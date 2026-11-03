@@ -389,6 +389,34 @@ WSL2 uses 50% of your RAM by default. If you have 16GB, it only uses 8GB.
 | 32GB | 20-24GB |
 | 64GB | 40-48GB |
 
+**When the model runs on Windows (an AMD APU such as Strix Halo, an RTX
+Spark), the opposite applies:** the model and WSL share the memory Windows
+can lend (its commit limit: RAM plus page file), and if WSL grows into it,
+Windows runs out and WSL can crash. Setup then writes a limit for you
+(`memory=` under `[wsl2]`, and `autoMemoryReclaim=dropcache` under
+`[experimental]`): the commit limit, less the model's memory, 16 GiB for
+Windows and 8 GiB of headroom, never under 12 GB. It never changes a value you
+set, and `& "$env:LOCALAPPDATA\ODS\restore-windows-settings.ps1"` puts your
+old file back. Run `ods doctor` in Ubuntu to see how much memory Windows has
+left; it warns below 8 GiB.
+
+### Problem: ODS stops working after WSL restarted or crashed
+
+**Symptoms:**
+- The dashboard says the local model runtime is unavailable after a Windows
+  "low on memory" warning, `wsl --shutdown` or a WSL crash
+- `ods doctor` reports `ODS-WSL-BIND-MOUNTS-STALE` or
+  `ODS-DOCKER-DESKTOP-PORTS-DEAD`
+
+**Solution:**
+ODS checks this by itself each time WSL starts and recreates the affected
+containers once a new container sees your data. If it reports that it could
+not:
+1. Restart Docker Desktop: right-click the Docker icon in the taskbar and
+   choose **Restart** (or run `docker desktop restart` in PowerShell).
+2. ODS repairs its containers by itself once Docker Desktop is back. If
+   `ods doctor` still reports it, run `ods repair mounts` in Ubuntu.
+
 ### Problem: "Port already in use"
 
 **Symptoms:**

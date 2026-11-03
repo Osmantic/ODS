@@ -1,18 +1,26 @@
-# WSL memory limit for an NVIDIA RTX Spark (PR B design 4.3, decision D5).
+# WSL memory limit for an NVIDIA RTX Spark (PR B design 4.3, decision D5),
+# and for any PC whose model runs on Windows in memory Windows shares with WSL
+# (wsl-memory-budget.ps1).
 #
 # Windows charges the memory WSL may use against the same commit limit the
 # GPU model needs. By default WSL may use half of the RAM Windows sees, about
-# 31 GiB on a factory RTX Spark. With the owner's consent ODS writes a bounded
-# memory= under [wsl2] in %USERPROFILE%\.wslconfig, marked as ODS's, and only
-# when that default is above the bound. An owner's own memory= is always kept
-# and planned with. The old file is backed up and restore-windows-settings.ps1
-# puts it back (windows-settings.ps1). The text functions are pure.
+# 31 GiB on a factory RTX Spark. ODS writes a bounded memory= under [wsl2] in
+# %USERPROFILE%\.wslconfig, marked as ODS's, and only when that default is
+# above the bound; where WSL supports it, also autoMemoryReclaim= under
+# [experimental] (WSL gives memory it no longer uses back to Windows), marked
+# the same way. An owner's own memory= or autoMemoryReclaim= is always kept,
+# and memory= is planned with. The old file is backed up and
+# restore-windows-settings.ps1 puts it back (windows-settings.ps1). The text
+# functions are pure.
 
 . (Join-Path $PSScriptRoot 'private-file.ps1')
 . (Join-Path $PSScriptRoot 'windows-settings.ps1')
 
 $script:ODSWslConfigMarker = '# Set by ODS setup: memory limit for WSL. Rerun ODS setup to change it.'
-# ODS never limits WSL below this: Ubuntu, Docker and the Portal need it.
+$script:ODSWslReclaimMarker = '# Set by ODS setup: WSL gives memory it no longer uses back to Windows. Rerun ODS setup to change it.'
+# ODS never limits WSL below this: Ubuntu, Docker and the Portal need it. The
+# full ODS stack with Portal ran at 12 GB on an RTX Spark (WSL reported
+# 11,933 MiB; 2026-10-25).
 $script:ODSWslMemoryFloorGiB = 12
 
 function Get-ODSWslConfigPath {
@@ -111,19 +119,103 @@ function Set-ODSWslConfigMemoryText([string]$Text, [int]$GiB, $RecordedGiB = $nu
 }
 
 function Remove-ODSWslConfigMemoryText([string]$Text) {
-    # The text without ODS's marker and the memory= line right under it
-    # (pure); unchanged when that pair is not there. Other lines stay.
+    # The text without ODS's lines (pure): each marker and the memory= or
+    # autoMemoryReclaim= line right under it. Unchanged when no such pair is
+    # there. Other lines stay. restore-windows-settings.ps1 carries this.
     $parsed = Get-ODSWslConfigLines $Text
     $lines = $parsed.Lines
-    for ($index = 0; $index -lt $lines.Count - 1; $index++) {
-        if ($lines[$index].Trim() -ceq $script:ODSWslConfigMarker -and $lines[$index + 1] -match '^\s*memory\s*=') {
+    $removed = $false
+    for ($index = $lines.Count - 2; $index -ge 0; $index--) {
+        $marker = $lines[$index].Trim()
+        if (($marker -ceq $script:ODSWslConfigMarker -and $lines[$index + 1] -match '^\s*memory\s*=') -or
+            ($marker -ceq $script:ODSWslReclaimMarker -and $lines[$index + 1] -match '^\s*autoMemoryReclaim\s*=')) {
             $lines.RemoveAt($index + 1)
             $lines.RemoveAt($index)
-            if (-not $lines.Count) { return '' }
-            return (($lines -join $parsed.Newline) + $parsed.Newline)
+            $removed = $true
         }
     }
-    return $Text
+    if (-not $removed) { return $Text }
+    if (-not $lines.Count) { return '' }
+    return (($lines -join $parsed.Newline) + $parsed.Newline)
+}
+
+function Find-ODSWslConfigReclaimLine($Lines) {
+    # Index of autoMemoryReclaim= in the [experimental] section, -1 when there
+    # is none; Section is the index of the [experimental] header, -1 when none.
+    $section = -1
+    $inSection = $false
+    for ($index = 0; $index -lt $Lines.Count; $index++) {
+        $line = $Lines[$index].Trim()
+        $header = [regex]::Match($line, '^\[(?<name>[^\]]+)\]')
+        if ($header.Success) {
+            $inSection = $header.Groups['name'].Value.Trim() -ieq 'experimental'
+            if ($inSection -and $section -lt 0) { $section = $index }
+            continue
+        }
+        if ($inSection -and $line -match '^autoMemoryReclaim\s*=') { return [pscustomobject]@{ Section = $section; Reclaim = $index } }
+    }
+    return [pscustomobject]@{ Section = $section; Reclaim = -1 }
+}
+
+function Read-ODSWslConfigReclaim([string]$Text, $RecordedReclaim = $null) {
+    # autoMemoryReclaim= under [experimental]: Value, and Owner 'ods' (ODS's
+    # marker above it and windows-settings.json records the same value) or
+    # 'owner'; $null when the file sets none (pure).
+    $parsed = Get-ODSWslConfigLines $Text
+    $found = Find-ODSWslConfigReclaimLine $parsed.Lines
+    if ($found.Reclaim -lt 0) { return $null }
+    $value = ($parsed.Lines[$found.Reclaim] -replace '^\s*autoMemoryReclaim\s*=', '').Trim()
+    $marked = $found.Reclaim -gt 0 -and $parsed.Lines[$found.Reclaim - 1].Trim() -ceq $script:ODSWslReclaimMarker
+    $ods = $marked -and $RecordedReclaim -and [string]$RecordedReclaim -ceq $value
+    return [pscustomobject]@{ Value = $value; Owner = $(if ($ods) { 'ods' } else { 'owner' }) }
+}
+
+function Set-ODSWslConfigReclaimText([string]$Text, [string]$Value, $RecordedReclaim = $null) {
+    <#
+    .SYNOPSIS
+        .wslconfig text with ODS's autoMemoryReclaim=<Value> under
+        [experimental] and its marker above it, every other line kept; $null
+        when the owner set autoMemoryReclaim= (theirs stays) (pure).
+    #>
+    if ($Value -cnotin @('dropcache', 'gradual')) { throw "Unknown autoMemoryReclaim value '$Value'." }
+    $current = Read-ODSWslConfigReclaim $Text $RecordedReclaim
+    if ($current -and $current.Owner -ceq 'owner') { return $null }
+    $parsed = Get-ODSWslConfigLines $Text
+    $lines = $parsed.Lines
+    $line = "autoMemoryReclaim=$Value"
+    $found = Find-ODSWslConfigReclaimLine $lines
+    if ($found.Reclaim -ge 0) {
+        $lines[$found.Reclaim] = $line
+    } elseif ($found.Section -ge 0) {
+        $lines.Insert($found.Section + 1, $line)
+        $lines.Insert($found.Section + 1, $script:ODSWslReclaimMarker)
+    } else {
+        if ($lines.Count -and $lines[$lines.Count - 1].Trim()) { $lines.Add('') }
+        $lines.Add('[experimental]')
+        $lines.Add($script:ODSWslReclaimMarker)
+        $lines.Add($line)
+    }
+    return (($lines -join $parsed.Newline) + $parsed.Newline)
+}
+
+function Get-ODSWslConfigUpdate([string]$Text, [int]$GiB, [string]$Reclaim, $RecordedGiB = $null, $RecordedReclaim = $null) {
+    <#
+    .SYNOPSIS
+        What ODS would write (pure): Text, and Memory and Reclaim each
+        'written' (ODS sets or updates its own line), 'owner' (the owner's
+        line stays) or 'skipped' (not asked: GiB 0, Reclaim empty).
+    #>
+    $memory = 'skipped'
+    if ($GiB -gt 0) {
+        $changed = Set-ODSWslConfigMemoryText $Text $GiB $RecordedGiB
+        if ($null -eq $changed) { $memory = 'owner' } else { $Text = $changed; $memory = 'written' }
+    }
+    $reclaimState = 'skipped'
+    if ($Reclaim) {
+        $changed = Set-ODSWslConfigReclaimText $Text $Reclaim $RecordedReclaim
+        if ($null -eq $changed) { $reclaimState = 'owner' } else { $Text = $changed; $reclaimState = 'written' }
+    }
+    return [pscustomobject]@{ Text = $Text; Memory = $memory; Reclaim = $reclaimState }
 }
 
 function Read-ODSWslConfigFile {
@@ -158,6 +250,13 @@ function Get-ODSWslRecordedGiB {
     return [double]$record.Value
 }
 
+function Get-ODSWslRecordedReclaim {
+    # The autoMemoryReclaim value ODS wrote, $null when it wrote none.
+    $record = Get-ODSWindowsSettingsValue (Read-ODSWindowsSettings) 'WslConfig'
+    if ($null -eq $record -or -not $record.Reclaim) { return $null }
+    return [string]$record.Reclaim
+}
+
 function Get-ODSWslEffectiveMemory([double]$VisibleGiB) {
     <#
     .SYNOPSIS
@@ -177,28 +276,43 @@ function Get-ODSSha256Hex([byte[]]$Bytes) {
     try { return (-join ($hash.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') })) } finally { $hash.Dispose() }
 }
 
-function Write-ODSWslConfig([int]$GiB) {
+function Write-ODSWslConfig([int]$GiB, [string]$Reclaim = '') {
     <#
     .SYNOPSIS
-        Write ODS's WSL memory limit to .wslconfig after backing up the old
-        file, and record it. Result 'written', 'owner' (the owner's memory= is
-        kept, nothing written) or 'unsupported' (a file ODS cannot edit as
-        plain text, nothing written). Takes effect when WSL restarts.
+        Write ODS's WSL memory limit (GiB, 0 to leave memory= alone) and, when
+        given, its autoMemoryReclaim value to .wslconfig after backing up the
+        old file, and record them. Result 'written', 'owner' (the owner's
+        values are kept, nothing written) or 'unsupported' (a file ODS cannot
+        edit as plain text, nothing written); Memory and Reclaim say what
+        happened to each (Get-ODSWslConfigUpdate). Takes effect when WSL
+        restarts.
     #>
     $file = Read-ODSWslConfigFile
     $recorded = Get-ODSWslRecordedGiB
-    if (-not $file.Editable) { return [pscustomobject]@{ Result = 'unsupported'; Path = $file.Path; Backup = '' } }
-    $text = Set-ODSWslConfigMemoryText $file.Text $GiB $recorded
-    if ($null -eq $text) { return [pscustomobject]@{ Result = 'owner'; Path = $file.Path; Backup = '' } }
+    $recordedReclaim = Get-ODSWslRecordedReclaim
+    if (-not $file.Editable) {
+        return [pscustomobject]@{ Result = 'unsupported'; Path = $file.Path; Backup = ''; Memory = 'unsupported'; Reclaim = 'unsupported' }
+    }
+    $update = Get-ODSWslConfigUpdate $file.Text $GiB $Reclaim $recorded $recordedReclaim
+    if ($update.Memory -cne 'written' -and $update.Reclaim -cne 'written') {
+        return [pscustomobject]@{ Result = 'owner'; Path = $file.Path; Backup = ''; Memory = $update.Memory; Reclaim = $update.Reclaim }
+    }
+    $text = $update.Text
     $backup = ''
     if ($file.Exists) {
-        $backup = Join-Path (Get-ODSWindowsSettingsDir) ('wslconfig-backup-' + [datetime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.txt')
+        # Unique per write: two writes in one second must not overwrite the
+        # backup the record points to.
+        $stamp = [datetime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 6)
+        $backup = Join-Path (Get-ODSWindowsSettingsDir) ('wslconfig-backup-' + $stamp + '.txt')
         Write-ODSPrivateFileBytes -Path $backup -Bytes $file.Bytes
     }
     $encoding = [Text.UTF8Encoding]::new($file.Bom)
     $bytes = [byte[]]($encoding.GetPreamble() + $encoding.GetBytes($text))
     # A plain write keeps the owner's file and its permissions as they were.
     [IO.File]::WriteAllBytes($file.Path, $bytes)
-    Save-ODSWindowsWslConfigChange -Value $GiB -HadFile $file.Exists -Backup $backup -WrittenSha256 (Get-ODSSha256Hex $bytes)
-    return [pscustomobject]@{ Result = 'written'; Path = $file.Path; Backup = $backup }
+    # The record names the values ODS owns in the file now.
+    $value = if ($update.Memory -ceq 'written') { $GiB } else { $recorded }
+    $reclaimValue = if ($update.Reclaim -ceq 'written') { $Reclaim } else { [string]$recordedReclaim }
+    Save-ODSWindowsWslConfigChange -Value $value -HadFile $file.Exists -Backup $backup -WrittenSha256 (Get-ODSSha256Hex $bytes) -Reclaim $reclaimValue
+    return [pscustomobject]@{ Result = 'written'; Path = $file.Path; Backup = $backup; Memory = $update.Memory; Reclaim = $update.Reclaim }
 }

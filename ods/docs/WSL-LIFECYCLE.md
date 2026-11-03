@@ -102,16 +102,44 @@ Stale-bind recovery: an authorized `ods start` on WSL with Docker Desktop
 probes the actual running container view and, when a service's bind mount has
 been invalidated by a WSL restart, recreates that service from already-installed
 images (no pull, no build) with real data retained and a private bounded backup
-of writable data in the stale container view. Backups are capped at 1 GiB and
-10,000 archive members across affected services, require disk headroom, and
-remain private even when recovery fails. The helper has a 120-second total
-budget within the lifecycle adapter's 300-second start budget. Selected paused services
-are refused rather than recreated. This recovery runs before Compose during
-manual starts and the saved Windows sign-in startup path;
+of writable data in the stale container view. Before any backup or recreate, a
+new throwaway container made from each stale service's own local image
+(`docker run --rm --pull never --network none`, the bind source mounted
+read-only) must see the same host object (device, inode, type) as the host
+does. Without that proof Docker Desktop is not sharing the distribution's files
+yet and new containers would be just as empty, so nothing is changed and the
+helper exits 3: restart Docker Desktop, then run `ods repair mounts`. Backups are
+capped at 1 GiB and 10,000 archive members across affected services, require
+disk headroom, and remain private even when recovery fails. One recovery runs at
+a time per installation (`data/wsl-bind-recovery/recovery.lock`); a second waits
+up to 60 seconds, then exits 4. The helper's 120-second budget starts once it
+holds the lock, within the lifecycle adapter's 300-second start budget. Selected
+paused services are refused rather than recreated. This recovery runs before
+Compose during manual starts and the saved Windows sign-in startup path;
 it makes no promise of universal resilience. Real Windows reboot qualification
 is still pending; the current evidence is a live laptop restoration.
 Containers absent from the selected manifest, including removed or disabled
 extension orphans, are left untouched.
+
+After a WSL VM restart nobody runs `ods start`: Docker Desktop starts the
+unless-stopped containers itself, and after the 2026-10-25 commit-exhaustion
+crash on an RTX Spark they came back with an empty `/data`. So each host-agent
+start under WSL (its systemd unit starts with the distribution) waits up to 10
+minutes for this installation's containers to settle, then runs
+`ods repair mounts --check`. When containers see stale data it runs
+`ods repair mounts` while holding the model lifecycle and every service lock,
+and defers while a model switch, a Pixel model transaction or a dashboard
+service operation runs. The repair resolves Compose files with ods-cli's
+`get_compose_flags` (the saved `.compose-flags`, else the resolver with `.env`
+loaded), never a container's recorded file list, which can be stale after an
+extension change. At most two repairs per WSL boot, each recorded in
+`data/wsl-self-heal.json` before it runs; a later agent start in a boot that
+already settled does nothing. When the proof fails, the repair fails or Docker
+never answered, the agent waits up to an hour for Docker Desktop to (re)start
+the containers and checks and repairs once more. The existing dead-port check runs after this repair; ports still dead
+after one container restart are recorded with the Docker Desktop restart step.
+`ods doctor` shows that record and its own checks. Portal access is never
+re-verified or replayed by this repair.
 
 For an already-managed installation missing its Windows sign-in task, repair
 registration without rerunning setup or starting WSL:

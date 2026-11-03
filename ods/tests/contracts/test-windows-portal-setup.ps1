@@ -111,6 +111,9 @@ function Reset-Scenario {
     $script:amdPlan = $null
     $script:amdArgs = @()
     $script:amdEnvironment = @{}
+    $script:amdMemory = $null
+    $script:wslBudgetCalls = @()
+    $script:wslBudgetRestart = $true
     $script:capturedEnvironment = @{}
     $script:linuxHome = '/home/user'
     $script:amdBinding = @()
@@ -153,7 +156,12 @@ function Initialize-ODSPortalAmdRuntime($Plan, [string]$SourceRoot, [bool]$NonIn
     $script:calls.Add('amd-runtime:' + $Plan.GpuName)
     $script:amdBinding = @($WslDistro, $WslInstallDir)
     if (@($script:amdArgs).Count -eq 0) { return $null }
-    return [pscustomobject]@{ Arguments = $script:amdArgs; Environment = $script:amdEnvironment }
+    return [pscustomobject]@{ Arguments = $script:amdArgs; Environment = $script:amdEnvironment; Memory = $script:amdMemory }
+}
+function Invoke-ODSPortalWslMemoryBudget([double]$EngineCommitGiB, [string]$Engine, [string]$WslVersionText) {
+    $script:calls.Add('wsl-budget')
+    $script:wslBudgetCalls += [pscustomobject]@{ EngineCommitGiB = $EngineCommitGiB; Engine = $Engine; WslVersionText = $WslVersionText }
+    return [pscustomobject]@{ Result = 'written'; RestartNeeded = $script:wslBudgetRestart; Budget = $null; Lines = @() }
 }
 function Test-ODSPortalAdministrator { return $script:scenario -eq 'admin' }
 function Test-ODSNativeWindowsInstall { return $script:scenario -eq 'native' }
@@ -464,6 +472,29 @@ try {
     $script:amdArgs = @()
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'AMD host that keeps the CPU route still installs'
     Check (-not (($script:capturedArguments -join ' ') -match 'native-llm|lemonade|--tier') -and $script:capturedEnvironment.Count -eq 0) 'the CPU route passes no native flags and no key'
+    Check (-not $script:calls.Contains('wsl-budget')) 'the CPU route leaves the WSL memory limit alone'
+    # A model on Windows in memory Windows also lends to WSL (an AMD APU)
+    # keeps WSL within a memory budget; the owner hears about the restart last.
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureNativeArgs; $script:amdEnvironment = $fixtureEnvironment
+    $script:amdMemory = [pscustomobject]@{ SharesSystemMemory = $true; EngineCommitGiB = 21.6; Engine = 'llama.cpp (Vulkan) with Qwen3.6.gguf' }
+    $budgetNotice = @(& { $script:budgetResult = Invoke-ODSPortalSetup @{} 'unused' } 6>&1 | ForEach-Object { [string]$_ }) -join "`n"
+    Check ($script:budgetResult -eq 0 -and @($script:wslBudgetCalls).Count -eq 1 -and $script:wslBudgetCalls[0].EngineCommitGiB -eq 21.6 -and
+        $script:wslBudgetCalls[0].Engine -ceq 'llama.cpp (Vulkan) with Qwen3.6.gguf' -and $script:wslBudgetCalls[0].WslVersionText -match '2\.6\.1\.0') 'a shared-memory model gets the WSL memory budget with its own commit and the WSL version'
+    Check ($script:calls.IndexOf('wsl-budget') -gt $script:calls.IndexOf('amd-runtime:AMD Radeon RX 9070 XT') -and
+        $script:calls.IndexOf('wsl-budget') -lt $script:calls.IndexOf('install:Ubuntu-24.04')) 'the budget is set after the model server is ready and before the Linux installer'
+    Check ($budgetNotice -match 'only after it restarts' -and $budgetNotice -match 'wsl --shutdown' -and
+        $budgetNotice.LastIndexOf('wsl --shutdown') -gt $budgetNotice.IndexOf('Starting the Linux installer')) 'setup ends by saying, in plain words, that WSL must restart for the limit'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureNativeArgs; $script:amdEnvironment = $fixtureEnvironment
+    $script:amdMemory = [pscustomobject]@{ SharesSystemMemory = $true; EngineCommitGiB = 21.6; Engine = 'x' }; $script:wslBudgetRestart = $false
+    $quiet = @(& { $null = Invoke-ODSPortalSetup @{} 'unused' } 6>&1 | ForEach-Object { [string]$_ }) -join "`n"
+    Check ($script:calls.Contains('wsl-budget') -and $quiet -notmatch 'wsl --shutdown') 'nothing changed in .wslconfig: no restart notice'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureNativeArgs; $script:amdEnvironment = $fixtureEnvironment
+    $script:amdMemory = [pscustomobject]@{ SharesSystemMemory = $false; EngineCommitGiB = 0.0; Engine = '' }
+    $null = Invoke-ODSPortalSetup @{} 'unused'
+    Check (-not $script:calls.Contains('wsl-budget')) 'a discrete GPU keeps its model in its own memory: WSL keeps its default'
     Reset-Scenario
     $script:nvidiaDriver = 576
     $script:amdPlan = $fixturePlan

@@ -53,6 +53,24 @@ try {
     Check ((Remove-ODSWslConfigMemoryText "[wsl2]${crlf}${marker}${crlf}memory=16GB${crlf}processors=8${crlf}") -ceq "[wsl2]${crlf}processors=8${crlf}") 'the restore transform removes only ODS''s marker and its memory= line'
     Check ((Remove-ODSWslConfigMemoryText "[wsl2]${crlf}memory=24GB${crlf}") -ceq "[wsl2]${crlf}memory=24GB${crlf}") 'without ODS''s marker the restore transform changes nothing'
 
+    # --- autoMemoryReclaim (pure) -------------------------------------------------------
+    $reclaimMarker = '# Set by ODS setup: WSL gives memory it no longer uses back to Windows. Rerun ODS setup to change it.'
+    Check ((Set-ODSWslConfigReclaimText '' 'dropcache') -ceq "[experimental]${crlf}${reclaimMarker}${crlf}autoMemoryReclaim=dropcache${crlf}") 'no file: [experimental], the marker and autoMemoryReclaim=dropcache'
+    Check ((Set-ODSWslConfigReclaimText "[experimental]${crlf}sparseVhd=true${crlf}" 'dropcache') -ceq "[experimental]${crlf}${reclaimMarker}${crlf}autoMemoryReclaim=dropcache${crlf}sparseVhd=true${crlf}") 'an existing [experimental] keeps its other keys'
+    Check ($null -eq (Set-ODSWslConfigReclaimText "[experimental]${crlf}autoMemoryReclaim=gradual${crlf}" 'dropcache') -and
+        $null -eq (Set-ODSWslConfigReclaimText "[experimental]${crlf}automemoryreclaim=disabled${crlf}" 'dropcache')) 'the owner''s autoMemoryReclaim= (any case) is never changed'
+    Check ((Set-ODSWslConfigReclaimText "[experimental]${crlf}${reclaimMarker}${crlf}autoMemoryReclaim=gradual${crlf}" 'dropcache' 'gradual') -ceq "[experimental]${crlf}${reclaimMarker}${crlf}autoMemoryReclaim=dropcache${crlf}") 'a value ODS owns is updated in place'
+    Check ($null -eq (Set-ODSWslConfigReclaimText "[experimental]${crlf}${reclaimMarker}${crlf}autoMemoryReclaim=gradual${crlf}" 'dropcache' $null)) 'a reclaim marker without a matching record is the owner''s'
+    $both = Get-ODSWslConfigUpdate "[wsl2]${crlf}processors=8${crlf}" 12 'dropcache'
+    Check ($both.Memory -ceq 'written' -and $both.Reclaim -ceq 'written' -and
+        $both.Text -ceq "[wsl2]${crlf}${marker}${crlf}memory=12GB${crlf}processors=8${crlf}${crlf}[experimental]${crlf}${reclaimMarker}${crlf}autoMemoryReclaim=dropcache${crlf}") 'memory= and autoMemoryReclaim= go in their own sections together'
+    $ownerMemory = Get-ODSWslConfigUpdate "[wsl2]${crlf}memory=20GB${crlf}" 12 'dropcache'
+    Check ($ownerMemory.Memory -ceq 'owner' -and $ownerMemory.Reclaim -ceq 'written' -and $ownerMemory.Text.Contains('memory=20GB') -and
+        -not $ownerMemory.Text.Contains('memory=12GB')) 'the owner''s memory= stays while ODS adds only reclaim'
+    $nothing = Get-ODSWslConfigUpdate "[wsl2]${crlf}memory=20GB${crlf}" 0 ''
+    Check ($nothing.Memory -ceq 'skipped' -and $nothing.Reclaim -ceq 'skipped' -and $nothing.Text -ceq "[wsl2]${crlf}memory=20GB${crlf}") 'nothing asked, nothing changed'
+    Check ((Remove-ODSWslConfigMemoryText $both.Text) -ceq "[wsl2]${crlf}processors=8${crlf}${crlf}[experimental]${crlf}") 'the restore transform removes both of ODS''s lines and keeps the rest'
+
     # --- Write-ODSWslConfig: backup, record, restore script ----------------------------
     $path = Join-Path $env:USERPROFILE '.wslconfig'
     $settingsPath = Get-ODSWindowsSettingsPath
@@ -108,6 +126,27 @@ try {
         (Get-ODSWslEffectiveMemory 62.5).Source -ceq 'default') 'a .wslconfig that is not valid UTF-8 is never edited, and WSL is planned at its default'
     Remove-Item -LiteralPath $path -Force
     Check ((Get-ODSWslEffectiveMemory 62.5).Source -ceq 'default' -and (Get-ODSWslEffectiveMemory 62.5).GiB -eq 31.25) 'without memory= WSL uses its default'
+
+    # --- Write-ODSWslConfig with autoMemoryReclaim ------------------------------------
+    Remove-Item -LiteralPath $settingsPath -Force
+    $original = "# mine${crlf}[wsl2]${crlf}processors=8${crlf}"
+    [IO.File]::WriteAllText($path, $original)
+    $written = Write-ODSWslConfig 12 'dropcache'
+    $record = (Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json).WslConfig
+    Check ($written.Result -ceq 'written' -and $written.Memory -ceq 'written' -and $written.Reclaim -ceq 'written' -and
+        $record.Value -eq 12 -and $record.Reclaim -ceq 'dropcache' -and [IO.File]::ReadAllText($written.Backup) -ceq $original) 'memory and reclaim are written once, backed up and recorded'
+    Check ((Read-ODSWslConfigReclaim ([IO.File]::ReadAllText($path)) (Get-ODSWslRecordedReclaim)).Owner -ceq 'ods') 'the reclaim value ODS wrote reads back as ODS''s'
+    $null = Invoke-Restore
+    Check ([IO.File]::ReadAllText($path) -ceq $original) 'restore puts the earlier file back, without either ODS line'
+    [IO.File]::WriteAllText($path, "[wsl2]${crlf}memory=20GB${crlf}")
+    $kept = Write-ODSWslConfig 0 'dropcache'
+    $record = (Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json).WslConfig
+    Check ($kept.Result -ceq 'written' -and $kept.Memory -ceq 'skipped' -and $null -eq $record.Value -and $record.Reclaim -ceq 'dropcache' -and
+        (Get-ODSWslEffectiveMemory 62.5).Source -ceq 'wslconfig') 'reclaim alone keeps the owner''s memory= theirs, and the record claims no memory value'
+    [IO.File]::WriteAllText($path, [IO.File]::ReadAllText($path).Replace("memory=20GB${crlf}", "memory=20GB${crlf}swap=0${crlf}"))
+    $said = Invoke-Restore
+    Check ([IO.File]::ReadAllText($path) -ceq "[wsl2]${crlf}memory=20GB${crlf}swap=0${crlf}${crlf}[experimental]${crlf}" -and $said -match 'wsl --shutdown') 'when edited since, restore removes only ODS''s reclaim line and keeps the owner''s memory= and edit'
+    Remove-Item -LiteralPath $path -Force
 
     # --- The page file part of the restore script ---------------------------------------
     Save-ODSWindowsPageFileOriginal -PagingFiles @('?:\pagefile.sys') -Automatic $true
