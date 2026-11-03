@@ -17,7 +17,7 @@ import {createHash} from 'node:crypto';
 import {registerHooks} from 'node:module';
 import {pathToFileURL, fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {promptContractForAgent, ODS_TINY_CONVERSATION_CONTRACT} from '../plugin/prompt-contract.mjs';
+import {promptContractForAgent, ODS_TINY_CONVERSATION_CONTRACT, PORTAL_INTEGRATION_TURN_CONTEXT} from '../plugin/prompt-contract.mjs';
 import {createExtensionReadTool} from '../plugin/host-observe.mjs';
 import {createPublicWebExtractTool} from '../plugin/web-extract.mjs';
 import {createAgentSkillTool} from '../plugin/agent-skills.mjs';
@@ -125,6 +125,7 @@ assert.ok(compactContract?.appendSystemContext?.includes(ODS_TINY_CONVERSATION_C
 // Include the surrounding production before_prompt_build hook, not only its
 // conversation contract. These prompts also consume the first-turn budget.
 compactContract.appendSystemContext = `${ACTIVITY_CONTRACT} ${executionLocationContext({agentId:'pixel'},'pixel')}  ${compactContract.appendSystemContext} ${executionContext()} `;
+compactContract.appendContext = PORTAL_INTEGRATION_TURN_CONTEXT;
 
 // Production bootstrap shape: a small BOOTSTRAP.md and a small AGENTS.md,
 // bounded by the per-agent 2000/6000 budget and contextInjection 'never'.
@@ -185,6 +186,8 @@ export default {id:'pixel-ods',register(api){api.on('before_prompt_build',()=>co
     config,provider:'fixture',model:'model',prompt,runId:'budget-8k-fresh',trigger:'user',timeoutMs:30000});
   const trace=JSON.stringify({requests:requests.length,error:result.meta?.error,systemChars:result.meta?.systemPromptReport?.systemPrompt?.chars,skillChars:result.meta?.systemPromptReport?.skills?.promptChars,skillCount:result.meta?.systemPromptReport?.skills?.entries?.length});
   console.log(JSON.stringify({requests:requests.length,error:result.meta?.error,contractChars:compactContract.appendSystemContext.length,systemChars:result.meta?.systemPromptReport?.systemPrompt?.chars,skillChars:result.meta?.systemPromptReport?.skills?.promptChars,skillCount:result.meta?.systemPromptReport?.skills?.entries?.length,wireTools:requests[0]?.tools?.map(t=>t.function.name),configuredContext:config.agents.defaults.contextTokens}));
+  assert.ok(requests[0]?.messages.some(m=>m.role==='user'&&typeof m.content==='string'&&m.content.includes(PORTAL_INTEGRATION_TURN_CONTEXT)),
+    'the actual current-turn integration guidance must reach the provider within the 8K budget');
   // The failure mode under investigation: precheck overflow before any provider call.
   if(result.meta?.error?.kind==='context_overflow'||result.meta?.error?.kind==='compaction_failure'){
     assert.fail('8K compact profile overflowed before reaching the provider: '+trace);
