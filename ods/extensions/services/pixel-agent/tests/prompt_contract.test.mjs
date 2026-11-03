@@ -6,6 +6,7 @@ import vm from "node:vm";
 import {
   CONNECTED_RECORDS_CONTRACT,
   PORTAL_INTEGRATIONS_CONTRACT,
+  PORTAL_INTEGRATION_API_CONTRACT,
   PORTAL_INTEGRATION_TURN_CONTEXT,
   ODS_COMPACT_CONVERSATION_CONTRACT,
   ODS_TINY_CONVERSATION_CONTRACT,
@@ -51,6 +52,9 @@ test('the actual prompt hook appends integration turn context independently of r
       const original = JSON.stringify(messages);
       const context = await promptHookAlone({prompt, messages});
       assert.equal(context.appendContext, PORTAL_INTEGRATION_TURN_CONTEXT);
+      assert.equal(context.appendSystemContext.split(PORTAL_INTEGRATION_API_CONTRACT).length - 1, 1,
+        'static integration API facts occur once in SYSTEM');
+      assert.ok(!context.appendContext.includes(PORTAL_INTEGRATION_API_CONTRACT));
       assert.ok(!context.appendSystemContext.includes(PORTAL_INTEGRATION_TURN_CONTEXT), 'not in cached system context');
       assert.ok(!context.prependContext?.includes(PORTAL_INTEGRATION_TURN_CONTEXT), 'keep it beside the owner turn');
       assert.equal(JSON.stringify(messages), original, 'history and typed receipts stay intact');
@@ -62,8 +66,29 @@ test('integration turn context is absent for runtime probes and agents with no P
   const probe = await promptHookAlone({probe:true});
   assert.ok(probe.appendSystemContext, 'the existing probe prompt contract remains');
   assert.ok(!probe.appendContext?.includes(PORTAL_INTEGRATION_TURN_CONTEXT));
+  assert.ok(!probe.appendSystemContext.includes(PORTAL_INTEGRATION_API_CONTRACT));
   const other = await promptHookAlone({agentId:'unrelated'});
   assert.equal(other, undefined);
+});
+
+test('the real hook keeps owner/history data out of static integration API facts', async () => {
+  const prompt = 'Current owner data canary: invented violet text.';
+  const messages = [{role:'assistant',content:'Historical argument canary: invented amber text.'},
+    {role:'toolResult',toolName:'pixel_ods_notes',details:{status:'done',path:'Historical canary.md'}}];
+  const before = JSON.stringify(messages);
+  const context = await promptHookAlone({prompt,messages});
+  assert.ok(context.appendSystemContext.includes(PORTAL_INTEGRATION_API_CONTRACT));
+  for (const data of [prompt,...messages.map(row=>row.content??row.details.path)]) {
+    assert.ok(!context.appendSystemContext.includes(data), data);
+  }
+  assert.equal(JSON.stringify(messages),before);
+  for (const boundary of ['search/read access data, not tool metadata',
+    'prepare never executes/consumes approval, even Allowed',
+    'preparation request permits submission without new consent',
+    'write/call may execute under policy', 'typed receipts', 'prose creates no request',
+    'owner decides Portal approval IDs', 'cannot look up/approve/decline IDs',
+    'historical actions', 'real grants require identical arguments',
+    'Never repeat uncertain external actions']) assert.ok(PORTAL_INTEGRATION_API_CONTRACT.includes(boundary),boundary);
 });
 import { createAskUserTool } from '../plugin/ask-user.mjs';
 

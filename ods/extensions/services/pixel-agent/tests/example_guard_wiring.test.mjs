@@ -21,7 +21,7 @@ import {withPixelCronDeliveryDefault,withPixelCronJobAdmission} from '../plugin/
 import {EXAMPLE_NOTES, exampleNotice} from '../plugin/example-guard.mjs';
 import {exampleRecordDirectory, exampleRecordFile} from '../plugin/example-projects.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
-import {longTaskContract, PORTAL_INTEGRATION_TURN_CONTEXT, promptContractForAgent} from '../plugin/prompt-contract.mjs';
+import {longTaskContract, PORTAL_INTEGRATION_API_CONTRACT, PORTAL_INTEGRATION_TURN_CONTEXT, promptContractForAgent} from '../plugin/prompt-contract.mjs';
 import {inResponseLanguage, responseLanguageTurnContext} from '../plugin/response-language.mjs';
 import {createSubagentDelivery} from '../plugin/subagent-delivery.mjs';
 import {withPixelSubagentWorkspace} from '../plugin/subagent-workspace.mjs';
@@ -100,7 +100,7 @@ function entry(root) {
     accessRuntime: {isProbe: () => false, beforeTool() {}, afterTool() {}, finish() {}},
     privateBrowserAccessForAgent: () => false, executionHostForAgent: () => 'sandbox',
     goalProgress: {...quiet, finalize: (_event, _context, {guardDecision}) => guardDecision}, taskActivity: quiet,
-    promptContractForAgent, longTaskContract, PORTAL_INTEGRATION_TURN_CONTEXT, configuredContextWindow: undefined, configuredLeanPrompt: false,
+    promptContractForAgent, longTaskContract, PORTAL_INTEGRATION_API_CONTRACT, PORTAL_INTEGRATION_TURN_CONTEXT, configuredContextWindow: undefined, configuredLeanPrompt: false,
     configuredResponseLanguage: undefined, inResponseLanguage, responseLanguageTurnContext, managedTeamRole,
     extensionRepositoryContext: async () => '', GOAL_CONTRACT: '', ACTIVITY_CONTRACT: '',
     executionLocationContext: () => '', executionContext: () => '',

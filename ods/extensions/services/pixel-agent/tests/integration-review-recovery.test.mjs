@@ -361,7 +361,7 @@ test('actual index lifecycle hooks suppress workful helpers even with event-only
     promptContractForAgent:()=>({prependContext:'fixture',appendSystemContext:'fixture'}),
     extensionRepositoryContext:forbidden('repository-fetch'),responseLanguageTurnContext:noop,
     configuredResponseLanguage:undefined,configuredContextWindow:65536,configuredLeanPrompt:false,
-    inResponseLanguage:value=>value,GOAL_CONTRACT:'',managedTeamRole:noop,PORTAL_INTEGRATION_TURN_CONTEXT:'fixture',
+    inResponseLanguage:value=>value,GOAL_CONTRACT:'',managedTeamRole:noop,PORTAL_INTEGRATION_API_CONTRACT:'static API fixture',PORTAL_INTEGRATION_TURN_CONTEXT:'fixture',
     longTaskContract:noop,ACTIVITY_CONTRACT:'',executionLocationContext:noop,executionContext:noop,
     conversationImageLifecycle:{observe:noop},managedRuntime:true,
   });
