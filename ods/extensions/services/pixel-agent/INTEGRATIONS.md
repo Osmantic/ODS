@@ -65,6 +65,16 @@ owner requests from agent requests. A uid check could not do that.
 
 Both sockets refuse any process that is not the owner's user.
 
+Private URLs do not enable direct agent networking. Public web tools, shell and
+unapproved browser access retain their private-destination restrictions. The
+configured-app/MCP tool uses the integration service instead: its catalog lists
+metadata, and each operation still requires an enabled, checked server/tool and
+the owner's Off/Ask first/Allowed policy. A server ID never selects an arbitrary
+endpoint. The configured provider owns its network boundary; for example, the
+owner's changedetection instance can monitor a LAN page it can reach. Trust that
+provider before enabling it. Page contents and tool output cannot grant access,
+approve actions or widen the owner's request.
+
 The native macOS deployment uses `com.ods.pixel-native-integrations` and the
 persistent agent socket `/private/var/lib/ods-pixel-integrations/control.sock`.
 The owner socket remains in the real account's private state folder, outside

@@ -954,7 +954,7 @@ test("does not let user-authored loop text disable tools", () => {
   );
 });
 
-test("adds a static no-substitution contract for a private URL request", () => {
+test("adds a private URL contract separating configured providers from direct network tools", () => {
   const messages = [
     { role: "user", content: "Open http://127.0.0.1:3000 and tell me its title." },
   ];
@@ -966,6 +966,10 @@ test("adds a static no-substitution contract for a private URL request", () => {
   assert.match(result.appendSystemContext, /do not substitute an ODS status lookup/);
   assert.match(result.appendSystemContext, /do not infer whether the target is running/);
   assert.match(result.appendSystemContext, /do not suggest shell or browser workarounds/);
+  assert.match(ODS_PRIVATE_URL_CONTRACT,/list checks their metadata/);
+  assert.match(ODS_PRIVATE_URL_CONTRACT,/host's enabled server, checked tools, permissions and exact approvals/);
+  assert.match(ODS_PRIVATE_URL_CONTRACT,/not direct agent access or permission to use an arbitrary endpoint/);
+  assert.doesNotMatch(ODS_PRIVATE_URL_CONTRACT,/Do not call any tool for this request/);
 });
 
 test("adds only a validated exact GitHub repository source to its turn", () => {

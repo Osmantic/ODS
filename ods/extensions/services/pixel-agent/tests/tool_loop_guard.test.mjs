@@ -11242,7 +11242,7 @@ test("preflights private targets for targeted public extraction", () => {
   );
 });
 
-test("blocks every tool substitution for a user-authored private URL request", () => {
+test("blocks unrelated tool substitution for a user-authored private URL request", () => {
   const guard = createToolLoopGuard();
   const messages = [
     { role: "user", content: [{ type: "text", text: "Inspect http://127.0.0.1:3000 now" }] },
@@ -11276,6 +11276,69 @@ test("blocks every tool substitution for a user-authored private URL request", (
     block: true,
     blockReason: PRIVATE_URL_REQUEST_REASON,
   });
+});
+
+test('private URL intent permits only the configured Portal provider transport, not direct access', () => {
+  const owner = 'Check http://fixture:8080/windows-wqa-k7-product.html with my configured page watch and notify below 70 reais.';
+  assert.equal(textRequestsPrivateUrlAccess(owner), true);
+  for (const id of ['pixel_ods_mcp', 'openclaw:pixel-ods:pixel_ods_mcp']) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({agentId:'pixel',runId:'run-1',sessionId:'session-1'}, 'pixel', {prompt:owner});
+    const invoke = params => call(guard, id === 'pixel_ods_mcp' ? id : 'tool_call', {
+      event:{params:id === 'pixel_ods_mcp' ? params : {id,args:params}},
+    });
+    assert.equal(invoke({action:'list'}), undefined);
+    const params = {action:'prepare',server:'app:watch',tool:'add',arguments:{
+      url:'http://fixture:8080/windows-wqa-k7-product.html',below:70,
+    }};
+    assert.equal(invoke(params), undefined);
+    assert.equal(invoke({...params,action:'call'}), undefined);
+    assert.equal(invoke({action:'call',server:'home',tool:'get_state',arguments:{}}), undefined);
+    // An unrelated status lookup still does not establish private-page access.
+    assert.equal(call(guard, 'pixel_ods_status').blockReason, PRIVATE_URL_REQUEST_REASON);
+    assert.equal(invoke({action:'list'}), undefined);
+    assert.equal(call(guard, 'web_fetch', {event:{params:{url:'http://fixture:8080/private'}}}).blockReason,
+      PRIVATE_NETWORK_LOOP_ABORT_REASON);
+  }
+});
+
+test('private URL transport exception rejects endpoint selectors, raw callers and lookalike tool IDs', () => {
+  const attempts = [
+    ['pixel_ods_mcp',{action:'call',server:'http://127.0.0.1:8080',tool:'fetch',arguments:{}}],
+    ['pixel_ods_mcp',{action:'call',server:'home',tool:'fetch',arguments:{},endpoint:'http://127.0.0.1'}],
+    ['pixel_ods_mcp',{action:'list',url:'http://127.0.0.1'}],
+    ['pixel_ods_mcp',{action:'call',server:'home',tool:'fetch',arguments:[]}],
+    ['pixel_ods_mcp',{action:'decide',approvalId:'anything',decision:'approve'}],
+    ['tool_call',{id:'openclaw:other:pixel_ods_mcp',args:{action:'list'}}],
+    ['mcp_call',{url:'http://127.0.0.1',method:'get'}],
+    ['exec',{command:'curl http://127.0.0.1/private'}],
+    ['web_fetch',{url:'http://127.0.0.1/private'}],
+    ['pixel_ods_web_extract',{url:'http://127.0.0.1/private'}],
+    ['browser',{url:'http://127.0.0.1/private'}],
+  ];
+  for (const [name,params] of attempts) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({agentId:'pixel',runId:'run-1',sessionId:'session-1'}, 'pixel', {
+      prompt:'Inspect http://127.0.0.1/private now',
+    });
+    assert.equal(call(guard,name,{event:{params}}).blockReason,PRIVATE_URL_REQUEST_REASON,JSON.stringify([name,params]));
+  }
+});
+
+test('owner no-tools restriction still blocks configured provider metadata', () => {
+  const guard = createToolLoopGuard();
+  guard.observeRun({agentId:'pixel',runId:'run-1',sessionId:'session-1'}, 'pixel', {
+    prompt:'Do not use any tools. Explain whether you can check http://fixture:8080/private.',
+  });
+  assert.equal(call(guard,'pixel_ods_mcp',{event:{params:{action:'list'}}}).block,true);
+});
+
+test('original Portuguese watch request remains model led without a private-intent classification', () => {
+  const prompt = 'Acompanhe o preço da página de teste http://fixture:8080/windows-wqa-k7-product.html e avise no destino QA somente quando ficar abaixo de70reais.';
+  assert.equal(textRequestsPrivateUrlAccess(prompt),false);
+  const guard = createToolLoopGuard();
+  guard.observeRun({agentId:'pixel',runId:'run-1',sessionId:'session-1'}, 'pixel', {prompt});
+  assert.equal(call(guard,'pixel_ods_mcp',{event:{params:{action:'list'}}}),undefined);
 });
 
 test("allows a normal public HTTP destination in an exec command", () => {

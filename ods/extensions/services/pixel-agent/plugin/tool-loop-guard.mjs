@@ -164,7 +164,7 @@ export const PRIVATE_NETWORK_LOOP_ABORT_REASON =
   "Pixel stopped this response because it requested another tool after a private-network boundary was enforced. Start a fresh message with a safe public destination or an approved ODS status capability.";
 
 export const PRIVATE_URL_REQUEST_REASON =
-  "This request contains a private URL that Pixel cannot open from this chat. Do not call or substitute any tool, including ODS status or shell tools. Reply concisely that the private page was not accessed and ask the user to provide its content or use a separately approved private-access capability.";
+  "This tool cannot open the requested private URL. Do not substitute ODS status, public web tools or shell access. A configured Portal app or MCP tool may handle its documented operation through its own host policy and approvals; its catalog is metadata, not proof of access. Otherwise state that the private page was not accessed and ask for its content or an approved private-access capability.";
 
 export const CODING_RETRY_EXHAUSTED_REASON =
   "Pixel stopped a no-progress coding repair loop after its bounded failed-verification limit. Do not call another tool in this turn. Give the user a visible summary of the verified failure, the changes attempted, and the most useful next step.";
@@ -4969,6 +4969,25 @@ export function textRequestsPrivateUrlAccess(text) {
   return /\b(?:access|browse|call|check|connect|download|fetch|inspect|open|query|read|request|retrieve|summarize|test|visit)\b|\btell\s+me\b|\bwhat(?:'s|\s+is)\s+(?:at|on)\b/i.test(
     text
   );
+}
+
+// Admission to the existing integrations transport, never authorization for a
+// provider action or a URL. The service resolves this closed server ID against
+// owner configuration and still checks enablement, checked tool binding, policy
+// and exact approvals. No endpoint/token/command is accepted as a transport
+// selector. Direct agent web, browser and shell protections stay independent.
+function configuredPortalProviderDispatch(target, params) {
+  if (!['pixel_ods_mcp', 'openclaw:pixel-ods:pixel_ods_mcp'].includes(target)
+      || !params || typeof params !== 'object' || Array.isArray(params)
+      || Object.keys(params).some(key => !['action', 'server', 'tool', 'arguments'].includes(key))) return false;
+  if (params.action === 'list') return Object.keys(params).length === 1;
+  if (!['call', 'prepare'].includes(params.action)
+      || typeof params.server !== 'string'
+      || !/^(?:[a-z0-9][a-z0-9-]{0,31}|app:(?:documents|photos|watch|news))$/.test(params.server)
+      || typeof params.tool !== 'string' || !params.tool.length || params.tool.length > 512
+      || /[\x00-\x20\x7f]/.test(params.tool)) return false;
+  return params.arguments === undefined || params.arguments !== null
+    && typeof params.arguments === 'object' && !Array.isArray(params.arguments);
 }
 
 // The output a call that ran keeps when the run-progress budget has stopped
@@ -10843,7 +10862,8 @@ export function createToolLoopGuard({
       }
     }
 
-    if (state?.privateNetworkPrompt) {
+    const configuredProviderDispatch = configuredPortalProviderDispatch(selectedToolTarget, selectedParams);
+    if (state?.privateNetworkPrompt && !configuredProviderDispatch) {
       state.privateNetworkPrompt = false;
       state.privateNetworkExhausted = true;
       state.privateNetworkRequestDenied = true;
@@ -10862,7 +10882,7 @@ export function createToolLoopGuard({
         (urlTargetsNonPublicAddress(selectedParams?.url) ||
           urlTargetsNonPublicAddress(selectedParams?.targetUrl)));
     if (state?.privateNetworkExhausted &&
-        (state.privateNetworkRequestDenied || repeatsDeniedPrivateAccess)) {
+        (state.privateNetworkRequestDenied && !configuredProviderDispatch || repeatsDeniedPrivateAccess)) {
       let aborted = false;
       try {
         aborted = typeof abortRun === "function" && Boolean(abortRun(sessionId));
