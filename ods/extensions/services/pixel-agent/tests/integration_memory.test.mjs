@@ -36,6 +36,11 @@ test('the dashboard answer to a memory card is read back exactly', () => {
     assert.deepEqual(memoryAnswer(message), {text: 'The owner is vegetarian.', choice});
   }
   assert.equal(memoryAnswer(`${question}\nMaybe later`), null, 'a custom answer is not a decision');
+  // As Portal's ingress passes it on: the owner's answer, then its delivery note.
+  const delivered = `${question}\nDon't save\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. If it asks for exact text, copy that full exact text. Do not answer with a generic acknowledgement. Do not output NO_REPLY.]`;
+  assert.deepEqual(memoryAnswer(delivered), {text: 'The owner is vegetarian.', choice: 'discard'});
+  assert.deepEqual(memoryAnswer(`${question}\nSave\n\n[ODS Pixel delivery requirement: x]`), {text: 'The owner is vegetarian.', choice: 'save'});
+  assert.equal(memoryAnswer(`${question}\nSave\n\nAnd also book a table.`), null, 'more than the answer is the owner talking');
   assert.equal(memoryAnswer('Remember that I am vegetarian'), null);
   assert.equal(memoryAnswer(undefined), null);
 });

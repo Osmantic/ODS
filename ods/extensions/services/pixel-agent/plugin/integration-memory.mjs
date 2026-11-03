@@ -19,9 +19,12 @@ export function chatSession(sessionKey) {
   return /^ods-[a-f0-9]{64}$/.test(user) ? user : '';
 }
 
+// The ingress adds a delivery note after the owner's message (pixel_ingress.mjs); it is not theirs.
+const DELIVERY_NOTE = /\n\n\[ODS (?:Portal|Pixel) delivery requirement:[\s\S]*$/;
+
 // The owner's answer to a memory card, when this turn is one.
 export function memoryAnswer(text) {
-  const match = typeof text === 'string' ? text.trim().match(QUESTION) : null;
+  const match = typeof text === 'string' ? text.replace(DELIVERY_NOTE, '').trim().match(QUESTION) : null;
   return match ? {text: match[1], choice: MEMORY_CHOICES[match[2]]} : null;
 }
 

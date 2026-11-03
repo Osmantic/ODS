@@ -8,6 +8,9 @@ import { submitIntegration } from './integrations.mjs';
 const SYNC_MS = 60000;
 export const REMINDER_MARK = 'Portal reminder: ';
 const isReminder = job => str(job?.description).startsWith(REMINDER_MARK);
+// OpenClaw may load this plugin more than once in the gateway process: the instance whose
+// hooks see gateway start is not always the one whose tools run. They share the scheduler here.
+const SHARED_CRON = Symbol.for('ods.pixel-ods.getCron');
 
 const str = value => (typeof value === 'string' ? value : '');
 
@@ -32,15 +35,15 @@ const sameSchedule = (job, plan) => job.schedule?.kind === 'cron' && job.schedul
 
 // Hooks for OpenClaw's cron: finished runs of Portal's tasks go to the integrations service,
 // and the digest job follows the owner's digest settings.
-export function createTaskHooks({submit = submitIntegration, agentId = 'pixel', warn = () => {}, timers = globalThis} = {}) {
+export function createTaskHooks({submit = submitIntegration, agentId = 'pixel', warn = () => {}, timers = globalThis, shared = globalThis} = {}) {
   // The gateway's cron service. At gateway start it may not exist yet, so the start context's
   // getCron is kept and asked again when the service is needed, as OpenClaw's own plugins do.
   let found, getCron, timer;
   const remember = context => {
-    if (typeof context?.getCron === 'function') getCron = context.getCron;
+    if (typeof context?.getCron === 'function') getCron = shared[SHARED_CRON] = context.getCron;
     found = context?.getCron?.() ?? found;
   };
-  const scheduler = () => (found ??= getCron?.());
+  const scheduler = () => (found ??= getCron?.() ?? shared[SHARED_CRON]?.());
 
   // One sync at a time: two that overlap could both find no digest job and both add one.
   let syncing;

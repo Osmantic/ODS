@@ -118,7 +118,7 @@ test('a reminder becomes a one-off job that deletes itself and runs nothing of n
 
 test('reminders are scheduled with the gateway cron once it is known', async () => {
   const {submit} = recorder({'digest-plan': {ok: true, plan: {...PLAN, enabled: false}}});
-  const hooks = createTaskHooks({submit, timers: {setInterval: () => ({}), clearInterval() {}}});
+  const hooks = createTaskHooks({submit, timers: {setInterval: () => ({}), clearInterval() {}}, shared: {}});
   await assert.rejects(hooks.scheduleReminder(REMINDER_PLAN), /scheduler is not ready/);
   const cron = fakeCron();
   await hooks.gatewayStart({}, {getCron: () => cron});
@@ -162,4 +162,19 @@ test('a scheduler that appears after gateway start is still found for a reminder
   cron = fakeCron();
   await hooks.scheduleReminder(REMINDER_PLAN);
   assert.equal(cron.calls.filter(([kind]) => kind === 'add').length, 1);
+});
+
+test('a reminder set from another instance of the plugin finds the scheduler the gateway gave the first', async () => {
+  const shared = {};
+  const {submit} = recorder({'digest-plan': {ok: true, plan: {...PLAN, enabled: false}}});
+  const timers = {setInterval: () => ({}), clearInterval() {}};
+  const hooked = createTaskHooks({submit, timers, shared});
+  const tools = createTaskHooks({submit, timers, shared});
+  await assert.rejects(tools.scheduleReminder(REMINDER_PLAN), /scheduler is not ready/);
+  const cron = fakeCron();
+  await hooked.gatewayStart({}, {getCron: () => cron});
+  await tools.scheduleReminder(REMINDER_PLAN);
+  assert.equal(cron.calls.filter(([kind]) => kind === 'add').length, 1);
+  // Separate processes, or tests, keep separate slots.
+  await assert.rejects(createTaskHooks({submit, timers, shared: {}}).scheduleReminder(REMINDER_PLAN), /not ready/);
 });
