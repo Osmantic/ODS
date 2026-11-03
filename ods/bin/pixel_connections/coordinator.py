@@ -16,13 +16,14 @@ import hashlib
 import hmac
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import tempfile
 import time
 from typing import Any
 
-from pixel_access_bridge import AccessError, atomic_json, digest, remaining, runtime_config_path
+from pixel_access_bridge import AccessError, atomic_json, connection_paths, digest, remaining, runtime_config_path
 from pixel_model_coordinator import _managed_marker, _marker_digest
 from pixel_settings.coordinator import _identity, _read, _valid_identity
 
@@ -764,7 +765,7 @@ def _journal(value: Any) -> dict[str, Any]:
     required = {"kind", "phase", "token", "transactionId", "edge_revision", "beforeSha", "boundary", "mode",
                 "beforeIdentity", "target", "markerBeforeSha"}
     optional = {"error", "outcome", "restartIdentity", "noOwnerWrite", "afterSha", "answersSha", "google",
-                "pluginChange"}
+                "pluginChange", "deploymentSha256"}
     if (not isinstance(value, dict) or not required <= set(value) or set(value) - required - optional
             or value["kind"] != "connection"
             or value["phase"] not in ("acquiring", "invoking", "restarting", "releasing")
@@ -776,6 +777,8 @@ def _journal(value: Any) -> dict[str, Any]:
             or not _valid_identity(value["beforeIdentity"])
             or "restartIdentity" in value and not _valid_identity(value["restartIdentity"])):
         raise AccessError("invalid-connection-transition")
+    if 'deploymentSha256' in value and (type(value['deploymentSha256']) is not str or not HEX.fullmatch(value['deploymentSha256'])):
+        raise AccessError('invalid-connection-transition')
     # Only trusted exact-step callers add this pair. Older transitions remain
     # readable; a partial or malformed step binding cannot be resumed as one.
     if (('afterSha' in value) != ('answersSha' in value)
@@ -829,7 +832,19 @@ def _journal(value: Any) -> dict[str, Any]:
     return value
 
 
+def _require_deployment(bridge, journal, *, fresh=False):
+    deployment = connection_paths(bridge)['deployment'] if platform.system() == 'Darwin' else None
+    if deployment is not None:
+        if fresh and 'deploymentSha256' not in journal and bridge.pending() is None:
+            journal['deploymentSha256'] = deployment.checksum
+        if journal.get('deploymentSha256') != deployment.checksum:
+            raise AccessError('connection-deployment-changed')
+    elif 'deploymentSha256' in journal:
+        raise AccessError('connection-deployment-changed')
+
+
 def _write(bridge, journal: dict[str, Any]) -> None:
+    _require_deployment(bridge, journal, fresh=True)
     if len(json.dumps(_journal(journal)).encode("utf-8")) > lifecycle.MAX_BYTES:
         raise AccessError("invalid-connection-transition")
     atomic_json(Path(bridge.state) / "transition.json", _journal(journal))
@@ -994,6 +1009,7 @@ def _google_abandon(bridge, hold: dict[str, Any], reason: str) -> None:
 
 
 def _google_owner_step(bridge, hold: dict[str, Any]) -> str:
+    _require_deployment(bridge, hold)
     _google_pair(hold)
     if bridge.native().get("active") or bridge.edge().get("streams"):
         raise AccessError("runtime-busy")
@@ -1007,7 +1023,7 @@ def _google_owner_step(bridge, hold: dict[str, Any]) -> str:
         config, config_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)
         if config_hash != hold["beforeSha"]:
             raise AccessError("connection-config-changed")
-        planned = planner.plan_config(config, target, install_dir=str(bridge.home / ".local/share/pixel"))
+        planned = planner.plan_config(config, target, **connection_paths(bridge)['plan'])
         raw = (json.dumps(planned, indent=2, sort_keys=True) + "\n").encode("utf-8")
         hold.update(phase="invoking", target=target, afterSha=hashlib.sha256(raw).hexdigest(),
                     answersSha=digest(answers))
@@ -1379,6 +1395,7 @@ def _owner_outcome(bridge, journal: dict[str, Any], result: dict[str, Any]) -> s
 def _resume(bridge, journal: dict[str, Any]) -> str:
     """Settle a gateway change a crash or lost reply interrupted; never apply it twice."""
     _journal(journal)
+    _require_deployment(bridge, journal)
     if "google" in journal:
         raise AccessError("connection-transition-in-progress")
     _acquire(bridge, journal)

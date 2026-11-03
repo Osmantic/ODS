@@ -11,7 +11,13 @@ renders both states with Pixel's own renderer and requires the same result.
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
 import re
+from types import SimpleNamespace
 from typing import Any
 
 from . import plugins as portal_plugins
@@ -54,6 +60,142 @@ ENV_LINE = re.compile(r"^([A-Z][A-Z0-9_]*)='((?:[^']|'\\'')*)'$")
 
 class PlanError(ValueError):
     """The live configuration is outside the shape Pixel renders."""
+
+
+DEPLOYMENT_KEYS = frozenset({'schemaVersion', 'surface', 'ownerUid', 'ownerGid', 'home', 'configPath',
+    'stateDir', 'gatewayEnvPath', 'answersPath', 'runtimeRoot', 'sourceRoot', 'nodePath', 'entrypointPath',
+    'launcherPath', 'hostPythonPath', 'pluginPaths', 'runtimeCustodySha256', 'bundleSha256',
+    'gatewayPlist', 'gatewayPlistSha256'})
+DEPLOYMENT_PLUGINS = ('pixel-source-broker', 'pixel-operations-broker', 'pixel-frontier-broker')
+NATIVE_RUNTIME_ROOT = Path('/usr/local/libexec/ods-pixel-runtimes')
+_HEX = re.compile(r'[a-f0-9]{64}\Z')
+
+
+@dataclass(frozen=True)
+class ConnectionDeployment:
+    """Internal Root/owner value, never a path-bearing public request or grant."""
+
+    encoded: bytes
+
+    @classmethod
+    def parse(cls, value):
+        if (type(value) is not dict or set(value) != DEPLOYMENT_KEYS or type(value['schemaVersion']) is not int
+                or value['schemaVersion'] != 1 or value['surface'] != 'darwin'
+                or type(value['ownerUid']) is not int or value['ownerUid'] <= 0
+                or type(value['ownerGid']) is not int or value['ownerGid'] < 0):
+            raise PlanError('connection-deployment-invalid')
+        for key in DEPLOYMENT_KEYS - {'schemaVersion', 'surface', 'ownerUid', 'ownerGid', 'pluginPaths'}:
+            item = value[key]
+            if key.endswith('Sha256'):
+                valid = type(item) is str and _HEX.fullmatch(item)
+            else:
+                valid = (type(item) is str and item.startswith('/') and item != '/'
+                         and not any(ord(c) < 32 for c in item)
+                         and all(part not in ('', '.', '..') for part in item.split('/')[1:]))
+            if not valid:
+                raise PlanError('connection-deployment-invalid')
+        plugins = value['pluginPaths']
+        if (type(plugins) is not dict or set(plugins) != set(DEPLOYMENT_PLUGINS)
+                or any(type(path) is not str or not re.fullmatch(r'/[^\x00-\x1f]+/plugins/[0-9]+', path)
+                       or any(part in ('', '.', '..') for part in path.split('/')[1:]) for path in plugins.values())
+                or len(set(plugins.values())) != len(plugins)):
+            raise PlanError('connection-deployment-invalid')
+        config_parent = Path(value['configPath']).parent
+        if (value['gatewayEnvPath'] != str(config_parent / 'gateway.env')
+                or value['answersPath'] != str(config_parent / 'onboarding.json')
+                or value['entrypointPath'] != str(Path(value['runtimeRoot']) / 'openclaw.mjs')
+                or any(Path(path).parent.parent != Path(value['nodePath']).parent for path in plugins.values())):
+            raise PlanError('connection-deployment-invalid')
+        raw = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
+        if len(raw) > 8192:
+            raise PlanError('connection-deployment-invalid')
+        return cls(raw)
+
+    @property
+    def document(self):
+        return json.loads(self.encoded)
+
+    @property
+    def checksum(self):
+        return hashlib.sha256(self.encoded).hexdigest()
+
+
+def _native_bundle_plugins(runtime):
+    """Use the protected published inventory, never owner config load.paths."""
+    from pixel_macos_custody import protected_bytes, protected_tree_metadata
+    root = Path(runtime['node']).parent
+    if root.parent != NATIVE_RUNTIME_ROOT or not _HEX.fullmatch(root.name) or Path(runtime['runtimeRoot']) != root / 'runtime':
+        raise PlanError('connection-runtime-bundle-unavailable')
+    protected_tree_metadata(root)
+    helper = Path(runtime['sourceRoot']) / 'installers/macos/lib/pixel-runtime-bundle.py'
+    protected_bytes(helper)
+    spec = importlib.util.spec_from_file_location('_connection_bundle', helper)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    manifest, checksum = module.verify(root, expected_digest=root.name)
+    paths = {}
+    for relative in manifest['plugins']:
+        metadata = json.loads(protected_bytes(root / relative / 'openclaw.plugin.json'))
+        plugin_id = metadata.get('id') if type(metadata) is dict else None
+        if plugin_id in DEPLOYMENT_PLUGINS:
+            if plugin_id in paths:
+                raise PlanError('connection-runtime-plugin-ambiguous')
+            paths[plugin_id] = str(root / relative)
+    if set(paths) != set(DEPLOYMENT_PLUGINS):
+        raise PlanError('connection-runtime-plugin-unavailable')
+    return paths, checksum
+
+
+def native_deployment(runtime, runtime_checksum, *, uid, gid, environment, plist, plist_sha256):
+    """Derive one value from already-qualified runtime and launchd inputs.
+
+    Sidefiles are a future installer publication beside the selected config.
+    Their absence refuses; preparation answers and Linux paths are never adopted.
+    """
+    from .native_mcp import _parents, _read
+    plugins, bundle_checksum = _native_bundle_plugins(runtime)
+    home, config, state_dir = (environment[key] for key in ('HOME', 'OPENCLAW_CONFIG_PATH', 'OPENCLAW_STATE_DIR'))
+    config_parent = Path(config).parent
+    env_path, answers_path = config_parent / 'gateway.env', config_parent / 'onboarding.json'
+    for path in (Path(home), Path(config), Path(state_dir), env_path, answers_path):
+        if path.resolve(strict=True) != path:
+            raise PlanError('connection-deployment-path-changed')
+        _parents(path, uid)
+    for path in (Path(home), Path(state_dir)):
+        info = path.lstat()
+        if not path.is_dir() or info.st_uid != uid or info.st_mode & 0o077:
+            raise PlanError('connection-deployment-owner-changed')
+    # Metadata and contents are checked again in the owner, before any state-dir
+    # preparation. Do not create/chmod/adopt incomplete publications.
+    _read(env_path, owners=(uid,), private=True)
+    _read(answers_path, owners=(uid,), private=True)
+    return ConnectionDeployment.parse({'schemaVersion': 1, 'surface': 'darwin', 'ownerUid': uid, 'ownerGid': gid,
+        'home': home, 'configPath': config, 'stateDir': state_dir, 'gatewayEnvPath': str(env_path),
+        'answersPath': str(answers_path), 'runtimeRoot': runtime['runtimeRoot'], 'sourceRoot': runtime['sourceRoot'],
+        'nodePath': runtime['node'], 'entrypointPath': str(Path(runtime['runtimeRoot']) / 'openclaw.mjs'),
+        'launcherPath': runtime['launcher'], 'hostPythonPath': runtime['hostPython'], 'pluginPaths': plugins,
+        'runtimeCustodySha256': runtime_checksum, 'bundleSha256': bundle_checksum,
+        'gatewayPlist': str(plist), 'gatewayPlistSha256': plist_sha256})
+
+
+def require_native_deployment(value, *, uid, gid, home, config_path):
+    """Owner-side requalification, not trust in a checksum supplied on a pipe."""
+    from pixel_access_bridge import gateway_runtime_environment
+    from pixel_macos_custody import protected_bytes
+    from pixel_provider.runtime_custody import RuntimeCustody
+    import plistlib
+    deployment = ConnectionDeployment.parse(value)
+    doc = deployment.document
+    if (doc['ownerUid'], doc['ownerGid'], doc['home'], doc['configPath']) != (uid, gid, home, config_path):
+        raise PlanError('connection-deployment-owner-changed')
+    runtime, checksum = RuntimeCustody(SimpleNamespace(binary=doc['launcherPath'])).inspect()
+    raw = protected_bytes(doc['gatewayPlist'])
+    actual = native_deployment(runtime, checksum, uid=uid, gid=gid,
+        environment=gateway_runtime_environment(plistlib.loads(raw)), plist=doc['gatewayPlist'],
+        plist_sha256=hashlib.sha256(raw).hexdigest())
+    if actual != deployment:
+        raise PlanError('connection-deployment-changed')
+    return deployment
 
 
 def limbs(capabilities: dict[str, bool] | None) -> dict[str, bool]:
@@ -156,11 +298,17 @@ def active_tools(config: Any, gateway: dict[str, Any]) -> list[str]:
     return list(tools)
 
 
-def plan_config(config: Any, gateway: dict[str, Any], *, install_dir: str) -> dict[str, Any]:
+def plan_config(config: Any, gateway: dict[str, Any], *, install_dir: str, plugin_paths=None) -> dict[str, Any]:
     """The live configuration with the Source Broker rendered for ``gateway``."""
     gateway = target(gateway)
-    plugin_path = f"{install_dir}/current/plugin"
-    later_paths = (f"{install_dir}/current/plugin-ops", f"{install_dir}/current/plugin-frontier")
+    if plugin_paths is None:
+        plugin_path = f"{install_dir}/current/plugin"
+        later_paths = (f"{install_dir}/current/plugin-ops", f"{install_dir}/current/plugin-frontier")
+    else:
+        if type(plugin_paths) is not dict or set(plugin_paths) != set(DEPLOYMENT_PLUGINS):
+            raise PlanError('connection-deployment-invalid')
+        plugin_path = plugin_paths[PLUGIN_ID]
+        later_paths = tuple(plugin_paths[name] for name in DEPLOYMENT_PLUGINS[1:])
     planned = copy.deepcopy(config)
     plugins, load, tools, also_allow, sandbox_allow, agent_tools, defaults = _shape(planned)
     previous = [name for name in SOURCE_TOOLS if name in also_allow]

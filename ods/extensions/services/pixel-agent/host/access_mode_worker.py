@@ -61,6 +61,20 @@ def main():
     # derived from its bound deployment. API requests cannot choose this path.
     path = os.environ.get("OPENCLAW_CONFIG_PATH") or os.path.join(
         os.environ["HOME"], ".openclaw", "openclaw.json")
+    deployment = None
+    def verify_deployment():
+        from pixel_connections.planner import require_native_deployment
+        return require_native_deployment(request['connection_deployment'], uid=os.geteuid(), gid=os.getegid(),
+                                         home=os.environ['HOME'], config_path=path)
+    native_operation = request['operation'] in ('connection-owner-status', 'connection-apply', 'connection-recover', 'native-mcp-oauth')
+    if native_operation and (platform.system() == 'Darwin' or 'connection_deployment' in request):
+        try:
+            if platform.system() != 'Darwin' or 'connection_deployment' not in request:
+                raise ValueError()
+            deployment = verify_deployment()
+        except Exception:
+            emit({'error': 'connection-deployment-unavailable'})
+            return  # Before preparing any owner state, callback or SDK operation.
     # New integrated installations keep recovery state under the already
     # private config directory. A user's general XDG state parent may validly
     # be group-writable; do not chmod that shared directory or weaken custody.
@@ -160,17 +174,19 @@ def main():
         if request["operation"].startswith("connection-"):
             import connection_transaction  # Linux only; see the custody check above.
             home = os.environ["HOME"]
-            env_path = os.path.join(home, ".config", "pixel-agent", "gateway.env")
+            env_path = (deployment.document['gatewayEnvPath'] if deployment else
+                        os.path.join(home, ".config", "pixel-agent", "gateway.env"))
+            native_options = dict(deployment=deployment, verify_deployment=verify_deployment) if deployment else {}
             try:
                 if request["operation"] == "connection-owner-status":
                     result = connection_transaction.connection_status(path, state_dir=state_dir, env_path=env_path,
-                                                                      answers_path=request["answers_path"])
+                                                                      answers_path=request["answers_path"], **native_options)
                 else:
-                    kwargs = dict(state_dir=state_dir, install_dir=os.path.join(home, ".local", "share", "pixel"),
+                    kwargs = dict(state_dir=state_dir, install_dir=None if deployment else os.path.join(home, ".local", "share", "pixel"),
                                   openclaw=request["openclaw"], transaction_id=request["transaction_id"],
                                   expected_config_sha256=request["config_sha256"], validate_config=validate,
                                   check_no_active_run=lambda: hook("busy"),
-                                  activate=lambda: hook("connection-activate"))
+                                  activate=lambda: hook("connection-activate"), **native_options)
                     result = (connection_transaction.apply_connection(
                                   path, request["connection_target"], request["connection_answers"],
                                   env_path=env_path, answers_path=request["answers_path"], **kwargs)

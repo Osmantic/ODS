@@ -110,12 +110,13 @@ def _fsync_directory(path):
         os.close(fd)
 
 
-def _journal(sd, path):
+def _journal(sd, path, deployment=None):
     value = _record(sd, JOURNAL)
     if value is None:
         return None
     files = value.get("files") if isinstance(value, dict) else None
-    if (type(value) is not dict or set(value) != JOURNAL_KEYS or value["schemaVersion"] != 1
+    expected = JOURNAL_KEYS | ({'deploymentSha256'} if deployment is not None else set())
+    if (type(value) is not dict or set(value) != expected or value["schemaVersion"] != 1
             or value["kind"] != "connection" or value["configPath"] != path
             or type(value["configMode"]) is not int
             or not all(_checksum(value[key]) for key in ("transactionId", "beforeSha", "afterSha"))
@@ -125,6 +126,8 @@ def _journal(sd, path):
                    or not _checksum(item["beforeSha"]) or not _checksum(item["afterSha"])
                    for item in files.values())):
         raise ConnectionTransactionError("invalid-connection-state")
+    if deployment is not None and value['deploymentSha256'] != deployment.checksum:
+        raise ConnectionTransactionError('connection-deployment-changed')
     _target(value["target"])
     return value
 
@@ -172,7 +175,7 @@ def _answers(raw, connection_answers):
     return _encoded(answers)
 
 
-def _plugin_ready(openclaw, install_dir, *, enabled):
+def _plugin_ready(openclaw, install_dir, *, enabled, plugin_path=None):
     """OpenClaw refreshes its plugin registry and, when enabled, resolves the plugin from the release."""
     # Cold inspection reports "loaded" for a manifest whose module cannot run.
     # Runtime inspection must actually import and register the active plugin.
@@ -190,7 +193,7 @@ def _plugin_ready(openclaw, install_dir, *, enabled):
             return False
         value = json.loads(inspected.stdout)
         plugin = value.get("plugin") if isinstance(value, dict) else None
-        expected = os.path.realpath(os.path.join(install_dir, "current", "plugin"))
+        expected = plugin_path if plugin_path is not None else os.path.realpath(os.path.join(install_dir, "current", "plugin"))
         return (isinstance(plugin, dict) and plugin.get("status") == "loaded" and plugin.get("imported") is True
                 and plugin.get("rootDir") == expected)
     except (OSError, subprocess.TimeoutExpired, ValueError):
@@ -248,7 +251,30 @@ def _check_result(path, journal, outcome):
         raise ConnectionTransactionError("connection-config-changed")
 
 
-def _rollback(path, sd, journal, validate, idle, activate, openclaw, install_dir):
+def _plugin_check(openclaw, install_dir, *, enabled, deployment=None):
+    if deployment is None:
+        return _plugin_ready(openclaw, install_dir, enabled=enabled)
+    return _plugin_ready(openclaw, install_dir, enabled=enabled,
+                         plugin_path=deployment.document['pluginPaths'][planner.PLUGIN_ID])
+
+
+def _deployment_check(deployment, verify_deployment, path, *, env_path=None, answers_path=None):
+    if deployment is None:
+        if verify_deployment is not None:
+            raise ConnectionTransactionError('connection-deployment-invalid')
+        return
+    if not isinstance(deployment, planner.ConnectionDeployment) or not callable(verify_deployment):
+        raise ConnectionTransactionError('connection-deployment-invalid')
+    doc = deployment.document
+    if (path != doc['configPath'] or env_path is not None and env_path != doc['gatewayEnvPath']
+            or answers_path is not None and answers_path != doc['answersPath']):
+        raise ConnectionTransactionError('connection-deployment-changed')
+    # Reopen/requalify files, not merely compare the supplied checksum.
+    if verify_deployment() != deployment:
+        raise ConnectionTransactionError('connection-deployment-changed')
+
+
+def _rollback(path, sd, journal, validate, idle, activate, openclaw, install_dir, deployment=None):
     backup = _read_private(os.path.join(sd, BACKUP))
     side_backups = {name: _read_private(os.path.join(sd, backup_name)) for name, backup_name in SIDE_FILES}
     if _hash(backup) != journal["beforeSha"] or any(
@@ -272,7 +298,7 @@ def _rollback(path, sd, journal, validate, idle, activate, openclaw, install_dir
             raise ConnectionTransactionError("connection-rollback-conflict")
         if side_hash != item["beforeSha"]:
             _replace(item["path"], side_backups[name], side_hash)
-    if not _plugin_ready(openclaw, install_dir, enabled=False):
+    if not _plugin_check(openclaw, install_dir, enabled=False, deployment=deployment):
         raise ConnectionTransactionError("connection-rollback-unverified")
     controller._require_idle(idle)
     if not _activate(activate):
@@ -291,13 +317,21 @@ def _requirements(expected_hash, transaction_id, validate_config, check_no_activ
 
 def apply_connection(config_path, gateway_target, connection_answers, *, state_dir, env_path, answers_path,
                      install_dir, openclaw, transaction_id, expected_config_sha256, validate_config,
-                     check_no_active_run, activate):
+                     check_no_active_run, activate, deployment=None, verify_deployment=None):
     """Write the planned gateway change, prove the plugin, and let root restart and verify it.
 
     activate() is a trusted host-only hook returning verified/rejected/unavailable.
     A rejected activation restores every file and has root restart the old setup.
     """
     _requirements(expected_config_sha256, transaction_id, validate_config, check_no_active_run, activate)
+    def check_deployment():
+        _deployment_check(deployment, verify_deployment, config_path, env_path=env_path, answers_path=answers_path)
+    check_deployment()  # Before even preparing the owner state directory.
+    if deployment is not None:
+        previous_idle = check_no_active_run
+        def check_no_active_run():
+            check_deployment()
+            return previous_idle()
     gateway_target = _target(gateway_target)
     if not state.valid_connection_answers(connection_answers):
         raise ConnectionTransactionError("invalid-connection-answers")
@@ -316,7 +350,8 @@ def apply_connection(config_path, gateway_target, connection_answers, *, state_d
             raise ConnectionTransactionError("connection-transaction-already-completed")
         side_before = {"gateway": _read_private(env_path), "answers": _read_private(answers_path)}
         try:
-            planned = planner.plan_config(_decode(before), gateway_target, install_dir=install_dir)
+            options = {'plugin_paths': deployment.document['pluginPaths']} if deployment is not None else {}
+            planned = planner.plan_config(_decode(before), gateway_target, install_dir=install_dir, **options)
             side_after = {"gateway": planner.plan_gateway_env(side_before["gateway"].decode("utf-8"),
                                                               gateway_target).encode("utf-8"),
                           "answers": _answers(side_before["answers"], connection_answers)}
@@ -329,6 +364,8 @@ def apply_connection(config_path, gateway_target, connection_answers, *, state_d
                    "files": {name: {"path": paths[name], "beforeSha": _hash(side_before[name]),
                                     "afterSha": _hash(side_after[name])} for name, _ in SIDE_FILES},
                    "target": gateway_target}
+        if deployment is not None:
+            journal['deploymentSha256'] = deployment.checksum
         controller._require_idle(check_no_active_run)
         staged = controller._stage_and_validate(path, after, mode, validate, "connection apply")
         try:
@@ -353,9 +390,9 @@ def apply_connection(config_path, gateway_target, connection_answers, *, state_d
         for name, _backup in SIDE_FILES:
             _replace(paths[name], side_after[name], journal["files"][name]["beforeSha"])
         enabled = bool(planner.active_tools(planned, gateway_target))
-        if (not _plugin_ready(openclaw, install_dir, enabled=enabled)
+        if (not _plugin_check(openclaw, install_dir, enabled=enabled, deployment=deployment)
                 or not _catalog_ready(openclaw, gateway_target["plugins"]) or not _activate(activate)):
-            return _rollback(path, sd, journal, validate, check_no_active_run, activate, openclaw, install_dir)
+            return _rollback(path, sd, journal, validate, check_no_active_run, activate, openclaw, install_dir, deployment)
         controller._require_idle(check_no_active_run)
         _check_result(path, journal, "applied")
         _finish(sd, journal, "applied")
@@ -363,24 +400,33 @@ def apply_connection(config_path, gateway_target, connection_answers, *, state_d
 
 
 def recover_connection(config_path, *, state_dir, install_dir, openclaw, transaction_id, expected_config_sha256,
-                       validate_config, check_no_active_run, activate):
+                       validate_config, check_no_active_run, activate, deployment=None, verify_deployment=None):
     """Roll an interrupted transaction back to its exact before-image; never overwrite drift."""
     _requirements(expected_config_sha256, transaction_id, validate_config, check_no_active_run, activate)
+    def check_deployment():
+        _deployment_check(deployment, verify_deployment, config_path)
+    check_deployment()
+    if deployment is not None:
+        previous_idle = check_no_active_run
+        def check_no_active_run():
+            check_deployment()
+            return previous_idle()
     sd = controller._prepare_state_dir(state_dir)
     with controller._Lock(sd):
         _no_pending_other(sd)
         path, _mode, data, _config = controller._load_config(config_path)
         if _hash(data) != expected_config_sha256:
             raise ConnectionTransactionError("connection-config-changed")
-        journal = _journal(sd, path)
+        journal = _journal(sd, path, deployment)
         if journal is None or journal["transactionId"] != transaction_id:
             raise ConnectionTransactionError("connection-recovery-unavailable")
         return _rollback(path, sd, journal, controller._normalize_validate(validate_config),
-                         check_no_active_run, activate, openclaw, install_dir)
+                         check_no_active_run, activate, openclaw, install_dir, deployment)
 
 
-def connection_status(config_path, *, state_dir, env_path, answers_path):
+def connection_status(config_path, *, state_dir, env_path, answers_path, deployment=None, verify_deployment=None):
     """Private owner-pipe status: what the live files say, never a live runtime claim."""
+    _deployment_check(deployment, verify_deployment, config_path, env_path=env_path, answers_path=answers_path)
     sd = controller._prepare_state_dir(state_dir)
     with controller._Lock(sd, exclusive=False):
         path, _mode, data, _config = controller._load_config(config_path)
@@ -389,7 +435,7 @@ def connection_status(config_path, *, state_dir, env_path, answers_path):
         if type(contract) is not dict:
             raise ConnectionTransactionError("invalid-onboarding-contract")
         answers = {key: contract.get(key) for key in state.ANSWER_KEYS}
-        pending = _journal(sd, path) is not None
+        pending = _journal(sd, path, deployment) is not None
         completed = _record(sd, COMPLETED)
         try:
             config = _decode(data)

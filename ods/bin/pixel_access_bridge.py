@@ -134,6 +134,42 @@ def runtime_config_path(bridge):
     return getattr(bridge, '_runtime_config_path', None) or bridge.home / '.openclaw/openclaw.json'
 
 
+def gateway_runtime_environment(document):
+    """Fixed launchd env grammar shared by Root and its unprivileged worker."""
+    arguments = document.get('ProgramArguments') if type(document) is dict else None
+    if type(arguments) is not list or len(arguments) < 4 or arguments[:2] != ['/usr/bin/env', '-i']:
+        raise AccessError('gateway-runtime-environment-unavailable')
+    values = {}
+    for argument in arguments[2:]:
+        if not isinstance(argument, str):
+            raise AccessError('gateway-runtime-environment-unavailable')
+        key, separator, value = argument.partition('=')
+        if not separator or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key):
+            break
+        if key in values:
+            raise AccessError('gateway-runtime-environment-unavailable')
+        values[key] = value
+    for key in ('HOME', 'OPENCLAW_CONFIG_PATH', 'OPENCLAW_STATE_DIR'):
+        value = values.get(key)
+        if (not isinstance(value, str) or not value.startswith('/') or value == '/'
+                or any(part in ('', '.', '..') for part in value.split('/')[1:])
+                or any(ord(char) < 32 for char in value) or Path(value).resolve() != Path(value)):
+            raise AccessError('gateway-runtime-path-unavailable')
+    return values
+
+
+def connection_paths(bridge):
+    """Root-private deployment selection; Linux defaults retain their bytes."""
+    if platform.system() == 'Darwin':
+        deployment = bridge.connection_deployment()
+        doc = deployment.document
+        return {'env': Path(doc['gatewayEnvPath']), 'answers': Path(doc['answersPath']),
+                'plan': {'install_dir': None, 'plugin_paths': doc['pluginPaths']}, 'deployment': deployment}
+    return {'env': bridge.home / '.config/pixel-agent/gateway.env',
+            'answers': bridge.install / 'data/pixel/onboarding.json',
+            'plan': {'install_dir': str(bridge.home / '.local/share/pixel')}, 'deployment': None}
+
+
 def private_json(path, uid, maximum=1024 * 1024):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
@@ -858,8 +894,13 @@ class SystemdAccessBridge:
         if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover",
                          "connection-apply", "connection-recover"):
             request["transaction_id"] = transaction_id
+        connection_deployment = None
+        if operation in ('connection-owner-status', 'connection-apply', 'connection-recover', 'native-mcp-oauth') and platform.system() == 'Darwin':
+            connection_deployment = self.connection_deployment()
+            request['connection_deployment'] = connection_deployment.document
         if operation in ("connection-owner-status", "connection-apply"):
-            request["answers_path"] = str(self.install / "data/pixel/onboarding.json")
+            request["answers_path"] = (connection_deployment.document['answersPath'] if connection_deployment
+                                       else str(self.install / "data/pixel/onboarding.json"))
         if operation == "connection-apply":
             request.update(connection_target=connection_target, connection_answers=connection_answers)
         if operation.startswith("model-") and operation != "model-status":
@@ -926,6 +967,8 @@ class SystemdAccessBridge:
                                 "connection-activate": activate_connection}.get(value["hook"])
                     if callback is None: raise AccessError("owner-protocol-failed")
                     remaining(deadline - time.monotonic())
+                    if connection_deployment is not None and self.connection_deployment() != connection_deployment:
+                        raise AccessError('connection-deployment-changed')
                     answer = callback()
                     remaining(deadline - time.monotonic())
                     try: protocol.hook_reply(operation, value["hook"], answer)
@@ -2616,28 +2659,7 @@ class LaunchdAccessBridge(SystemdAccessBridge):
 
     def _runtime_environment(self):
         _, document = self._launchd_document()
-        arguments = document.get('ProgramArguments')
-        if (type(arguments) is not list or len(arguments) < 4
-                or arguments[:2] != ['/usr/bin/env', '-i']):
-            raise AccessError('gateway-runtime-environment-unavailable')
-        values = {}
-        for argument in arguments[2:]:
-            if not isinstance(argument, str):
-                raise AccessError('gateway-runtime-environment-unavailable')
-            key, separator, value = argument.partition('=')
-            if not separator or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key):
-                break
-            if key in values:
-                raise AccessError('gateway-runtime-environment-unavailable')
-            values[key] = value
-        for key in ('HOME', 'OPENCLAW_CONFIG_PATH', 'OPENCLAW_STATE_DIR'):
-            value = values.get(key)
-            if (not isinstance(value, str) or not value.startswith('/') or value == '/'
-                    or any(part in ('', '.', '..') for part in value.split('/')[1:])
-                    or any(ord(char) < 32 for char in value)
-                    or Path(value).resolve() != Path(value)):
-                raise AccessError('gateway-runtime-path-unavailable')
-        return values
+        return gateway_runtime_environment(document)
 
     def worker_environment(self):
         self.verify_gateway_installation_binding()
@@ -2652,9 +2674,7 @@ class LaunchdAccessBridge(SystemdAccessBridge):
                 env[key] = configured[key]
         return env
 
-    def _worker_executable(self, operation, environment):
-        if operation != 'schedules':
-            return super()._worker_executable(operation, environment)
+    def _native_runtime_selection(self, environment):
         # The native CLI validator is an exact protected wrapper, not a package
         # directory. Reuse the existing full runtime qualification; only this
         # fixed operation receives the real entrypoint on the private pipe.
@@ -2676,7 +2696,26 @@ class LaunchdAccessBridge(SystemdAccessBridge):
                 raise AccessError('scheduler-runtime-unqualified')
         except OSError:
             raise AccessError('scheduler-runtime-unqualified') from None
-        return str(entrypoint)
+        return runtime, _custody, str(entrypoint)
+
+    def _worker_executable(self, operation, environment):
+        if operation not in ('schedules', 'connection-owner-status', 'connection-apply', 'connection-recover', 'native-mcp-oauth'):
+            return super()._worker_executable(operation, environment)
+        return self._native_runtime_selection(environment)[2]
+
+    def connection_deployment(self):
+        from pixel_connections.planner import native_deployment, PlanError
+        self.verify_gateway_installation_binding()
+        environment = self._runtime_environment()
+        if Path(environment['HOME']) != self.home or Path(environment['OPENCLAW_CONFIG_PATH']) != runtime_config_path(self):
+            raise AccessError('connection-deployment-changed')
+        try:
+            runtime, checksum, _entrypoint = self._native_runtime_selection(environment)
+            raw, _document = self._launchd_document()
+            return native_deployment(runtime, checksum, uid=self.owner.pw_uid, gid=self.owner.pw_gid,
+                environment=environment, plist=self.gateway_plist, plist_sha256=hashlib.sha256(raw).hexdigest())
+        except (OSError, ValueError, PlanError):
+            raise AccessError('connection-deployment-unavailable') from None
 
     def _docker_process_context(self):
         # Docker Desktop and its socket are owner-managed. Drop root before

@@ -13,13 +13,14 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import secrets
 import stat
 import tempfile
 
-from pixel_access_bridge import AccessError, runtime_config_path
+from pixel_access_bridge import AccessError, connection_paths, runtime_config_path
 
 from . import coordinator as c, custody, native_apps as apps, native_mcp as native, oauth, planner, state
 
@@ -64,7 +65,7 @@ def _valid_record(value):
 def validate_journal(value):
     """A bounded metadata-only state machine; unknown fields are never ignored."""
     try:
-        if (type(value) is not dict or set(value) != KEYS or value['kind'] != 'native-app-enrollment'
+        if (type(value) is not dict or set(value) not in (KEYS, KEYS | {'deploymentSha256'}) or value['kind'] != 'native-app-enrollment'
                 or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
                 or value['app'] not in apps.IDS or type(value['app']) is not str
                 or type(value['flowId']) is not str or not oauth.FLOW_ID.fullmatch(value['flowId'])
@@ -72,6 +73,8 @@ def validate_journal(value):
                 or value['activationId'] is not None and not _checksum(value['activationId'])
                 or value['error'] is not None and (type(value['error']) is not str
                     or not re.fullmatch(r'[a-z][a-z0-9-]{0,95}', value['error']))):
+            raise ValueError()
+        if 'deploymentSha256' in value and not _checksum(value['deploymentSha256']):
             raise ValueError()
         created, updated = (native._instant(value[key]) for key in ('createdAt', 'updatedAt'))
         if updated < created:
@@ -159,10 +162,21 @@ class Controller:
         journal = _read(self.path)
         if journal and journal['app'] != self.app:
             raise native.NativeError('another-native-sign-in-pending')
+        if journal:
+            deployment = connection_paths(self.bridge)['deployment'] if platform.system() == 'Darwin' else None
+            if ((deployment is not None and journal.get('deploymentSha256') != deployment.checksum)
+                    or deployment is None and 'deploymentSha256' in journal):
+                raise native.NativeError('connection-deployment-changed')
         return journal
 
     def _put(self, journal, **changes):
         journal = dict(journal, **changes, updatedAt=native._iso(self.now()))
+        deployment = connection_paths(self.bridge)['deployment'] if platform.system() == 'Darwin' else None
+        if deployment is not None:
+            if 'deploymentSha256' not in journal and self._read() is None:
+                journal['deploymentSha256'] = deployment.checksum
+            if journal.get('deploymentSha256') != deployment.checksum:
+                raise native.NativeError('connection-deployment-changed')
         raw = native.encoded(validate_journal(journal)) + b'\n'
         if len(raw) > MAX_BYTES:
             raise native.NativeError('invalid-native-enrollment-journal')
@@ -192,6 +206,8 @@ class Controller:
             os.close(fd)
 
     def _record_write(self, expected, after):
+        if platform.system() == 'Darwin':
+            self._read()  # Requalify the bound deployment before Root metadata writes.
         if c._record() != expected:
             raise native.NativeError('native-app-record-changed')
         c._write_record(after)
@@ -205,9 +221,9 @@ class Controller:
     def _sidefiles(self):
         # These are the same fixed protected-deployment paths supplied to the
         # existing owner worker. Neither browser nor model selects a path.
-        return {key: native._read(path, owners=(self.bridge.owner.pw_uid,), private=True)
-            for key, path in (('env', self.bridge.home / '.config/pixel-agent/gateway.env'),
-                              ('answers', self.bridge.install / 'data/pixel/onboarding.json'))}
+        paths = connection_paths(self.bridge)
+        return {key: native._read(paths[key], owners=(self.bridge.owner.pw_uid,), private=True)
+                for key in ('env', 'answers')}
 
     def _stable(self):
         return {'recordSha256': native.digest(c._record()), 'configSha256': self._config()[1]}
@@ -266,7 +282,7 @@ class Controller:
                 and google.get('directPaused', False) != c._full_access(self.bridge)):
             raise native.NativeError('connection-access-mode-sync-required')
         target = c.gateway_target(after, custody_held=held)
-        planned = planner.plan_config(config, target, install_dir=str(self.bridge.home / '.local/share/pixel'))
+        planned = planner.plan_config(config, target, **connection_paths(self.bridge)['plan'])
         after_sha = _hash((json.dumps(planned, indent=2, sort_keys=True) + '\n').encode('utf-8'))
         answers = state.connection_answers(after, google_custody=held)
         for key, value in answers.items():

@@ -204,8 +204,21 @@ def request(value):
         raise ProtocolError("owner-protocol-failed")
     operation = value["operation"]
     allowed = KEYS.get(operation)
-    if allowed is None or set(value) not in (allowed, allowed | {'expected_projection'} if operation == 'provider-change' else allowed):
+    forms = (allowed, allowed | {'expected_projection'} if operation == 'provider-change' and allowed else allowed)
+    native_operations = ('connection-owner-status', 'connection-apply', 'connection-recover', 'native-mcp-oauth')
+    if operation in native_operations and allowed:
+        forms += (allowed | {'connection_deployment'},)
+    if allowed is None or set(value) not in forms:
         raise ProtocolError("owner-protocol-failed")
+    deployment = None
+    if 'connection_deployment' in value:
+        from pixel_connections.planner import ConnectionDeployment, PlanError
+        try:
+            deployment = ConnectionDeployment.parse(value['connection_deployment']).document
+        except (ValueError, TypeError, PlanError):
+            raise ProtocolError('owner-protocol-failed') from None
+        if value['openclaw'] != deployment['entrypointPath']:
+            raise ProtocolError('owner-protocol-failed')
     if (type(value["openclaw"]) is not str or not PurePosixPath(value["openclaw"]).is_absolute()
             or "\x00" in value["openclaw"] or type(value["confirmed"]) is not bool):
         raise ProtocolError("owner-protocol-failed")
@@ -271,7 +284,8 @@ def request(value):
     if operation in ("connection-owner-status", "connection-apply"):
         answers_path = value["answers_path"]
         if (type(answers_path) is not str
-                or not answers_path.startswith("/") or not answers_path.endswith("/data/pixel/onboarding.json")
+                or not answers_path.startswith("/")
+                or (answers_path != deployment['answersPath'] if deployment else not answers_path.endswith("/data/pixel/onboarding.json"))
                 or any(c in answers_path for c in "\x00\n\r\t")
                 or any(p in ("", ".", "..") for p in answers_path.split("/")[1:])):
             raise ProtocolError("owner-protocol-failed")

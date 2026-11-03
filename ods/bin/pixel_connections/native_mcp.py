@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import os
+import platform
 from pathlib import Path
 import re
 import secrets
@@ -223,14 +224,16 @@ def worker_result(value, action=None):
 
 def bridge_binding(bridge, server_name):
     """Derive the installed owner/runtime identity under the caller's Root lock."""
-    from pixel_access_bridge import runtime_config_path
+    from pixel_access_bridge import connection_paths, runtime_config_path
     bridge.discover()
     if bridge.pending():
         raise NativeError('transition-recovery-required')
     environment = bridge.worker_environment()
+    deployment = connection_paths(bridge)['deployment'] if platform.system() == 'Darwin' else None
     return derive_binding(config_path=runtime_config_path(bridge), uid=bridge.owner.pw_uid,
                           home=bridge.home, state_dir=environment.get('OPENCLAW_STATE_DIR', bridge.home / '.openclaw'),
-                          binary=bridge.binary, search_path=environment['PATH'], server_name=server_name)
+                          binary=deployment.document['entrypointPath'] if deployment else bridge.binary,
+                          search_path=environment['PATH'], server_name=server_name)
 
 
 def _verified_runtime(bridge, binding, *, snapshot=None):
