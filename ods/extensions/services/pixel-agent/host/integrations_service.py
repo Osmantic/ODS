@@ -219,13 +219,16 @@ class Integrations(AppActions, memory.MemoryActions):
         elif action == "discover":
             self.discover(request.get("serverId"))
         elif action == "test":
-            return {**self.view(), "notice": self.test(request.get("serverId"))}
+            notice = self.test(request.get("serverId"))
+            return {**self.view(), "notice": notice}
         elif action == "test-app":
-            return {**self.view(), "notice": self.test_app(request.get("app"))}
+            notice = self.test_app(request.get("app"))
+            return {**self.view(), "notice": notice}
         elif action == "watch-list":
             return {**self.view(), "watches": self.watch_overview()}
         elif action == "send-digest":
-            return {**self.view(), "notice": self.send_digest_now()}
+            notice = self.send_digest_now()
+            return {**self.view(), "notice": notice}
         elif action == "restart":
             with self.store.lock:
                 server = self._server(self.store.config(), request.get("serverId"), enabled=False)

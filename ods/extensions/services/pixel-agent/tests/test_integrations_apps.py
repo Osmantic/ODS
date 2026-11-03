@@ -551,6 +551,9 @@ class AppTests(unittest.TestCase):
                                    "photos": "Immich answered as Owner. Searching by place and date works. To also search by what is "
                                              "in a photo, turn on Smart Search in Immich under Administration → Settings → Machine Learning.",
                                    "watch": "changedetection.io answered: 0 watched pages.", "news": "FreshRSS answered: 2 feeds."})
+        # The view that comes back already holds what the action did.
+        self.assertEqual(self.owner("test-app", app="news")["activity"][0]["action"], "app-test")
+        self.assertEqual(self.owner("send-digest")["activity"][0]["target"], apps.DIGEST_NAME)
         with self.assertRaisesRegex(service.IntegrationError, "Unknown app"):
             self.owner("test-app", app="mail")
         self.save(self.settings(enabled=False), secrets={"apps": {"photos": ""}})
