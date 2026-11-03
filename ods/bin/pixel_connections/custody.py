@@ -2359,6 +2359,205 @@ class NativeChildOutcome:
     reason: str
 
 
+def _native_clock_ns():
+    """One Darwin boot-wide raw clock; never Python3.9's local monotonic origin."""
+    import time
+    if sys.platform != 'darwin' or not hasattr(time, 'CLOCK_MONOTONIC_RAW'):
+        raise CustodyError('native-source-clock-unavailable')
+    try:
+        value = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
+    except (OSError, ValueError):
+        raise CustodyError('native-source-clock-unavailable') from None
+    if type(value) is not int or not 0 < value < 2**63:
+        raise CustodyError('native-source-clock-unavailable')
+    return value
+
+
+@dataclass(frozen=True)
+class _NativeInvocation:
+    """Immutable mechanics only. Parsing is NOT Root/generation authority."""
+    encoded: bytes
+    seal: Any
+
+    @property
+    def document(self):
+        return json.loads(self.encoded)
+
+
+def _native_invocation(value):
+    keys = {'role', 'identifier', 'nonce', 'boot', 'clock', 'generation', 'issuedNs',
+        'admissionDeadlineNs', 'workerDeadlineNs'}
+    if (type(value) is not dict or set(value) != keys or type(value['generation']) is not str
+            or not FLOW_ID.fullmatch(value['generation']) or type(value['nonce']) is not str
+            or not FLOW_ID.fullmatch(value['nonce']) or type(value['clock']) is not str
+            or value['clock'] != 'darwin-clock-monotonic-raw-ns-v1'
+            or type(value['boot']) is not str or not re.fullmatch(r'[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}', value['boot'])):
+        raise CustodyError('native-source-invocation-invalid')
+    native_child_arguments(value['role'], value['identifier'])
+    for name in ('issuedNs', 'admissionDeadlineNs', 'workerDeadlineNs'):
+        item = value[name]
+        if type(item) is not str or not re.fullmatch('[1-9][0-9]{0,18}', item) or int(item) >= 2**63:
+            raise CustodyError('native-source-invocation-invalid')
+    issued, admission, worker = (int(value[key]) for key in ('issuedNs', 'admissionDeadlineNs', 'workerDeadlineNs'))
+    budget = NATIVE_CHILD_BUDGETS[value['role']] * 10**9
+    if (not issued < admission or not issued < worker or worker - issued > budget
+            or admission - issued > (30 * 10**9 if value['role'] == 'sync' else budget)
+            or value['role'] != 'sync' and worker > admission):
+        raise CustodyError('native-source-invocation-invalid')
+    return _NativeInvocation(_native_encoded(value), _NATIVE_SEAL)
+
+
+def _native_invocation_document(invocation):
+    if (type(invocation) is not _NativeInvocation or invocation.seal is not _NATIVE_SEAL
+            or type(invocation.encoded) is not bytes or len(invocation.encoded) > 1024):
+        raise CustodyError('native-source-invocation-invalid')
+    try:
+        value = json.loads(invocation.encoded, object_pairs_hook=_native_pairs)
+    except (ValueError, UnicodeError, RecursionError):
+        raise CustodyError('native-source-invocation-invalid') from None
+    if _native_invocation(value).encoded != invocation.encoded:
+        raise CustodyError('native-source-invocation-invalid')
+    return value
+
+
+def _native_slot_matches(snapshot, invocation, *, running=False):
+    """Private captured-view comparison, never a new approval/deployment reader.
+
+    The future fixed Gate reader must obtain this view after Root admission.
+    Sibling additions do not change the expected invocation's immutable bytes.
+    """
+    expected = _native_invocation_document(invocation)
+    if (type(snapshot) is not dict or set(snapshot) != {'generation', 'boot', 'phase', 'invocations'}
+            or type(snapshot['phase']) is not str or snapshot['phase'] != 'active'
+            or type(snapshot['generation']) is not str or type(snapshot['boot']) is not str
+            or snapshot['generation'] != expected['generation'] or snapshot['boot'] != expected['boot']
+            or type(snapshot['invocations']) is not dict or not 1 <= len(snapshot['invocations']) <= 64):
+        return False
+    wanted = NATIVE_LABEL + expected['role'] + ('.' + expected['identifier'] if expected['identifier'] is not None else '')
+    found = False
+    for label, row in snapshot['invocations'].items():
+        if (type(label) is not str or type(row) is not dict or set(row) != {'phase', 'invocation'}
+                or type(row['phase']) is not str or row['phase'] not in ('prepared', 'running', 'unknown', 'retired')):
+            return False
+        try:
+            current = _native_invocation(row['invocation'])
+            doc = current.document
+        except CustodyError:
+            return False
+        if (doc['generation'] != snapshot['generation'] or doc['boot'] != snapshot['boot']
+                or label != NATIVE_LABEL + doc['role'] + ('.' + doc['identifier'] if doc['identifier'] is not None else '')):
+            return False
+        if label == wanted:
+            found = current.encoded == invocation.encoded and row['phase'] in (('prepared', 'running') if running else ('prepared',))
+    return found
+
+
+def _native_pipe_binding(fd, *, writing):
+    import fcntl
+    if type(fd) is not int or fd < 3:
+        raise CustodyError('native-source-barrier-pipe-invalid')
+    info = os.fstat(fd)
+    if not stat.S_ISFIFO(info.st_mode) or fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE != (os.O_WRONLY if writing else os.O_RDONLY):
+        raise CustodyError('native-source-barrier-pipe-invalid')
+    os.set_blocking(fd, False)
+    return info.st_dev, info.st_ino, info.st_mode
+
+
+def _native_pipe_close(fd, binding):
+    try:
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino, info.st_mode) == binding:
+            os.close(fd)
+    except OSError:
+        pass
+
+
+def _native_barrier_frame(invocation, kind):
+    return _native_encoded({'version': 1, 'kind': kind, 'invocationSha256': hashlib.sha256(invocation.encoded).hexdigest()})
+
+
+def _native_pipe_transfer(fd, binding, *, deadline, outgoing=None, cancel=None, _guard=None):
+    import select
+    data, offset = b'', 0
+    if outgoing is not None and len(outgoing) > 256:
+        raise CustodyError('native-source-barrier-frame-invalid')
+    while _native_clock_ns() < deadline:
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino, info.st_mode) != binding:
+            raise CustodyError('native-source-barrier-pipe-changed')
+        if cancel is not None and cancel.is_set():
+            raise CustodyError('native-source-barrier-cancelled')
+        timeout = min(.02, max(0, deadline - _native_clock_ns()) / 10**9)
+        read, write, _errors = select.select([fd] if outgoing is None else [], [fd] if outgoing is not None else [], [], timeout)
+        # select and the fixed-view guard may yield/block. Revalidate AFTER
+        # both, immediately before I/O; no late GO or reused-FD write.
+        if outgoing is not None and write and _guard is not None and not _guard():
+            raise CustodyError('native-source-barrier-scope-changed')
+        if _native_clock_ns() >= deadline:
+            raise CustodyError('native-source-barrier-admission-expired')
+        if cancel is not None and cancel.is_set():
+            raise CustodyError('native-source-barrier-cancelled')
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino, info.st_mode) != binding:
+            raise CustodyError('native-source-barrier-pipe-changed')
+        if outgoing is not None and write:
+            try:
+                count = os.write(fd, outgoing[offset:])
+            except BlockingIOError:
+                continue
+            if count <= 0:
+                raise CustodyError('native-source-barrier-eof')
+            offset += count
+            if offset == len(outgoing):
+                return None
+        elif read:
+            chunk = os.read(fd, 257 - len(data))
+            if not chunk:
+                raise CustodyError('native-source-barrier-eof')
+            data += chunk
+            if len(data) > 256:
+                raise CustodyError('native-source-barrier-frame-invalid')
+            if b'\n' in data:
+                if not data.endswith(b'\n') or data.count(b'\n') != 1:
+                    raise CustodyError('native-source-barrier-frame-invalid')
+                return data
+    raise CustodyError('native-source-barrier-admission-expired')
+
+
+def _native_child_ready_barrier(invocation, *, ready_fd, go_fd, current):
+    """Protected bootstrap primitive only; does NOT import/run Source.
+
+    The future post-Seatbelt entrypoint must call before Source import. EOF,
+    invalid frame or expired admission never returns permission to proceed.
+    Only these anonymous pipe ends are consumed/closed, never unrelated FDs.
+    """
+    doc = _native_invocation_document(invocation)
+    if not callable(current):
+        raise CustodyError('native-source-barrier-scope-changed')
+    ready = _native_pipe_binding(ready_fd, writing=True)
+    go = None
+    try:
+        go = _native_pipe_binding(go_fd, writing=False)
+        if ready[:2] == go[:2]:
+            raise CustodyError('native-source-barrier-pipe-invalid')
+        deadline = min(int(doc['admissionDeadlineNs']), int(doc['workerDeadlineNs']))
+        if not _native_slot_matches(current(), invocation):
+            raise CustodyError('native-source-barrier-scope-changed')
+        _native_pipe_transfer(ready_fd, ready, deadline=deadline, outgoing=_native_barrier_frame(invocation, 'ready'),
+            _guard=lambda: _native_slot_matches(current(), invocation))
+        answer = _native_pipe_transfer(go_fd, go, deadline=deadline)
+        # GO may race the same immutable slot's prepared-to-running record.
+        # This does not admit startup from an already-running slot: READY and
+        # the parent's GO checks above still require prepared.
+        if (answer != _native_barrier_frame(invocation, 'go') or not _native_slot_matches(current(), invocation, running=True)
+                or _native_clock_ns() >= deadline):
+            raise CustodyError('native-source-barrier-frame-invalid')
+    finally:
+        _native_pipe_close(ready_fd, ready)
+        if go is not None:
+            _native_pipe_close(go_fd, go)
+
+
 @dataclass(frozen=True)
 class _NativeChildWitness:
     process: Any
@@ -2420,7 +2619,7 @@ def _native_observe_child(process, *, started, uid, gid, executable, inspect=Non
     return _NativeChildWitness(process, started, root, tuple(identities), inspect, tree, _NATIVE_SEAL)
 
 
-def _native_supervise_child(witness, *, role, timeout, cancel=None):
+def _native_supervise_child(witness, *, role, timeout, cancel=None, _invocation=None, _current=None):
     """Bounded wait/TERM/KILL/reap for observed, identity-matched children.
 
     No spawn, retry, Root Run binding or provider-result interpretation occurs
@@ -2443,8 +2642,18 @@ def _native_supervise_child(witness, *, role, timeout, cancel=None):
     if process.pid != root[0]:
         return NativeChildOutcome('unknown', None, False, False, 'owned-child-handle-changed')
     known = {identity[0]: identity for identity in witness.identities}
+    now, scale = time.monotonic, 1
     deadline = witness.started + timeout
-    cleanup = min(5.0, timeout / 2)
+    if _invocation is not None:
+        doc = _native_invocation_document(_invocation)
+        if doc['role'] != role or not callable(_current):
+            raise CustodyError('native-source-child-control-invalid')
+        now, scale = _native_clock_ns, 10**9
+        deadline = int(doc['workerDeadlineNs'])
+        timeout = (deadline - int(doc['issuedNs'])) / scale
+    elif _current is not None:
+        raise CustodyError('native-source-child-control-invalid')
+    cleanup = min(5.0, timeout / 2) * scale
     work_end = deadline - cleanup
     uncertain = False
     reason = 'exited'
@@ -2498,7 +2707,7 @@ def _native_supervise_child(witness, *, role, timeout, cancel=None):
         nonlocal uncertain
         # Descendants first; never kill a UID/name/process group wholesale.
         for pid in sorted(known, key=lambda value: value == root[0]):
-            if time.monotonic() >= deadline:
+            if now() >= deadline:
                 return
             if probe(pid) is not True:
                 continue
@@ -2508,7 +2717,7 @@ def _native_supervise_child(witness, *, role, timeout, cancel=None):
                 pass
             except OSError:
                 uncertain = True
-    while time.monotonic() < work_end:
+    while now() < work_end:
         observe()
         if not live():
             break
@@ -2518,24 +2727,32 @@ def _native_supervise_child(witness, *, role, timeout, cancel=None):
         if cancel is not None and cancel.is_set():
             reason = 'cancelled'
             break
-        time.sleep(min(0.02, max(0, work_end - time.monotonic())))
+        if _invocation is not None:
+            try:
+                current = _native_slot_matches(_current(), _invocation, running=True)
+            except Exception:
+                current = False
+            if not current:
+                uncertain, reason = True, 'scope-changed'
+                break
+        time.sleep(min(0.02, max(0, work_end - now()) / scale))
     else:
         reason = 'timed-out'
     if live():
         if reason == 'exited':
             reason = 'descendants-remained'
-        term_end = min(deadline, time.monotonic() + cleanup / 2)
+        term_end = min(deadline, now() + cleanup / 2)
         send(signal.SIGTERM)
-        while time.monotonic() < deadline and live():
+        while now() < deadline and live():
             observe()
-            if time.monotonic() >= term_end:
+            if now() >= term_end:
                 send(signal.SIGKILL)
-            time.sleep(min(0.02, max(0, deadline - time.monotonic())))
+            time.sleep(min(0.02, max(0, deadline - now()) / scale))
     # A process may already be a non-running zombie while its exit is not yet
     # returned by poll(). Reap only this owned handle, within the SAME deadline.
-    if process.poll() is None and time.monotonic() < deadline:
+    if process.poll() is None and now() < deadline:
         try:
-            process.wait(timeout=max(0, deadline - time.monotonic()))
+            process.wait(timeout=max(0, deadline - now()) / scale)
         except subprocess.TimeoutExpired:
             pass
     remaining_children = live()
@@ -2545,6 +2762,80 @@ def _native_supervise_child(witness, *, role, timeout, cancel=None):
                                   'identity-or-cleanup-unproven')
     disposition = reason if reason in ('cancelled', 'timed-out') else 'exited'
     return NativeChildOutcome(disposition, process.returncode, True, True, reason)
+
+
+@dataclass(frozen=True)
+class NativeStartupOutcome:
+    """Barrier mechanics, not Root admission or a Source effect receipt."""
+    go_sent: bool
+    reason: str
+    witness: Any
+    cleanup: NativeChildOutcome | None
+
+
+def _native_release_child(process, *, started, invocation, ready_fd, go_fd, current,
+                          uid, gid, executable, cancel=None, inspect=None, tree=None):
+    """No spawn/Source import. Consume READY, observe stable OWNED Python, GO.
+
+    Future Root wiring must supply a requalified fixed view, not owner/model
+    data. A typed invocation/slot match alone is never that authority. Failed
+    startup closes GO and cleans only this owned child with its original worker
+    ceiling; a changed/unobservable identity remains unknown, never replayed.
+    """
+    import threading
+    if type(process) is not subprocess.Popen or not callable(current) or cancel is not None and type(cancel) is not threading.Event:
+        raise CustodyError('native-source-child-control-invalid')
+    doc = _native_invocation_document(invocation)
+    ready, go, witness = None, None, None
+    failure = None
+    try:
+        ready = _native_pipe_binding(ready_fd, writing=False)
+        go = _native_pipe_binding(go_fd, writing=True)
+        if ready[:2] == go[:2]:
+            raise CustodyError('native-source-barrier-pipe-invalid')
+        deadline = min(int(doc['admissionDeadlineNs']), int(doc['workerDeadlineNs']))
+        if _native_clock_ns() < int(doc['issuedNs']) or not _native_slot_matches(current(), invocation):
+            raise CustodyError('native-source-barrier-scope-changed')
+        frame = _native_pipe_transfer(ready_fd, ready, deadline=deadline, cancel=cancel)
+        if frame != _native_barrier_frame(invocation, 'ready'):
+            raise CustodyError('native-source-barrier-frame-invalid')
+        witness = _native_observe_child(process, started=started, uid=uid, gid=gid,
+            executable=executable, inspect=inspect, tree=tree)
+        if (cancel is not None and cancel.is_set() or not _native_slot_matches(current(), invocation)
+                or _native_clock_ns() >= deadline):
+            raise CustodyError('native-source-barrier-scope-changed')
+        # Scope callback and observation may block; the transfer rechecks the
+        # absolute ceiling/cancellation and never starts a fresh timeout.
+        _native_pipe_transfer(go_fd, go, deadline=deadline, outgoing=_native_barrier_frame(invocation, 'go'), cancel=cancel,
+            _guard=lambda: _native_slot_matches(current(), invocation))
+    except Exception as error:
+        failure = error.code if isinstance(error, CustodyError) else 'native-source-barrier-io-failed'
+    finally:
+        if go is not None:
+            _native_pipe_close(go_fd, go)
+        if ready is not None:
+            _native_pipe_close(ready_fd, ready)
+    if failure is None:
+        return NativeStartupOutcome(True, 'released', witness, None)
+    if witness is None and process.poll() is None:
+        try:
+            witness = _native_observe_child(process, started=started, uid=uid, gid=gid,
+                executable=executable, inspect=inspect, tree=tree)
+        except CustodyError:
+            pass
+    if witness is not None:
+        stopped = threading.Event()
+        stopped.set()
+        cleanup = _native_supervise_child(witness, role=doc['role'], timeout=NATIVE_CHILD_BUDGETS[doc['role']],
+            cancel=stopped, _invocation=invocation, _current=current)
+    else:
+        remaining = max(0, int(doc['workerDeadlineNs']) - _native_clock_ns()) / 10**9
+        try:
+            process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            pass
+        cleanup = NativeChildOutcome('unknown', process.returncode, process.poll() is not None, False, 'startup-identity-unproven')
+    return NativeStartupOutcome(False, failure, witness, cleanup)
 
 
 def _native_child_main(argv):
