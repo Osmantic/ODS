@@ -368,9 +368,31 @@ class Integrations(RecoveryReviewOnly, AppActions):
             updated['approvalBindings']['appContexts'] = {
                 app: app_context(updated, app, secrets['apps'].get(app, '')) for app in apps.APPS}
             notification_binding = notification_context(updated, secrets)
+            previous_ntfy = config.get("approvalBindings", {}).get("notificationContext")
+            staged_ntfy = secrets.get("notificationContext")
+            if (previous_ntfy != staged_ntfy and notification_binding != staged_ntfy
+                    and secrets.get("ntfyPassword") and "ntfyPassword" not in changes):
+                raise IntegrationError("notification-check-required", "Restore the intended notification destination or re-enter its password before saving.")
             updated['approvalBindings']['notificationContext'] = notification_binding
             secrets['notificationContext'] = notification_binding
             # Revoke before state writes; interrupted saves fail closed.
+            # These markers bind the credentials file to the intended provider.
+            # The two file renames can be separated by a crash or a disk error.
+            mcp_contexts = {server["id"]: digest(server_context(server, secrets))
+                            for server in updated["mcp"]["servers"]}
+            previous_contexts = config.get("approvalBindings", {}).get("mcpContexts", {})
+            saved_contexts = secrets.get("mcpContexts", {})
+            for server_id, target in mcp_contexts.items():
+                saved_target = saved_contexts.get(server_id)
+                if saved_target == previous_contexts.get(server_id) or target == saved_target:
+                    continue
+                # An unrelated save must not bind a replacement key to the old URL.
+                retained_token = secrets["mcp"].get(server_id) and server_id not in changes.get("mcp", {})
+                retained_env = set(secrets["mcpEnv"].get(server_id, {})) - set(env_changes.get(server_id, {}))
+                if retained_token or retained_env:
+                    raise IntegrationError("mcp-check-required", "Restore the intended MCP destination or re-enter its credentials before saving.")
+            updated.setdefault("approvalBindings", {})["mcpContexts"] = mcp_contexts
+            secrets["mcpContexts"] = mcp_contexts
             self.store.save_approvals([])
             self.store.save_secrets(secrets)
             self.store.save_config(updated)
@@ -390,6 +412,13 @@ class Integrations(RecoveryReviewOnly, AppActions):
             config, secrets = self.store.config(), self.store.secrets()
             if self._server(config, server["id"], enabled=False) != server:
                 raise IntegrationError("stale-revision", "These settings changed. Reload them and try again.")
+            bindings = config.get("approvalBindings", {})
+            if "mcpContexts" in bindings or "mcpContexts" in secrets:
+                expected = digest(server_context(server, secrets))
+                for contexts in (bindings.get("mcpContexts"), secrets.get("mcpContexts")):
+                    if not isinstance(contexts, dict) or contexts.get(server["id"]) != expected:
+                        raise IntegrationError("mcp-check-required", "The saved MCP destination and credentials could not be verified together. "
+                                               "Review and save Portal integrations again before connecting.")
             admitted = _AdmittedLocalServers(self, digest(config, secrets, self._runtime_revision))
             return McpSession(server, secrets["mcp"].get(server["id"], ""), secrets["mcpEnv"].get(server["id"], {}), admitted)
 
