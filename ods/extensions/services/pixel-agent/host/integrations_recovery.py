@@ -12,7 +12,7 @@ import urllib.parse
 
 import integrations_notes as notes
 from integrations_app_service import APP_SERVER_IDS, app_text
-from integrations_common import IntegrationError, clip, digest, now, redact_secrets
+from integrations_common import IntegrationError, clip, digest, note_approval_digest, now, redact_secrets
 
 REVIEW_FIELD = "recoveryReviewOnly"
 REVIEW_APPROVAL_SECONDS = 24 * 3600
@@ -266,11 +266,11 @@ class RecoveryReviewOnly:
             self._require_review_ask(policy)
             mode = request.get("mode", "append")
             notes.validate_write(request.get("text"), mode)
-            relative, target = notes.write_binding(config, str(request.get("path", "")), mode, reference_context=expected)
+            relative, target = notes.write_binding(config, str(request.get("path", "")), mode, reference_context=expected, for_approval=True)
             epoch = self._review_binding(config, "notes")
             summary = f"{'Add to' if mode == 'append' else 'Create'} note {relative}"
             reply, notification = self._prepare_approval("note", summary,
-                digest("note-v2", epoch, target, relative, mode, request.get("text")))
+                note_approval_digest(epoch, target, relative, mode, request.get("text")))
         if notify_owner and notification:
             self._notify_approval(notification)
         return reply

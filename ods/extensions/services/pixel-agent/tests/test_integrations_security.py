@@ -83,6 +83,86 @@ def test_old_note_approval_never_authorizes_changed_state(world, change):
     assert "approved-before-change" not in (target / "Note.md").read_text()
 
 
+@pytest.mark.parametrize("replace", ["rename", "recreate"])
+def test_note_grant_is_not_reusable_for_a_replacement_at_the_same_path(world, replace):
+    service, _, vault = world
+    note = vault / "Note.md"
+    request = dict(path=note.name, text="requested line", mode="append")
+    approve(service, agent(service, "notes-write", **request))
+    if replace == "rename":
+        note.rename(vault / "previous.md")
+    else:
+        note.unlink()
+    note.write_text("replacement\n")
+    renewed = agent(service, "notes-write", **request)
+    assert renewed["status"] == "approval-required"
+    assert note.read_text() == "replacement\n"
+    approve(service, renewed)
+    assert agent(service, "notes-write", **request)["written"] == note.name
+    assert note.read_text().splitlines().count("requested line") == 1
+
+
+def test_unrelated_note_does_not_revoke_an_append_approval(world):
+    service, _, vault = world
+    request = dict(path="Note.md", text="requested line", mode="append")
+    approve(service, agent(service, "notes-write", **request))
+    (vault / "Other.md").write_text("another note")
+    assert agent(service, "notes-write", **request)["written"] == "Note.md"
+
+
+def test_weaker_saved_note_grants_require_a_fresh_owner_request(world):
+    service, store, vault = world
+    req = dict(path="Note.md", text="review again", mode="append")
+    current = agent(service, "notes-write", **req)
+    original, = store.approvals()
+    legacy = {**original, "digest": "a" * 64}
+    mcp = {**legacy, "id": "other-tool", "kind": "mcp"}
+    store.save_approvals([legacy, {**legacy, "id": "previously-approved", "state": "approved"}, mcp])
+    assert store.approvals() == [mcp]
+    with pytest.raises(IntegrationError, match="no longer waiting"):
+        approve(service, current)
+    fresh = agent(service, "notes-write", **req)
+    assert fresh["status"] == "approval-required" and fresh["approvalId"] != current["approvalId"]
+    assert (vault / "Note.md").read_text() == "original\n"
+
+
+def test_create_approval_tracks_the_existing_parent_without_creating_folders(world):
+    service, _, vault = world
+    parent = vault / "Inbox"
+    parent.mkdir()
+    request = dict(path="Inbox/Week/Status.md", text="status", mode="create")
+    approve(service, agent(service, "notes-write", **request))
+    assert not (parent / "Week").exists()
+    parent.rename(vault / "OldInbox")
+    parent.mkdir()
+    replacement = agent(service, "notes-write", **request)
+    assert replacement["status"] == "approval-required" and not (parent / "Week").exists()
+    approve(service, replacement)
+    assert agent(service, "notes-write", **request)["written"] == request["path"]
+    assert (parent / "Week/Status.md").read_text() == "status\n"
+
+
+def test_replacement_at_final_open_cannot_receive_the_approved_append(world, monkeypatch):
+    service, _, vault = world
+    note = vault / "Note.md"
+    request = dict(path=note.name, text="approved", mode="append")
+    approve(service, agent(service, "notes-write", **request))
+    actual_open = os.open
+    replaced = []
+
+    def replace_at_open(path, flags, *args, **kwargs):
+        if path == note.name and flags & os.O_APPEND and not replaced:
+            replaced.append(True)
+            note.unlink()
+            note.write_text("different file\n")
+        return actual_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(notes.os, "open", replace_at_open)
+    with pytest.raises(IntegrationError, match="destination changed"):
+        agent(service, "notes-write", **request)
+    assert replaced and note.read_text() == "different file\n"
+
+
 def test_saved_settings_revoke_pending_ids_before_any_other_write(world):
     service, store, _ = world
     pending = agent(service, "notes-write", path="Note.md", text="later", mode="append")
