@@ -167,6 +167,24 @@ def test_unknown_source_ref_refuses_before_owner_git_or_root_component_validatio
     assert not called
 
 
+def test_exact_43_current_pin_keeps_only_the_reviewed_42_predecessor(package):
+    assert package[1] == '224ed399e38273db0f9d4834ceab55d493a99cf3'
+    assert set(component.SOURCE_AUTHORITIES) == {
+        'acc5550888fe034a9a42e90307c9f7a664726315', '224ed399e38273db0f9d4834ceab55d493a99cf3'}
+
+
+def test_unknown_44_coherently_resealed_component_cannot_expand_the_closed_table(package, monkeypatch):
+    files = copy.deepcopy(package[2])
+    forged = json.loads(files['component.json'])
+    forged['sourceRef'] = '4'*40
+    files['component.json'] = component.encoded(forged)
+    with pytest.raises(ValueError, match='ref-unqualified'):
+        component.validate_payloads(files, ref='4'*40, python='/usr/bin/python3')
+    monkeypatch.setattr(component.subprocess, 'run', lambda *args, **kwargs: pytest.fail('Unqualified 44 must refuse before Git'))
+    with pytest.raises(ValueError, match='ref-unqualified'):
+        component.source_payloads('/invented/unknown44', '4'*40, '/usr/bin/python3')
+
+
 @pytest.mark.parametrize('change', ['missing-profile', 'extra', 'broker', 'profile', 'ref', 'python', 'input-sha', 'duplicate'])
 def test_component_closed_shape_and_provenance_refuses(package, change):
     _source, ref, original = package

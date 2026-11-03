@@ -34,6 +34,16 @@ SOURCE_AUTHORITIES = {
         },
         'templateSha256': '2f0c2700542d295272c70f47c52cef116101b01c7ce45a353eb0c1d93d1a39be',
     },
+    '224ed399e38273db0f9d4834ceab55d493a99cf3': {
+        'bundleSha256': '2fec2c091b424b74f7109c18ef55310e5e78adad75b73e973e64a4b46613cf15',
+        'tree': '4a84cdfeba5b4f71ee476ffb76b0e04d8841c953',
+        'inputs': {
+            'deploy/source-broker/broker.py': '0b0c5a9727505e3b8af0196df2fc922eec42d0977c3ab48515dbee416687b948',
+            'scripts/configure.mjs': 'c512eb6cdc0056c03e1d07ccfaf76030e7917a5819322ba8e24e8a7ade0d728d',
+            '.env.example': 'c54674f297a091318db77728a088ceaa6a7c3c0815658296704ea2deb8c63ee4',
+        },
+        'templateSha256': '2f0c2700542d295272c70f47c52cef116101b01c7ce45a353eb0c1d93d1a39be',
+    },
 }
 ROOT_SOURCE_FILES = {
     'bin/access_mode_config.py': 'extensions/services/pixel-agent/host/access_mode_config.py',
