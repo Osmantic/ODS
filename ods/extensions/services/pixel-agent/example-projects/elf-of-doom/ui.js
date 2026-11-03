@@ -226,11 +226,124 @@ function steerAround(e, baseAng, spd, dt) {
   return false;
 }
 
+// ---------- Dread Weaver's quadruple web ----------
+// Xath-Rokka (the realm 3 boss) looses her web as a four-strand fan instead of one bolt, so the
+// only clean answer is movement rather than a sidestep of a single projectile. Deliberately keyed
+// on boss + spider: plain spiders keep their single web. The Hollow Crown joins the fan through the
+// separate boss check below, and now shares the spider's "web" projectile kind as well, so his shots
+// slow and lock Shasan's bow the same way (that behaviour is keyed on the kind, not on the shooter).
+//
+// Shasan's own volley is the reference: engine.js startShot() spaces its arrows .12 rad apart, so
+// three Double Shot picks (n = 4) span .36 rad. Twice as wide is .72, which is the spread below.
+// The hero's per-arrow jitter is not copied: a jittered fan can close its gaps and hand out a
+// dodgeable pattern, and it makes the shot count the only variable.
+// ---------- Troll bosses: regeneration ----------------------------------------------------------
+// Vhelmor and Druskral recover 1% of max health per second, or 2% once enraged, so a fight has to
+// be committed to rather than chipped at from safety. Keyed on boss + kind "troll": regular enemies
+// never enter this (no kind "troll" exists outside BOSS_STATS), and the other three bosses keep
+// their current numbers. The +30% health that comes with them is a separate dial, TROLL_HP_SCALE in
+// world.js, applied at the boss spawn site.
+const TROLL_REGEN = .01;    // fraction of maxHp per second, unenraged
+const TROLL_REGEN_ENRAGED = .02;
+const TROLL_ENRAGE_SPD_MUL = 1.25;   // on top of the boss enrage's own 1.2
+// Halves the boss swing cooldown. Clamped to one wind-up at the point of use, because a cooldown
+// shorter than the swing's own length breaks the attack outright (the guard in updateEnemy re-arms
+// it in the swing's final frame — see the note there). With atkDur .6 the clamp binds, so the swing
+// interval goes .95 -> .6 and the troll attacks 1.55x rather than 2x as often.
+const TROLL_ENRAGE_ATK_CD_MUL = .5;
+const isTrollBoss = (e) => !!(e.boss && e.kind === "troll");
+function trollRegenPerSec(e) {
+  if (!isTrollBoss(e)) return 0;
+  return e.maxHp * (e.phase === 2 ? TROLL_REGEN_ENRAGED : TROLL_REGEN);
+}
+// Both multipliers are 1 until the troll is actually enraged, so a healthy troll is exactly the
+// troll it was before this change.
+function trollSpdMul(e) { return isTrollBoss(e) && e.phase === 2 ? TROLL_ENRAGE_SPD_MUL : 1; }
+function trollAtkCdMul(e) { return isTrollBoss(e) && e.phase === 2 ? TROLL_ENRAGE_ATK_CD_MUL : 1; }
+
+const WEB_FAN_N = 4;              // strands per spit, boss only
+const WEB_FAN_SPREAD = .36 * 2;   // total arc, rad: twice the span of a 4-arrow hero volley
+// The Hollow Crown spits the same four-strand fan as the Dread Weaver, so the fan is keyed on both
+// rather than on spider alone: same count, same spread, same "web" projectile (see the spit site). A
+// plain spider still fires a single strand, and nothing else in the game gains a fan.
+function webShotCount(e) { return e.boss && (e.kind === "spider" || e.kind === "hollowcrown") ? WEB_FAN_N : 1; }
+function webShotAngle(e, i) {
+  const n = webShotCount(e);
+  return n > 1 ? (i - (n - 1) / 2) * (WEB_FAN_SPREAD / (n - 1)) : 0;
+}
+
+/* -------------------------------------------------------------------------
+   The Hollow Crown's ghost mode.
+
+   The final boss is meant to read as the other bosses put together: he spits the Dread Weaver's web
+   fan (above), and ghost mode is the mirror image of the troll's regen. A troll is hardest to kill
+   while it is healing; the Crown becomes unhittable outright for a few seconds at a time, then has
+   to come back into the world to hit you.
+
+   While ghosted: hero arrows pass through him, he regens, he moves faster, and his melee still
+   lands. Bats and reinforcements are untouched, and no troll or enrage rule reaches him.
+
+   Timings: a window lasts 2-6 s and the next is armed 6-16 s after the previous one ends. The gap is
+   the dial that carries the requested rate: at 4 s on plus 11 s off average, a cycle is ~15 s, so
+   roughly 4.1 windows a minute — inside the 3-6 a minute asked for. (An earlier 3-6 s gap produced
+   ~7.8 a minute and left him invulnerable about half the fight, which is what the 6-16 s gap replaced.)
+   Measured over simulated play in probe/crown-ghost.test.js, not estimated here.
+
+   The cadence is expressed as window + gap timers rather than as a per-minute counter on purpose: a
+   counter keyed to elapsed minutes drifts (3 in the first minute, 9 in the next), needs a scheduler,
+   and behaves badly across pause. A gap timer is frame-exact and pause-safe.
+   ------------------------------------------------------------------------- */
+const CROWN_GHOST_KIND = "hollowcrown";
+// ui.js is loaded after chars.js but every one of these is read at draw time, so the load order is
+// fine; they live with the rest of the ghost block so the mechanic reads as one unit.
+const CROWN_GHOST_ON_S = [2, 6];    // how long a single ghosting lasts
+const CROWN_GHOST_GAP_S = [6, 16];  // solid time between windows — the other half of the cadence
+const CROWN_GHOST_REGEN = .02;      // fraction of maxHp per second while ghosted (2%)
+const CROWN_GHOST_SPD_MUL = 1.15;   // 15% faster; multiplies through the existing phase-2 1.2 factor
+// The two look constants, declared once because two files read them: ui.js owns the translucency and
+// the aura, chars.js owns the tint inside the silhouette.
+const CROWN_GHOST_ALPHA = .45;      // see-through, but still clearly a figure on screen
+const CROWN_GHOST_TINT = "rgba(150,215,255,.55)";  // light blue, over the cloak only
+function isCrown(e) { return !!(e.boss && e.kind === CROWN_GHOST_KIND); }
+function crownGhosted(e) { return !!(e && e.boss && e.kind === CROWN_GHOST_KIND && e.ghostT > 0); }
+function crownGhostSpeedMul(e) { return crownGhosted(e) ? CROWN_GHOST_SPD_MUL : 1; }
+
+// One state machine for both halves of the cycle. The phase and its timer always move together and the
+// transitions announce themselves, so no caller can leave him half-ghosted. Driven from the top of
+// updateEnemy — before the corpse guard, so a dead Crown can neither ghost nor heal, and before the
+// troll regen tick so the two regen sources stay readable in order.
+function crownGhostTick(e, dt) {
+  if (!isCrown(e) || e.dead) return;
+  if (e.ghostT > 0) {
+    e.ghostT -= dt;
+    if (e.ghostT <= 0) {
+      // Window over, he is shootable again. The gap is re-armed even when this frame overshot the end,
+      // so a large dt can never strand him permanently solid with no further window scheduled.
+      e.ghostT = 0;
+      e.ghostNextT = rand(CROWN_GHOST_GAP_S[0], CROWN_GHOST_GAP_S[1]);
+      popText(e.x, e.y - 104, "MATERIAL", "#cfe6ff", false);
+      return;
+    }
+  } else {
+    // undefined only on his very first frame; arming a gap rather than an instant ghost means he does
+    // not open the fight invulnerable, which would read as a broken boss for the first two seconds.
+    e.ghostNextT = (e.ghostNextT === undefined ? rand(CROWN_GHOST_GAP_S[0], CROWN_GHOST_GAP_S[1]) : e.ghostNextT) - dt;
+    if (e.ghostNextT <= 0) {
+      e.ghostNextT = 0;
+      e.ghostT = rand(CROWN_GHOST_ON_S[0], CROWN_GHOST_ON_S[1]);
+      popText(e.x, e.y - 104, "GHOSTFORM", "#8fd6ff", false);
+    }
+  }
+}
+
 function updateEnemy(e, dt) {
   if (e.dead) return;
   e.hurtT = Math.max(0, e.hurtT - dt);
   if (e.atkT > 0) { e.atkT -= dt; if (e.atkT <= 0) e.atkT = 0; if (e.atkT <= 0 && e.pendingHit) { e.pendingHit = false; doEnemyHit(e); } }
   e.atkCdT = Math.max(0, e.atkCdT - dt);
+  // Ticked here rather than inside a distance branch: he has to phase in and out even when the hero is
+  // across the arena, and his ghost state must be settled before speed, regen or drawing read it.
+  crownGhostTick(e, dt);
   const d = dist(e.x, e.y, P.x, P.y);
   // archer bow aim always tracks the hero (drawn in world space)
   if (d > 1 && (e.kind === "archer" || e.kind === "brutearcher")) e.aimAng = Math.atan2(P.y - 16 - e.y, P.x - e.x);
@@ -241,7 +354,12 @@ function updateEnemy(e, dt) {
     if (e.faceHold > .18) { e.face = want; e.faceHold = 0; }
   } else e.faceHold = 0;
   const reach = meleeReach(e);
-  const spd = e.spd * (e.boss && e.phase === 2 ? 1.2 : 1) * .8;
+  // The .2 factor is the existing boss enrage. The troll term multiplies on top of it, so an
+  // enraged troll walks at 1.2 * 1.25 = 1.5x its base pace, not 1.45x — and an unenraged troll is
+  // untouched, which is what "25% faster on top of what enrage already gives" asks for.
+  // The ghost term is the Crown's own: 1.15 while translucent, multiplied through the same chain, so a
+  // ghosted Crown in phase 2 moves at 1.2 * 1.15 and a solid one is exactly as before.
+  const spd = e.spd * (e.boss && e.phase === 2 ? 1.2 : 1) * trollSpdMul(e) * crownGhostSpeedMul(e) * .8;
 
   // brutes and grunt archers keep their distance and loose arrows (only when they can see the hero)
   if (e.kind === "archer" || e.kind === "brutearcher") {
@@ -296,7 +414,7 @@ function updateEnemy(e, dt) {
       e.dashT = .45; e.dashDx = Math.cos(a); e.dashDy = Math.sin(a);
     }
   }
-  // ranged spit for spiders & hollowcrown (web / cold bolts only when the target is visible)
+  // ranged spit for spiders & hollowcrown (web only, and only when the target is visible)
   if ((e.kind === "spider" || (e.boss && (e.kind === "spider" || e.kind === "hollowcrown")))) {
     e.spitT -= dt;
     if (e.spitT <= 0 && d < 340 && d > 90 && losToHero(e) && G.projectiles.length < MAX_PROJECTILES) {
@@ -305,7 +423,20 @@ function updateEnemy(e, dt) {
       const spd2 = 210;
       // fromEnemy:true is essential — without it the bolt is treated as a hero arrow
       // and the collision loop dereferences pr.hitSet, which only hero arrows carry (freeze)
-      G.projectiles.push({ x: e.x, y: e.y - (e.boss ? 30 : 18), vx: Math.cos(a) * spd2, vy: Math.sin(a) * spd2, t: 3, dmg: e.dmg * .8, ang: a, fromEnemy: true, kind: e.boss && e.kind === "hollowcrown" ? "cold" : "web" });
+      //
+      // Both web bosses fire a four-shot fan (see WEB_FAN_*): the Dread Weaver and the Hollow Crown.
+      // Plain spiders still push exactly one, unchanged.
+      for (let i = 0, n = webShotCount(e); i < n; i++) {
+        // The fan is centred on the hero, so the middle strand of an odd count still points at him.
+        const wa = a + webShotAngle(e, i);
+        // kind is "web" for both of them now. It is not cosmetic: the slow and the bow-lock are keyed
+        // on pr.kind === "web" in the projectile-hit branch (see WEB_SLOW_T), so as long as the Crown
+        // fired "cold" his shots did damage only and never webbed anyone. One shared kind means his fan
+        // carries the spider's full behaviour — WEB_SLOW movement cut, WEB_SLOW_T duration, the shoot
+        // lock and the "Webbed!" feedback — with no second copy of that logic to drift. His damage is
+        // still his own (e.dmg * .8 off BOSS_STATS) and the four-strand fan is unchanged.
+        G.projectiles.push({ x: e.x, y: e.y - (e.boss ? 30 : 18), vx: Math.cos(wa) * spd2, vy: Math.sin(wa) * spd2, t: 3, dmg: e.dmg * .8, ang: wa, fromEnemy: true, kind: "web" });
+      }
     }
   }
   // hollowcrown summons on phase 2
@@ -335,20 +466,65 @@ function updateEnemy(e, dt) {
       }
     }
   } else if (e.atkCdT <= 0 && e.atkT <= 0) {
-    e.atkT = e.atkDur; e.pendingHit = true; e.atkCdT = e.boss ? .95 : rand(1.1, 1.7);
+    // The troll's enraged swing: half the boss cooldown, so she attacks far more often while keeping
+    // her wind-up (atkDur) and the travel to the pendingHit resolution. The tell stays readable and
+    // one swing still cannot land twice — only the gap between swings shrinks.
+    //
+    // The cooldown is floored at one wind-up, and that floor is load-bearing in two ways.
+    //
+    // 1. Correctness. The guard above is `atkCdT <= 0 && atkT <= 0`, and atkT is decremented every
+    //    frame while pendingHit resolves on the first, so a swing's last frame leaves atkT a hair off
+    //    zero rather than on it — which satisfies the guard again in the same frame. If the cooldown
+    //    is shorter than the wind-up, atkT is re-set to atkDur before it ever ticks down, and the
+    //    attack freezes: the troll throws exactly one swing, forever, with the hit never resolving.
+    //    That is what a raw .475 against a .6 wind-up did before the floor was added.
+    // 2. Fairness. A cooldown below the wind-up would also mean the swing is shorter than its own
+    //    animation, i.e. a faster attack rather than a more frequent one.
+    //
+    // Consequence for the request: .95 * .5 = .475 is *below* the .6 wind-up, so the clamp binds and
+    // the swing interval goes .95 -> .6. Over 20 s that is 22 swings -> 34, i.e. 1.55x rather than
+    // 2x, and the full cycle 1.55 s -> 1.20 s. Hitting a true 2x needs the wind-up shortened too, so
+    // the tell gets cheaper to read — say the word if you want that trade instead.
+    e.atkT = e.atkDur; e.pendingHit = true;
+    e.atkCdT = Math.max(e.atkDur, (e.boss ? .95 : rand(1.1, 1.7)) * trollAtkCdMul(e));
   }
-  // boss phase change
-  if (e.boss && e.phase === 1 && e.hp < e.maxHp * .5) {
+  // Troll-boss regeneration. Ticked here, deliberately *before* the phase-change test below: the
+  // enrage fires at half health, and regen reads e.phase, so healing first would let a troll that
+  // crosses the threshold in this very frame recover at the enraged 2% rate a frame early. Ordering
+  // the tick ahead of the transition makes the rate match the phase the troll is actually in.
+  // It also sits before the corpse guard's return at the top of the function, so a dead troll never
+  // heals, and the clamp is the whole point of the line — regen must never push past full.
+  const rr = trollRegenPerSec(e);
+  if (rr > 0 && e.hp < e.maxHp) e.hp = Math.min(e.maxHp, e.hp + rr * dt);
+
+  // Ghost regen: 1% of max HP per second, and only while he is actually translucent. The pairing is the
+  // mechanic — the only window in which he heals is the only window in which you cannot hit him — so
+  // the healing is something you watch happen rather than a number quietly ticking. Guarded on
+  // crownGhosted rather than isCrown, so a solid Crown has no regen path at all, and clamped at maxHp
+  // like the troll's. He never consults trollRegenPerSec, which stays troll- and spider-scoped, so the
+  // Crown's 1% is genuinely separate from the troll dial and is unaffected if that is retuned.
+  if (crownGhosted(e)) e.hp = Math.min(e.maxHp, e.hp + e.maxHp * CROWN_GHOST_REGEN * dt);
+
+  // boss phase change. The threshold is inclusive (<=) rather than strict: a troll whose max health
+  // is an even number crosses half exactly, and at 1% per second the regen lands on .5 * maxHp to
+  // the float rather than below it, so with a strict < a troll bled down to precisely half and then
+  // healed away from the line would never enrage at all — which is what the probe caught. The troll
+  // is also checked here rather than left to the generic latch at the top of this function: that one
+  // lives inside the distance branch, so it only fires while the boss is within 300 px of the hero,
+  // and a troll being kited across the arena would sit un-enraged with her 2% regen pending.
+  if (e.boss && e.phase === 1 && e.hp <= e.maxHp * .5) {
     e.phase = 2; AudioSys.bossRoar(); G.shake = Math.max(G.shake, 12);
     popText(e.x, e.y - 90, "ENRAGED!", "#ff5a4a", true);
   }
 }
 // The only melee contact path: reached via the pendingHit swing resolution above, and the sole
 // caller of hurtHero with e.dmg. Ranged damage goes through G.projectiles instead - archer arrows
-// (ui.js ~248) and spider/hollowcrown web and cold bolts (~285) - which is why archer arrows and spider
-// spit keep their previous numbers. Both bosses have a ranged attack too, so the scale is keyed on
-// the hit actually landing as a contact swing rather than on kind, and hollowcrown cold-bolt damage is
-// left unchanged. Boss contact swings are doubled, since the boss melee attack is a melee attack.
+// (ui.js ~248) and the web bolts fired by spiders and both web bosses (~285) - which is why archer
+// arrows and spider spit keep their previous numbers. Both bosses have a ranged attack too, so the
+// scale is keyed on the hit actually landing as a contact swing rather than on kind, and the Hollow
+// Crown's web damage is left unchanged (still e.dmg * .8 — switching his shots to "web" moved them
+// onto the slow/lock path, not onto a different damage number). Boss contact swings are doubled,
+// since the boss melee attack is a melee attack.
 function doEnemyHit(e) {
   const d = dist(e.x, e.y, P.x, P.y);
   // Same art-derived contact distance the AI uses to decide to bite, plus the small step-in
@@ -583,8 +759,13 @@ function update(dt) {
     const sp = P.spd * (P.webT > 0 ? WEB_SLOW : 1);
     moveEnt(P, 12, v.dx, v.dy, sp, dt);
   }
-  // shoot only with Space (or J): fires in the direction you are moving / last aimed
-  if (slashHeld && P.atkT <= 0 && P.atkCdT <= 0) startShot();
+  // shoot only with Space (or J): fires in the direction you are moving / last aimed.
+  // A webbed hero cannot draw the bow at all, for exactly the lifetime of the slow. The gate is
+  // the web timer itself rather than a separate lock, so there is no second clock that can outlast
+  // the slow or strand him unable to fire: webT is decremented above once per frame, and the frame
+  // it reaches 0 this condition passes again and Space fires immediately. The cooldown from the
+  // last shot is NOT cancelled — an already-drawn shot still resolves normally.
+  if (slashHeld && P.webT <= 0 && P.atkT <= 0 && P.atkCdT <= 0) startShot();
 
   // immediate facing update: face the direction actually being moved
   {
@@ -680,13 +861,20 @@ function update(dt) {
     // cannot spawn a wave into the "cleared" celebration.
     if (G.boss) {
       // The fallback on a missing clock also honours the loop rule, so a boss that somehow starts
-      // without an explicit timer still gets realm-6 pacing in loop 2+ instead of the slow one.
+      // without an explicit timer still gets realm-6 pacing in loop 2+ (or Rukhmak's half-rate) rather
+      // than the slow one.
       const reinLoop = loopNumber(G.zone);
       G.bossReinT = (G.bossReinT === undefined ? bossReinIntervalS(G.boss.kind, reinLoop) : G.bossReinT) - dt;
       if (G.bossReinT <= 0) {
-        const final = G.boss.kind === FINAL_BOSS_KIND;
-        G.bossReinT = bossReinIntervalS(G.boss.kind, reinLoop);
-        spawnReinforceWave(final);
+        const kind = G.boss.kind;
+        // Re-armed from the same function that armed it at spawn, so a boss that calls twice in one
+        // fight cannot drift onto a different cadence between the two calls.
+        G.bossReinT = bossReinIntervalS(kind, reinLoop);
+        // The caller's name is only passed for the boss whose calls are distinctive enough to name —
+        // Rukhmak, whose whole shtick is frequency. Other bosses keep the shipped generic banner
+        // verbatim, so their reinforcement text is untouched too, not just their clock.
+        spawnReinforceWave(kind === FINAL_BOSS_KIND,
+          kind === CAPTAIN_BOSS_KIND ? G.boss.name : null);
       }
     }
   } else if (G.wave === "cleared") {
@@ -700,11 +888,18 @@ function update(dt) {
     }
   }
 
-  // projectiles: hero arrows hit enemies, enemy arrows/web/cold bolts hit the hero
+  // projectiles: hero arrows hit enemies, enemy arrows and web bolts hit the hero
   // broad-phase grid rebuilt once per frame so arrows no longer test every enemy in
   // the arena (the old O(arrows x enemies) scan is what stuttered in big melees)
+  //
+  // A ghosted Hollow Crown is deliberately left out of the broad-phase. That is what makes the arrows
+  // genuinely pass *through* him instead of being caught and fizzling on contact: the hit test never
+  // sees him, so an arrow carries on past his silhouette and keeps flying. A hurtEnemy early-return
+  // alone would have swallowed every arrow that touched him, which reads as an invisible wall rather
+  // than as a ghost. He is indexed normally for everyone else, and crownGhosted is kind-keyed, so this
+  // costs other enemies one property read.
   PROJGRID.reset();
-  for (const e of G.enemies) if (!e.dead) PROJGRID.add(e, e.x, e.y);
+  for (const e of G.enemies) if (!e.dead && !crownGhosted(e)) PROJGRID.add(e, e.x, e.y);
   for (const pr of G.projectiles) {
     pr.x += pr.vx * dt; pr.y += pr.vy * dt; pr.t -= dt;
     // hard guard: a non-finite projectile would never expire and hang the frame.
@@ -723,8 +918,9 @@ function update(dt) {
         // only burst into particles and never slowed anything - the hit was damage-only.
         // P.spd itself is untouched, so a speed boon can never be clobbered by unwinding a slow.
         if (pr.kind === "web") {
+          // Re-hits refresh the same timer, so slow and shoot-lock always expire together.
           P.webT = WEB_SLOW_T;
-          popText(P.x, P.y - 48, "Webbed!", "#b9c6ff", false);
+          popText(P.x, P.y - 48, "Webbed - bow stuck!", "#b9c6ff", false);
         }
         pr.t = 0;
       }
@@ -1186,6 +1382,16 @@ function renderWorld(g) {
       // in a big fight the level holds far more brutes than the viewport shows, so this paid
       // for enemies the player cannot see. Skip anything outside the camera plus a margin.
       if (d.x < G.camX - 90 || d.x > G.camX + W + 90 || d.y < G.camY - 130 || d.y > G.camY + H + 90) continue;
+      // The Crown's aura, brightened while he is ghosted. It is drawn here, behind the entity loop
+      // puts him on screen, because a glow has to sit *under* the figure to read as emanating from him
+      // rather than painted on him, and it is drawn per-frame rather than baked into a sprite because
+      // ghost state toggles every few seconds — caching on it would thrash the sprite cache. This is
+      // also why the aura is keyed on the drawn entity rather than G.boss: the boss is always in the
+      // list, but this way the glow follows him if he is ever drawn from somewhere else.
+      if (crownGhosted(d)) {
+        glowSprite(g, d.x, d.y - 46, 92, "150,220,255", .34);
+        glowSprite(g, d.x, d.y - 42, 46, "190,240,255", .22);
+      }
       drawEnemyEnt(g, d, time);
     }
     else drawHeroEnt(g, time);
@@ -1618,6 +1824,62 @@ function drawMotes(g) {
   g.restore();
 }
 
+// The visible "I am webbed" tell, drawn over the finished hero in the same feet-anchored space
+// (origin at his feet, +y down, torso about y -13..-34, arms out near y -24..-30).
+//
+// Cost is the constraint here because this runs every frame while the slow is on: one path object,
+// a handful of quadratic strands, stroked twice (dark outline pass + pale strand pass) plus a few
+// sagging threads. No gradient, shadow, blur, filter, save/restore churn, per-frame allocation, or
+// second canvas — and it never draws more than about 40px wide, so it cannot paint far from the hero.
+// It is intentionally static apart from a slow breathing sag driven by the frame `time`, so it does
+// not shimmer.
+// The visible "I am webbed" tell: strands pinned around the torso and over the arms, so the reason
+// the bow isn't firing is painted on him.
+//
+// Coordinates: Shasan's own feet-anchored space — (0,0) at his feet, body running up to about y=-36,
+// torso around y=-14..-26, arms/shoulders y=-24..-33 — the same space drawElf paints in. Stroking
+// these exact numbers with no translate puts them within ~35 px of the map's top-left corner instead
+// of on him, which is the failure this function's call site exists to prevent.
+//
+// Facing: drawElf does `scale(s, 1)` about his vertical axis at chars.js:19, inside a save() it
+// restores at chars.js:123. So whether that mirror is still in force when an overlay draws is up for
+// grabs — and "up for grabs" is what left the first cut of this bind drawn at the map origin. The
+// contract is therefore anchored, not inherited: drawHeroEnt wraps this call in its own translate +
+// scale(P.face, 1) and drawWebBind applies no mirror of its own. That makes the strands follow the
+// bow arm on a turn, and keeps them on him even if the elf's own save/restore bookkeeping changes.
+//
+// Cost is the constraint because this runs over the hero every frame while the web is on: one path,
+// stroked twice (dark under-stroke, then pale silk). No gradient, shadowBlur, filter, line dash,
+// compositing change, or second canvas, and nothing painted beyond his own torso and arms. Static
+// apart from one slow sine sag, so it reads as loaded silk rather than shimmer.
+function drawWebBind(g, time) {
+  const sag = Math.sin(time * .0035) * .8;          // tiny, slow — silk under load
+  g.beginPath();
+  // three wraps around the torso, slightly angled so they read as spun around him
+  for (let i = 0; i < 3; i++) {
+    const y = -16 - i * 6.5;
+    g.moveTo(-10, y + 2);
+    g.quadraticCurveTo(0, y + 3.6 + sag, 11, y + 1.2);
+    g.moveTo(-9, y + 3.4);
+    g.quadraticCurveTo(0, y - 1.6 + sag, 10, y + 2.4);
+  }
+  // Arms pinned forward toward the bow arm: over the shoulder, down across the forearm, and a tether
+  // from chest to bow hand so the drawn arm is visibly held rather than merely wrapped.
+  g.moveTo(-6, -33);
+  g.quadraticCurveTo(3, -28 + sag, 12, -25);
+  g.moveTo(-5, -29);
+  g.quadraticCurveTo(4, -25 + sag, 11, -28.5);
+  g.moveTo(-2, -24);
+  g.quadraticCurveTo(5, -22 + sag, 12.5, -26);
+  // loose threads sagging off the binds, weighted forward so the mass reads on the side he faces
+  g.moveTo(-7, -19);
+  g.quadraticCurveTo(-2, -13 + sag, 4, -18.5);
+  g.moveTo(3, -22);
+  g.quadraticCurveTo(8, -16 + sag, 11, -21);
+  g.strokeStyle = "rgba(20,20,40,.45)"; g.lineWidth = 3.2; g.stroke();    // edge against the tunic
+  g.strokeStyle = "rgba(232,235,255,.92)"; g.lineWidth = 1.5; g.stroke();  // the silk
+}
+
 function drawHeroEnt(g, time) {
   g.save();
   g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
@@ -1632,6 +1894,15 @@ function drawHeroEnt(g, time) {
     g.fillStyle = "#e8d98a"; g.beginPath(); g.arc(0, -28, 10, 0, TAU); g.fill();
     // drawing continues with the fallback silhouette
   }
+  // "Why isn't the bow firing?" The silk has to be painted on him, so its transform is built here
+  // rather than borrowed from whatever drawElf left on the context: this save/translate/scale/restore
+  // is exactly his position and his facing. Drawn after the g.restore() below instead — inside the
+  // hero's own call but outside this frame — the strands land near the map's top-left corner; drawn
+  // with the scale omitted they stop turning with him. probe/web-bind.test.js pins both.
+  // After drawElf, and after the catch block's emergency silhouette, so the strands land on top of
+  // whichever figure was actually painted. Cheap by design since this runs every frame: one small
+  // path stroked twice — no gradient, shadow, filter or second canvas.
+  if (P.webT > 0) { g.save(); g.scale(P.face < 0 ? -1 : 1, 1); drawWebBind(g, time); g.restore(); }
   // no flicker overlay while invulnerable — it read as a black flash and hid the elf
   g.restore();
   // outer save from the top of this function. It was never restored, so every frame left one
@@ -1722,6 +1993,26 @@ function drawEnemyEnt(g, e, time) {
   // boss enlargement (e.scale) itself. drawBoss's own "fenris" branch is unreachable and was a
   // plainer, thinner wolf than the one in drawFenris, which is why Skarnax looked like a slightly
   // bigger pack wolf instead of an ancient one. The other bosses scale themselves in drawBoss.
+  // Ghost mode, and the reason the alpha is set on the *entity* transform rather than pushed down into
+  // drawBoss: the art is one program of ~25 fill-and-stroke calls, so dropping globalAlpha there would
+  // compound wherever two parts of the body overlap — a cloak edge over a shoulder would come out
+  // doubly transparent, and the void hood, a black fill inside a black cloak, would simply vanish. One
+  // alpha on the surface the body is composited onto makes the whole figure uniformly translucent, and
+  // lets the floor show through him, which is half of "clearly a ghost".
+  //
+  // The light-blue half lives in drawBoss (see the ghost block there) rather than here, and that
+  // placement is forced rather than stylistic. Tinting with source-atop needs a well-defined backing
+  // surface: "atop" means the destination pixels *inside the shape you are about to paint*, so it only
+  // behaves as an over-the-body wash when the body was drawn into a clipped region. Applied over the
+  // main canvas it would flood the whole fillRect and repaint the floor, the torchlight and anything
+  // standing near him in light blue. drawBoss instead traces the figure once, clips to it, and paints
+  // the tint inside that clip — which cannot put a pixel outside the Crown by construction, and so
+  // does not risk the leak that this file's old hit-flash produced (see the long note below).
+  //
+  // A single frame of ghosting is enough to matter to a player mid-shot, so the state is read once here
+  // and the renderer is the only other place that reads it.
+  const ghost = crownGhosted(e);
+  if (ghost) g.globalAlpha = CROWN_GHOST_ALPHA;
   if (e.boss) { if (e.kind === "fenris") drawFenris(g, e, time); else drawBoss(g, e, time); }
   else if (e.kind === "bat") drawBat(g, e, time);
   else if (e.kind === "spider") drawSpider(g, e, time);
@@ -1835,7 +2126,41 @@ function drawPickup(g, pk, time) {
 }
 
 // ---------- HUD ----------
+// Boss bar placement lives directly above updateHud because it is driven from there: the bar has to be
+// re-placed on the same frame the realm title changes, so the two belong together.
+//
+// The bar used to be pinned at top: 88px in the stylesheet, which quietly assumed the center HUD block
+// above it always came to the same height. It does not: the realm title wraps, and when it does the
+// Arrows counter is pushed down into exactly the band where the boss name is drawn, so the name
+// overprints the counter and the arrow count is unreadable for the whole fight. "Fenris Hollow of
+// Har-Mazel" does it against Skarnax, and the " · Loop N" suffix from loop 2 on pushes more titles over.
+// So the bar's top is derived from the measured bottom edge of that block instead of from a constant.
+//
+// BOSS_BAR_MIN_TOP is the historical 88px and stays the floor, so a one-line title leaves the bar
+// exactly where it always was; the bar only ever moves when the text above it genuinely got taller.
+const BOSS_BAR_MIN_TOP = 88;   // where the bar sat when it was pinned; the flex layout lands on it too
+const bossBarLayout = { show: null };   // last applied visibility, so the pass is a no-op in steady state
+const hudCenter = $("hud-center");
+
+// The centring that the old absolute positioning gave for free has to be put back by hand once the bar
+// joins the column: #hud is justify-content: space-between, so a shrink-to-fit middle stays centred while
+// it is narrower than the free space but drifts right as soon as the bar makes it wider. flex-grow on the
+// column fixes that (see .hud-center.boss-active in style.css) by filling the row and centring the text
+// inside the real box. It is applied only while a boss is alive so the non-boss HUD is untouched.
+//
+// The pass keys on the bar's visibility alone, because toggling it is exactly what changes the column's
+// height. No measurement, so no per-frame forced layout and no dependence on a viewport-vs-letterboxed-
+// frame coordinate conversion. Called from updateHud, after the bar's hidden state was settled for the
+// frame, so a boss appearing in a wrapping realm is laid out from the first frame.
+function layoutBossBar() {
+  const show = !bossWrap.classList.contains("hidden") && !hud.classList.contains("hidden");
+  if (show === bossBarLayout.show) return;
+  bossBarLayout.show = show;
+  hudCenter.classList.toggle("boss-active", show);
+}
+
 const HUDc = {};
+
 function updateHud() {
   let hf = HUDc.hf;
   if (!hf) {
@@ -1864,7 +2189,9 @@ function updateHud() {
   if (al) {
     if (al.__v !== P.arrows) { al.textContent = "🏹 Arrows: " + P.arrows; al.__v = P.arrows; }
     const low = P.arrows <= 5;
-    if (al.__low !== low) { al.classList.toggle("low-ammo", low); al.__low = low; }
+    if (al.__low !== low) {
+      al.classList.toggle("low-ammo", low); al.__low = low;
+    }
   }
   const wl = HUDc.wl;
   const wt = G.boss ? "⚔ Boss battle!" : G.wave === "fight" ? "Foes: " + G.enemies.length : G.wave === "preboss" ? "Brace yourself…" : "Path clear — keep moving!";
@@ -1873,7 +2200,14 @@ function updateHud() {
   // shown once the player has gone past the first six realms.
   const lp = loopNumber(G.zone);
   const zl = HUDc.zl, zt = (realmIndex(G.zone) + 1) + "/" + REALM_COUNT + " · " + ZONES[realmIndex(G.zone)].name + (lp > 1 ? " · Loop " + lp : "");
-  if (zl.__v !== zt) { zl.textContent = zt; zl.__v = zt; }
+  // Re-place the boss bar on exactly the frames the realm title changes: that string is what grows the
+  // " · Loop N" suffix and therefore what makes a title wrap or unwrap, and it is written above this
+  // line so the measurement sees the new text rather than the old. updateHud is called at the end of
+  // update(), after the boss bar was shown on a spawn, so a boss appearing in a wrapping realm is
+  // placed from the first frame. The wave line ("Foes: n" -> "⚔ Boss battle!") is one line either way
+  // and cannot change the block's height, so it needs no pass of its own.
+  const zl2 = zl.__v;
+  if (zl2 !== zt) { zl.textContent = zt; zl.__v = zt; layoutBossBar(); }
 }
 
 // ---------- screens ----------
