@@ -26,7 +26,9 @@ Earlier semantic experiments, including the 144-completion scope3 corpus,
 failed their declared gates; their negative evidence remains unchanged. The
 latest operations-only interface also failed its real 9B gate: it safely refused
 unsupported requests, but missed eight valid cells, chiefly connected news and
-photo observations. Reliable approval continuation remains open. Final ordinary
+photo observations. A subsequent finite-catalog prototype introduced seven
+false-eligible negative cells and was reverted without installation. Reliable
+approval continuation remains open. Final ordinary
 Windows/WSL installation, physical Mac acceptance and official Google provisioning
 remain required. See the composition record for each result's exact scope.
 

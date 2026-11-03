@@ -52,6 +52,13 @@ operation. Invalid schema outputs were legal JSON, not truncation. A decoder
 repair would not resolve these semantic misses. The source and oracles stayed
 fixed throughout; this result remains a failure.
 
+A later finite-catalog prototype improved positive qualification to 66/68, but
+misclassified seven of 76 negative cells, including replacement/deletion,
+quoted text and approval intent. It failed the zero-false-eligibility gate and
+was reverted before publication or installation. All 144 component requests
+completed without tools or effects; its failed evidence is retained. Changing
+the semantic vocabulary is not sufficient to qualify automatic tool forcing.
+
 Separately, seven scripted actual-native scenarios on `065dd29b5` passed:
 Ask preparation, Allowed refusal during review, lost-acknowledgement fencing,
 late read/source changes and cancellation during classification or required
