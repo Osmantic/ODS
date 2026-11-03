@@ -134,3 +134,18 @@ def test_a_chat_is_named_to_the_service_as_the_gateway_names_its_session(client,
         'session': 'ods-' + __import__('hashlib').sha256(b'chat-1').hexdigest(), 'remember': False})
     assert client.post('/api/pixel/integrations/memory-chat', headers=AUTH, json={'chatId': '../x', 'remember': False}).status_code == 400
     assert client.post('/api/pixel/integrations/memory-chat', headers=AUTH, json={'chatId': 'chat-1'}).status_code == 400
+
+
+def test_telegram_settings_relay_with_the_token_only_when_typed(client, agent):
+    agent.return_value = {'settings': {'revision': 3}, 'approvals': [], 'activity': [], 'notice': 'Telegram saved.',
+                          'telegram': {'enabled': True, 'ownerId': '123456789', 'hasToken': True}}
+    settings = {'enabled': True, 'ownerId': '123456789', 'apiRoot': 'https://api.telegram.org'}
+    assert client.post('/api/pixel/integrations/telegram-save', headers=AUTH, json=settings).json()['notice'] == 'Telegram saved.'
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/telegram-save', payload=settings, timeout=30)
+    with_token = {**settings, 'token': '123456789:AAH' + 'x' * 32}
+    client.post('/api/pixel/integrations/telegram-save', headers=AUTH, json=with_token)
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/telegram-save', payload=with_token, timeout=30)
+    client.post('/api/pixel/integrations/telegram-test', headers=AUTH, json={})
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/telegram-test', payload={}, timeout=140)
+    assert client.post('/api/pixel/integrations/telegram-save', headers=AUTH, json={'enabled': True}).status_code == 400
+    assert client.post('/api/pixel/integrations/telegram-save', headers=AUTH, json={**settings, 'chat': 1}).status_code == 400

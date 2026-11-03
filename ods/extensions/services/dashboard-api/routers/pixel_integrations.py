@@ -1,4 +1,4 @@
-"""Owner-only Portal integrations: Obsidian notes, ntfy notifications, MCP servers, apps and memory.
+"""Owner-only Portal integrations: Obsidian notes, ntfy notifications, MCP servers, apps, memory and Telegram.
 
 The host integrations service keeps the settings and secrets and does the work; this
 router checks the request shape and relays it through the host agent. A refusal keeps the
@@ -35,10 +35,14 @@ FIELDS = {
     'memory-clear': set(),
     'memory-decide': {'id', 'decision'},
     'memory-chat': {'chatId', 'remember'},
+    'telegram-save': {'enabled', 'ownerId', 'apiRoot', 'token'},
+    'telegram-test': set(),
 }
+# Secrets are sent only when the owner typed a new one.
+OPTIONAL = {'secrets', 'token'}
 _SAFE_CHAT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 # A local server may download itself on its first start; the app actions make several calls.
-SLOW = {'discover', 'test', 'test-app', 'watch-list', 'send-digest'}
+SLOW = {'discover', 'test', 'test-app', 'watch-list', 'send-digest', 'telegram-test'}
 
 
 async def _body(request, action):
@@ -49,7 +53,7 @@ async def _body(request, action):
         payload = json.loads(raw or b'{}')
     except ValueError:
         raise HTTPException(400, 'Invalid integrations request') from None
-    if not isinstance(payload, dict) or set(payload) - FIELDS[action] or not set(payload) >= FIELDS[action] - {'secrets'}:
+    if not isinstance(payload, dict) or set(payload) - FIELDS[action] or not set(payload) >= FIELDS[action] - OPTIONAL:
         raise HTTPException(400, 'Invalid integrations request')
     return payload
 
