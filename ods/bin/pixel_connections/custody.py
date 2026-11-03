@@ -784,6 +784,8 @@ def _native_acl_library():
         'acl_set_fd_np': ([ctypes.c_int, pointer, ctypes.c_int], ctypes.c_int),
         'acl_free': ([pointer], ctypes.c_int),
         'mbr_uid_to_uuid': ([ctypes.c_uint32, pointer], ctypes.c_int),
+        'mbr_gid_to_uuid': ([ctypes.c_uint32, pointer], ctypes.c_int),
+        'mbr_check_membership': ([pointer, pointer, ctypes.POINTER(ctypes.c_int)], ctypes.c_int),
     }
     for name, (arguments, result) in signatures.items():
         try:
@@ -965,12 +967,55 @@ def _native_identity_record(record, expected, *, complete=False):
 
 
 def _native_identity_collisions(intent):
-    for entry in pwd.getpwall():
-        if entry.pw_uid == intent['id'] and entry.pw_name != NATIVE_BROKER:
+    users = pwd.getpwall()
+    for entry in users:
+        if (entry.pw_uid == intent['id'] and entry.pw_name != NATIVE_BROKER
+                or entry.pw_gid == intent['id'] and (entry.pw_uid != intent['id'] or entry.pw_name != NATIVE_BROKER)):
             raise CustodyError('native-source-identity-id-collision')
     for entry in grp.getgrall():
-        if (entry.gr_gid == intent['id'] and entry.gr_name != NATIVE_BROKER
+        dedicated = entry.gr_gid == intent['id'] or entry.gr_name == NATIVE_BROKER
+        if (dedicated and (entry.gr_gid != intent['id'] or entry.gr_name != NATIVE_BROKER or entry.gr_mem != [])
                 or NATIVE_BROKER in entry.gr_mem):
+            raise CustodyError('native-source-identity-membership-conflict')
+    try:
+        named = grp.getgrnam(NATIVE_BROKER)
+    except KeyError:
+        named = None
+    if named is not None and (named.gr_name != NATIVE_BROKER or named.gr_gid != intent['id'] or named.gr_mem != []):
+        raise CustodyError('native-source-identity-membership-conflict')
+    record = _native_ds_record('Groups')
+    _native_identity_record(record, _native_identity_attributes(intent, 'Groups'))
+    # A UUID-only DirectoryService prefix has no assigned GID yet. Do not
+    # confuse a separately resolved group with that not-yet-published prefix.
+    ready = record is not None and record.get('PrimaryGroupID') == [str(intent['id'])]
+    if not ready:
+        if named is not None:
+            raise CustodyError('native-source-identity-membership-conflict')
+        return
+    if named is None:
+        raise CustodyError('native-source-identity-group-unavailable')
+    _native_verify_group_readers(intent, users)
+
+
+def _native_verify_group_readers(intent, users):
+    """Verify this dedicated file-reader group, not every broker membership.
+
+    Apple requires mbr_check_membership for effective UUID/nested membership;
+    getgrouplist is partial and gr_mem alone cannot prove this boundary. The
+    enumerated passwd view is not a universe of remote/hidden identities.
+    """
+    lib = _native_acl_library()
+    group = (ctypes.c_ubyte * 16)()
+    if (lib.mbr_gid_to_uuid(intent['id'], group) != 0
+            or bytes(group) != uuid.UUID(intent['groupGuid']).bytes):
+        raise CustodyError('native-source-identity-group-uuid-conflict')
+    for entry in users:
+        # UID 0 already has Root authority; it is not an excluded reader.
+        if entry.pw_uid == 0 or entry.pw_uid == intent['id'] and entry.pw_name == NATIVE_BROKER:
+            continue
+        user = (ctypes.c_ubyte * 16).from_buffer_copy(_native_uuid(lib, entry.pw_uid))
+        member = ctypes.c_int(-1)
+        if lib.mbr_check_membership(user, group, ctypes.byref(member)) != 0 or member.value != 0:
             raise CustodyError('native-source-identity-membership-conflict')
 
 
@@ -1077,7 +1122,19 @@ def native_prepare_identity(selection):
         if raw is None:
             if any(_native_ds_record(kind) is not None for kind in ('Groups', 'Users')):
                 raise CustodyError('native-source-identity-unmanaged-record')
-            occupied = {entry.pw_uid for entry in pwd.getpwall()} | {entry.gr_gid for entry in grp.getgrall()}
+            # A remote/cached named record absent from the local DS view is
+            # not an empty namespace and cannot be adopted by a fresh intent.
+            for lookup in (pwd.getpwnam, grp.getgrnam):
+                try:
+                    lookup(NATIVE_BROKER)
+                except KeyError:
+                    continue
+                raise CustodyError('native-source-identity-unmanaged-record')
+            users, groups = pwd.getpwall(), grp.getgrall()
+            if (any(entry.pw_name == NATIVE_BROKER for entry in users)
+                    or any(entry.gr_name == NATIVE_BROKER or NATIVE_BROKER in entry.gr_mem for entry in groups)):
+                raise CustodyError('native-source-identity-unmanaged-record')
+            occupied = {entry.pw_uid for entry in users} | {entry.pw_gid for entry in users} | {entry.gr_gid for entry in groups}
             available = next((value for value in range(60000, 65000) if value not in occupied), None)
             if available is None:
                 raise CustodyError('native-source-identity-id-exhausted')

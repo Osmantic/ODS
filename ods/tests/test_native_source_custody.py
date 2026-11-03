@@ -33,6 +33,8 @@ class AppleACL:
     """Documented ACL API behavior only; not a Darwin ABI/kernel claim."""
     def __init__(self):
         self.objects, self.acls, self.buffers, self.identities = {}, {}, [], {}
+        self.group_identities, self.memberships, self.membership_queries = {}, {}, []
+        self.membership_error = 0
         self.next = 100
         self.writes = 0
         self.fail_write = False
@@ -95,6 +97,19 @@ class AppleACL:
     def mbr_uid_to_uuid(self, uid, out):
         value = self.identities.setdefault(uid, uuid.uuid5(uuid.NAMESPACE_OID, str(uid)).bytes)
         ctypes.memmove(out, value, 16)
+        return 0
+
+    def mbr_gid_to_uuid(self, gid, out):
+        value = self.group_identities.setdefault(gid, uuid.uuid5(uuid.NAMESPACE_DNS, str(gid)).bytes)
+        ctypes.memmove(out, value, 16)
+        return 0
+
+    def mbr_check_membership(self, user, group, out):
+        pair = bytes(user), bytes(group)
+        self.membership_queries.append(pair)
+        if self.membership_error:
+            return self.membership_error
+        out._obj.value = self.memberships.get(pair, 0)
         return 0
 
     def acl_init(self, count):
@@ -198,16 +213,29 @@ def native(deployment, tmp_path, monkeypatch):  # noqa: F811 -- imported pytest 
     identity = {'schema': 1, 'name': source.NATIVE_BROKER, 'id': 60001,
                 'userGuid': str(uuid.uuid4()).upper(), 'groupGuid': str(uuid.uuid4()).upper()}
     acl.identities[identity['id']] = uuid.UUID(identity['userGuid']).bytes
+    acl.group_identities[identity['id']] = uuid.UUID(identity['groupGuid']).bytes
     records = {kind: {k: [v] for k, v in source._native_identity_attributes(identity, kind).items()}
                for kind in ('Groups', 'Users')}
     monkeypatch.setattr(source, '_native_ds_record', lambda kind: copy.deepcopy(records[kind]))
     monkeypatch.setattr(source.pwd, 'getpwall', lambda: [])
     monkeypatch.setattr(source.grp, 'getgrall', lambda: [])
     actual_user, actual_group = source.pwd.getpwnam, source.grp.getgrnam
-    monkeypatch.setattr(source.pwd, 'getpwnam', lambda name: SimpleNamespace(pw_uid=60001, pw_gid=60001)
-        if name == source.NATIVE_BROKER else actual_user(name))
-    monkeypatch.setattr(source.grp, 'getgrnam', lambda name: SimpleNamespace(gr_gid=60001)
-        if name == source.NATIVE_BROKER else actual_group(name))
+    def user_lookup(name):
+        if name != source.NATIVE_BROKER:
+            return actual_user(name)
+        record = records['Users']
+        if record is None or 'UniqueID' not in record:
+            raise KeyError(name)
+        return SimpleNamespace(pw_uid=int(record['UniqueID'][0]),pw_gid=int(record['PrimaryGroupID'][0]))
+    monkeypatch.setattr(source.pwd,'getpwnam',user_lookup)
+    def group_lookup(name):
+        if name != source.NATIVE_BROKER:
+            return actual_group(name)
+        record = records['Groups']
+        if record is None or 'PrimaryGroupID' not in record:
+            raise KeyError(name)
+        return SimpleNamespace(gr_name=source.NATIVE_BROKER,gr_gid=int(record['PrimaryGroupID'][0]),gr_mem=[])
+    monkeypatch.setattr(source.grp, 'getgrnam', group_lookup)
     (metadata / 'source-identity.json').write_text(json.dumps(identity))
     (metadata / 'source-identity.json').chmod(0o600)
     # The real Root guard resolves the owner through pwd too. Preserve that
@@ -435,6 +463,22 @@ def test_fresh_identity_intent_is_durable_before_first_ds_write_and_retry_keeps_
     (native.metadata / 'source-identity.json').unlink()
     records = {'Groups': None, 'Users': None}
     monkeypatch.setattr(source, '_native_ds_record', lambda kind: copy.deepcopy(records[kind]))
+    previous_group_lookup = source.grp.getgrnam
+    def group_lookup(name):
+        if name != source.NATIVE_BROKER:
+            return previous_group_lookup(name)
+        if records['Groups'] is None or 'PrimaryGroupID' not in records['Groups']:
+            raise KeyError(name)
+        return SimpleNamespace(gr_name=source.NATIVE_BROKER,gr_gid=int(records['Groups']['PrimaryGroupID'][0]),gr_mem=[])
+    monkeypatch.setattr(source.grp,'getgrnam',group_lookup)
+    previous_user_lookup = source.pwd.getpwnam
+    def user_lookup(name):
+        if name != source.NATIVE_BROKER:
+            return previous_user_lookup(name)
+        if records['Users'] is None or 'UniqueID' not in records['Users']:
+            raise KeyError(name)
+        return SimpleNamespace(pw_uid=int(records['Users']['UniqueID'][0]),pw_gid=int(records['Users']['PrimaryGroupID'][0]))
+    monkeypatch.setattr(source.pwd,'getpwnam',user_lookup)
     writes = []
     fail = [True]
     def run(arguments, **kwargs):
@@ -449,17 +493,15 @@ def test_fresh_identity_intent_is_durable_before_first_ds_write_and_retry_keeps_
         records[kind][key] = [value]
         if kind == 'Users' and key == 'GeneratedUID':
             native.acl.identities[60000] = uuid.UUID(value).bytes
+        if kind == 'Groups' and key == 'GeneratedUID':
+            native.acl.group_identities[60000] = uuid.UUID(value).bytes
         writes.append((kind, key))
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(source.subprocess, 'run', run)
     with pytest.raises(source.CustodyError, match='directory-write-failed'):
         source.native_prepare_identity(native.selected)
     saved = (native.metadata / 'source-identity.json').read_bytes()
-    actual_user, actual_group = source.pwd.getpwnam, source.grp.getgrnam
-    monkeypatch.setattr(source.pwd, 'getpwnam', lambda name: SimpleNamespace(pw_uid=60000,pw_gid=60000)
-        if name == source.NATIVE_BROKER else actual_user(name))
-    monkeypatch.setattr(source.grp, 'getgrnam', lambda name: SimpleNamespace(gr_gid=60000)
-        if name == source.NATIVE_BROKER else actual_group(name))
+    # The live named lookups above follow the recorded DS prefix.
     result = source.native_prepare_identity(native.selected)
     assert result == json.loads(saved) and (native.metadata / 'source-identity.json').read_bytes() == saved
     assert writes[-1] == ('Users', 'UniqueID')
@@ -562,7 +604,7 @@ def test_ctypes_contract_uses_public_apple_signatures_without_opaque_layout(monk
     names = ('acl_get_fd_np','acl_valid','acl_get_entry','acl_get_tag_type',
         'acl_get_permset_mask_np','acl_get_flagset_np','acl_get_flag_np','acl_get_qualifier',
         'acl_init','acl_create_entry','acl_set_tag_type','acl_set_qualifier',
-        'acl_set_permset_mask_np','acl_set_fd_np','acl_free','mbr_uid_to_uuid')
+        'acl_set_permset_mask_np','acl_set_fd_np','acl_free','mbr_uid_to_uuid','mbr_gid_to_uuid','mbr_check_membership')
     library = SimpleNamespace(**{name:Function() for name in names})
     monkeypatch.setattr(source,'sys',SimpleNamespace(platform='darwin'))
     def load(path, **kwargs):
@@ -574,6 +616,8 @@ def test_ctypes_contract_uses_public_apple_signatures_without_opaque_layout(monk
     assert library.acl_get_permset_mask_np.argtypes == [ctypes.c_void_p,ctypes.POINTER(ctypes.c_uint64)]
     assert library.acl_set_permset_mask_np.argtypes == [ctypes.c_void_p,ctypes.c_uint64]
     assert library.mbr_uid_to_uuid.argtypes == [ctypes.c_uint32,ctypes.c_void_p]
+    assert library.mbr_gid_to_uuid.argtypes == [ctypes.c_uint32,ctypes.c_void_p]
+    assert library.mbr_check_membership.argtypes == [ctypes.c_void_p,ctypes.c_void_p,ctypes.POINTER(ctypes.c_int)]
     assert library.acl_get_qualifier.restype is ctypes.c_void_p
 
 
@@ -608,4 +652,177 @@ def test_broker_numeric_collision_refuses_before_ds_write(native,monkeypatch,kin
         monkeypatch.setattr(source.grp,'getgrall',lambda:[SimpleNamespace(gr_gid=60001,gr_name='foreign',gr_mem=[])])
     monkeypatch.setattr(source.subprocess,'run',lambda *a,**k:pytest.fail('no DS write allowed'))
     with pytest.raises(source.CustodyError):
+        source.native_prepare_identity(native.selected)
+
+
+@pytest.mark.parametrize('entrypoint',['identity','state'])
+def test_foreign_primary_broker_gid_refuses_before_any_ds_or_file_write(native,monkeypatch,entrypoint):
+    monkeypatch.setattr(source.pwd,'getpwall',lambda:[SimpleNamespace(pw_uid=501,pw_gid=60001,pw_name='foreign')])
+    monkeypatch.setattr(source.subprocess,'run',lambda *a,**k:pytest.fail('DS write reached before primary GID refusal'))
+    monkeypatch.setattr(source,'_native_save_at',lambda *a,**k:pytest.fail('file write reached before primary GID refusal'))
+    with pytest.raises(source.CustodyError,match='identity-'):
+        if entrypoint=='identity':source.native_prepare_identity(native.selected)
+        else:source.native_prepare_state(native.selected,native.identity)
+    assert not source.NATIVE_STATE.exists() and not native.changes
+
+
+def test_direct_named_group_membership_disagreement_refuses_before_any_ds_write(native,monkeypatch):
+    original=source.grp.getgrnam
+    monkeypatch.setattr(source.grp,'getgrnam',lambda name:SimpleNamespace(gr_name=source.NATIVE_BROKER,gr_gid=60001,gr_mem=['foreign'])
+        if name==source.NATIVE_BROKER else original(name))
+    monkeypatch.setattr(source.subprocess,'run',lambda *a,**k:pytest.fail('DS write reached before direct group refusal'))
+    with pytest.raises(source.CustodyError,match='identity-'):
+        source.native_prepare_identity(native.selected)
+
+
+@pytest.mark.parametrize('entrypoint',['identity','state'])
+@pytest.mark.parametrize('case',['nested-member','api-error','unknown-result','wrong-group-uuid'])
+def test_resolved_dedicated_membership_refuses_before_any_ds_or_file_write(native,monkeypatch,entrypoint,case):
+    foreign=SimpleNamespace(pw_uid=501,pw_gid=20,pw_name='foreign')
+    monkeypatch.setattr(source.pwd,'getpwall',lambda:[foreign])
+    pair=(source._native_uuid(native.acl,501),native.acl.group_identities[60001])
+    if case=='nested-member':native.acl.memberships[pair]=1
+    elif case=='api-error':native.acl.membership_error=errno.EIO
+    elif case=='unknown-result':native.acl.memberships[pair]=2
+    else:native.acl.group_identities[60001]=b'x'*16
+    monkeypatch.setattr(source.subprocess,'run',lambda *a,**k:pytest.fail('DS write before membership proof'))
+    monkeypatch.setattr(source,'_native_save_at',lambda *a,**k:pytest.fail('file write before membership proof'))
+    with pytest.raises(source.CustodyError,match='identity-'):
+        if entrypoint=='identity':source.native_prepare_identity(native.selected)
+        else:source.native_prepare_state(native.selected,native.identity)
+    assert not native.changes and not source.NATIVE_STATE.exists()
+    if case!='wrong-group-uuid':assert pair in native.acl.membership_queries
+
+
+def test_resolved_foreign_nonmember_allows_exact_preparation_after_proof(native,monkeypatch):
+    monkeypatch.setattr(source.pwd,'getpwall',lambda:[SimpleNamespace(pw_uid=501,pw_gid=20,pw_name='foreign')])
+    pair=(source._native_uuid(native.acl,501),native.acl.group_identities[60001])
+    save=source._native_save_at
+    def checked_save(*args,**kwargs):
+        assert pair in native.acl.membership_queries
+        return save(*args,**kwargs)
+    monkeypatch.setattr(source,'_native_save_at',checked_save)
+    assert source.native_prepare_state(native.selected,native.identity)['phase']=='prepared-no-jobs'
+    assert pair in native.acl.membership_queries
+
+
+def test_fresh_numeric_selection_excludes_other_users_primary_gids_before_intent_write(native,monkeypatch):
+    (native.metadata/'source-identity.json').unlink()
+    monkeypatch.setattr(source,'_native_ds_record',lambda kind:None)
+    original_user,original_group=source.pwd.getpwnam,source.grp.getgrnam
+    def missing_user(name):
+        if name==source.NATIVE_BROKER:raise KeyError(name)
+        return original_user(name)
+    def missing_group(name):
+        if name==source.NATIVE_BROKER:raise KeyError(name)
+        return original_group(name)
+    monkeypatch.setattr(source.pwd,'getpwnam',missing_user)
+    monkeypatch.setattr(source.grp,'getgrnam',missing_group)
+    monkeypatch.setattr(source.pwd,'getpwall',lambda:[SimpleNamespace(pw_uid=501,pw_gid=60000,pw_name='foreign')])
+    attempted=[]
+    def stop_before_write(selected,directory,name,value,**kwargs):
+        attempted.append((name,value))
+        raise OSError('intent intercepted before write')
+    monkeypatch.setattr(source,'_native_save_at',stop_before_write)
+    monkeypatch.setattr(source.subprocess,'run',lambda *a,**k:pytest.fail('no DS write'))
+    with pytest.raises(OSError,match='intercepted'):
+        source.native_prepare_identity(native.selected)
+    assert attempted[0][0]=='source-identity.json' and attempted[0][1]['id']==60001
+    assert not (native.metadata/'source-identity.json').exists()
+
+
+@pytest.mark.parametrize('field,value',[('gr_name','foreign'),('gr_gid',60002)])
+def test_named_group_resolution_must_match_both_root_name_and_gid(native,monkeypatch,field,value):
+    record={'gr_name':source.NATIVE_BROKER,'gr_gid':60001,'gr_mem':[]}
+    record[field]=value
+    original=source.grp.getgrnam
+    monkeypatch.setattr(source.grp,'getgrnam',lambda name:SimpleNamespace(**record) if name==source.NATIVE_BROKER else original(name))
+    monkeypatch.setattr(source.subprocess,'run',lambda *a,**k:pytest.fail('no DS write'))
+    with pytest.raises(source.CustodyError,match='membership-conflict'):
+        source.native_prepare_identity(native.selected)
+
+
+def test_same_name_with_foreign_uid_cannot_hide_a_primary_gid_collision(native,monkeypatch):
+    monkeypatch.setattr(source.pwd,'getpwall',lambda:[SimpleNamespace(pw_uid=501,pw_gid=60001,pw_name=source.NATIVE_BROKER)])
+    monkeypatch.setattr(source.subprocess,'run',lambda *a,**k:pytest.fail('no DS write'))
+    with pytest.raises(source.CustodyError,match='id-collision'):
+        source.native_prepare_identity(native.selected)
+
+
+@pytest.mark.parametrize('kind',['user','group'])
+def test_fresh_intent_cannot_shadow_a_named_lookup_missing_from_local_ds(native,monkeypatch,kind):
+    (native.metadata/'source-identity.json').unlink()
+    monkeypatch.setattr(source,'_native_ds_record',lambda _kind:None)
+    original_user,original_group=source.pwd.getpwnam,source.grp.getgrnam
+    def missing_user(name):
+        if name==source.NATIVE_BROKER:raise KeyError(name)
+        return original_user(name)
+    def missing_group(name):
+        if name==source.NATIVE_BROKER:raise KeyError(name)
+        return original_group(name)
+    monkeypatch.setattr(source.pwd,'getpwnam',missing_user)
+    monkeypatch.setattr(source.grp,'getgrnam',missing_group)
+    if kind=='user':monkeypatch.setattr(source.pwd,'getpwnam',lambda name:SimpleNamespace(pw_uid=500,pw_gid=20)
+        if name==source.NATIVE_BROKER else original_user(name))
+    else:monkeypatch.setattr(source.grp,'getgrnam',lambda name:SimpleNamespace(gr_name=source.NATIVE_BROKER,gr_gid=60001,gr_mem=[])
+        if name==source.NATIVE_BROKER else original_group(name))
+    monkeypatch.setattr(source,'_native_save_at',lambda *a,**k:pytest.fail('no intent write before cross-view refusal'))
+    monkeypatch.setattr(source.subprocess,'run',lambda *a,**k:pytest.fail('no DS write'))
+    with pytest.raises(source.CustodyError,match='unmanaged-record'):
+        source.native_prepare_identity(native.selected)
+
+
+@pytest.mark.parametrize('kind',['listed-user','listed-group','orphan-member-name'])
+def test_fresh_intent_refuses_enumerated_name_aliases_or_membership_before_writing(native,monkeypatch,kind):
+    (native.metadata/'source-identity.json').unlink()
+    monkeypatch.setattr(source,'_native_ds_record',lambda _kind:None)
+    original_user,original_group=source.pwd.getpwnam,source.grp.getgrnam
+    def absent_user(name):
+        if name==source.NATIVE_BROKER:raise KeyError(name)
+        return original_user(name)
+    def absent_group(name):
+        if name==source.NATIVE_BROKER:raise KeyError(name)
+        return original_group(name)
+    monkeypatch.setattr(source.pwd,'getpwnam',absent_user)
+    monkeypatch.setattr(source.grp,'getgrnam',absent_group)
+    if kind=='listed-user':monkeypatch.setattr(source.pwd,'getpwall',lambda:[SimpleNamespace(pw_name=source.NATIVE_BROKER,pw_uid=500,pw_gid=20)])
+    else:monkeypatch.setattr(source.grp,'getgrall',lambda:[SimpleNamespace(gr_name=source.NATIVE_BROKER if kind=='listed-group' else 'foreign',
+        gr_gid=60000,gr_mem=[] if kind=='listed-group' else [source.NATIVE_BROKER])])
+    monkeypatch.setattr(source,'_native_save_at',lambda *a,**k:pytest.fail('no intent write'))
+    monkeypatch.setattr(source.subprocess,'run',lambda *a,**k:pytest.fail('no DS write'))
+    with pytest.raises(source.CustodyError,match='unmanaged-record'):
+        source.native_prepare_identity(native.selected)
+
+
+@pytest.mark.parametrize('entrypoint',['identity','state'])
+def test_enumerated_dedicated_group_reader_is_not_hidden_by_empty_direct_lookup(native,monkeypatch,entrypoint):
+    monkeypatch.setattr(source.grp,'getgrall',lambda:[SimpleNamespace(gr_name=source.NATIVE_BROKER,gr_gid=60001,gr_mem=['foreign'])])
+    # Deliberately absent from the passwd enumeration; the positive group record
+    # must suffice to refuse, even though the direct getgrnam view is empty.
+    assert source.pwd.getpwall()==[] and source.grp.getgrnam(source.NATIVE_BROKER).gr_mem==[]
+    monkeypatch.setattr(source.subprocess,'run',lambda *a,**k:pytest.fail('DS write before enumerated reader refusal'))
+    monkeypatch.setattr(source,'_native_save_at',lambda *a,**k:pytest.fail('file write before enumerated reader refusal'))
+    with pytest.raises(source.CustodyError,match='identity-'):
+        if entrypoint=='identity':source.native_prepare_identity(native.selected)
+        else:source.native_prepare_state(native.selected,native.identity)
+    assert not source.NATIVE_STATE.exists() and not native.changes
+
+
+@pytest.mark.parametrize('change',['wrong-gid-for-name','wrong-name-for-gid','nonlist-empty'])
+def test_enumerated_dedicated_identity_must_match_empty_exact_group(native,monkeypatch,change):
+    fields={'gr_name':source.NATIVE_BROKER,'gr_gid':60001,'gr_mem':[]}
+    if change=='wrong-gid-for-name':fields['gr_gid']=60002
+    elif change=='wrong-name-for-gid':fields['gr_name']='foreign'
+    else:fields['gr_mem']=None
+    monkeypatch.setattr(source.grp,'getgrall',lambda:[SimpleNamespace(**fields)])
+    monkeypatch.setattr(source.subprocess,'run',lambda *a,**k:pytest.fail('no DS write before enumeration refusal'))
+    with pytest.raises(source.CustodyError,match='membership-conflict'):
+        source.native_prepare_identity(native.selected)
+
+
+def test_direct_named_group_requires_an_actual_empty_member_list(native,monkeypatch):
+    original=source.grp.getgrnam
+    monkeypatch.setattr(source.grp,'getgrnam',lambda name:SimpleNamespace(gr_name=source.NATIVE_BROKER,gr_gid=60001,gr_mem=None)
+        if name==source.NATIVE_BROKER else original(name))
+    with pytest.raises(source.CustodyError,match='membership-conflict'):
         source.native_prepare_identity(native.selected)
