@@ -133,7 +133,7 @@ test('actual Recovery receives completed-read evidence only after real factory s
       complete:async params=>{
         const input=JSON.parse(params.messages[0].content);inputs.push(input);
         const data=params.systemPrompt===REVIEW_LABEL_SYSTEM?{operations:[{id:'notes.read',approval:'none'},{id:'notes.append',approval:'before'}]}
-          :{entailed:input.maximumEffect==='private-read'||input.progress.reads.some(value=>value.raw.params.path==='Example.md')};
+          :{entailed:input.candidateOperation.maximumEffect==='private-read'||input.priorCompletedReads.reads.some(value=>value.operation.arguments.path==='Example.md')};
         return {agentId:'pixel',provider:'ods-gateway',model:'ods/current',text:JSON.stringify(data)};
       }});
     recovery.observe({prompt:owner},context,context.runId);
@@ -149,6 +149,6 @@ test('actual Recovery receives completed-read evidence only after real factory s
     const decision=await checked('append',append);
     if(hasRead) {assert.equal(decision,undefined);assert.equal((await f.tool('pixel_ods_notes').execute('append',append)).details.status,'approval-required');}
     else {assert.equal(decision.block,true);assert.equal(f.sent.length,0);}
-    assert.equal(inputs.at(-1).progress.reads.length,hasRead?1:0);
+    assert.equal(inputs.at(-1).priorCompletedReads.reads.length,hasRead?1:0);
   }
 });
