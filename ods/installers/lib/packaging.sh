@@ -247,6 +247,7 @@ pkg_resolve() {
         apt)
             case "$canonical" in
                 docker-compose-plugin) echo "docker-compose-plugin" ;;
+                docker-buildx-plugin)  echo "docker-buildx-plugin" ;;
                 podman-compose)        echo "podman-compose" ;;
                 python3-pyyaml)        echo "python3-yaml" ;;
                 python3-pip)           echo "python3-pip" ;;
@@ -263,6 +264,7 @@ pkg_resolve() {
                     fi
                     ;;
                 docker-compose-plugin) echo "docker-compose-plugin" ;;
+                docker-buildx-plugin)  echo "docker-buildx-plugin" ;;
                 podman-compose)        echo "podman-compose" ;;
                 python3-pyyaml)        echo "python3-pyyaml" ;;
                 python3-pip)           echo "python3-pip" ;;
@@ -273,6 +275,7 @@ pkg_resolve() {
         pacman)
             case "$canonical" in
                 docker-compose-plugin) echo "docker-compose" ;;
+                docker-buildx-plugin)  echo "docker-buildx" ;;
                 podman-compose)        echo "podman-compose" ;;
                 python3-pyyaml)        echo "python-yaml" ;;
                 python3-pip)           echo "python-pip" ;;
@@ -283,6 +286,7 @@ pkg_resolve() {
         zypper)
             case "$canonical" in
                 docker-compose-plugin) echo "docker-compose" ;;
+                docker-buildx-plugin)  echo "docker-buildx" ;;
                 podman-compose)        echo "docker-compose" ;;
                 python3-pyyaml)        echo "python3-PyYAML" ;;
                 python3-pip)           echo "python3-pip" ;;
@@ -293,6 +297,7 @@ pkg_resolve() {
         xbps)
             case "$canonical" in
                 docker-compose-plugin) echo "docker-compose" ;;
+                docker-buildx-plugin)  echo "docker-buildx" ;;
                 podman-compose)        echo "podman-compose" ;;
                 python3-pyyaml)        echo "python3-yaml" ;;
                 python3-pip)           echo "python3-pip" ;;
@@ -303,6 +308,7 @@ pkg_resolve() {
         apk)
             case "$canonical" in
                 docker-compose-plugin) echo "docker-cli-compose" ;;
+                docker-buildx-plugin)  echo "docker-cli-buildx" ;;
                 podman-compose)        echo "podman-compose" ;;
                 python3-pyyaml)        echo "py3-yaml" ;;
                 python3-pip)           echo "py3-pip" ;;

@@ -349,6 +349,28 @@ else
     fi
 fi
 
+# Compose builds ODS's local images through the buildx plugin. Docker CE
+# packages include it, but Arch, openSUSE, Void and Alpine ship it separately
+# (docker-buildx / docker-cli-buildx). Without it Compose falls back to the
+# classic builder, which is slower and lacks BuildKit features (#7092).
+_docker_cli_is_podman() {
+    case "$(docker --version 2>/dev/null || true)" in
+        *[Pp]odman*) return 0 ;;
+    esac
+    return 1
+}
+if [[ "$SKIP_DOCKER" != "true" ]] && command -v docker &> /dev/null \
+    && ! _docker_cli_is_podman && ! docker buildx version &> /dev/null; then
+    if $DRY_RUN; then
+        log "[DRY RUN] Would install the Docker buildx plugin"
+    else
+        ai "Installing the Docker buildx plugin..."
+        # shellcheck disable=SC2046
+        pkg_install $(pkg_resolve docker-buildx-plugin) \
+            || warn "Could not install the Docker buildx plugin; Compose will build local images with the classic builder"
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # Runtime sanity checks
 # ---------------------------------------------------------------------------
