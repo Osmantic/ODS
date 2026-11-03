@@ -105,7 +105,6 @@ test('each chat turn gets the facts and the learning hint; an answer to a card i
   assert.match(notesForTurn.answer, /saved the memory/);
   assert.match(notesForTurn.facts, /vegetarian/);
   assert.match(notesForTurn.hint, /pixel_ods_notes action remember/);
-  assert.match(notesForTurn.hint, /never a request, a task, a reminder/);
   const plain = await hooks.promptContext('What should I cook tonight?', SESSION);
   assert.equal(plain.answer, undefined);
   assert.equal(sent.at(-1).payload.action, 'memory-context');

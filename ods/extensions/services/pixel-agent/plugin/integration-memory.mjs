@@ -9,9 +9,10 @@ export const MEMORY_QUESTION_ID = 'memory_save';
 export const MEMORY_CHOICES = Object.freeze({'Save': 'save', "Don't save": 'discard', 'Always save without asking': 'always'});
 const QUESTION = /^Remember this about you\? "([\s\S]{1,300})"\n(Save|Don't save|Always save without asking)\s*$/;
 const LEARN_HINT = 'When the owner tells you a lasting fact about themselves or a preference (diet, people they mention, '
-  + 'how they like answers), save it with pixel_ods_notes action remember, as one short sentence about the owner. '
-  + 'Only facts the owner states about themselves: never a request, a task, a reminder or how to answer this one message. '
-  + 'Most messages hold no such fact; then do not call remember.';
+  + 'how they like answers), save it with pixel_ods_notes action remember, as one short sentence about the owner.';
+// Kept short and positive on purpose: a longer hint listing what not to save ("never a request, a task, a
+// reminder... do not call remember") made the small local model stop calling tools at all, reminders
+// included. A wrong proposal costs little: the owner is asked before anything is saved.
 
 export const memoryQuestion = text => `Remember this about you? "${text}"`;
 
