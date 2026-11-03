@@ -488,6 +488,16 @@ jobs:
         shell: powershell
         run: ./tests/test-windows-opencode-port.ps1
 
+      - name: Windows OpenCode Config Literal Path (PowerShell 7)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: ./tests/test-windows-opencode-config-literal-path.ps1
+
+      - name: Windows OpenCode Config Literal Path (PowerShell 5.1)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-opencode-config-literal-path.ps1
+
       - name: Windows Restart Model Preflight
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
