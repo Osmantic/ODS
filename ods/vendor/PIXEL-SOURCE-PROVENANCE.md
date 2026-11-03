@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`8afb55abf50633616cd759146366588717534afc`, and its SHA-256 is
-`988caa969858f457855e134d6e26d44ff2edb82263aeff08347d9dd8fc115b16`.
+`47706f6863f74ae65c83c925bd6af51395193363`, and its SHA-256 is
+`8c9b197a9763c26054dc0f7d920abe11b24f6a1bfbda03abc156aa031a3a8a7c`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -21,6 +21,13 @@ and the install/bootstrap scripts must retain executable Git modes.
 The repository owner authorized this source publication and the ODS-only
 Pixel grant. Third-party packages are not included in the Git bundle and
 retain their own notices and licenses.
+
+## ODS-maintained 4.3.45 Calendar list repair
+
+The functional change and scope are recorded in the
+[4.3.45 candidate evidence](pixel/ODS-QUALIFICATION-4.3.45.md). Current installers
+use the new bundle. Previously reviewed Source identities remain available for
+their existing prepared clients and native component receipts.
 
 ## ODS-maintained 4.3.44 civil-date candidate
 
