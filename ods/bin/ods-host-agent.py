@@ -56,6 +56,7 @@ from model_switchboard import wsl_runtime as _wsl_runtime
 # Model packs (extensions/services/<id>/model-packs.json): files an extension's
 # container reads beside its image, fetched by the prepare step after images.
 import extension_assets as _extension_assets
+import model_lifecycle_lock as _process_model_lock
 # Model profiles (WP3): measured capabilities per GGUF x llama.cpp build x host.
 # Fail-open like the switchboard: without the package a switch runs as before.
 try:
@@ -606,7 +607,55 @@ _MODEL_ARTIFACT_FULL_SAMPLE_BYTES = 1024 * 1024
 # Model lifecycle ownership serializes operations that read or mutate model
 # artifacts, active routing, or the runtime containers. Keep the historical
 # activation-lock name as an alias because env updates use the same boundary.
-_model_lifecycle_lock = threading.Lock()
+class _ModelLifecycleMutex:
+    """Keep the thread guard and, on Linux, the installation's process lease."""
+
+    def __init__(self):
+        self._thread_lock = threading.Lock()
+        self._lease = None
+
+    def acquire(self, blocking=True):
+        if not self._thread_lock.acquire(blocking=blocking):
+            return False
+        try:
+            if sys.platform.startswith("linux"):
+                self._lease = _process_model_lock.acquire(INSTALL_DIR, blocking=blocking)
+        except BlockingIOError:
+            self._thread_lock.release()
+            return False
+        except (RuntimeError, OSError) as exc:
+            self._thread_lock.release()
+            logger.error("Model lifecycle lock could not be verified: %s", exc)
+            if not blocking:
+                return False
+            raise RuntimeError("Model lifecycle lock could not be verified") from exc
+        return True
+
+    def release(self):
+        lease, self._lease = self._lease, None
+        try:
+            if lease is not None:
+                lease.close()
+        finally:
+            self._thread_lock.release()
+
+    def locked(self):
+        return self._thread_lock.locked()
+
+    @property
+    def lease_fd(self):
+        return self._lease.fd if self._lease is not None else None
+
+    def __enter__(self):
+        if not self.acquire():
+            raise RuntimeError("Model lifecycle lock is busy")
+        return self
+
+    def __exit__(self, *_exc):
+        self.release()
+
+
+_model_lifecycle_lock = _ModelLifecycleMutex()
 _model_activate_lock = _model_lifecycle_lock
 _model_lifecycle_state_lock = threading.Lock()
 _model_lifecycle_operation: str | None = None
@@ -2524,6 +2573,30 @@ def _model_management_snapshot() -> tuple[int, dict]:
         _model_management_lock.release()
 
 
+def _load_model_script(filename: str):
+    path = INSTALL_DIR / "scripts" / filename
+    spec = importlib.util.spec_from_file_location("_ods_" + path.stem.replace("-", "_"), path)
+    if spec is None or spec.loader is None:
+        raise ImportError("vLLM download helper is missing")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper
+
+
+def _load_vllm_downloader():
+    return _load_model_script("download-hf-manifest.py")
+
+
+def _vllm_snapshot_is_active(env: dict, entry: dict, models_dir: Path) -> bool:
+    if not _vllm_engine(env):
+        return False
+    if env.get("LLM_MODEL") in {entry.get("id"), entry.get("llm_model_name")}:
+        return True
+    active_folder = str(env.get("VLLM_MODEL_DIR") or "").strip()
+    return bool(active_folder and (models_dir / active_folder).resolve()
+                == (models_dir / _model_vllm.model_dir_name(entry)).resolve())
+
+
 def _normalize_model_download_status(status_path: Path, data: dict) -> dict:
     """Schedule single-flight verification for status left by a dead worker."""
     global _model_status_verify_thread
@@ -2532,6 +2605,19 @@ def _normalize_model_download_status(status_path: Path, data: dict) -> dict:
         return data
     if _model_download_thread_alive():
         return data
+    if data.get("runtime") == "vllm":
+        # Serialize against worker admission. A dead worker cannot establish
+        # completion; keep verified files/partials available for explicit resume.
+        with _model_download_lock:
+            current = _read_model_status(status_path)
+            if _model_download_thread_alive() or current != data:
+                return current
+            counts = [data.get("bytesDownloaded"), data.get("bytesTotal")]
+            done, total = [n if type(n) is int and n >= 0 else 0 for n in counts]
+            _write_model_status(status_path, "failed", str(data.get("model") or ""), done, total,
+                                "Download interrupted; start it again to resume the saved snapshot.",
+                                runtime="vllm", strict=True)
+            return _read_model_status(status_path)
 
     model = _download_status_model_token(data.get("model"))
     manifest, manifest_error = _catalog_manifest_for_status(model)
@@ -4706,11 +4792,14 @@ def _publish_activation_route(env: dict, model_id: str, proof: dict, capabilitie
             or not isinstance(proof.get("contextLength"), int)
             or proof["contextLength"] <= 0):
         raise RuntimeError("Cannot publish an unverified model-router target")
+    backend_kind, endpoint_id, native_route = _initial_switchboard_backend(env)
+    if backend_kind == "vllm" and proof["identity"] != str(env.get("VLLM_SERVED_MODEL") or "").strip():
+        raise RuntimeError("Cannot publish a different vLLM served identity")
     return _switchboard_state.record_verified_route(
         INSTALL_DIR / "data" / "model-state.json", catalog_id=str(model_id),
         runtime_model_id=proof["identity"], proof_identity=proof["identity"],
-        backend_kind="llama-server", endpoint_id="llama-server-default",
-        native_route=None, context_length=proof["contextLength"],
+        backend_kind=backend_kind, endpoint_id=endpoint_id,
+        native_route=native_route, context_length=proof["contextLength"],
         capabilities=capabilities,
     )
 
@@ -4921,6 +5010,14 @@ def _begin_pixel_model_transaction(config: dict):
 
 
 def _pixel_local_identity_matches(config: dict, identity: str, expected: str) -> bool:
+    if _vllm_engine(config):
+        served = str(config.get('VLLM_SERVED_MODEL') or '').strip()
+        logical = str(config.get('LLM_MODEL') or '').strip()
+        if not served or not logical:
+            return False
+        if identity != served:
+            return False
+        return expected in (served, logical)
     if identity == expected:
         return True
     gguf = str(config.get('GGUF_FILE') or '')
@@ -4959,6 +5056,27 @@ def _prove_pixel_model_contract(config: dict, contract: dict) -> bool:
             # A provider outage is an unproven route. Callers retain the hold
             # and can report an eligible explicit recovery without replaying it.
             logger.warning("Portal model contract proof failed: the saved remote route did not pass its live completion check")
+            return False
+        return True
+    if _vllm_engine(config):
+        served = str(config.get('VLLM_SERVED_MODEL') or '').strip()
+        logical = str(config.get('LLM_MODEL') or '').strip()
+        if not served or not logical:
+            logger.warning("Portal model contract proof failed: VLLM_SERVED_MODEL and LLM_MODEL must both be set")
+            return False
+        proof = _wait_for_model_readiness(config,model_id=served,
+            gguf_file="",llm_model_name=served,
+            attempts=1,initial_delay=0,interval=0,return_proof=True,require_exact_context=True)
+        if not isinstance(proof, dict) or not proof:
+            logger.warning("Portal model contract proof failed: %s did not pass the readiness check", served)
+            return False
+        if not _pixel_local_identity_matches(config, proof.get('identity'), contract['model']):
+            logger.warning("Portal model contract proof failed: the runtime serves %s, the contract names %s",
+                           proof.get('identity'), contract['model'])
+            return False
+        if proof.get('contextVerified') is not True or proof.get('contextLength') != contract['contextLength']:
+            logger.warning("Portal model contract proof failed: the runtime context is %s, the contract needs %s",
+                           proof.get('contextLength'), contract['contextLength'])
             return False
         return True
     gguf = str(config.get('GGUF_FILE') or '')
@@ -10340,18 +10458,77 @@ def _update_command(script_path: Path, *args: str) -> list[str]:
     return [bash, _to_bash_path(script_path), *args]
 
 
-def _run_update_script(action: str, *args: str, timeout: int | None) -> subprocess.CompletedProcess:
+def _run_update_script(action: str, *args: str, timeout: int | None, lifecycle_fd: int | None = None) -> subprocess.CompletedProcess:
     script = _find_update_script()
     if script is None:
         raise FileNotFoundError("ods-update.sh not found")
-    return subprocess.run(
-        _update_command(script, action, *args),
-        cwd=str(INSTALL_DIR),
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    cmd = _update_command(script, action, *args)
+    return _run_lifecycle_command(cmd, timeout=timeout, lifecycle_fd=lifecycle_fd)
 
+
+def _run_lifecycle_command(cmd: list[str], *, timeout: int | None, lifecycle_fd: int | None = None) -> subprocess.CompletedProcess:
+    """Bound a model/update child and keep its installation lease inherited."""
+    fd = lifecycle_fd
+    if not sys.platform.startswith("linux"):
+        return subprocess.run(
+            cmd,
+            cwd=str(INSTALL_DIR),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    env = os.environ.copy()
+    env.pop("ODS_MODEL_LIFECYCLE_LOCK_FD", None)
+    env.pop("ODS_MODEL_LIFECYCLE_LOCK_FILE", None)
+    pass_fds = ()
+    if fd is not None:
+        _process_model_lock.validate_fd(INSTALL_DIR, fd)
+        env["ODS_MODEL_LIFECYCLE_LOCK_FD"] = str(fd)
+        env["ODS_MODEL_LIFECYCLE_LOCK_FILE"] = str(_process_model_lock.lock_path(INSTALL_DIR))
+        pass_fds = (fd,)
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(INSTALL_DIR),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        pass_fds=pass_fds,
+        start_new_session=True,
+    )
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        finally:
+            # Kill the whole group even if the shell already exited: children
+            # may have closed their output while retaining the lifecycle lease.
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                # A detached descendant can keep pipes open. Bound cleanup;
+                # any inherited lease stays held until that descendant exits.
+                if proc.stdout:
+                    proc.stdout.close()
+                if proc.stderr:
+                    proc.stderr.close()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.error("Lifecycle process did not exit after SIGKILL: pid=%s", proc.pid)
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 # This is fixed read-only sensor code, never interpolated with request input.
 _WSL_SENSOR_POWERSHELL = r"""$ErrorActionPreference = 'Stop'
@@ -12275,7 +12452,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             def _run_background_update():
                 try:
                     _write_update_status("running", "update", started_at=_iso_now())
-                    result = _run_update_script("update", timeout=3600)
+                    result = _run_update_script(
+                        "update", timeout=3600,
+                        lifecycle_fd=getattr(_model_lifecycle_lock, "lease_fd", None),
+                    )
                     output = ((result.stdout or "") + (result.stderr or ""))[-8000:]
                     _write_update_status(
                         "succeeded" if result.returncode == 0 else "failed",
@@ -14213,6 +14393,13 @@ class AgentHandler(BaseHTTPRequestHandler):
         if body is None:
             return
 
+        # A vLLM catalog model is downloaded by its pinned Hugging Face
+        # manifest, not by a caller-supplied URL. Dispatch before the GGUF
+        # validation below so the body is never re-read or re-authenticated.
+        if "model_id" in body:
+            self._handle_model_download_vllm(body)
+            return
+
         gguf_file = body.get("gguf_file", "")
         gguf_url = body.get("gguf_url", "")
         gguf_parts = body.get("gguf_parts", [])
@@ -14692,6 +14879,112 @@ class AgentHandler(BaseHTTPRequestHandler):
                 raise
 
         json_response(self, 200, {"status": "started"})
+
+    def _handle_model_download_vllm(self, body: dict):
+        """Download a trusted snapshot under the shared model lifecycle lock."""
+        global _model_download_cancelable, _model_download_thread
+        model_id = body.get("model_id")
+        if not isinstance(model_id, str) or not model_id.strip() or set(body) != {"model_id"}:
+            json_response(self, 400, {"error": "Only a catalog model_id is accepted"})
+            return
+        model_id = model_id.strip()
+        try:
+            entry = next((m for m in _load_model_library_records() if m.get("id") == model_id), None)
+            if entry is None:
+                json_response(self, 404, {"error": "Model not in library catalog"})
+                return
+            if not _model_vllm.is_vllm_entry(entry):
+                json_response(self, 409, {"error": "This model requires a GGUF download request"})
+                return
+            _model_vllm.require_valid(entry)
+        except (RuntimeError, ValueError) as exc:
+            json_response(self, 500, {"error": f"Model catalog unavailable: {exc}"})
+            return
+
+        acquired, active = _begin_model_lifecycle("model_download", model_id)
+        if not acquired:
+            json_response(self, 409, _model_lifecycle_conflict("model download", active))
+            return
+        worker_started = False
+        startup_error = None
+        try:
+            # Resolve the store and reread active identity only after admission.
+            models_dir = _model_download_directory()
+            env = load_env(INSTALL_DIR / ".env")
+            if _vllm_snapshot_is_active(env, entry, models_dir):
+                json_response(self, 409, {
+                    "error": "The active vLLM snapshot cannot be replaced while selected",
+                    "code": "vllm_active_snapshot",
+                })
+                return
+            helper = _load_vllm_downloader()
+            total = _model_vllm.manifest_bytes(entry)
+            status_path = INSTALL_DIR / "data" / "model-download-status.json"
+            progress = {"done": 0}
+
+            def _download():
+                global _model_download_cancelable
+                try:
+                    def report(done: int, total_bytes: int) -> None:
+                        progress["done"] = done
+                        _write_model_status(status_path, "downloading", model_id, done, total_bytes,
+                                            runtime="vllm", strict=True)
+
+                    helper.fetch_manifest(entry, models_dir, helper.DEFAULT_BASE_URL,
+                                          cancelled=_model_download_cancel.is_set, on_progress=report)
+                    if _model_download_cancel.is_set():
+                        raise helper.DownloadCancelled("Download cancelled by user")
+                    _write_model_status(status_path, "complete", model_id, total, total,
+                                        runtime="vllm", strict=True)
+                except helper.DownloadCancelled as exc:
+                    _write_model_status(status_path, "cancelled", model_id, progress["done"], total,
+                                        str(exc), runtime="vllm")
+                except (OSError, ValueError, helper.NoSpace, helper.Mismatch, helper.HubRefused,
+                        helper.DownloadStopped, helper.HTTPException) as exc:
+                    _write_model_status(status_path, "failed", model_id, progress["done"], total,
+                                        str(exc), runtime="vllm")
+                except Exception as exc:
+                    # A background worker has no request boundary to report an
+                    # unexpected failure; retain the traceback and release admission.
+                    logger.exception("vLLM manifest download failed")
+                    _write_model_status(status_path, "failed", model_id, progress["done"], total,
+                                        str(exc), runtime="vllm")
+                finally:
+                    with _model_download_lock:
+                        _model_download_cancelable = False
+                    _end_model_lifecycle("model_download")
+
+            with _model_download_lock:
+                if _model_download_thread_alive():
+                    json_response(self, 409, {"error": "Another download is in progress"})
+                    return
+                _model_download_cancel.clear()
+                _write_model_status(status_path, "downloading", model_id, 0, total,
+                                    runtime="vllm", strict=True)
+                _model_download_cancelable = True
+                try:
+                    _model_download_thread = threading.Thread(target=_download, daemon=True)
+                    _model_download_thread.start()
+                    worker_started = True
+                except RuntimeError:
+                    _model_download_cancelable = False
+                    _model_download_thread = None
+                    _write_model_status(status_path, "failed", model_id, 0, total,
+                                        "Could not start the download worker", runtime="vllm")
+                    raise
+        except (ImportError, OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+            logger.warning("Cannot start vLLM download: %s", exc)
+            startup_error = {"error": f"Could not start download: {exc}"}
+        finally:
+            if not worker_started:
+                _end_model_lifecycle("model_download")
+        if startup_error is not None:
+            # A failed launch owns no worker. Release admission before the
+            # client sees failure and can immediately retry the operation.
+            json_response(self, 500, startup_error)
+            return
+        json_response(self, 200, {"status": "started", "model_id": model_id})
+
 
     def _handle_model_download_cancel(self):
         """Cancel an in-progress model download."""
@@ -16531,12 +16824,52 @@ class AgentHandler(BaseHTTPRequestHandler):
                 payload["failure_detail"] = switchboard_run.get("detail")
             json_response(self, 500, payload)
 
+    def _handle_model_delete_vllm(self, body: dict):
+        """Remove an inactive catalog snapshot under model lifecycle admission."""
+        model_id = body.get("model_id")
+        if not isinstance(model_id, str) or not model_id.strip() or set(body) != {"model_id"}:
+            json_response(self, 400, {"error": "Only a catalog model_id is accepted"})
+            return
+        model_id = model_id.strip()
+        acquired, active = _begin_model_lifecycle("model_delete", model_id)
+        if not acquired:
+            json_response(self, 409, _model_lifecycle_conflict("model deletion", active))
+            return
+        try:
+            entry = next((m for m in _load_model_library_records() if m.get("id") == model_id), None)
+            if entry is None or not _model_vllm.is_vllm_entry(entry):
+                json_response(self, 404, {"error": "Model not in vLLM catalog"})
+                return
+            _model_vllm.require_valid(entry)
+            models_dir = _model_download_directory()
+            env = load_env(INSTALL_DIR / ".env")
+            if _vllm_snapshot_is_active(env, entry, models_dir):
+                json_response(self, 409, {"error": "The selected vLLM snapshot cannot be deleted",
+                                          "code": "vllm_active_snapshot"})
+                return
+            helper = _load_model_script("model_snapshot_files.py")
+            removed = helper.delete_snapshot(models_dir, _model_vllm.model_dir_name(entry), entry["files"])
+            json_response(self, 200, {"status": "deleted", "model_id": model_id, "bytesRemoved": removed})
+        except FileNotFoundError:
+            json_response(self, 404, {"error": "Snapshot is missing or changed during deletion"})
+        except (ImportError, OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+            logger.warning("vLLM snapshot deletion refused or incomplete: %s", exc)
+            json_response(self, 409, {"error": f"Snapshot deletion refused or incomplete: {exc}",
+                                      "code": "vllm_snapshot_delete_incomplete"})
+        finally:
+            _end_model_lifecycle("model_delete")
+
+
     def _handle_model_delete(self):
         """Delete a downloaded GGUF model file."""
         if not check_auth(self):
             return
         body = read_json_body(self)
         if body is None:
+            return
+
+        if "model_id" in body:
+            self._handle_model_delete_vllm(body)
             return
 
         gguf_file = body.get("gguf_file", "")
@@ -21631,6 +21964,18 @@ def _failed_llama_server_log_excerpt(container: str = "ods-llama-server") -> str
         return ""
 
 
+def _compose_stage_engine(service: str, flags: list[str], *, expected: dict | None = None):
+    """Use the held model lease for owned, single-engine Compose staging."""
+    from model_switchboard import compose_runtime
+    fd = _model_lifecycle_lock.lease_fd
+    if fd is None:
+        raise RuntimeError("Compose engine staging requires the model lifecycle lease")
+    return compose_runtime.stage(
+        INSTALL_DIR, flags, service, lease_fd=fd, expected=expected,
+        run=lambda argv, timeout: _run_lifecycle_command(argv, timeout=timeout, lifecycle_fd=fd),
+    )
+
+
 def _compose_restart_llama_server(env: dict):
     """Restart llama-server via docker compose (host-native path).
 
@@ -21665,18 +22010,15 @@ def _compose_restart_llama_server(env: dict):
         # the transaction atomically replaces models.ini or other config files.
         # A strict stop followed by a non-forced up can make rollback fail on
         # an already-stopped candidate or reuse a stale bind mount.
-        _run(
-            ["docker", "compose"]
-            + compose_flags
-            + [
-                "up",
-                "-d",
-                "--force-recreate",
-                "--no-deps",
-                "llama-server",
-            ],
-            300,
-        )
+        if sys.platform.startswith("linux"):
+            _compose_stage_engine("llama-server", compose_flags)
+        else:
+            _run(
+                ["docker", "compose"]
+                + compose_flags
+                + ["up", "-d", "--force-recreate", "--no-deps", "llama-server"],
+                300,
+            )
     else:
         # No compose flags — cannot use compose. Fall back to the inspected
         # container recreation path, which applies the current model, context,
@@ -22182,7 +22524,7 @@ def _recreate_llama_server(env: dict, override_image: str = ""):
 
 
 def _write_model_status(path: Path, status: str, model: str, downloaded: int, total: int, error: str = "",
-                        *, strict: bool = False):
+                        *, strict: bool = False, runtime: str | None = None):
     """Write status atomically; strict callers must report publication failure."""
     data = {
         "status": status,
@@ -22191,6 +22533,8 @@ def _write_model_status(path: Path, status: str, model: str, downloaded: int, to
         "bytesTotal": total,
         "updatedAt": _iso_now(),
     }
+    if runtime:
+        data["runtime"] = runtime
     if error:
         data["error"] = error
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")

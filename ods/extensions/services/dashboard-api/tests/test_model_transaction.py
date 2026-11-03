@@ -124,6 +124,85 @@ def test_installer_contract_with_logical_name_is_proven_and_mismatches_are_logge
     assert 'the runtime serves Other-9B-Q4_K_M.gguf, the contract names qwen3.5-9b' in caplog.text
 
 
+def test_vllm_contract_proven_without_gguf(monkeypatch):
+    config = {'LLM_BACKEND': 'vllm', 'VLLM_SERVED_MODEL': 'qwen3.5-9b', 'LLM_MODEL': 'qwen3.5-9b', 'CTX_SIZE': '65536'}
+    contract = {'model': 'qwen3.5-9b', 'contextLength': 65536, 'maxTokens': 8192, 'reasoning': False}
+    proof = {'identity': 'qwen3.5-9b', 'contextLength': 65536, 'contextVerified': True}
+    seen = {}
+    def fake_wait(_config, **kwargs):
+        seen.update(kwargs)
+        return dict(proof)
+    monkeypatch.setattr(host, '_wait_for_model_readiness', fake_wait)
+    assert _real_prove_pixel_model_contract(config, contract) is True
+    assert seen['gguf_file'] == '' and seen['model_id'] == 'qwen3.5-9b'
+    assert seen['attempts'] == 1 and seen['initial_delay'] == 0 and seen['interval'] == 0
+    assert seen['return_proof'] is True and seen['require_exact_context'] is True
+
+
+def test_vllm_contract_accepts_logical_contract_name(monkeypatch):
+    config = {'LLM_BACKEND': 'vllm', 'VLLM_SERVED_MODEL': 'Qwen3.5-9B', 'LLM_MODEL': 'qwen3.5-9b', 'CTX_SIZE': '65536'}
+    contract = {'model': 'qwen3.5-9b', 'contextLength': 65536, 'maxTokens': 8192, 'reasoning': False}
+    proof = {'identity': 'Qwen3.5-9B', 'contextLength': 65536, 'contextVerified': True}
+    monkeypatch.setattr(host, '_wait_for_model_readiness', lambda *_a, **_k: dict(proof))
+    assert _real_prove_pixel_model_contract(config, contract) is True
+
+
+def test_vllm_contract_rejects_wrong_identity(monkeypatch, caplog):
+    config = {'LLM_BACKEND': 'vllm', 'VLLM_SERVED_MODEL': 'qwen3.5-9b', 'LLM_MODEL': 'qwen3.5-9b', 'CTX_SIZE': '65536'}
+    contract = {'model': 'qwen3.5-9b', 'contextLength': 65536, 'maxTokens': 8192, 'reasoning': False}
+    proof = {'identity': 'other-model', 'contextLength': 65536, 'contextVerified': True}
+    monkeypatch.setattr(host, '_wait_for_model_readiness', lambda *_a, **_k: dict(proof))
+    with caplog.at_level('WARNING'):
+        assert _real_prove_pixel_model_contract(config, contract) is False
+    assert 'the runtime serves other-model, the contract names qwen3.5-9b' in caplog.text
+
+
+def test_vllm_contract_rejects_wrong_context(monkeypatch, caplog):
+    config = {'LLM_BACKEND': 'vllm', 'VLLM_SERVED_MODEL': 'qwen3.5-9b', 'LLM_MODEL': 'qwen3.5-9b', 'CTX_SIZE': '65536'}
+    contract = {'model': 'qwen3.5-9b', 'contextLength': 65536, 'maxTokens': 8192, 'reasoning': False}
+    proof = {'identity': 'qwen3.5-9b', 'contextLength': 32768, 'contextVerified': True}
+    monkeypatch.setattr(host, '_wait_for_model_readiness', lambda *_a, **_k: dict(proof))
+    with caplog.at_level('WARNING'):
+        assert _real_prove_pixel_model_contract(config, contract) is False
+    assert 'the runtime context is 32768, the contract needs 65536' in caplog.text
+
+
+def test_vllm_contract_rejects_unverified_context(monkeypatch, caplog):
+    config = {'LLM_BACKEND': 'vllm', 'VLLM_SERVED_MODEL': 'qwen3.5-9b', 'LLM_MODEL': 'qwen3.5-9b', 'CTX_SIZE': '65536'}
+    contract = {'model': 'qwen3.5-9b', 'contextLength': 65536, 'maxTokens': 8192, 'reasoning': False}
+    proof = {'identity': 'qwen3.5-9b', 'contextLength': 65536, 'contextVerified': False}
+    monkeypatch.setattr(host, '_wait_for_model_readiness', lambda *_a, **_k: dict(proof))
+    with caplog.at_level('WARNING'):
+        assert _real_prove_pixel_model_contract(config, contract) is False
+    assert 'the runtime context is 65536, the contract needs 65536' in caplog.text
+
+
+def test_vllm_contract_refuses_missing_served_or_logical(monkeypatch, caplog):
+    contract = {'model': 'qwen3.5-9b', 'contextLength': 65536, 'maxTokens': 8192, 'reasoning': False}
+    monkeypatch.setattr(host, '_wait_for_model_readiness',
+                        lambda *_a, **_k: pytest.fail('must not probe without config'))
+    for config in (
+        {'LLM_BACKEND': 'vllm', 'LLM_MODEL': 'qwen3.5-9b'},
+        {'LLM_BACKEND': 'vllm', 'VLLM_SERVED_MODEL': 'qwen3.5-9b'},
+        {'LLM_BACKEND': 'vllm'},
+    ):
+        caplog.clear()
+        with caplog.at_level('WARNING'):
+            assert _real_prove_pixel_model_contract(config, contract) is False
+        assert 'VLLM_SERVED_MODEL and LLM_MODEL must both be set' in caplog.text
+
+
+def test_vllm_identity_rejects_arbitrary_equal_strings():
+    config = {'LLM_BACKEND': 'vllm', 'VLLM_SERVED_MODEL': 'qwen3.5-9b', 'LLM_MODEL': 'qwen3.5-9b'}
+    assert host._pixel_local_identity_matches(config, 'qwen3.5-9b', 'qwen3.5-9b')
+    assert not host._pixel_local_identity_matches(config, 'other', 'other')
+    assert not host._pixel_local_identity_matches(config, 'qwen3.5-9b', 'other')
+    assert not host._pixel_local_identity_matches(
+        {'LLM_BACKEND': 'vllm', 'LLM_MODEL': 'qwen3.5-9b'}, 'qwen3.5-9b', 'qwen3.5-9b')
+    assert not host._pixel_local_identity_matches(
+        {'LLM_BACKEND': 'vllm', 'VLLM_SERVED_MODEL': 'qwen3.5-9b'}, 'qwen3.5-9b', 'qwen3.5-9b')
+
+
 @pytest.fixture
 def controller(tmp_path,monkeypatch):
     monkeypatch.setattr(host,'INSTALL_DIR',tmp_path)

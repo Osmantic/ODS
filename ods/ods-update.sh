@@ -1383,6 +1383,18 @@ EOF
 # MAIN
 #==============================================================================
 
+_run_with_model_lifecycle_lock() (
+    if [[ "$(uname -s)" == Linux ]]; then
+        local lock_lib="$INSTALL_DIR/installers/lib/model-lifecycle-lock.sh"
+        [[ -f "$lock_lib" ]] || { log_error "Model lifecycle lock helper is missing; restore the ODS installation."; exit 1; }
+        # shellcheck source=installers/lib/model-lifecycle-lock.sh
+        . "$lock_lib"
+        ods_model_lifecycle_lock_acquire "$INSTALL_DIR" "source update $1" || exit 1
+        trap ods_model_lifecycle_lock_release EXIT
+    fi
+    "$@"
+)
+
 main() {
     local command="${1:-help}"
     shift || true
@@ -1395,13 +1407,13 @@ main() {
             cmd_status "$@"
             ;;
         backup)
-            cmd_backup "$@"
+            _run_with_model_lifecycle_lock cmd_backup "$@"
             ;;
         update)
-            cmd_update "$@"
+            _run_with_model_lifecycle_lock cmd_update "$@"
             ;;
         rollback)
-            cmd_rollback "$@"
+            _run_with_model_lifecycle_lock cmd_rollback "$@"
             ;;
         changelog)
             cmd_changelog "$@"

@@ -47,8 +47,10 @@ model_memory.py.
 from __future__ import annotations
 
 import math
+import os
 import re
 import shlex
+import stat
 from typing import Any, Iterable, NamedTuple
 
 
@@ -316,6 +318,74 @@ def require_valid(model: dict[str, Any]) -> dict[str, Any]:
     if problems:
         raise ValueError("invalid vLLM catalog entry: " + "; ".join(problems))
     return model
+
+
+def _walk_components(root: str, parts: list[str]) -> str | None:
+    """lstat every intermediate directory; None when one is missing, "unsafe" when not a plain dir."""
+    current = root
+    for part in parts:
+        current = os.path.join(current, part)
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return "unsafe"
+        if not stat.S_ISDIR(info.st_mode):
+            return "unsafe"
+    return current
+
+
+def snapshot_presence(model: dict[str, Any], models_dir: str) -> str:
+    """Advisory size/presence of a vLLM snapshot: missing, partial, complete or unsafe.
+
+    Size and presence only, never cryptographic verification. The snapshot
+    root is ``model_dir_name(model)`` under ``models_dir`` (which may itself
+    be an owner-intentional symlink, resolved once). Every intermediate
+    directory and the root are lstat'ed: a symlink, hardlink or non-regular
+    file on a manifest path makes the state unsafe. Each manifest item must be a
+    single-link regular file of exactly its catalog size for complete;
+    missing or wrong-sized files make it partial when the root exists.
+    """
+    try:
+        require_valid(model)
+    except ValueError:
+        return "unsafe"
+    try:
+        base = os.path.realpath(models_dir)
+    except OSError:
+        return "unsafe"
+    root = os.path.join(base, model_dir_name(model))
+    try:
+        root_info = os.lstat(root)
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unsafe"
+    if not stat.S_ISDIR(root_info.st_mode):
+        return "unsafe"
+    complete = True
+    for item in model["files"]:
+        parts = item["path"].split("/")
+        parent = _walk_components(root, parts[:-1])
+        if parent == "unsafe":
+            return "unsafe"
+        if parent is None:
+            complete = False
+            continue
+        target = os.path.join(parent, parts[-1])
+        try:
+            info = os.lstat(target)
+        except FileNotFoundError:
+            complete = False
+            continue
+        except OSError:
+            return "unsafe"
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            return "unsafe"
+        if info.st_size != int(item["size"]):
+            complete = False
+    return "complete" if complete else "partial"
 
 
 def parse_gpu(text: str) -> Gpu:

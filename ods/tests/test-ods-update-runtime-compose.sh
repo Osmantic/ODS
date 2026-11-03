@@ -19,6 +19,12 @@ BIN_DIR="$TMP_DIR/bin"
 mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/config/litellm" "$BIN_DIR"
 
 cp "$UPDATE_SCRIPT" "$INSTALL_DIR/ods-update.sh"
+
+mkdir -p "$INSTALL_DIR/installers/lib" "$INSTALL_DIR/bin"
+
+cp "$ROOT_DIR/installers/lib/model-lifecycle-lock.sh" "$INSTALL_DIR/installers/lib/"
+
+cp "$ROOT_DIR/bin/model_lifecycle_lock.py" "$INSTALL_DIR/bin/"
 mkdir -p "$INSTALL_DIR/scripts"
 cp "$ROOT_DIR/scripts/publish-update-backup.py" "$INSTALL_DIR/scripts/"
 chmod +x "$INSTALL_DIR/ods-update.sh"
@@ -149,6 +155,9 @@ SOURCE_PARENT="$TMP_DIR/source-parent"
 SOURCE_INSTALL="$SOURCE_PARENT/ods"
 mkdir -p "$SOURCE_BIN_DIR" "$SOURCE_INSTALL"
 cp "$UPDATE_SCRIPT" "$SOURCE_INSTALL/ods-update.sh"
+mkdir -p "$SOURCE_INSTALL/installers/lib" "$SOURCE_INSTALL/bin"
+cp "$ROOT_DIR/installers/lib/model-lifecycle-lock.sh" "$SOURCE_INSTALL/installers/lib/"
+cp "$ROOT_DIR/bin/model_lifecycle_lock.py" "$SOURCE_INSTALL/bin/"
 chmod +x "$SOURCE_INSTALL/ods-update.sh"
 cat > "$SOURCE_BIN_DIR/curl" <<'SH'
 #!/usr/bin/env bash

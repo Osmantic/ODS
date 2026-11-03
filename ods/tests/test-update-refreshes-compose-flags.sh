@@ -52,8 +52,12 @@ exit 0
 SH
 cp "$BIN_DIR/docker" "$BIN_DIR/docker-compose"
 # The source-update safety helper is Python; its own tests cover it.
+export ODS_TEST_REAL_PYTHON="$(command -v python3)"
 cat > "$BIN_DIR/python3" <<'SH'
 #!/usr/bin/env bash
+if [[ "${1:-}" == */model_lifecycle_lock.py ]]; then
+    exec "$ODS_TEST_REAL_PYTHON" "$@"
+fi
 [[ "${2:-}" == compose ]] && cat >/dev/null
 exit 0
 SH
@@ -71,6 +75,9 @@ make_checkout() {
     git_quiet init -q "$work"
     mkdir -p "$work/scripts" "$work/extensions/services/retired"
     cp "$UPDATE_SCRIPT" "$work/ods-update.sh"
+    mkdir -p "$work/installers/lib" "$work/bin"
+    cp "$ROOT_DIR/installers/lib/model-lifecycle-lock.sh" "$work/installers/lib/"
+    cp "$ROOT_DIR/bin/model_lifecycle_lock.py" "$work/bin/"
     printf 'print("stub")\n' > "$work/scripts/source-update-preflight.py"
     printf '#!/usr/bin/env bash\necho "-f docker-compose.base.yml"\n' > "$work/scripts/resolve-compose-stack.sh"
     chmod +x "$work/scripts/resolve-compose-stack.sh"

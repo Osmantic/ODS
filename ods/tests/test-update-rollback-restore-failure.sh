@@ -26,6 +26,9 @@ build_fixture() {
     local install="$1" mode="${2:-}"
     mkdir -p "$install"/{config/litellm,data/backups,bin}
     cp "$TARGET" "$install/ods-update.sh"
+    mkdir -p "$install/installers/lib" "$install/bin"
+    cp "$ROOT_DIR/installers/lib/model-lifecycle-lock.sh" "$install/installers/lib/"
+    cp "$ROOT_DIR/bin/model_lifecycle_lock.py" "$install/bin/"
     # Use the reviewed real guard; synthetic target remains separate from helper code.
     mkdir -p "$install/scripts"
     ln -s "$ROOT_DIR/scripts/source-update-preflight.py" "$install/scripts/source-update-preflight.py"

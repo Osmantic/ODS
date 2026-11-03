@@ -60,6 +60,7 @@ tests/test-cli-status-json-state.sh
 tests/test-cli-status-optional-webui.sh
 tests/test-cli-stt-env.py
 tests/test-cli-update-verification.sh
+tests/test-cli-vllm-update-health.sh
 tests/test-comfyui-user-dir-persisted.sh
 tests/test-comfyui-cuda-cache-persisted.sh
 tests/test-llama-cuda-cache-persisted.sh
@@ -151,7 +152,17 @@ tests/test-model-library-coverage.py
 tests/test-model-library-verdicts.py
 tests/test-model-library-vllm.py
 tests/test_select_model_vllm.py
+tests/test_vllm_gpu_admission.py
+tests/test_hf_manifest_hardening.py
+tests/test_hf_manifest_verify.py
+tests/test_model_lifecycle_lock.py
+tests/test_model_lifecycle_handoff.py
+tests/test_model_transition_journal.py
+tests/test_compose_engine_transition.py
+tests/test_model_snapshot_delete.py
+tests/test_vllm_snapshot_presence.py
 tests/test_host_agent_vllm.py
+tests/test_host_agent_vllm_download_http.py
 tests/test_preserve_active_model_vllm.py
 tests/test_doctor_vllm_route.py
 tests/test-native-llm-phase02.sh
@@ -350,6 +361,7 @@ tests/test-cli-chat-error-exit.py
 tests/test-cli-compose-cache-model-store.sh
 tests/test-update-compose-cache-owner-overlays.sh
 tests/test-cli-update-model-lifecycle.sh
+tests/test-cli-update-process-lock.sh
 tests/test-summary-quick-commands.sh
 tests/test_dashboard_env_custody.py
 tests/test_cli_preset_name_validation.py

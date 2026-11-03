@@ -40,8 +40,13 @@ trap 'rm -rf "$FIXTURE"' EXIT
 # ---------------------------------------------------------------------------
 mkdir -p "$FIXTURE/lib" "$FIXTURE/extensions/services/bsvc" "$FIXTURE/extensions/services/oneshot" "$FIXTURE/bin"
 cp "$ROOT_DIR/ods-cli" "$FIXTURE/ods-cli"
+mkdir -p "$FIXTURE/installers/lib"
+cp "$ROOT_DIR/installers/lib/model-lifecycle-lock.sh" "$FIXTURE/installers/lib/"
+cp "$ROOT_DIR/bin/model_lifecycle_lock.py" "$FIXTURE/bin/"
+export ODS_MODEL_LIFECYCLE_LOCK_ROOT="$FIXTURE/locks"
 cp "$ROOT_DIR"/lib/*.sh "$FIXTURE/lib/"
 : > "$FIXTURE/docker-compose.base.yml"
+cp "$ROOT_DIR/docker-compose.vllm.yml" "$FIXTURE/docker-compose.vllm.yml"
 cat > "$FIXTURE/ods-update.sh" <<'BACKUP'
 #!/usr/bin/env bash
 # This fixture exercises service verification after a completed snapshot.
@@ -100,6 +105,7 @@ if [[ "${1:-}" == "compose" ]]; then
         config)
             echo "bsvc"
             echo "oneshot"
+            [[ -z "${FAKE_VLLM_HEALTH_FILE:-}" ]] || echo "vllm-server"
             ;;
         pull)
             seen=0
@@ -114,6 +120,7 @@ if [[ "${1:-}" == "compose" ]]; then
                 echo "id-$last"
             elif [[ " $* " == *"--status"*"running"* ]]; then
                 [[ "${FAKE_DOCKER_PS_EMPTY:-}" == "1" ]] || echo "bsvc"
+                [[ -z "${FAKE_VLLM_HEALTH_FILE:-}" ]] || echo "vllm-server"
             else
                 echo "bsvc"
                 echo "oneshot"
@@ -129,6 +136,15 @@ case "${1:-}" in
     inspect)
         for last in "$@"; do :; done
         case "$last" in
+            ods-vllm-server)
+                state=$(head -n 1 "${FAKE_VLLM_HEALTH_FILE:?}")
+                printf '%s\n' "$state" >> "${FAKE_VLLM_HEALTH_LOG:?}"
+                if [[ $(wc -l < "$FAKE_VLLM_HEALTH_FILE") -gt 1 ]]; then
+                    tail -n +2 "$FAKE_VLLM_HEALTH_FILE" > "$FAKE_VLLM_HEALTH_FILE.next"
+                    mv "$FAKE_VLLM_HEALTH_FILE.next" "$FAKE_VLLM_HEALTH_FILE"
+                fi
+                echo "running $state"
+                ;;
             id-bsvc)
                 if [[ "${FAKE_DOCKER_PS_EMPTY:-}" == "1" ]]; then echo "exited 1"; else echo "running 0"; fi
                 ;;
@@ -151,6 +167,19 @@ echo "curl: (7) Failed to connect" >&2
 exit 7
 SH
 chmod +x "$FIXTURE/bin/docker" "$FIXTURE/bin/curl"
+printf '#!/bin/sh\nexit 0\n' > "$FIXTURE/bin/sleep"
+chmod +x "$FIXTURE/bin/sleep"
+# A fixture update must never discover or restart the machine's installed
+# agent. Record and refuse service-manager/elevation calls as a second guard.
+for command_name in systemctl launchctl sudo; do
+    cat > "$FIXTURE/bin/$command_name" <<'SH'
+#!/bin/sh
+printf '%s\n' "$0 $*" >> "${TEST_HOST_SERVICE_CALLS:?}"
+exit 90
+SH
+    chmod +x "$FIXTURE/bin/$command_name"
+done
+export TEST_HOST_SERVICE_CALLS="$FIXTURE/host-service-calls"
 
 reset_env() {
     cat > "$FIXTURE/.env" <<'EOF'
@@ -163,6 +192,7 @@ EOF
 run_update() {
     # Never let a non-zero CLI exit kill the test; callers assert on output/state
     PATH="$FIXTURE/bin:$PATH" INSTALL_DIR="$FIXTURE" ODS_HOME="$FIXTURE" \
+        ODS_AGENT_FORCE_SESSION=true \
         bash "$FIXTURE/ods-cli" update 2>&1 || true
 }
 
@@ -235,6 +265,48 @@ else
 fi
 
 echo ""
+# The real update path must wait for vLLM health before publishing success.
+reset_env
+printf 'LLM_BACKEND=vllm\n' >> "$FIXTURE/.env"
+export FAKE_VLLM_HEALTH_FILE="$FIXTURE/vllm-health"
+export FAKE_VLLM_HEALTH_LOG="$FIXTURE/vllm-health.log"
+printf 'starting\nhealthy\n' > "$FAKE_VLLM_HEALTH_FILE"
+: > "$FAKE_VLLM_HEALTH_LOG"
+output=$(run_update)
+if [[ "$output" == *"Update complete"* ]] &&
+    grep -q '^starting$' "$FAKE_VLLM_HEALTH_LOG" &&
+    grep -q '^healthy$' "$FAKE_VLLM_HEALTH_LOG" &&
+    grep -q '^ODS_VERSION=2.0.1' "$FIXTURE/.env"; then
+    pass "vLLM update waits through loading before recording success"
+else
+    fail "vLLM health wait was not enforced: $(echo "$output" | tail -5)"
+fi
+
+reset_env
+printf 'LLM_BACKEND=vllm\n' >> "$FIXTURE/.env"
+printf 'unhealthy\n' > "$FAKE_VLLM_HEALTH_FILE"
+output=$(run_update)
+if [[ "$output" == *"vLLM did not become healthy"* && "$output" != *"Update complete"* ]] &&
+    grep -q '^ODS_VERSION=2.0.0' "$FIXTURE/.env"; then
+    pass "unhealthy vLLM refuses update success and version promotion"
+else
+    fail "unhealthy vLLM update was not refused: $(echo "$output" | tail -5)"
+fi
+unset FAKE_VLLM_HEALTH_FILE FAKE_VLLM_HEALTH_LOG
+reset_env
+printf 'LLM_BACKEND=vllm\nODS_MODE=cloud\n' >> "$FIXTURE/.env"
+output=$(run_update)
+if [[ "$output" == *"Update complete"* ]]; then
+    pass "an inactive configured vLLM backend does not gate the active stack"
+else
+    fail "inactive vLLM incorrectly gated update: $(echo "$output" | tail -5)"
+fi
+if [[ ! -s "$TEST_HOST_SERVICE_CALLS" ]]; then
+    pass "fixture update never invokes the installed host service manager"
+else
+    fail "fixture update attempted to control a host service"
+fi
+
 echo "Results: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]] || exit 1
 exit 0
