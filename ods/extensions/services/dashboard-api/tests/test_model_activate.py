@@ -3652,7 +3652,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     home.mkdir()
     (install_dir / ".env").write_text(
         "PIXEL_SOURCE_URL=bundled\n"
-        "PIXEL_SOURCE_REF=fb48263c80ed86ddbfafad14cd688bec97f21704\n"
+        "PIXEL_SOURCE_REF=acc5550888fe034a9a42e90307c9f7a664726315\n"
         f"{gateway_setting}",
         encoding="utf-8",
     )
@@ -3746,7 +3746,7 @@ def test_managed_pixel_reconcile_accepts_bundled_source(
     home = tmp_path / "owner-home"
     install_dir.mkdir()
     home.mkdir()
-    source_ref = "fb48263c80ed86ddbfafad14cd688bec97f21704"
+    source_ref = "acc5550888fe034a9a42e90307c9f7a664726315"
     source_setting = "PIXEL_SOURCE_URL=bundled\n" if explicit_source else ""
     (install_dir / ".env").write_text(
         f"{source_setting}PIXEL_SOURCE_REF={source_ref}\n",
@@ -3834,15 +3834,19 @@ def test_managed_pixel_reconcile_rejects_remote_source(tmp_path, monkeypatch):
         _mod._reconcile_ods_managed_pixel_model("safe-model", 65536)
 
 
+@pytest.mark.parametrize("source_ref", [
+    "b33730436baf5d98bf58f7d57c090318fe19f433",
+    "fb48263c80ed86ddbfafad14cd688bec97f21704",
+])
 def test_managed_pixel_reconcile_rejects_old_ref_without_local_checkout(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, source_ref,
 ):
     install_dir = tmp_path / "install"
     home = tmp_path / "owner-home"
     install_dir.mkdir()
     home.mkdir()
     (install_dir / ".env").write_text(
-        "PIXEL_SOURCE_REF=b33730436baf5d98bf58f7d57c090318fe19f433\n",
+        f"PIXEL_SOURCE_REF={source_ref}\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
