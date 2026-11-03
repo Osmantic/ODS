@@ -4838,12 +4838,36 @@ finally:
 PY
 }
 
+_ods_pixel_google_custody() {
+    # The Source Broker's Google sign-in is root-only. Without usable sudo it counts
+    # as absent, so an install never turns on a source it cannot see is connected.
+    local token="${ODS_PIXEL_SOURCE_TOKEN_PATH:-/var/lib/pixel-source-broker/private/google-token.json}"
+    if [[ "${ODS_SUDO_AVAILABLE:-true}" != false ]] && ods_sudo test -f "$token"; then
+        printf '%s\n' present
+    else
+        printf '%s\n' absent
+    fi
+}
+
+_ods_pixel_contract_uses_source_broker() {
+    jq -e '.emailLimbEnabled == true or .calendarLimbEnabled == true or .socialLimbEnabled == true' \
+        "$1" >/dev/null
+}
+
+_ods_pixel_install_source_broker_if_connected() {
+    local owner="$1" home="$2" pixel_root="$3" answers="$4" pixel_log="$5"
+    # Only an owner's connected app turns a source limb on; otherwise nothing runs.
+    _ods_pixel_contract_uses_source_broker "$answers" || return 0
+    ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" source-broker --confirm >>"$pixel_log" 2>&1
+}
+
 _ods_pixel_write_onboarding() {
     local owner="$1" home="$2" answers="$3" openclaw_bin="$4" plugin_path="$5" plugin_digest="$6"
     local web_search_provider="${7:-searxng}" parallel_path="${8:-}" parallel_digest="${9:-}"
     local context="${MAX_CONTEXT:-16384}" max_tokens reasoning=default
     local gateway_alias gateway_label runtime_model model_gateway_port="${PIXEL_MODEL_RELAY_PORT:-4006}" pixel_gateway_port gateway_key="${PIXEL_MODEL_RELAY_KEY:-}"
     local gateway_key_file write_status=0
+    local connections="${ODS_PORTAL_CONNECTIONS_FILE:-/etc/ods/portal-connections.json}" google_custody=absent
     if [[ "$context" =~ ^[0-9]+$ && "$context" -ge 4096 ]]; then
         :
     else
@@ -4900,6 +4924,12 @@ _ods_pixel_write_onboarding() {
         return 1
     }
 
+    # The owner's connected apps survive an update. Root is asked about the broker's
+    # sign-in only when a connection record exists.
+    if [[ -e "$connections" || -L "$connections" ]]; then
+        google_custody="$(_ods_pixel_google_custody)"
+    fi
+
     local renderer
     renderer="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/pixel-onboarding.py" || return 1
     [[ -f "$renderer" ]] || return 1
@@ -4916,7 +4946,8 @@ _ods_pixel_write_onboarding() {
         "$openclaw_bin" "$home" "$runtime_model" "$context" "$max_tokens" "$reasoning" \
         "$gateway_alias" "$gateway_label" "$model_gateway_port" "$pixel_gateway_port" "$gateway_key_file" \
         "${SEARXNG_PORT:-8888}" "$plugin_path" "$plugin_digest" \
-        "$web_search_provider" "$parallel_path" "$parallel_digest" || write_status=$?
+        "$web_search_provider" "$parallel_path" "$parallel_digest" \
+        "$connections" "$google_custody" || write_status=$?
     ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$gateway_key_file" || write_status=1
     return "$write_status"
 }
@@ -5734,6 +5765,10 @@ ods_pixel_install_default_agent() {
             ai_bad "Pixel's root-custodied Operations policy does not match the ODS-managed policy."
             return 1
         fi
+        if ! _ods_pixel_install_source_broker_if_connected "$owner" "$home" "$pixel_root" "$answers" "$pixel_log"; then
+            ai_bad "Pixel could not start the isolated Source Broker for your connected apps. See $pixel_log."
+            return 1
+        fi
         if [[ "${FORCE:-false}" == true ]]; then
             # Forced reinstall retires an interrupted agent sandbox while
             # the gateway is stopped, then runs the unchanged verifier.
@@ -5786,6 +5821,10 @@ ods_pixel_install_default_agent() {
         fi
         if ! _ods_pixel_verify_operations_policy_custody "$owner" "$home" "$operations_policy"; then
             ai_bad "Pixel's root-custodied Operations policy does not match the ODS-managed policy."
+            return 1
+        fi
+        if ! _ods_pixel_install_source_broker_if_connected "$owner" "$home" "$pixel_root" "$answers" "$pixel_log"; then
+            ai_bad "Pixel could not start the isolated Source Broker for your connected apps. See $pixel_log."
             return 1
         fi
         if [[ "$same_verified_source" == true ]]; then
