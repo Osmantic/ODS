@@ -46,9 +46,16 @@ export default function PortalChatMemory({ chatId }) {
     }
   }
 
+  // A switch, not a checkbox: checkboxes in the chat belong to Portal's answers (task lists).
   return <div className="p-2 text-xs">
-    <label className="flex items-center gap-2"><input type="checkbox" checked={quiet} disabled={busy || !chatId} onChange={event => change(event.target.checked)} />Don’t remember this chat</label>
-    <p className="mt-1 text-theme-text-muted">Portal won’t learn from this chat or use what it remembers about you here.</p>
+    <button type="button" role="switch" aria-checked={quiet} aria-describedby="portal-chat-memory-note" disabled={busy || !chatId}
+      onClick={() => change(!quiet)} className="flex w-full items-center justify-between gap-2 text-left disabled:opacity-60">
+      <span>Don’t remember this chat</span>
+      <span aria-hidden="true" className={`relative inline-flex h-4 w-7 shrink-0 rounded-full transition-colors ${quiet ? 'bg-theme-accent' : 'bg-theme-border'}`}>
+        <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-transform ${quiet ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+      </span>
+    </button>
+    <p id="portal-chat-memory-note" className="mt-1 text-theme-text-muted">Portal won’t learn from this chat or use what it remembers about you here.</p>
     {error && <p role="alert" className="mt-1 text-red-400">{error}</p>}
   </div>
 }
