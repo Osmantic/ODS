@@ -222,7 +222,7 @@ def test_invocation_snapshots_detach_mutation_and_no_cli_admission(world):
     assert inv.document['nonce']=='2'*32
     for role,identifier in [('sync',None),('direct',None),('action','calendar-1893456789012-12abcdef'),
             ('reconcile','gmail-draft-1893456789012-34abcdef'),('exchange','5'*32),('revoke',None)]:
-        with pytest.raises(s.CustodyError,match='generation-not-admitted'):
+        with pytest.raises(s.CustodyError,match='native-source-broker-platform-required'):
             s._native_child_main(['--native-broker-child',role,*([identifier] if identifier else [])])
 
 

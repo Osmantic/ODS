@@ -43,7 +43,7 @@ def test_all_six_role_definitions_are_disabled_without_any_automatic_trigger(rol
     assert value['Umask'] == 63 and value['ExitTimeOut'] == 5
     assert value['ProgramArguments'] == ['/usr/bin/env', '-i', 'HOME=/private/var/empty',
         'USER=_ods_pixel_sources', 'LOGNAME=_ods_pixel_sources', 'PATH=/usr/bin:/bin:/usr/sbin:/sbin',
-        'PYTHONDONTWRITEBYTECODE=1', 'PYTHONNOUSERSITE=1', '/usr/bin/python3', '-I', '-B',
+        'PYTHONDONTWRITEBYTECODE=1', 'PYTHONNOUSERSITE=1', '/usr/bin/python3', '-I', '-S', '-B',
         '/usr/local/libexec/ods-pixel-access/pixel_connections/custody.py',
         '--native-broker-child', role, *([identifier] if identifier else [])]
     assert value['StandardOutPath'] == '/private/var/log/pixel-source-broker/' + role + '.stdout.log'
@@ -66,13 +66,14 @@ def test_existing_source_command_grammar_is_not_broadened_for_renderer_inputs():
 
 @pytest.mark.parametrize('role,identifier,_arguments', CASES)
 def test_actual_private_cli_refuses_before_reading_any_owner_or_root_state(tmp_path, role, identifier, _arguments):
-    command = [sys.executable, '-I', '-B', str(ROOT / 'bin/pixel_connections/custody.py'),
+    command = [sys.executable, '-I', '-S', '-B', str(ROOT / 'bin/pixel_connections/custody.py'),
         '--native-broker-child', role, *([identifier] if identifier else [])]
     result = subprocess.run(command, cwd=tmp_path, env={'HOME': str(tmp_path),
         'XDG_CONFIG_HOME': str(tmp_path / 'absent'), 'PATH': os.defpath},
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
     assert result.returncode == 2
-    assert result.stdout == '' and result.stderr == 'error: native-source-generation-not-admitted\n'
+    expected = 'native-source-bootstrap-isolation-required' if sys.platform == 'darwin' else 'native-source-broker-platform-required'
+    assert result.stdout == '' and result.stderr == 'error: ' + expected + '\n'
     assert list(tmp_path.iterdir()) == []
 
 
@@ -82,5 +83,6 @@ def test_generation_refusal_does_not_mint_admission_or_invoke_root_qualifiers(mo
     monkeypatch.setattr(custody, '_native_selected', forbidden)
     monkeypatch.setattr(custody, '_native_environment_context', forbidden)
     monkeypatch.setattr(custody.subprocess, 'Popen', forbidden)
-    with pytest.raises(custody.CustodyError, match='generation-not-admitted'):
+    expected = 'native-source-bootstrap-isolation-required' if sys.platform == 'darwin' else 'native-source-broker-platform-required'
+    with pytest.raises(custody.CustodyError, match=expected):
         custody._native_child_main(['--native-broker-child', 'sync'])
