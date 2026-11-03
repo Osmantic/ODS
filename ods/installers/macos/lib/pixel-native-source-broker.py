@@ -1522,6 +1522,22 @@ def _active_record(custody, record, origin, binding, expected):
 
 
 def publish_active_slot(selection, role, identifier=None, *, rollback=False):
+    """Reuse protected hashes for this operation, never Root authority/results."""
+    from pixel_access_bridge import LaunchdAccessBridge
+    from pixel_connections import custody
+    from pixel_connections.planner import ConnectionDeployment
+    # Check the exact sealed type before accessing any caller object attributes.
+    if type(selection) is not custody._NativeSourceSelection:
+        raise custody.CustodyError('native-source-deployment-required')
+    if (selection.seal is not custody._NATIVE_SEAL
+            or type(selection.bridge) is not LaunchdAccessBridge
+            or type(selection.deployment) is not ConnectionDeployment):
+        raise custody.CustodyError('native-source-deployment-required')
+    with LaunchdAccessBridge._native_runtime_operation(selection.bridge):
+        return _publish_active_slot(selection, role, identifier, rollback=rollback)
+
+
+def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
     """Root-only fixed publisher, caller holds existing admission lock.
 
     No launchctl mutation/Source dispatch. Root inputs and intent precede the
