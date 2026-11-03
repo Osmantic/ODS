@@ -546,7 +546,8 @@ test('requested notes reads and harmless catalog calls keep exact private ticket
     const submitted=[];
     const adapter=createIntegrationTools({context:CONTEXT,outcomes,requireBound:ctx=>recovery.isReviewOnly(ctx),submit:async payload=>{submitted.push(payload);
       return payload.action==='notes-read'?{ok:true,path:'Example.md',text:'Invented note',recoveryReviewOnly:true}
-        :payload.action==='notes-search'?{ok:true,results:[],recoveryReviewOnly:true}
+        :payload.action==='notes-search'?{ok:true,results:[],recoveryReviewOnly:true,
+          reviewReferences:{version:1,source:'obsidian',binding:'a'.repeat(64),entries:[],truncated:false}}
           :{ok:true,servers:[],recoveryReviewOnly:true};}}).find(value=>value.name===name);
     const result=await adapter.execute(context.toolCallId,params);
     assert.equal(submitted.length,1);assert.deepEqual(submitted[0],{...integrationRequest(name,params,CONTEXT),recoveryReviewOnly:true});
