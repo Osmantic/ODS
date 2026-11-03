@@ -1,0 +1,71 @@
+#include <tunables/global>
+
+# AppArmor profile for the ODS-managed Pixel sandbox containers.
+#
+# This is Docker's docker-default profile (github.com/moby/profiles/apparmor)
+# rendered for this name with an unconfined daemon, plus the two "//&unconfined"
+# rules below. On AppArmor 5 hosts (Ubuntu 26.04), runc labels every
+# `docker exec` process as a stack of the container profile and unconfined.
+# docker-default only lets processes signal peers labelled exactly with its
+# own name, so inside an exec session a process cannot signal its own child:
+# Pixel's cancellable exec wrapper cannot stop a command, and the access
+# runtime's cancellation proof fails. These rules restore exactly the
+# in-container signalling and tracing docker-default already intends.
+profile ods-pixel-sandbox flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  network,
+  # Disallow obsolete socket families removed from the Linux kernel.
+  deny network ax25,
+  deny network ipx,
+  deny network appletalk,
+  deny network netrom,
+  deny network rose,
+  deny network econet,
+  deny network atmsvc,
+  deny network irda,
+  deny network wanpipe,
+  deny network isdn,
+  deny network caif,
+  # Disallow AF_ALG (Linux kernel crypto API).
+  deny network alg,
+  # Disallow AF_VSOCK to prevent host/guest communication.
+  deny network vsock,
+  capability,
+  file,
+  umount,
+  # Host (privileged) processes may send signals to container processes.
+  signal (receive) peer=unconfined,
+  # runc may send signals to container processes (for "docker stop").
+  signal (receive) peer=runc,
+  # crun may send signals to container processes (for "docker stop" when used with crun OCI runtime).
+  signal (receive) peer=crun,
+  # Container processes may send signals amongst themselves, including
+  # processes started by `docker exec`.
+  signal (send,receive) peer="ods-pixel-sandbox",
+  signal (send,receive) peer="ods-pixel-sandbox//&unconfined",
+
+  deny @{PROC}/* w,   # deny write for all files directly in /proc (not in a subdir)
+  # deny write to files not in /proc/<number>/** or /proc/sys/**
+  deny @{PROC}/{[^1-9/],[^1-9/][^0-9/],[^1-9s/][^0-9y/][^0-9s/],[^1-9/][^0-9/][^0-9/][^0-9/]*}/** w,
+  deny @{PROC}/sys/[^k]** w,  # deny /proc/sys except /proc/sys/k* (effectively /proc/sys/kernel)
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,  # deny everything except shm* in /proc/sys/kernel/
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+
+  deny mount,
+
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/devices/virtual/powercap/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+
+  # allow processes within the container to trace each other,
+  # provided all other LSM and yama setting allow it.
+  ptrace (trace,tracedby,read,readby) peer="ods-pixel-sandbox",
+  ptrace (trace,tracedby,read,readby) peer="ods-pixel-sandbox//&unconfined",
+}
