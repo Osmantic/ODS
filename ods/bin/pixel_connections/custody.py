@@ -630,6 +630,7 @@ def remove_env(paths: Paths) -> None:
 NATIVE_BROKER = '_ods_pixel_sources'
 NATIVE_HOME = '/private/var/empty'
 NATIVE_META = Path('/private/var/lib/ods-pixel-access')
+NATIVE_DEFINITIONS = Path('/Library/LaunchDaemons')
 NATIVE_STATE = Path('/private/var/lib/pixel-source-broker')
 NATIVE_ENV = NATIVE_STATE / 'source-broker.env'
 NATIVE_LEGACY_ENV = Path('/private/etc/pixel-source-broker.env')
@@ -728,6 +729,30 @@ def native_child_arguments(role, identifier=None):
     return () if role == 'sync' else (('--drain-direct',) if role == 'direct' else ('--revoke',))
 
 
+def native_disabled_definition(role, *, identity, python, identifier=None):
+    """One shared inert renderer, reused by publisher AND descriptor verifier."""
+    _native_identity_intent(identity)
+    native_child_arguments(role, identifier)
+    if (type(python) is not str or not python.startswith('/') or any(c in python for c in '\0\r\n')
+            or any(part in ('', '.', '..') for part in python.split('/')[1:])):
+        raise CustodyError('native-source-python-path-invalid')
+    label = NATIVE_LABEL + role + ('.' + identifier if identifier is not None else '')
+    environment = {'HOME': '/private/var/empty', 'USER': NATIVE_BROKER, 'LOGNAME': NATIVE_BROKER,
+        'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONNOUSERSITE': '1'}
+    document = {
+        'Label': label, 'Disabled': True, 'RunAtLoad': False, 'KeepAlive': False,
+        'UserName': NATIVE_BROKER, 'GroupName': NATIVE_BROKER, 'InitGroups': False,
+        'ProgramArguments': ['/usr/bin/env', '-i', *(key + '=' + value for key, value in environment.items()),
+            python, '-I', '-B', '/usr/local/libexec/ods-pixel-access/pixel_connections/custody.py',
+            '--native-broker-child', role, *([identifier] if identifier is not None else [])],
+        'WorkingDirectory': str(NATIVE_STATE), 'Umask': 0o077, 'ProcessType': 'Background',
+        'AbandonProcessGroup': False, 'ExitTimeOut': 5, 'StandardInPath': '/dev/null',
+        'StandardOutPath': str(NATIVE_LOGS / (role + '.stdout.log')),
+        'StandardErrorPath': str(NATIVE_LOGS / (role + '.stderr.log')),
+    }
+    return Path('/Library/LaunchDaemons') / (label + '.plist'), plistlib.dumps(document, sort_keys=True), 0o644
+
+
 def _native_root():
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise CustodyError('native-source-root-required')
@@ -782,6 +807,12 @@ def _native_selected(selection, *, _publication=False):
         from pixel_macos_custody import protected_directory
         with protected_directory(NATIVE_META) as directory:
             publication, _raw = _native_json_at(directory, 'source-publication.json')
+            jobs, _jobs_raw = _native_json_at(directory, 'source-jobs-prepare.json')
+        # This data-only increment admits no ordinary env/account/kit writer
+        # once a generation has been staged. Only explicit recovery may handle
+        # its frozen inputs. A completed rollback restores the old v1 boundary.
+        if jobs is not None and (type(jobs) is not dict or jobs.get('phase') != 'restored'):
+            raise CustodyError('native-source-generation-requires-lifecycle')
         if publication is not None and (type(publication) is not dict
                 or publication.get('schemaVersion') != 1
                 or publication.get('kind') != 'ods-native-source-publication'
@@ -1160,13 +1191,22 @@ def _native_pairs(pairs):
 
 
 def _native_json_at(directory, name, *, mode=0o600):
-    if name not in ('source-identity.json', 'source-custody-prepare.json', 'source-environment.json', 'source-logs-prepare.json', 'source-publication.json'):
+    if name not in ('source-identity.json', 'source-custody-prepare.json', 'source-environment.json', 'source-logs-prepare.json', 'source-publication.json', 'source-jobs-prepare.json'):
         raise CustodyError('native-source-record-invalid')
+    if name == 'source-jobs-prepare.json':
+        try:
+            raw, _inode = _native_root_file(directory, name, mode=mode)
+        except FileNotFoundError:
+            return None, None
+        try:
+            return json.loads(raw, object_pairs_hook=_native_pairs), raw
+        except (ValueError, UnicodeError, RecursionError):
+            raise CustodyError('native-source-record-invalid') from None
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
     except FileNotFoundError:
         return None, None
-    limit = 65536 if name == 'source-publication.json' else 16384
+    limit = 65536 if name in ('source-publication.json', 'source-jobs-prepare.json') else 16384
     with os.fdopen(fd, 'rb') as stream:
         info = os.fstat(stream.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
@@ -1189,7 +1229,7 @@ def _native_save_at(selection, directory, name, value, *, previous=None, _public
     if raw != previous:
         raise CustodyError('native-source-record-changed')
     body = (json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n').encode()
-    if len(body) > (65536 if name == 'source-publication.json' else 16384):
+    if len(body) > (65536 if name in ('source-publication.json', 'source-jobs-prepare.json') else 16384):
         raise CustodyError('native-source-record-invalid')
     temporary = '.source-' + uuid.uuid4().hex
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
@@ -1423,6 +1463,32 @@ def _native_prepare_binding(doc, identity, owner_guid, kit_sha, checksum):
 def _native_inode(value):
     return (type(value) is list and len(value) == 2 and all(type(v) is int for v in value)
             and value[0] >= 0 and value[1] > 0)
+
+
+def _native_at_inode(directory, name):
+    try:
+        value = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    return [value.st_dev, value.st_ino]
+
+
+def _native_root_file(directory, name, *, mode=0o600, gid=0, limit=65536):
+    """Bounded fixed-namespace FD read, including final path identity."""
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    with os.fdopen(fd, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(before.st_mode) or (before.st_uid, before.st_gid) != (0, gid)
+                or stat.S_IMODE(before.st_mode) != mode or before.st_nlink != 1 or before.st_size > limit):
+            raise CustodyError('native-source-generation-file-unsafe')
+        _native_no_acl(stream.fileno())
+        body = stream.read(limit + 1)
+        after = os.fstat(stream.fileno())
+        stamp = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+        identity = [before.st_dev, before.st_ino]
+        if len(body) > limit or stamp(before) != stamp(after) or _native_at_inode(directory, name) != identity:
+            raise CustodyError('native-source-generation-file-changed')
+        return body, identity
 
 
 def _native_validate_prepare_intent(intent, binding):
@@ -1708,7 +1774,7 @@ def _native_environment_record(value, binding):
         raise CustodyError('native-source-environment-journal-changed')
 
 
-def _native_environment_context(selection, metadata, gate, kit_sha, *, _publication=False):
+def _native_environment_binding(selection, metadata, gate, kit_sha, *, _publication=False):
     doc = _native_selected(selection, **({'_publication': True} if _publication is True else {}))
     _manifest, current_kit = native_verify_kit(selection, _publication=_publication)
     if current_kit != kit_sha:
@@ -1745,19 +1811,155 @@ def _native_environment_context(selection, metadata, gate, kit_sha, *, _publicat
             os.close(child)
     expected = (json.dumps(_native_descriptor(doc, identity, owner_guid, kit_sha),
                            sort_keys=True, separators=(',', ':')) + '\n').encode()
+    return identity, {'schemaVersion': 1, 'kind': 'ods-native-source-environment',
+        'deploymentSha256': selection.deployment.checksum, 'kitSha256': kit_sha,
+        'gate': list(inode), 'ownerUid': doc['ownerUid'], 'brokerUid': identity['id'],
+        'brokerGuid': identity['userGuid']}, expected
+
+
+def _native_environment_context(selection, metadata, gate, kit_sha, *, _publication=False):
+    identity, binding, expected = _native_environment_binding(selection, metadata, gate, kit_sha,
+        _publication=_publication)
     fd = os.open('custody.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=gate)
     with os.fdopen(fd, 'rb') as stream:
         info = os.fstat(stream.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != identity['id']
-                or stat.S_IMODE(info.st_mode) != 0o640 or info.st_nlink != 1 or info.st_size != len(expected)):
+                or stat.S_IMODE(info.st_mode) != 0o640 or info.st_nlink != 1 or not 0 < info.st_size <= 16384):
             raise CustodyError('native-source-descriptor-unsafe')
         _native_no_acl(stream.fileno())
-        if stream.read(16385) != expected:
+        raw = stream.read(16385)
+        current = os.fstat(stream.fileno())
+        stamp = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+        if (len(raw) != info.st_size or stamp(info) != stamp(current)
+                or [info.st_dev, info.st_ino] != _native_at_inode(gate, 'custody.json')):
             raise CustodyError('native-source-descriptor-changed')
-    return identity, {'schemaVersion': 1, 'kind': 'ods-native-source-environment',
-        'deploymentSha256': selection.deployment.checksum, 'kitSha256': kit_sha,
-        'gate': list(inode), 'ownerUid': doc['ownerUid'], 'brokerUid': identity['id'],
-        'brokerGuid': identity['userGuid']}
+        if raw != expected:
+            _native_validate_inactive_generation(selection, metadata, gate, identity, binding, expected,
+                raw, [info.st_dev, info.st_ino])
+    return identity, binding
+
+
+def _native_encoded(value):
+    return (json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n').encode()
+
+
+def _native_job_record(record, binding, expected):
+    """Closed Root intent. Its hashes do not authorize arbitrary plist bytes."""
+    keys = {'schemaVersion', 'kind', 'generation', 'phase', 'binding', 'environment',
+        'before', 'directory', 'definitions', 'manifest', 'gate', 'witness'}
+    phases = {'staging', 'publishing', 'manifest-ready', 'moving-gate',
+        'committed-inactive', 'restoring', 'restored', 'unknown', 'retired'}
+    if (type(record) is not dict or set(record) != keys or record['schemaVersion'] != 1
+            or type(record['schemaVersion']) is not int or record['kind'] != 'ods-native-source-job-prepare'
+            or type(record['generation']) is not str or not FLOW_ID.fullmatch(record['generation'])
+            or type(record['phase']) is not str or record['phase'] not in phases
+            or record['binding'] != binding or type(record['before']) is not dict
+            or set(record['before']) != {'inode', 'descriptor'} or not _native_inode(record['before']['inode'])
+            or _native_encoded(record['before']['descriptor']) != expected
+            or record['directory'] is not None and not _native_inode(record['directory'])
+            or type(record['definitions']) is not dict or not 1 <= len(record['definitions']) <= 64):
+        raise CustodyError('native-source-job-record-changed')
+    environment = record['environment']
+    if (type(environment) is not dict or set(environment) != {'inode', 'sha256', 'size'}
+            or not _native_inode(environment['inode']) or type(environment['sha256']) is not str
+            or not _NATIVE_SHA.fullmatch(environment['sha256']) or type(environment['size']) is not int
+            or not 0 < environment['size'] <= MAX_RESULT_BYTES):
+        raise CustodyError('native-source-job-record-changed')
+    old = record['before']['descriptor']
+    for label, item in record['definitions'].items():
+        if (type(label) is not str or type(item) is not dict
+                or set(item) != {'role', 'identifier', 'sha256', 'inode', 'ready'}
+                or item['inode'] is not None and not _native_inode(item['inode'])
+                or type(item['ready']) is not bool or item['ready'] and item['inode'] is None):
+            raise CustodyError('native-source-job-record-changed')
+        path, body, _mode = native_disabled_definition(item['role'], identity=old['broker'],
+            python=old['hostPython'], identifier=item['identifier'])
+        if label != path.stem or item['sha256'] != hashlib.sha256(body).hexdigest():
+            raise CustodyError('native-source-job-record-changed')
+    for key in ('manifest', 'gate'):
+        image = record[key]
+        if (type(image) is not dict or set(image) != {'inode', 'ready'}
+                or image['inode'] is not None and not _native_inode(image['inode'])
+                or type(image['ready']) is not bool or image['ready'] and image['inode'] is None):
+            raise CustodyError('native-source-job-record-changed')
+    witness = record['witness']
+    if (type(witness) is not dict or set(witness) != {'kind', 'boot', 'loadedSourceJobs', 'brokerProcesses', 'brokerUid'}
+            or witness['kind'] != 'never-started-observed' or type(witness['boot']) is not str
+            or not re.fullmatch(r'[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}', witness['boot'])
+            or type(witness['loadedSourceJobs']) is not int or witness['loadedSourceJobs'] != 0
+            or type(witness['brokerProcesses']) is not int or witness['brokerProcesses'] != 0
+            or witness['brokerUid'] != old['broker']['id']):
+        raise CustodyError('native-source-job-record-changed')
+
+
+def _native_job_manifest(record):
+    return {'schemaVersion': 1, 'kind': 'ods-native-source-job-generation',
+        'generation': record['generation'], 'phase': 'staged-disabled',
+        **{key: record['binding'][key] for key in ('deploymentSha256', 'publicationSha256', 'kitSha256')},
+        'environment': {key: record['environment'][key] for key in ('inode', 'sha256')},
+        'definitions': {label: {'inode': item['inode'], 'sha256': item['sha256']}
+            for label, item in record['definitions'].items()}}
+
+
+def _native_job_projection(record):
+    # Broker-readable commit point. Inactive is explicit, never inferred from
+    # old v1 bytes, an exit status, existing files, or a Root intent alone.
+    value = dict(record['before']['descriptor'], schemaVersion=2, phase='inactive')
+    value['launch'] = {'generation': record['generation'], 'phase': 'inactive',
+        'environment': {key: record['environment'][key] for key in ('inode', 'sha256')},
+        'definitions': {label: item['sha256'] for label, item in record['definitions'].items()}}
+    return _native_encoded(value)
+
+
+def _native_job_directory(metadata, record):
+    fd = os.open('native-source-jobs', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=metadata)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (0, 0, 0o700)
+                or record['directory'] != [info.st_dev, info.st_ino]
+                or _native_at_inode(metadata, 'native-source-jobs') != record['directory']):
+            raise CustodyError('native-source-job-directory-changed')
+        _native_no_acl(fd)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _native_validate_inactive_generation(selection, metadata, gate, identity, binding, expected, raw, inode):
+    record, _record_raw = _native_json_at(metadata, 'source-jobs-prepare.json')
+    publication, _pub_inode = _native_root_file(metadata, 'source-publication.json')
+    binding = dict(binding, publicationSha256=hashlib.sha256(publication).hexdigest())
+    _native_job_record(record, binding, expected)
+    if (record['phase'] != 'committed-inactive' or not record['gate']['ready']
+            or not record['manifest']['ready'] or record['gate']['inode'] != inode
+            or any(not item['ready'] for item in record['definitions'].values())
+            or raw != _native_job_projection(record)):
+        raise CustodyError('native-source-job-generation-incomplete')
+    env, _env_raw = _native_json_at(metadata, 'source-environment.json')
+    _native_environment_record(env, {key: value for key, value in binding.items() if key != 'publicationSha256'})
+    if (env['pending'] is not None or env['current'] != record['environment']
+            or _native_environment_snapshot(gate, NATIVE_ENV.name, identity['id']) != record['environment']):
+        raise CustodyError('native-source-job-environment-changed')
+    jobs = _native_job_directory(metadata, record)
+    from pixel_macos_custody import protected_directory
+    try:
+        if set(os.listdir(jobs)) != {'manifest.json', '.gate-before'}:
+            raise CustodyError('native-source-job-directory-changed')
+        manifest, manifest_inode = _native_root_file(jobs, 'manifest.json')
+        before, before_inode = _native_root_file(jobs, '.gate-before', mode=0o640, gid=identity['id'], limit=16384)
+        if (manifest != _native_encoded(_native_job_manifest(record)) or manifest_inode != record['manifest']['inode']
+                or before != expected or before_inode != record['before']['inode']):
+            raise CustodyError('native-source-job-generation-changed')
+        with protected_directory(NATIVE_DEFINITIONS) as definitions:
+            for label, item in record['definitions'].items():
+                _path, body, _mode = native_disabled_definition(item['role'], identity=identity,
+                    python=record['before']['descriptor']['hostPython'], identifier=item['identifier'])
+                actual, actual_inode = _native_root_file(definitions, label + '.plist', mode=0o644, limit=16384)
+                if actual != body or actual_inode != item['inode']:
+                    raise CustodyError('native-source-job-definition-changed')
+    finally:
+        os.close(jobs)
 
 
 def _native_environment_acl(selection, fd, broker_uid):
@@ -1997,6 +2199,22 @@ def _native_log_files(directory, record, identity):
             value = record['files'][name]
             if not value['ready'] or value['inode'] != _native_log_file(fd, identity):
                 raise CustodyError('native-source-log-file-changed')
+        finally:
+            os.close(fd)
+
+
+def _native_verify_prepared_logs(metadata, identity, environment_binding):
+    """Read-only exact log publication without following an intermediate Gate."""
+    record, _raw = _native_json_at(metadata, 'source-logs-prepare.json')
+    _native_log_record(record, {**environment_binding, 'kind': 'ods-native-source-log-prepare', 'path': str(NATIVE_LOGS)})
+    from pixel_macos_custody import protected_directory
+    with protected_directory(NATIVE_LOGS.parent) as parent:
+        fd = os.open(NATIVE_LOGS.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            inode = native_verify_log_directory(fd, identity['id'])
+            if inode != record['directory'] or inode != _native_at_inode(parent, NATIVE_LOGS.name):
+                raise CustodyError('native-source-log-file-changed')
+            _native_log_files(fd, record, identity)
         finally:
             os.close(fd)
 

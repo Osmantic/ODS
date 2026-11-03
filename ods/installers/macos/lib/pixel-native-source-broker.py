@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import plistlib
 import re
 import stat
 import subprocess
@@ -255,26 +254,8 @@ def disabled_definition(role, *, identity, python, identifier=None):
     The broker entrypoint deliberately refuses until Root approves the launch
     generation/cancellation handoff. No periodic/path trigger is emitted here.
     """
-    from pixel_connections.custody import (_native_identity_intent, native_child_arguments,
-        NATIVE_BROKER, NATIVE_LABEL)
-    _native_identity_intent(identity)
-    native_child_arguments(role, identifier)
-    python = _path(python)
-    label = NATIVE_LABEL + role + ('.' + identifier if identifier is not None else '')
-    environment = {'HOME': '/private/var/empty', 'USER': NATIVE_BROKER, 'LOGNAME': NATIVE_BROKER,
-        'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONNOUSERSITE': '1'}
-    document = {
-        'Label': label, 'Disabled': True, 'RunAtLoad': False, 'KeepAlive': False,
-        'UserName': NATIVE_BROKER, 'GroupName': NATIVE_BROKER, 'InitGroups': False,
-        'ProgramArguments': ['/usr/bin/env', '-i', *(key + '=' + value for key, value in environment.items()),
-            python, '-I', '-B', str(PROGRAM_ROOT / 'pixel_connections/custody.py'),
-            '--native-broker-child', role, *([identifier] if identifier is not None else [])],
-        'WorkingDirectory': STATE, 'Umask': 0o077, 'ProcessType': 'Background',
-        'AbandonProcessGroup': False, 'ExitTimeOut': 5, 'StandardInPath': '/dev/null',
-        'StandardOutPath': LOGS + '/' + role + '.stdout.log',
-        'StandardErrorPath': LOGS + '/' + role + '.stderr.log',
-    }
-    return Path('/Library/LaunchDaemons') / (label + '.plist'), plistlib.dumps(document, sort_keys=True), 0o644
+    from pixel_connections.custody import native_disabled_definition
+    return native_disabled_definition(role, identity=identity, python=python, identifier=identifier)
 
 
 def source_payloads(source, ref, python):
@@ -639,9 +620,9 @@ def _source_authority(selection):
     return custody, custody._native_selected(selection, _publication=True)
 
 
-def _no_actors(selection, custody, metadata):
+def _no_actors(selection, custody, metadata, *, _generation=False):
     """Read-only proof for inert B3.1. A loaded job is not silently stopped."""
-    if os.path.lexists(custody.NATIVE_META / 'native-source-jobs'):
+    if not _generation and os.path.lexists(custody.NATIVE_META / 'native-source-jobs'):
         raise ValueError('native-source-job-state-requires-lifecycle')
     raw = selection.bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10)
     if not raw.startswith('system = {') or not raw.rstrip().endswith('}') or len(raw) > 1024 * 1024:
@@ -1027,6 +1008,356 @@ def _apply_bindings(selection, custody, metadata, record, save, *, rollback=Fals
         finally:
             if close:
                 os.close(directory)
+
+
+def _generation_prefix(custody, directory, name, body, image, *, mode=0o600, gid=0):
+    """Validate retained prefixes too; rollback cannot adopt an unknown inode."""
+    present = custody._native_at_inode(directory, name)
+    if present is None:
+        return
+    if image['inode'] is None or present != image['inode']:
+        raise ValueError('native-source-generation-prefix-changed')
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        custody._native_no_acl(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid not in (0, gid)
+                or stat.S_IMODE(info.st_mode) not in (0o600, mode) or info.st_nlink != 1
+                or [info.st_dev, info.st_ino] != image['inode'] or not 0 <= info.st_size <= len(body)):
+            raise ValueError('native-source-generation-prefix-changed')
+        prefix = stream.read(len(body) + 1)
+        after = os.fstat(stream.fileno())
+        if (not body.startswith(prefix) or image['ready'] and (prefix != body
+                or (info.st_gid, stat.S_IMODE(info.st_mode)) != (gid, mode))
+                or (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                or custody._native_at_inode(directory, name) != image['inode']):
+            raise ValueError('native-source-generation-prefix-changed')
+
+
+def _generation_stage(custody, directory, name, body, image, save, guard, *, mode=0o600, gid=0):
+    """Record the created FD before bytes/permissions; resume only its prefix."""
+    guard()
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+    if image['inode'] is None:
+        flags |= os.O_CREAT | os.O_EXCL
+    fd = os.open(name, flags, 0o600, dir_fd=directory)
+    with os.fdopen(fd, 'r+b') as stream:
+        info = os.fstat(stream.fileno())
+        custody._native_no_acl(stream.fileno())
+        inode = [info.st_dev, info.st_ino]
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid not in (0, gid)
+                or stat.S_IMODE(info.st_mode) not in (0o600, mode) or info.st_nlink != 1
+                or not 0 <= info.st_size <= len(body)
+                or custody._native_at_inode(directory, name) != inode):
+            raise ValueError('native-source-generation-prefix-unsafe')
+        if image['inode'] is None:
+            image['inode'] = inode
+            save()
+        elif inode != image['inode']:
+            raise ValueError('native-source-generation-prefix-changed')
+        prefix = stream.read(len(body) + 1)
+        if (prefix != body) if image['ready'] else (not body.startswith(prefix)):
+            raise ValueError('native-source-generation-prefix-changed')
+        if image['ready']:
+            if (info.st_gid, stat.S_IMODE(info.st_mode)) != (gid, mode):
+                raise ValueError('native-source-generation-prefix-changed')
+            return
+        guard()
+        if custody._native_at_inode(directory, name) != inode:
+            raise ValueError('native-source-generation-prefix-changed')
+        stream.seek(0, os.SEEK_END)
+        stream.write(body[len(prefix):])
+        stream.flush()
+        os.fsync(stream.fileno())
+        os.fchown(stream.fileno(), 0, gid)
+        os.fchmod(stream.fileno(), mode)
+        os.fsync(stream.fileno())
+        if custody._native_root_file(directory, name, mode=mode, gid=gid)[0] != body:
+            raise ValueError('native-source-generation-prefix-changed')
+        image['ready'] = True
+        save()
+
+
+def publish_disabled_generation(selection, specifications, *, rollback=False):
+    """DATA ONLY, caller holds existing Root admission. No launchctl mutation.
+
+    The protected prepare intent precedes creation; definitions and manifest
+    precede the inactive Gate projection. A missing Gate during two renames is
+    not an atomic pair and admits no actor. Unknown images are preserved.
+    """
+    if type(rollback) is not bool or type(specifications) is not list or not 1 <= len(specifications) <= 64:
+        raise ValueError('native-source-generation-control-invalid')
+    custody, doc, _component, _ref = _material(selection)
+    from pixel_macos_custody import protected_directory
+    with protected_directory(custody.NATIVE_META) as metadata, protected_directory(custody.NATIVE_DEFINITIONS) as units:
+        gate = os.open(custody.NATIVE_STATE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        jobs = None
+        try:
+            _kit, kit_sha = custody.native_verify_kit(selection, require_profiles=True, _publication=True)
+            identity, base_binding, expected = custody._native_environment_binding(selection, metadata, gate, kit_sha, _publication=True)
+            publication, _publication_inode = custody._native_root_file(metadata, 'source-publication.json')
+            binding = dict(base_binding, publicationSha256=sha(publication))
+            env_record, _env_raw = custody._native_json_at(metadata, 'source-environment.json')
+            custody._native_environment_record(env_record, base_binding)
+            environment = custody._native_environment_snapshot(gate, custody.NATIVE_ENV.name, identity['id'])
+            if environment is None or env_record['pending'] is not None or environment != env_record['current']:
+                raise ValueError('native-source-generation-environment-unsettled')
+            # The exact existing log publication is required, not just paths.
+            custody._native_verify_prepared_logs(metadata, identity, base_binding)
+            files = {}
+            for spec in specifications:
+                if type(spec) is not dict or set(spec) != {'role', 'identifier'}:
+                    raise ValueError('native-source-generation-control-invalid')
+                path, body, _mode = disabled_definition(spec['role'], identity=identity,
+                    python=doc['hostPythonPath'], identifier=spec['identifier'])
+                if path.stem in files:
+                    raise ValueError('native-source-generation-duplicate-definition')
+                files[path.stem] = (dict(spec), body)
+            record, raw = custody._native_json_at(metadata, 'source-jobs-prepare.json')
+            if record is None:
+                if rollback:
+                    raise ValueError('native-source-generation-recovery-missing')
+                # Actual B3.1 protected bundle, old/new images, and never-started
+                # witness are verified BEFORE the first generation intent.
+                verify_kit_publication(selection)
+                before, before_inode = custody._native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id'], limit=16384)
+                if before != expected:
+                    raise ValueError('native-source-generation-prior-not-v1')
+                if custody._native_at_inode(metadata, 'native-source-jobs') is not None:
+                    raise ValueError('native-source-generation-unmanaged-directory')
+                if any(name.startswith(custody.NATIVE_LABEL) for name in os.listdir(units)):
+                    raise ValueError('native-source-generation-unmanaged-definition')
+                if len({os.fstat(fd).st_dev for fd in (metadata, gate, units)}) != 1:
+                    raise ValueError('native-source-generation-cross-filesystem')
+                record = {'schemaVersion': 1, 'kind': 'ods-native-source-job-prepare',
+                    'generation': uuid.uuid4().hex, 'phase': 'staging', 'binding': binding,
+                    'environment': environment, 'before': {'inode': before_inode, 'descriptor': json.loads(expected)},
+                    'directory': None, 'definitions': {label: dict(spec, sha256=sha(body), inode=None, ready=False)
+                        for label, (spec, body) in files.items()}, 'manifest': {'inode': None, 'ready': False},
+                    'gate': {'inode': None, 'ready': False}, 'witness': _no_actors(selection, custody, metadata)}
+            custody._native_job_record(record, binding, expected)
+            if record['environment'] != environment or set(record['definitions']) != set(files) or any(
+                    {key: item[key] for key in ('role', 'identifier')} != files[label][0]
+                    for label, item in record['definitions'].items()):
+                raise ValueError('native-source-generation-input-changed')
+            retained = '.native-source-jobs-' + record['generation']
+            if record['phase'] in ('unknown', 'retired') or record['phase'] in ('restoring', 'restored') and not rollback:
+                raise ValueError('native-source-generation-explicit-recovery-required')
+
+            def guard():
+                custody._native_selected(selection, _publication=True)
+                current_identity, current_binding, current_expected = custody._native_environment_binding(
+                    selection, metadata, gate, kit_sha, _publication=True)
+                if (current_identity != identity or current_binding != base_binding or current_expected != expected
+                        or custody._native_root_file(metadata, 'source-publication.json')[0] != publication
+                        or custody._native_environment_snapshot(gate, custody.NATIVE_ENV.name, identity['id']) != environment
+                        or custody._native_json_at(metadata, 'source-environment.json')[0] != env_record
+                        or _no_actors(selection, custody, metadata, _generation=True) != record['witness']):
+                    raise ValueError('native-source-generation-input-changed')
+                custody._native_verify_prepared_logs(metadata, identity, base_binding)
+                if set(name for name in os.listdir(units) if name.startswith(custody.NATIVE_LABEL)) - {
+                        label + '.plist' for label in files}:
+                    raise ValueError('native-source-generation-unmanaged-definition')
+                for label, (_spec, body) in files.items():
+                    item, name = record['definitions'][label], label + '.plist'
+                    if custody._native_at_inode(units, name) is not None:
+                        actual, inode = custody._native_root_file(units, name, mode=0o644, limit=16384)
+                        if not item['ready'] or (actual, inode) != (body, item['inode']):
+                            raise ValueError('native-source-generation-definition-changed')
+                if jobs is not None:
+                    current = os.fstat(jobs)
+                    if ([current.st_dev, current.st_ino] != record['directory']
+                            or (current.st_uid, current.st_gid, stat.S_IMODE(current.st_mode)) != (0, 0, 0o700)):
+                        raise ValueError('native-source-generation-directory-changed')
+                    custody._native_no_acl(jobs)
+                    located = custody._native_at_inode(metadata, 'native-source-jobs')
+                    if located != record['directory'] and not (rollback and located is None
+                            and custody._native_at_inode(metadata, retained) == record['directory']):
+                        raise ValueError('native-source-generation-directory-changed')
+                    allowed = {'manifest.json', '.gate-next', '.gate-before', *[label + '.plist' for label in files]}
+                    if set(os.listdir(jobs)) - allowed:
+                        raise ValueError('native-source-generation-directory-changed')
+                    for label, (_spec, body) in files.items():
+                        name = label + '.plist'
+                        _generation_prefix(custody, jobs, name, body, record['definitions'][label], mode=0o644)
+                        if custody._native_at_inode(jobs, name) is not None and custody._native_at_inode(units, name) is not None:
+                            raise ValueError('native-source-generation-definition-conflict')
+                    _generation_prefix(custody, jobs, 'manifest.json', custody._native_encoded(custody._native_job_manifest(record)), record['manifest'])
+                    _generation_prefix(custody, jobs, '.gate-next', custody._native_job_projection(record), record['gate'], mode=0o640, gid=identity['id'])
+                    if custody._native_at_inode(jobs, '.gate-before') is not None:
+                        old, old_inode = custody._native_root_file(jobs, '.gate-before', mode=0o640, gid=identity['id'])
+                        if (old, old_inode) != (expected, record['before']['inode']):
+                            raise ValueError('native-source-generation-gate-backup-changed')
+                current_inode = custody._native_at_inode(gate, 'custody.json')
+                if current_inode is None:
+                    if record['phase'] not in ('moving-gate', 'restoring') or jobs is None or custody._native_at_inode(jobs, '.gate-before') != record['before']['inode']:
+                        raise ValueError('native-source-generation-gate-changed')
+                else:
+                    current_body, current_inode = custody._native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id'], limit=16384)
+                    if (current_body, current_inode) != (expected, record['before']['inode']) and not (
+                            record['gate']['ready'] and (current_body, current_inode) == (custody._native_job_projection(record), record['gate']['inode'])):
+                        raise ValueError('native-source-generation-gate-changed')
+
+            def save():
+                nonlocal raw
+                guard()
+                custody._native_job_record(record, binding, expected)
+                raw = custody._native_save_at(selection, metadata, 'source-jobs-prepare.json', record,
+                    previous=raw, _publication=True)
+
+            if raw is None:
+                save()  # Before mkdir or any disabled definition.
+            if record['directory'] is None:
+                guard()
+                os.mkdir('native-source-jobs', mode=0o700, dir_fd=metadata)
+                jobs = os.open('native-source-jobs', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=metadata)
+                info = os.fstat(jobs)
+                if (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (0, 0, 0o700):
+                    raise ValueError('native-source-generation-directory-unsafe')
+                custody._native_no_acl(jobs)
+                record['directory'] = [info.st_dev, info.st_ino]
+                os.fsync(jobs)
+                os.fsync(metadata)
+                save()
+            else:
+                if rollback and custody._native_at_inode(metadata, 'native-source-jobs') is None:
+                    jobs = os.open(retained, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=metadata)
+                else:
+                    jobs = custody._native_job_directory(metadata, record)
+            guard()
+            if record['phase'] == 'restored':
+                if (custody._native_at_inode(metadata, 'native-source-jobs') is not None
+                        or custody._native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id']) != (expected, record['before']['inode'])
+                        or any(custody._native_at_inode(units, label + '.plist') is not None for label in files)):
+                    raise ValueError('native-source-generation-restore-unconfirmed')
+                return {'status': 'restored', 'generation': record['generation']}
+
+            def current_gate():
+                try:
+                    body, inode = custody._native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id'], limit=16384)
+                except FileNotFoundError:
+                    return None
+                if (body, inode) == (expected, record['before']['inode']):
+                    return 'before'
+                if record['gate']['ready'] and (body, inode) == (custody._native_job_projection(record), record['gate']['inode']):
+                    return 'after'
+                raise ValueError('native-source-generation-gate-changed')
+
+            if rollback:
+                record['phase'] = 'restoring'
+                save()
+                current = current_gate()
+                if current == 'after':
+                    if custody._native_at_inode(jobs, '.gate-next') is not None:
+                        raise ValueError('native-source-generation-gate-conflict')
+                    guard()
+                    os.rename('custody.json', '.gate-next', src_dir_fd=gate, dst_dir_fd=jobs)
+                    os.fsync(gate)
+                    os.fsync(jobs)
+                    current = None
+                if current is None:
+                    body, inode = custody._native_root_file(jobs, '.gate-before', mode=0o640, gid=identity['id'])
+                    if (body, inode) != (expected, record['before']['inode']):
+                        raise ValueError('native-source-generation-gate-backup-changed')
+                    guard()
+                    os.rename('.gate-before', 'custody.json', src_dir_fd=jobs, dst_dir_fd=gate)
+                    os.fsync(gate)
+                    os.fsync(jobs)
+                for label, item in record['definitions'].items():
+                    name = label + '.plist'
+                    if custody._native_at_inode(units, name) is None:
+                        continue
+                    actual, inode = custody._native_root_file(units, name, mode=0o644, limit=16384)
+                    if (actual, inode) != (files[label][1], item['inode']) or custody._native_at_inode(jobs, name) is not None:
+                        raise ValueError('native-source-generation-definition-changed')
+                    guard()
+                    os.rename(name, name, src_dir_fd=units, dst_dir_fd=jobs)
+                    os.fsync(units)
+                    os.fsync(jobs)
+                guard()
+                if custody._native_at_inode(metadata, 'native-source-jobs') == record['directory']:
+                    if custody._native_at_inode(metadata, retained) is not None:
+                        raise ValueError('native-source-generation-retained-conflict')
+                    os.rename('native-source-jobs', retained, src_dir_fd=metadata, dst_dir_fd=metadata)
+                    os.fsync(metadata)
+                record['phase'] = 'restored'
+                save()
+                return {'status': 'restored', 'generation': record['generation']}
+
+            if record['phase'] == 'committed-inactive':
+                custody._native_validate_inactive_generation(selection, metadata, gate, identity, base_binding,
+                    expected, custody._native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id'])[0],
+                    custody._native_at_inode(gate, 'custody.json'))
+                return {'status': 'inactive', 'generation': record['generation'], 'definitionCount': len(files)}
+            if record['phase'] == 'staging':
+                for label, (_spec, body) in files.items():
+                    _generation_stage(custody, jobs, label + '.plist', body, record['definitions'][label], save, guard, mode=0o644)
+                _generation_stage(custody, jobs, 'manifest.json', custody._native_encoded(custody._native_job_manifest(record)),
+                    record['manifest'], save, guard)
+                projection = custody._native_job_projection(record)
+                if len(projection) > 16384:
+                    raise ValueError('native-source-generation-projection-too-large')
+                _generation_stage(custody, jobs, '.gate-next', projection, record['gate'], save, guard,
+                    mode=0o640, gid=identity['id'])
+                record['phase'] = 'publishing'
+                save()
+            if record['phase'] == 'publishing':
+                for label, (_spec, body) in files.items():
+                    name = label + '.plist'
+                    if custody._native_at_inode(units, name) is None:
+                        actual, inode = custody._native_root_file(jobs, name, mode=0o644, limit=16384)
+                        if (actual, inode) != (body, record['definitions'][label]['inode']):
+                            raise ValueError('native-source-generation-definition-changed')
+                        guard()
+                        os.rename(name, name, src_dir_fd=jobs, dst_dir_fd=units)
+                        os.fsync(jobs)
+                        os.fsync(units)
+                    actual, inode = custody._native_root_file(units, name, mode=0o644, limit=16384)
+                    if (actual, inode) != (body, record['definitions'][label]['inode']):
+                        raise ValueError('native-source-generation-definition-changed')
+                record['phase'] = 'manifest-ready'
+                save()
+            # Revalidate every input and full public definition before the
+            # broker-readable commit point, including on a lost-ack resume.
+            for label, (_spec, body) in files.items():
+                actual, inode = custody._native_root_file(units, label + '.plist', mode=0o644, limit=16384)
+                if (actual, inode) != (body, record['definitions'][label]['inode']):
+                    raise ValueError('native-source-generation-definition-changed')
+            actual, inode = custody._native_root_file(jobs, 'manifest.json')
+            if actual != custody._native_encoded(custody._native_job_manifest(record)) or inode != record['manifest']['inode']:
+                raise ValueError('native-source-generation-manifest-changed')
+            record['phase'] = 'moving-gate'
+            save()
+            current = current_gate()
+            if current == 'before':
+                if custody._native_at_inode(jobs, '.gate-before') is not None:
+                    raise ValueError('native-source-generation-gate-conflict')
+                guard()
+                os.rename('custody.json', '.gate-before', src_dir_fd=gate, dst_dir_fd=jobs)
+                os.fsync(gate)
+                os.fsync(jobs)
+                current = None
+            if current is None:
+                old, old_inode = custody._native_root_file(jobs, '.gate-before', mode=0o640, gid=identity['id'])
+                new, new_inode = custody._native_root_file(jobs, '.gate-next', mode=0o640, gid=identity['id'])
+                if (old, old_inode) != (expected, record['before']['inode']) or (new, new_inode) != (
+                        custody._native_job_projection(record), record['gate']['inode']):
+                    raise ValueError('native-source-generation-gate-candidate-changed')
+                guard()
+                os.rename('.gate-next', 'custody.json', src_dir_fd=jobs, dst_dir_fd=gate)
+                os.fsync(gate)
+                os.fsync(jobs)
+            if current_gate() != 'after':
+                raise ValueError('native-source-generation-gate-unconfirmed')
+            record['phase'] = 'committed-inactive'
+            save()
+            custody._native_validate_inactive_generation(selection, metadata, gate, identity, base_binding,
+                expected, custody._native_job_projection(record), record['gate']['inode'])
+            return {'status': 'inactive', 'generation': record['generation'], 'definitionCount': len(files)}
+        finally:
+            if jobs is not None:
+                os.close(jobs)
+            os.close(gate)
 
 
 def verify_kit_publication(selection):
