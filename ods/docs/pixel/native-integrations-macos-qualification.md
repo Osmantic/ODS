@@ -87,6 +87,37 @@ Record the first failing step, exact error and source commit. Share sanitized
 results, never credentials, account content or private receipt files. Passing
 the initial UI journeys does not replace the remaining physical matrix.
 
+### Scheduled Notes approval on Apple Silicon
+
+Record the source commit, physical model, selected OpenClaw provider and model
+alias, and whether the run used the installed Portal or an isolated gateway.
+For the managed model route, use the shipped Pixel model relay and the
+installer-generated Pixel hook policy. The configuration writer sets
+`plugins.entries.pixel-ods.hooks.allowConversationAccess` on the private
+candidate. The native runtime reports whether it can restrict a follow-up's
+tools and require its first tool call. Record those two acknowledgments
+separately when testing a follow-up. A custom provider can report a different
+capability set even when it reaches the same model. Keep API keys, private
+configuration and note contents out of shared receipts.
+
+1. With a disposable vault set to **Ask first**, schedule a recurring task that
+   appends one unique line to an existing note. Close the chat and let the
+   scheduler run it. Check for one pending request in owner Settings and
+   verify the note is byte-identical. A question in task history alone does
+   not give the owner a request to approve.
+2. Approve the pending item and verify the file is still unchanged. Let the
+   next occurrence run. Verify that it consumed the approval and appended the
+   line exactly once. Cancel the task, retain both history entries, and check
+   that the following due time passes without another edit.
+3. Schedule a read-only request for the note heading. Check that the result
+   contains the actual heading, the file stays unchanged and Settings gains
+   no approval. For revocation, turn note writing **Off** between occurrences
+   and verify that subsequent runs cannot edit the note or queue an approval.
+
+Record whether an owner decision came from rendered Settings or the
+authenticated owner API. Track a supported update of an existing launchd
+installation as a separate physical qualification.
+
 ## Deployment contract
 
 The new snapshot publishes nine integrations programs and one owner-run
