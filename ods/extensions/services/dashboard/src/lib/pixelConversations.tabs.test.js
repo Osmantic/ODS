@@ -124,6 +124,50 @@ it('does not ignore an incompatible legacy writer on the same chat',()=>{
   expect(localStorage.getItem(PREFIX+'same')).toBe(record)
 })
 
+it.each([false,true])('preserves a raw legacy library-only edit with active pointer B (missing digest %j)',missingDigest=>{
+  const a=chat('library-a','A modern original')
+  saveConversation(a)
+  const writer=createConversationWriter(readActiveConversation())
+  saveConversation(chat('active-b','B active'))
+  const entries=JSON.parse(localStorage.getItem('ods.pixel.conversations.v1'))
+  const changed=entries.map(row=>{
+    if(row.chatId!==a.chatId)return row
+    const next={...row,draft:'Legacy library-only edit'}
+    if(missingDigest)delete next.persistenceDigest
+    return next
+  })
+  const raw=JSON.stringify(changed)
+  localStorage.setItem('ods.pixel.conversations.v1',raw)
+  expect(()=>writer({...a,draft:'Do not discard legacy edit'})).toThrow(/changed/)
+  expect(localStorage.getItem('ods.pixel.conversations.v1')).toBe(raw)
+})
+
+it('recognizes intact stale index copies after multiple independent durable revisions',()=>{
+  const original=chat('older-index','A0')
+  saveConversation(original)
+  const stale=JSON.parse(localStorage.getItem(CHAT_KEY))
+  const writer=createConversationWriter(readActiveConversation())
+  for(const draft of ['A1','A2','A3'])writer({...original,draft})
+  saveConversation(chat('active-b','B1'))
+  localStorage.setItem('ods.pixel.conversations.v1',JSON.stringify([stale]))
+  expect(()=>writer({...original,draft:'A4'})).not.toThrow()
+  expect(readConversations().find(row=>row.chatId===original.chatId).draft).toBe('A4')
+})
+
+it('keeps the original unsealed legacy base across repeated failed index writes',()=>{
+  const original=chat('legacy-base','A0')
+  localStorage.setItem('ods.pixel.conversations.v1',JSON.stringify([original]))
+  localStorage.setItem(CHAT_KEY,JSON.stringify(original))
+  const writer=createConversationWriter(original),setItem=Storage.prototype.setItem
+  vi.spyOn(Storage.prototype,'setItem').mockImplementation(function(key,value){
+    if(key==='ods.pixel.conversations.v1')throw new DOMException('Full','QuotaExceededError')
+    return setItem.call(this,key,value)
+  })
+  for(const draft of ['A1','A2','A3'])expect(()=>writer({...original,draft})).toThrow('Full')
+  expect(readConversations().find(row=>row.chatId===original.chatId).draft).toBe('A3')
+  expect(JSON.parse(localStorage.getItem('ods.pixel.conversations.v1'))[0].draft).toBe('A0')
+})
+
 it('per-chat tombstones still refuse resurrection after a stale legacy list overwrite',()=>{
   const record=chat('deleted')
   saveConversation(record)

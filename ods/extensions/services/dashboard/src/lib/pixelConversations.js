@@ -60,8 +60,22 @@ function durableConversation(chatId) {
   const raw = localStorage.getItem(RECORD_PREFIX + chatId)
   if (raw === null) return null
   const value = JSON.parse(raw)
-  if (!valid(value) || value.chatId !== chatId) throw new Error('Saved conversation could not be read. Existing browser data has been preserved.')
+  if (!valid(value) || value.chatId !== chatId || value.persistenceDigest !== undefined && !validSnapshotDigest(value)) {
+    throw new Error('Saved conversation could not be read. Existing browser data has been preserved.')
+  }
   return value
+}
+
+function validSnapshotDigest(chat) {
+  return typeof chat?.persistenceDigest === 'string' && /^[a-f0-9]{64}$/.test(chat.persistenceDigest)
+    && chat.persistenceDigest === snapshotHash(conversationSnapshot(chat))
+}
+
+function knownLibraryMirror(record, mirror) {
+  if (!valid(mirror) || legacyRelation(record, mirror) !== 'conflict') return true
+  // Our own stale index copies remain self-consistent at any age. Older
+  // clients do not update this digest when editing; never discard that edit.
+  return validSnapshotDigest(mirror) || record.persistenceLegacyBase === snapshotHash(conversationSnapshot(mirror))
 }
 
 function legacyRelation(record, current) {
@@ -108,7 +122,9 @@ function loadConversations(preserveInvalid = false) {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(chatId)) continue
     const record = durableConversation(chatId)
     if (!record) continue
-    const value = reconcileRecord(record, stored.find(item => valid(item) && item.chatId === chatId), current)
+    const library = stored.find(item => valid(item) && item.chatId === chatId)
+    if (!knownLibraryMirror(record, library)) conversationChanged()
+    const value = reconcileRecord(record, library, current)
     entries = entries.filter(item => !valid(item) || item.chatId !== chatId)
     if (value.messages.length || value.draft?.trim() || value.draftImages?.length) entries.push(value)
   }
@@ -127,7 +143,7 @@ function conversationSnapshot(chat) {
   if (!chat) return null
   // Save timestamps alone do not make identical content a conflicting edit.
   return JSON.stringify(Object.fromEntries(Object.entries(chat)
-    .filter(([key]) => !['updatedAt', 'persistenceVersion', 'persistenceRevision', 'persistenceParent', 'recoverySource'].includes(key))
+    .filter(([key]) => !['updatedAt', 'persistenceVersion', 'persistenceRevision', 'persistenceParent', 'persistenceDigest', 'persistenceLegacyBase', 'recoverySource'].includes(key))
     .sort(([left], [right]) => left.localeCompare(right))))
 }
 
@@ -147,7 +163,7 @@ const terminalOutcome = message => JSON.stringify({status:message?.status,
   content:message?.content || (message?.status === 'done' ? 'Completed without a text response.' : '')})
 
 const EMPTY_DRAFT_KEYS = new Set(['schema', 'chatId', 'messages', 'draft', 'requestId', 'inFlight',
-  'interrupted', 'contextStart', 'compactionRequestId', 'preview', 'workspaceOpen', 'updatedAt', 'persistenceVersion', 'persistenceRevision', 'persistenceParent', 'draftImages'])
+  'interrupted', 'contextStart', 'compactionRequestId', 'preview', 'workspaceOpen', 'updatedAt', 'persistenceVersion', 'persistenceRevision', 'persistenceParent', 'persistenceDigest', 'persistenceLegacyBase', 'draftImages'])
 function omittedEmptyBaseline(chat) {
   // The library omits an empty draft. Moving the shared active pointer does
   // not edit that draft, but pending operations and unknown metadata stay strict.
@@ -243,11 +259,16 @@ export function saveConversation(chat, checkpoint) {
   const value = checkpoint?.activate
     ? {...latest, persistenceVersion:2, persistenceRevision:latest.persistenceRevision || persistenceRevision()}
     : { ...previous, ...chat, updatedAt: Date.now(), persistenceVersion: 2, persistenceRevision: persistenceRevision() }
-  if (!checkpoint?.activate) value.persistenceParent = latest ? snapshotHash(conversationSnapshot(latest)) : null
+  if (!checkpoint?.activate) {
+    value.persistenceParent = latest ? snapshotHash(conversationSnapshot(latest)) : null
+    value.persistenceLegacyBase = record?.persistenceLegacyBase || previous?.persistenceLegacyBase
+      || (latest && !validSnapshotDigest(latest) ? snapshotHash(conversationSnapshot(latest)) : null)
+  }
   // A normal edit (even one made by the recovery observer) ends the handoff.
   // Never carry a receipt forward through an object spread from saved data.
   if (!checkpoint?.activate) delete value.recoverySource
   if (checkpoint?.recoverySource) value.recoverySource = {...checkpoint.recoverySource, resultHash:snapshotHash(conversationSnapshot(value))}
+  if (!checkpoint?.activate) value.persistenceDigest = snapshotHash(conversationSnapshot(value))
   const remaining = entries.filter(item => !valid(item) || item.chatId !== value.chatId)
   const next = value.messages.length || value.draft?.trim() || value.draftImages?.length ? [value, ...remaining] : remaining
   if (valid(current) && current.chatId !== value.chatId) {
