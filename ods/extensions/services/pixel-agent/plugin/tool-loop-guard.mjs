@@ -15065,7 +15065,12 @@ export function createToolLoopGuard({
       };
     }
     // Evidence truth remains independent of the owner's routing mode.
-    if (extensionDiscoveryActive(state)) return extensionDiscoveryVerification(state);
+    // An optional, rejected software-catalog lookup does not turn another
+    // task into owner-required host work. Tool admission is unchanged; admitted
+    // jobs and genuine required Operations still retain their evidence checks.
+    if (extensionDiscoveryActive(state) && (state.operationsRequired ||
+        state.operationsRequiredActions.size > 0 || state.operationsSubmittedJobs.size > 0))
+      return extensionDiscoveryVerification(state);
     if (state.operationsRequired) {
       if (state.operationsInventoryOnly) {
         const inventoryText = operationsInventoryEvidenceText(state.operationsInventory);

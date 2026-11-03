@@ -2941,6 +2941,32 @@ test("extension discovery allows model-selected reads without rewriting targets 
   assert.equal(call(guard, "write", { event: { params: { path: "diagnosis.md", content: "Collected evidence" } } })?.block, undefined);
 });
 
+test('rejected optional software lookups do not turn the M5 connection request into host work', () => {
+  const owner = 'Essa conexão já foi configurada e habilitada em Settings → Portal integrations. Use a conexão Arquivos QA WQA-M5 para listar somente os nomes dos arquivos do diretório que ela permite.';
+  const guard = createToolLoopGuard();
+  assert.equal(userMessageOperationsRequirements([],owner).required,false);
+  guard.observeRun({agentId:'pixel',runId:'run-1',sessionId:'session-1'},'pixel',{prompt:owner});
+  for (const params of [{action:'list',target:'Arquivos QA WQA-M5'}, {action:'search',target:'Arquivos'}]) {
+    assert.notEqual(call(guard,'pixel_ods_extensions',{event:{params}})?.block,true);
+    afterCall(guard,'pixel_ods_extensions',{event:{params,result:{isError:true,content:[{type:'text',text:'Lookup rejected: target is unknown or disabled.'}],
+      details:{schemaVersion:2,jobId:'ops-1793730447447-941e29f052df',status:'rejected',error:'target is unknown or disabled',ok:false}}}});
+    assert.equal(guard.verificationForRun('run-1').status,'none');
+  }
+  assert.notEqual(guard.deliveryVerificationForRun('run-1')?.text,OPERATIONS_UNAVAILABLE_DELIVERY_PREFIX);
+});
+
+test('an explicit extension request still requires broker evidence after a rejected lookup', () => {
+  const guard = createToolLoopGuard();
+  guard.observeRun({agentId:'pixel',runId:'run-1',sessionId:'session-1'},'pixel',{
+    prompt:'Search the installable ODS extension catalog for notes.',
+  });
+  const params={action:'search',target:'unknown'};
+  call(guard,'pixel_ods_extensions',{event:{params}});
+  afterCall(guard,'pixel_ods_extensions',{event:{params,result:{isError:true,details:{status:'rejected',ok:false}}}});
+  assert.equal(guard.verificationForRun('run-1').status,'failed');
+  assert.equal(guard.verificationForRun('run-1').text,OPERATIONS_UNAVAILABLE_DELIVERY_PREFIX);
+});
+
 test("extension discovery verifies corrected reads and inspection without losing earlier rejected evidence", () => {
   const guard = createToolLoopGuard();
   guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", {
