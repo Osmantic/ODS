@@ -1,4 +1,12 @@
 # Gitleaks ignore file
+# Exact historical literal localStorage index comparisons in concurrent-tab tests;
+# these are public browser storage namespace names, not authentication values.
+72a6150eeff14baa9c5cc618bff8a8367e0b1d4b:ods/extensions/services/dashboard/src/lib/pixelConversationWriter.test.js:generic-api-key:17
+72a6150eeff14baa9c5cc618bff8a8367e0b1d4b:ods/extensions/services/dashboard/src/pages/Pixel.tab-selection.test.jsx:generic-api-key:45
+992e5716c9bad77870d9de73d15a4814d44da167:ods/extensions/services/dashboard/src/lib/pixelConversations.tabs.test.js:generic-api-key:163
+# Literal previous-release version labels in pytest parameter lists, not keys.
+57ea935ade9d3b32bdff1993f1ee209a82d5ba43:ods/tests/pixel_inference/test_client.py:generic-api-key:109
+546b675bf7f9ce0361c9da721de37abf8e6f0133:ods/tests/pixel_inference/test_client.py:generic-api-key:110
 # Pytest's literal version label "previous-4.3.41" beside an access-release ID.
 # This exact historical finding is test metadata, not an issued credential.
 036075a9578e345df7f930564ce1768773ea2aa3:ods/tests/pixel_inference/test_client.py:generic-api-key:108

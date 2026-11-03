@@ -2,9 +2,12 @@
 import json
 import pytest
 
-from test_integrations_preparation import world, call, policy
+import test_integrations_preparation as preparation
+from test_integrations_preparation import call, policy
 from integrations_common import IntegrationError, MAX_RESPONSE_BYTES, digest, now
 from integrations_service import handle_line
+
+world = preparation.world
 
 
 def detail(service, approval_id):
