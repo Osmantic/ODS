@@ -38,9 +38,6 @@ const admission=(changes={})=>({...event(),nativeRetryToolsAllowState:nativeScop
 const TOOL_CONTEXT=Object.freeze({agentId:CONTEXT.agentId,runId:CONTEXT.runId,sessionId:CONTEXT.sessionId,sessionKey:CONTEXT.sessionKey,toolCallId:'native-current'});
 const EMPTY_REFERENCES=Object.freeze({lookups:Object.freeze([]),truncated:false});
 const EMPTY_PROGRESS=Object.freeze({reads:Object.freeze([]),truncated:false});
-const catalogDefinition=id=>REVIEW_LABEL_SYSTEM.split('\n').find(line=>line.startsWith(id+': ')).slice(id.length+2);
-const semantic=(canonicalOperation,typeId,args,maximumEffect='private-read')=>({canonicalOperation,typeId,
-  definition:catalogDefinition(typeId),arguments:args,maximumEffect});
 function concreteCandidate(name='pixel_ods_notes',params=appendParams(),options={}) {
   const raw=JSON.parse(JSON.stringify({name,params}));
   const payload=options.payload??integrationRequest(name,raw.params,TOOL_CONTEXT);
@@ -67,101 +64,12 @@ test('catalog stays advisory: no concrete observation until a native candidate; 
   const verify=calls[1],input=JSON.parse(verify.messages[0].content);
   assert.equal(verify.systemPrompt,REVIEW_CONCRETE_SYSTEM);assert.equal(verify.maxTokens,192);assert.equal(verify.temperature,0.2);
   assert.deepEqual(Object.keys(verify).sort(),['maxTokens','messages','purpose','signal','systemPrompt','temperature']);
-  assert.deepEqual(Object.keys(input).sort(),['candidateOperation','clock','declaredOperations','ownerRequest','priorCompletedReads','priorResourceReferences']);
-  assert.equal(input.ownerRequest,OWNER);assert.deepEqual(input.declaredOperations,[{...op('notes.append'),definition:catalogDefinition('notes.append')}]);
-  assert.deepEqual(input.candidateOperation,semantic('obsidian:append','notes.append',
-    {mode:'append',path:'Example.md',text:'Current owned line'},'approval-proposal'));
-  assert.deepEqual(input.priorResourceReferences,EMPTY_REFERENCES);
-  assert.deepEqual(input.priorCompletedReads,EMPTY_PROGRESS);
-  assert.ok(!verify.messages[0].content.includes('pixel_ods_notes'),'semantic input needs no opaque adapter name');
-});
-
-test('all twelve concrete operations use the same eleven catalog definitions through real prepare/check/commit',async()=>{
-  const fixtures=[
-    ['notes.search','obsidian:search','pixel_ods_notes',{action:'search',query:'an invented subject'}, {query:'an invented subject'}],
-    ['notes.read','obsidian:read','pixel_ods_notes',{action:'read',path:'Folder/Orbit.md'}, {path:'Folder/Orbit.md'}],
-    ['notes.create','obsidian:create','pixel_ods_notes',{action:'write',path:'Folder/New.md',text:'Exact content',mode:'create'},
-      {path:'Folder/New.md',text:'Exact content',mode:'create'}],
-    ['notes.append','obsidian:append','pixel_ods_notes',{action:'write',path:'Folder/Orbit.md',text:'Exact addition'},
-      {path:'Folder/Orbit.md',text:'Exact addition',mode:'append'}],
-    ['documents.search','paperless:search','pixel_ods_mcp',{action:'call',server:'app:documents',tool:'search',arguments:{query:'a receipt'}},{query:'a receipt'}],
-    ['documents.read','paperless:read','pixel_ods_mcp',{action:'call',server:'app:documents',tool:'read',arguments:{id:'9007199254740993'}},{id:'9007199254740993'}],
-    ['photos.search','immich:search','pixel_ods_mcp',{action:'call',server:'app:photos',tool:'search',arguments:{query:'boats',place:'Zürich',after:'2021-01-01',before:'2021-02-28'}},
-      {query:'boats',place:'Zürich',after:'2021-01-01',before:'2021-02-28'}],
-    ['monitors.list','watch:list','pixel_ods_mcp',{action:'call',server:'app:watch',tool:'list'},{}],
-    ['monitors.add','watch:add','pixel_ods_mcp',{action:'call',server:'app:watch',tool:'add',arguments:{url:'https://example.invalid/item',title:'原文 🪁',below:0}},
-      {url:'https://example.invalid/item',title:'原文 🪁',below:0}],
-    ['monitors.remove','watch:remove','pixel_ods_mcp',{action:'call',server:'app:watch',tool:'remove',arguments:{id:'watch-exact'}},{id:'watch-exact'}],
-    ['news.read','freshrss:unread','pixel_ods_mcp',{action:'call',server:'app:news',tool:'unread',arguments:{}},{}],
-    ['news.read','freshrss:digest_read','pixel_ods_mcp',{action:'call',server:'app:news',tool:'digest',arguments:{}},{}],
-  ];
-  const seenTypes=new Set(),seenCanonical=new Set(),news=[];
-  for(const [id,canonical,name,params,args]of fixtures){
-    const effect=['notes.create','notes.append','monitors.add','monitors.remove'].includes(id)?'approval-proposal':'private-read';
-    const approval=effect==='approval-proposal'?'before':'none',outcomes=createIntegrationOutcomes();
-    outcomes.begin({prompt:OWNER},CONTEXT,CONTEXT.runId);
-    const {recovery,calls}=world({complete:async()=>reply([op(id,approval)]),nativeStartClear:state=>outcomes.reviewStartClear({agentId:'pixel',
-      runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey})});
-    assert.equal((await recovery.finalize(event(),CONTEXT)).action,'revise',canonical);
-    const ctx={...TOOL_CONTEXT,toolCallId:'mapped-'+canonical},ev={...tool(name,params),toolCallId:ctx.toolCallId};
-    recovery.beforeTool(ev,ctx);assert.equal(recovery.floor(ev,ctx),undefined);
-    const candidate=await outcomes.prepareReviewCandidate(ev,ctx);
-    const verdict=await outcomes.checkReviewCandidate(candidate,value=>recovery.checkConcrete(value,ctx));
-    assert.equal(verdict.entailed,true,canonical);assert.equal(verdict.candidate,candidate.ref);
-    assert.equal(outcomes.commitReviewCandidate(candidate,verdict),undefined);
-    const input=JSON.parse(calls[1].messages[0].content),projected=input.candidateOperation;
-    assert.deepEqual(input.declaredOperations,[{id,definition:catalogDefinition(id),approval}]);
-    const expected=semantic(canonical,id,args,effect);
-    if(id==='news.read'){
-      assert.equal(typeof projected.variantDefinition,'string');assert.match(projected.variantDefinition,/do not mark them read or send a notification/);
-      news.push(projected.variantDefinition);expected.variantDefinition=projected.variantDefinition;
-      assert.match(projected.variantDefinition,canonical==='freshrss:unread'?/currently unread/:/not previously delivered/);
-    }
-    assert.deepEqual(projected,expected);
-    assert.deepEqual(input.priorResourceReferences,EMPTY_REFERENCES);assert.deepEqual(input.priorCompletedReads,EMPTY_PROGRESS);
-    assert.equal(calls.length,2);assert.ok(!calls[1].messages[0].content.includes(SESSION));
-    assert.deepEqual(candidate.view.raw,{name,params},'projection never rewrites the raw reservation');
-    assert.deepEqual(candidate.view.payload,integrationRequest(name,params,ctx),'full payload stays bound outside model input');
-    seenTypes.add(id);seenCanonical.add(canonical);await recovery.stop();outcomes.clear();
-  }
-  assert.equal(seenTypes.size,11);assert.equal(seenCanonical.size,12);assert.notEqual(news[0],news[1]);
-  assert.equal(createHash('sha256').update(REVIEW_LABEL_SYSTEM).digest('hex'),'7dfbc5328bd9b1717ba1bc14b48ec9495a931966b63b38b5093e060949dfeb92');
-});
-
-test('semantic arguments preserve optional presence, defaults, zero, whitespace and non-BMP content',async()=>{
-  const fixtures=[
-    ['notes.append','pixel_ods_notes',{action:'write',path:' Folder/🪁 ',text:'  verbatim\n原文 🪁\n'},
-      {mode:'append',path:' Folder/🪁 ',text:'  verbatim\n原文 🪁\n'},'approval-proposal'],
-    ['photos.search','pixel_ods_mcp',{action:'call',server:'app:photos',tool:'search',arguments:{after:'2020-01-01'}},
-      {after:'2020-01-01'},'private-read'],
-    ['photos.search','pixel_ods_mcp',{action:'call',server:'app:photos',tool:'search',arguments:{query:'',place:'港 🪁'}},
-      {query:'',place:'港 🪁'},'private-read'],
-    ['monitors.add','pixel_ods_mcp',{action:'call',server:'app:watch',tool:'add',arguments:{url:'https://example.invalid/',below:0}},
-      {url:'https://example.invalid/',below:0},'approval-proposal'],
-    ['documents.read','pixel_ods_mcp',{action:'call',server:'app:documents',tool:'read',arguments:{id:1}},{id:1},'private-read'],
-  ];
-  for(const [id,name,params,expected,effect]of fixtures){
-    const {recovery,calls}=world({complete:async()=>reply([op(id)])});await recovery.finalize(event(),CONTEXT);
-    assert.equal((await recovery.checkConcrete(concreteCandidate(name,params,{maximumEffect:effect}),TOOL_CONTEXT)).entailed,true);
-    assert.deepEqual(JSON.parse(calls[1].messages[0].content).candidateOperation.arguments,expected);
-  }
-});
-
-test('unknown raw constraints, unknown app arguments and unsafe document IDs never reach semantic projection',async()=>{
-  const fixtures=[
-    ['notes.append','pixel_ods_notes',{...appendParams(),after:'a user constraint'},'approval-proposal'],
-    ['notes.read','pixel_ods_notes',{action:'read',path:'Example.md',limit:1},'private-read'],
-    ['documents.search','pixel_ods_mcp',{action:'call',server:'app:documents',tool:'search',arguments:{query:'invoice',date:'2020-01-01'}},'private-read'],
-    ['photos.search','pixel_ods_mcp',{action:'call',server:'app:photos',tool:'search',arguments:{query:'boats',limit:1}},'private-read'],
-    ['news.read','pixel_ods_mcp',{action:'call',server:'app:news',tool:'digest',arguments:{feed:'selected'}},'private-read'],
-    ['documents.read','pixel_ods_mcp',{action:'call',server:'app:documents',tool:'read',arguments:{id:9007199254740992}},'private-read'],
-    ['documents.read','pixel_ods_mcp',{action:'call',server:'app:documents',tool:'read',arguments:{id:'9223372036854775808'}},'private-read'],
-  ];
-  for(const [id,name,params,effect]of fixtures){
-    const {recovery,calls}=world({complete:async()=>reply([op(id)])});await recovery.finalize(event(),CONTEXT);
-    assert.equal((await recovery.checkConcrete(concreteCandidate(name,params,{maximumEffect:effect}),TOOL_CONTEXT)).entailed,false);
-    assert.equal(calls.length,1,'a lost or unsupported constraint is refused in code, not delegated to a model');
-  }
+  assert.deepEqual(Object.keys(input).sort(),['clock','declaredTypes','maximumEffect','ownerRequest','payload','progress','raw','references']);
+  assert.equal(input.ownerRequest,OWNER);assert.deepEqual(input.declaredTypes,[op('notes.append')]);
+  assert.deepEqual(input.raw,{name:'pixel_ods_notes',params:appendParams()});
+  assert.deepEqual(input.payload,integrationRequest('pixel_ods_notes',appendParams(),TOOL_CONTEXT));
+  assert.equal(input.maximumEffect,'approval-proposal');assert.deepEqual(input.references,EMPTY_REFERENCES);
+  assert.deepEqual(input.progress,EMPTY_PROGRESS);
 });
 
 test('concrete current-step input includes only typed bounded-read completion order, never inferred contents',async()=>{
@@ -171,9 +79,8 @@ test('concrete current-step input includes only typed bounded-read completion or
   await recovery.finalize(event(owner),CONTEXT);
   assert.equal((await recovery.checkConcrete(concreteCandidate('pixel_ods_notes',appendParams(),{progress}),TOOL_CONTEXT)).entailed,true);
   const input=JSON.parse(calls[1].messages[0].content);
-  assert.deepEqual(input.priorCompletedReads,{reads:[{sequence:2,status:'read-complete',
-    operation:semantic('obsidian:read','notes.read',{path:'Example.md'})}],truncated:false});assert.equal(input.ownerRequest,owner);
-  assert.deepEqual(Object.keys(input.priorCompletedReads.reads[0]).sort(),['operation','sequence','status']);
+  assert.deepEqual(input.progress,progress);assert.equal(input.ownerRequest,owner);
+  assert.deepEqual(Object.keys(input.progress.reads[0]).sort(),['raw','sequence','status']);
   assert.match(REVIEW_CONCRETE_SYSTEM,/not that all contents were supplied, understood or satisfy a content condition/);
   assert.match(REVIEW_CONCRETE_SYSTEM,/missing or clipped facts remain unknown/);
   assert.equal(calls.length,2,'progress changes the existing concrete input, not the number of judges');
@@ -210,9 +117,8 @@ test('progress retains exact decimal-string identities and explicit clipping wit
   const candidate=concreteCandidate('pixel_ods_mcp',{action:'call',server:'app:documents',tool:'read',arguments:{id:'9223372036854775807'}},
     {maximumEffect:'private-read',progress});
   assert.equal((await recovery.checkConcrete(candidate,TOOL_CONTEXT)).entailed,true);
-  assert.deepEqual(JSON.parse(calls[1].messages[0].content).priorCompletedReads,{reads:[{sequence:9,status:'read-complete',
-    operation:semantic('paperless:read','documents.read',{id:'9223372036854775807'})}],truncated:true});
-  assert.equal(typeof JSON.parse(calls[1].messages[0].content).priorCompletedReads.reads[0].operation.arguments.id,'string');
+  assert.deepEqual(JSON.parse(calls[1].messages[0].content).progress,progress);
+  assert.equal(typeof JSON.parse(calls[1].messages[0].content).progress.reads[0].raw.params.arguments.id,'string');
   assert.equal(createHash('sha256').update(REVIEW_LABEL_SYSTEM).digest('hex'),'7dfbc5328bd9b1717ba1bc14b48ec9495a931966b63b38b5093e060949dfeb92');
 });
 
@@ -295,10 +201,10 @@ test('typed lookup facts are projected without opaque source/session bindings; n
   const candidate=concreteCandidate('pixel_ods_mcp',{action:'call',server:'app:documents',tool:'read',arguments:{id:'9223372036854775807'}},
     {maximumEffect:'private-read',references,ref:Object.freeze({opaque:'DO_NOT_SERIALIZE'})});
   assert.equal((await read.recovery.checkConcrete(candidate,TOOL_CONTEXT)).entailed,true);
-  assert.deepEqual(JSON.parse(read.calls[1].messages[0].content).priorResourceReferences,references);assert.ok(!read.calls[1].messages[0].content.includes('DO_NOT_SERIALIZE'));
+  assert.deepEqual(JSON.parse(read.calls[1].messages[0].content).references,references);assert.ok(!read.calls[1].messages[0].content.includes('DO_NOT_SERIALIZE'));
   const news=world({complete:async()=>reply([op('news.read')])});await news.recovery.finalize(event(),CONTEXT);
   await news.recovery.checkConcrete(concreteCandidate('pixel_ods_mcp',{action:'call',server:'app:news',tool:'digest',arguments:{}},{maximumEffect:'private-read'}),TOOL_CONTEXT);
-  const input=JSON.parse(news.calls[1].messages[0].content);assert.equal(Object.hasOwn(input.candidateOperation.arguments,'runContext'),false);
+  const input=JSON.parse(news.calls[1].messages[0].content);assert.equal(Object.hasOwn(input.payload,'runContext'),false);
   assert.ok(!news.calls[1].messages[0].content.includes(SESSION));
 });
 
