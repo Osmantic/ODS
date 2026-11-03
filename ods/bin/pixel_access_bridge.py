@@ -2470,6 +2470,33 @@ class SystemdAccessBridge:
                 raise AccessError("transition-failed") from None
 
 
+_NATIVE_RUNTIME_OPERATION = contextvars.ContextVar("pixel_native_runtime_operation", default=None)
+_NATIVE_RUNTIME_OPERATION_SEAL = object()
+
+
+class _NativeRuntimeOperation:
+    """Private hash-cache lease; never deployment or execution authority."""
+    __slots__ = ('bridge', 'custody', 'thread', 'active', 'seal', 'bundle_root')
+
+    def __init__(self, bridge, custody):
+        self.bridge, self.custody = bridge, custody
+        self.thread, self.active = threading.current_thread(), True
+        self.seal = _NATIVE_RUNTIME_OPERATION_SEAL
+        self.bundle_root = None
+
+
+def _native_runtime_bundle_cache(operation, root):
+    """Fixed Root lease only; a path/dictionary never selects a hash cache."""
+    if (type(operation) is not _NativeRuntimeOperation
+            or type(operation.bridge) is not LaunchdAccessBridge
+            or LaunchdAccessBridge._native_runtime_lease(operation.bridge) is not operation
+            or _NATIVE_RUNTIME_OPERATION.get() is not operation
+            or operation.bundle_root is None or Path(root) != operation.bundle_root
+            or type(operation.custody._cache) is not dict):
+        raise AccessError('provider-runtime-operation-unqualified')
+    return operation.custody._cache
+
+
 class LaunchdAccessBridge(SystemdAccessBridge):
     """Darwin bridge for a root-owned system LaunchDaemon gateway.
 
@@ -2503,6 +2530,44 @@ class LaunchdAccessBridge(SystemdAccessBridge):
         # The shared change() implementation checks this path only to detect a
         # legacy systemd drop-in. Darwin mode never creates one.
         self.dropin = Path('/private/var/empty/ods-pixel-no-systemd-dropin')
+
+    def _native_runtime_lease(self):
+        from pixel_provider.runtime_custody import RuntimeCustody
+        lease = _NATIVE_RUNTIME_OPERATION.get()
+        if (type(self) is LaunchdAccessBridge and type(lease) is _NativeRuntimeOperation
+                and lease.seal is _NATIVE_RUNTIME_OPERATION_SEAL and lease.active
+                and lease.bridge is self and lease.thread is threading.current_thread()
+                and type(lease.custody) is RuntimeCustody and lease.custody.bridge is self):
+            return lease
+        return None
+
+    @contextlib.contextmanager
+    def _native_runtime_operation(self):
+        """Reuse verified hashes only within this exact Root bridge operation.
+
+        An explicit scope may also cover initial publication outside bounded().
+        It adds no deadline or authority; every inspect still qualifies files.
+        """
+        if type(self) is not LaunchdAccessBridge or LaunchdAccessBridge._native_runtime_lease(self) is not None:
+            yield
+            return
+        from pixel_provider.runtime_custody import RuntimeCustody
+        lease = _NativeRuntimeOperation(self, RuntimeCustody(self))
+        token = _NATIVE_RUNTIME_OPERATION.set(lease)
+        try:
+            yield
+        finally:
+            # Context copies can retain this object after reset. Revoke first,
+            # then discard hashes rather than letting a later operation reuse it.
+            lease.active = False
+            lease.custody._cache.clear()
+            _NATIVE_RUNTIME_OPERATION.reset(token)
+
+    @contextlib.contextmanager
+    def bounded(self, seconds):
+        with super().bounded(seconds):
+            with LaunchdAccessBridge._native_runtime_operation(self):
+                yield
 
     @contextlib.contextmanager
     def locked(self, *, wait_seconds=0):
@@ -2680,7 +2745,11 @@ class LaunchdAccessBridge(SystemdAccessBridge):
         # fixed operation receives the real entrypoint on the private pipe.
         from pixel_provider.runtime_custody import RuntimeCustody
         try:
-            runtime, _custody = RuntimeCustody(self).inspect()
+            lease = LaunchdAccessBridge._native_runtime_lease(self)
+            qualifier = lease.custody if lease is not None else RuntimeCustody(self)
+            runtime, _custody = RuntimeCustody.inspect(qualifier)
+            if lease is not None:
+                lease.bundle_root = Path(runtime['node']).parent
         except (OSError, ValueError):
             raise AccessError('scheduler-runtime-unqualified') from None
         process = getattr(self, 'gateway_process', None)
@@ -2713,7 +2782,8 @@ class LaunchdAccessBridge(SystemdAccessBridge):
             runtime, checksum, _entrypoint = self._native_runtime_selection(environment)
             raw, _document = self._launchd_document()
             return native_deployment(runtime, checksum, uid=self.owner.pw_uid, gid=self.owner.pw_gid,
-                environment=environment, plist=self.gateway_plist, plist_sha256=hashlib.sha256(raw).hexdigest())
+                environment=environment, plist=self.gateway_plist, plist_sha256=hashlib.sha256(raw).hexdigest(),
+                _operation=LaunchdAccessBridge._native_runtime_lease(self))
         except (OSError, ValueError, PlanError):
             raise AccessError('connection-deployment-unavailable') from None
 

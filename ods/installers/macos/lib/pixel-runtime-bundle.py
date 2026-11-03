@@ -466,26 +466,61 @@ def _open_file(root, relative):
         os.close(parent)
 
 
-def _file(root, relative, output=None):
+def _operation_cache(operation, root, *, metadata=False):
+    if operation is None:
+        return None
+    try:
+        from pixel_access_bridge import AccessError, _native_runtime_bundle_cache
+        from pixel_macos_custody import CustodyError, protected_tree_metadata
+    except ImportError:
+        raise BundleError('bundle-operation-unqualified') from None
+    try:
+        cache = _native_runtime_bundle_cache(operation, root)
+        if metadata:
+            protected_tree_metadata(root)
+        return cache
+    except (AccessError, CustodyError, OSError):
+        raise BundleError('bundle-operation-unqualified') from None
+
+
+def _file(root, relative, output=None, *, _operation=None):
     fd = _open_file(root, relative)
     with os.fdopen(fd, 'rb') as source:
         before = os.fstat(source.fileno())
         if not stat.S_ISREG(before.st_mode) or before.st_mode & 0o7000:
             raise BundleError('unsupported-bundle-file')
-        checksum = hashlib.sha256()
-        for block in iter(lambda: source.read(1024 * 1024), b''):
-            checksum.update(block)
-            if output is not None:
-                output.write(block)
+        cache = _operation_cache(_operation, root)
+        signature = (before.st_dev, before.st_ino, before.st_mode, before.st_uid, before.st_gid,
+                     before.st_nlink, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        key = str(Path(root) / relative)
+        cached = cache.get(key) if cache is not None else None
+        if cache is not None:
+            from pixel_provider.runtime_custody import ROOT_UID, _acl
+            if before.st_uid != ROOT_UID or before.st_nlink != 1 or before.st_mode & 0o022:
+                raise BundleError('bundle-operation-unqualified')
+            _acl(source.fileno())  # A cache hit never exempts a current Darwin ACL.
+        if cached is not None and cached[0] == signature and output is None:
+            checksum = cached[1][3]
+        else:
+            hasher = hashlib.sha256()
+            for block in iter(lambda: source.read(1024 * 1024), b''):
+                hasher.update(block)
+                if output is not None:
+                    output.write(block)
+            checksum = hasher.hexdigest()
         if _signature(before) != _signature(os.fstat(source.fileno())):
             raise BundleError('bundle-source-changed')
+        if cache is not None:
+            cache[key] = signature, ['file', stat.S_IMODE(before.st_mode), before.st_size, checksum]
         # Modes are deliberately normalized; ACLs and xattrs are not imported.
         return ['file', 0o755 if before.st_mode & 0o111 else 0o644,
-                before.st_size, checksum.hexdigest()]
+                before.st_size, checksum]
 
 
-def inventory(root, *, exclude_manifest=False, normalize_modes=True):
+def inventory(root, *, exclude_manifest=False, normalize_modes=True, _operation=None):
     root = Path(root)
+    if _operation is not None:
+        _operation_cache(_operation, root, metadata=True)
     if not stat.S_ISDIR(root.lstat().st_mode):
         raise BundleError('bundle-directory-required')
     entries = {}
@@ -513,7 +548,7 @@ def inventory(root, *, exclude_manifest=False, normalize_modes=True):
                     raise BundleError('unsupported-bundle-directory')
                 entries[relative] = ['directory', 0o755 if normalize_modes else stat.S_IMODE(info.st_mode)]
             else:
-                entries[relative] = _file(root, relative)
+                entries[relative] = _file(root, relative, _operation=_operation)
                 if not normalize_modes:
                     entries[relative][1] = stat.S_IMODE(info.st_mode)
             if len(entries) > MAX_ENTRIES:
@@ -545,8 +580,10 @@ def _copy_tree(source, target, entries):
         raise BundleError('bundle-copy-mismatch')
 
 
-def verify(root, *, expected_digest=None):
+def verify(root, *, expected_digest=None, _operation=None):
     root = Path(root).resolve(strict=True)
+    if _operation is not None:
+        _operation_cache(_operation, root)
     path = root / MANIFEST
     if (not stat.S_ISREG(path.lstat().st_mode) or path.stat().st_size > MAX_MANIFEST):
         raise BundleError('invalid-bundle-manifest')
@@ -564,7 +601,7 @@ def verify(root, *, expected_digest=None):
     checksum = hashlib.sha256(body).hexdigest()
     if expected_digest is not None and checksum != expected_digest:
         raise BundleError('bundle-manifest-changed')
-    if inventory(root, exclude_manifest=True, normalize_modes=False) != value['entries']:
+    if inventory(root, exclude_manifest=True, normalize_modes=False, _operation=_operation) != value['entries']:
         raise BundleError('bundle-content-changed')
     if (value['entries'].get('node', [None])[0] != 'file'
             or value['entries']['node'][1] != 0o755
