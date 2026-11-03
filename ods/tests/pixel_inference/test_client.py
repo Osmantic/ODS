@@ -107,8 +107,18 @@ def test_archive_rejects_missing_or_changed_bundle_without_git(tmp_path,monkeypa
     '8afb55abf50633616cd759146366588717534afc',
     '224ed399e38273db0f9d4834ceab55d493a99cf3',
     mod.PIXEL_COMMIT,
-), ids=('legacy', 'native-search', 'pre-access-release', 'access-release-4.3.27',
-    'access-release-4.3.28', 'previous-4.3.41', 'previous-4.3.42', 'previous-4.3.43', 'previous-4.3.44', 'current'))
+), ids=(
+    'legacy',
+    'native-search',
+    'pre-access-release',
+    'access-release-4.3.27',
+    'access-release-4.3.28',
+    'previous-4.3.41',
+    'previous-4.3.42',
+    'previous-4.3.43',
+    'previous-4.3.44',
+    'current',
+))
 def client_dir(tmp_path,request):
     tmp_path.chmod(0o700)
     (tmp_path/'pixel-source').mkdir(mode=0o700)
