@@ -202,7 +202,9 @@ class NativeSourceExecutor:
         state = field('state', '[^\n]+')
         pid = field('pid', '[1-9][0-9]*', True)
         runs = int(field('runs', '[0-9]+'))
-        exit_code = field('last exit code', '[0-9]+', True)
+        exit_code = field('last exit code', r'[0-9]+|\(never exited\)', True)
+        if exit_code == '(never exited)':
+            exit_code = None
         if (state not in ('running', 'not running', 'waiting', 'spawn scheduled') or runs >= 2**31
                 or (state == 'running') != (pid is not None) or pid is not None and int(pid) > 2147483647
                 or exit_code is not None and int(exit_code) > 255):

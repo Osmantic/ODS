@@ -60,8 +60,8 @@ class Launchd:
         lines += ['\t}', '\tenvironment = {', '\t\tXPC_SERVICE_NAME => ' + label, '\t}']
         if row['process'] is not None:
             lines.append('\tpid = ' + str(row['process'].pid))
-        if row['exit'] is not None:
-            lines.append('\tlast exit code = ' + str(row['exit']))
+        last_exit = '(never exited)' if row['exit'] is None else str(row['exit'])
+        lines.append('\tlast exit code = ' + last_exit)
         return '\n'.join([*lines, '}']) + '\n'
 
     def release(self, label):
