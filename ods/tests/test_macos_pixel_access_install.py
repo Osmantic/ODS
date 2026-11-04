@@ -3040,6 +3040,122 @@ def test_previous_guard_is_derived_from_archived_code_without_execution(kind):
             installer._previous_upgrade_guard(records)
 
 
+@pytest.mark.parametrize('fault', [None, 'integration-loaded', 'integration-plist', 'unrecognized-role',
+    'unrecognized-adapter', 'old-job-missing', 'snapshot-drift'])
+def test_prepared_schema_five_legacy_recovery_preserves_six_running_services(tmp_path, monkeypatch, fault):
+    import pixel_access_bridge as bridge_module
+    from test_native_source_installer_recovery import source_images, binding, context_plan
+    records = source_images()
+    authority = binding(records)
+    plan = context_plan(records)
+    plan['access_settings']['gateway_port'] = 18789
+    records.extend(dict(path=p, before=None, after=b'candidate code', mode=0o644, gid=0)
+                   for p in sorted(installer._upgrade.SCHEDULE_ADDITIONS | installer._upgrade.INTEGRATION_ADDITIONS))
+    guard = str(installer.ACCESS_PROGRAM_ROOT / 'pixel_access_bridge.py')
+    records.append(dict(path=guard, before=(ROOT / 'tests/fixtures/macos-legacy-upgrade-guard.txt').read_bytes(),
+                        after=(ROOT / 'bin/pixel_access_bridge.py').read_bytes(), mode=0o644, gid=0))
+    options = dict(current_digest='a' * 64, candidate_digest='b' * 64,
+                   allowed_paths={item['path'] for item in records})
+    value = installer._upgrade.encode_recovery(records, source_addition=authority, **options)
+    assert value['schemaVersion'] == 5
+    pending = tmp_path / 'runtime-upgrade.json'
+    installer._upgrade.RecoveryJournal.create(pending, value)
+    original_read = bridge_module.private_json
+    monkeypatch.setattr(bridge_module, 'private_json', lambda p, _uid, limit: original_read(p, os.getuid(), limit))
+    monkeypatch.setattr(installer._launchd, 'ACCESS_STATE', tmp_path)
+    monkeypatch.setattr(installer.sys, 'platform', 'darwin')
+    monkeypatch.setattr(installer.os, 'geteuid', lambda: 0)
+    adapter = object.__new__(bridge_module.LaunchdAccessBridge)
+    adapter.state = tmp_path
+    held, events = [], []
+    @contextmanager
+    def locked(_self):
+        held.append(True)
+        try: yield
+        finally: held.pop()
+    monkeypatch.setattr(bridge_module.LaunchdAccessBridge, 'recovery_locked', locked)
+    @contextmanager
+    def bounded(_self, seconds):
+        assert held and seconds == 900
+        yield
+    monkeypatch.setattr(bridge_module.LaunchdAccessBridge, 'bounded', bounded)
+    def load(**_kwargs):
+        assert held
+        journal, decoded = installer._upgrade.RecoveryJournal.load(pending, **options)
+        return plan, journal, decoded
+    monkeypatch.setattr(installer, '_load_upgrade_recovery', load)
+    monkeypatch.setattr(installer, '_verify_recovery_bindings', lambda p, r: None)
+    images = {item['path']: tmp_path / ('image-' + str(index)) for index, item in enumerate(records)}
+    for item in records:
+        if item['before'] is not None: images[item['path']].write_bytes(item['before'])
+    def read_image(path, **_kwargs):
+        image = images[str(path)]
+        return image.read_bytes() if image.exists() else None
+    monkeypatch.setattr(installer, '_source_snapshot_read', read_image)
+    if fault == 'snapshot-drift': images[guard].write_bytes(b'unknown changed guard')
+    integration_target = 'system/com.ods.pixel-native-integrations'
+    integration_plist = Path('/Library/LaunchDaemons/com.ods.pixel-native-integrations.plist')
+    prior = installer._PriorAbsentIntegrations(integration_target, integration_plist)
+    monkeypatch.setattr(installer, '_destination', lambda p: images[str(p)] if Path(p) == integration_plist else Path(p))
+    if fault == 'integration-plist': images[str(integration_plist)].write_bytes(b'unexpected definition')
+    previous = {role: SimpleNamespace(target='system/com.ods.pixel-native-' + role,
+        verify_definition=lambda: None) for role in installer._upgrade.LEGACY_NATIVE_ROLES}
+    candidate = {role: SimpleNamespace(target=service.target) for role, service in previous.items()}
+    previous['integrations'] = prior
+    candidate['integrations'] = SimpleNamespace(target=integration_target)
+    if fault == 'unrecognized-role':
+        previous['unknown'] = previous.pop('integrations')
+        candidate['unknown'] = candidate.pop('integrations')
+    elif fault == 'unrecognized-adapter':
+        previous['integrations'] = SimpleNamespace(target=integration_target, prior_absent=True,
+            verify_definition=prior.verify_definition, assert_stopped=prior.assert_stopped)
+    loaded = {service.target for role, service in previous.items() if role in installer._upgrade.LEGACY_NATIVE_ROLES}
+    if fault == 'integration-loaded': loaded.add(integration_target)
+    if fault == 'old-job-missing': loaded.remove(previous['manager'].target)
+    original_loaded = set(loaded)
+    def command(arguments):
+        assert arguments[:2] == ['/bin/launchctl', 'print']
+        if arguments[2] not in loaded:
+            raise installer.InstallError('host-command-failed', returncode=113)
+        return 'reviewed loaded definition'
+    monkeypatch.setattr(installer, '_command', command)
+    monkeypatch.setattr(installer, '_upgrade_services', lambda p, r: (previous, candidate))
+    monkeypatch.setattr(installer, '_upgrade_service_identity', lambda service: ('unchanged', service.target))
+    monkeypatch.setattr(installer, '_verify_recovery_runtime', lambda p: events.append('verify-old-runtime'))
+    monkeypatch.setattr(installer, '_upgrade_policy_mode', lambda p: 'sandboxed')
+    monkeypatch.setattr(installer, '_edge_hold_journal', lambda p: tmp_path / 'never-held.json')
+    monkeypatch.setattr(installer, '_discover_source_installer_bridge', lambda bridge: events.append('discover-old'))
+    monkeypatch.setattr(installer, '_rollover_source_installer_history', lambda *_a: events.append('check-source-history'))
+    monkeypatch.setattr(installer, '_finish_source_upgrade', lambda p, r, journal: events.append('verify-source-restored'))
+    monkeypatch.setattr(installer, '_clear_candidate_stop_witnesses', lambda p: None)
+    monkeypatch.setattr(installer, '_ready_gateway', lambda *_a: events.append('ready-old-gateway'))
+    monkeypatch.setattr(installer, '_ready_access', lambda *_a, **_kw: events.append('ready-old-access'))
+    monkeypatch.setattr(installer, '_ready_access_relay', lambda *_a, **_kw: events.append('ready-old-relay'))
+    def forbidden(*_args, **_kwargs):
+        pytest.fail('unstarted recovery must not stop/start services, hold admission, or publish/restore files')
+    for name in ('_start_upgrade_service', '_stop_upgrade_service', '_resume_migration_hold',
+                 '_restore_upgrade_owner', '_acquire_migration_hold'):
+        monkeypatch.setattr(installer, name, forbidden)
+    monkeypatch.setattr(installer._upgrade, 'replace_deployment_files', forbidden)
+    monkeypatch.setattr(installer._upgrade, 'restore_deployment_files', forbidden)
+    def recover():
+        return installer.recover_install(adapter, current_digest='a' * 64,
+            candidate_digest='b' * 64, owner_name='invented-owner')
+    if fault:
+        with pytest.raises(installer.InstallError): recover()
+        assert pending.exists() and json.loads(pending.read_bytes())['phase'] == 'prepared'
+        assert 'verify-source-restored' not in events
+    else:
+        assert recover() == 'restored'
+        assert not pending.exists()
+        archive = tmp_path / ('runtime-upgrade-' + 'b' * 64 + '.completed.json')
+        assert json.loads(archive.read_bytes()) == dict(value, phase='restored')
+        assert len(loaded) == 6 and 'verify-source-restored' in events
+        assert all(read_image(item['path']) == item['before'] for item in records)
+    assert loaded == original_loaded and not held
+    assert not (tmp_path / 'never-held.json').exists()
+
+
 @pytest.mark.parametrize('fault', ['missing-check', 'different-journal', 'swallowed-error',
     'unlocked', 'status-ready', 'different-reason', 'decorator', 'duplicate-lock', 'async-lock'])
 def test_legacy_guard_compatibility_rejects_each_changed_guard_semantic(fault):

@@ -2636,7 +2636,13 @@ def _recover_unstarted_upgrade(plan, records, journal, previous, candidate, *, v
             if _source_snapshot_read(item['path'], limit=8 * 1024 * 1024) != item['before']:
                 raise InstallError('runtime-upgrade-rollback-file-drift')
         for role, service in previous.items():
-            if _observe_upgrade_service(service, candidate[role]) != 'previous':
+            if type(service) is _PriorAbsentIntegrations and role == 'integrations':
+                # The approved legacy deployment has six running services and
+                # no integrations definition/job. Absence is its exact old
+                # state, not a missing process that recovery may fabricate.
+                service.verify_definition()
+                service.assert_stopped()
+            elif _observe_upgrade_service(service, candidate[role]) != 'previous':
                 raise InstallError('runtime-upgrade-original-service-required')
         _upgrade_policy_mode(plan)
         _ready_gateway(previous['gateway'], plan['access_settings']['gateway_port'])
