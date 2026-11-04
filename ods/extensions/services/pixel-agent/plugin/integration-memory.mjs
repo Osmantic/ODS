@@ -40,27 +40,32 @@ const ANSWERED = {
   unknown: 'That memory question is no longer waiting (it was answered in Settings or the chat was set not to be remembered). Say so in one short sentence; call no tools.',
 };
 
-// Chats whose current turn applied the owner's answer to a memory card. Shared across plugin
+// Chats whose current turn proposes no memory, with why: 'answered' (the turn applied the owner's
+// answer to a memory card) or 'reminder' (the owner asked for a reminder). Shared across plugin
 // instances (the prompt hook and the tool can come from different ones), as the scheduler is.
-const ANSWERED_TURNS = Symbol.for('ods.pixel-ods.memoryAnsweredTurns');
-export function answeredTurns(shared = globalThis) {
-  shared[ANSWERED_TURNS] ??= new Set();
-  return shared[ANSWERED_TURNS];
+const NO_PROPOSAL_TURNS = Symbol.for('ods.pixel-ods.memoryNoProposalTurns');
+export function noProposalTurns(shared = globalThis) {
+  shared[NO_PROPOSAL_TURNS] ??= new Map();
+  return shared[NO_PROPOSAL_TURNS];
 }
 
 // submit is integrations.mjs's submitIntegration, passed in: that module imports this one.
 export function createMemoryHooks({submit, warn = () => {}, shared = globalThis}) {
   return {
     // Before a turn: the owner's answer to a memory card is applied, then the facts for this chat.
-    async promptContext(userText, sessionKey) {
+    // reminder: the turn asks for a reminder (integration-tasks.mjs reminderHint gave it one).
+    async promptContext(userText, sessionKey, {reminder = false} = {}) {
       const session = chatSession(sessionKey);
       if (!session) return {};
       const notes = {};
       const answer = memoryAnswer(userText);
       // A turn that answers a card only acknowledges it: no new proposal (e2e: the small model
       // proposed "I will remember you're vegetarian." right after the owner saved that fact).
-      if (answer) answeredTurns(shared).add(session);
-      else answeredTurns(shared).delete(session);
+      // A reminder turn gets only the reminder hint (e2e: with both, "remind me in 2 minutes to
+      // stretch" became the card "The owner reminds them to stretch in 2 minutes").
+      const block = answer ? 'answered' : reminder ? 'reminder' : '';
+      if (block) noProposalTurns(shared).set(session, block);
+      else noProposalTurns(shared).delete(session);
       try {
         if (answer) {
           const reply = await submit({action: 'memory-answer', session, ...answer}, {timeoutMs: CONTEXT_TIMEOUT_MS});
@@ -69,7 +74,7 @@ export function createMemoryHooks({submit, warn = () => {}, shared = globalThis}
         }
         const reply = await submit({action: 'memory-context', session}, {timeoutMs: CONTEXT_TIMEOUT_MS});
         if (reply?.ok && reply.text) notes.facts = reply.text;
-        if (reply?.ok && reply.enabled && !reply.quiet && !answer) notes.hint = LEARN_HINT;
+        if (reply?.ok && reply.enabled && !reply.quiet && !block) notes.hint = LEARN_HINT;
       } catch (error) {
         // The service is down or not on this system: the turn goes on without memory.
         warn(`Portal memory: unavailable for this turn: ${error.message}`);

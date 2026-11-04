@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {answeredTurns, chatSession, createMemoryHooks, MEMORY_CHOICES, memoryAnswer, memoryQuestion} from '../plugin/integration-memory.mjs';
+import {noProposalTurns, chatSession, createMemoryHooks, MEMORY_CHOICES, memoryAnswer, memoryQuestion} from '../plugin/integration-memory.mjs';
 import {createIntegrationTools} from '../plugin/integrations.mjs';
 import {parseQuestions} from '../plugin/questions-schema.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
@@ -109,14 +109,14 @@ test('each chat turn gets the facts and the learning hint; an answer to a card i
   assert.match(notesForTurn.facts, /vegetarian/);
   // A turn answering a card only acknowledges it: no invitation to propose more.
   assert.equal(notesForTurn.hint, undefined);
-  assert.ok(answeredTurns(shared).has(USER));
+  assert.ok(noProposalTurns(shared).get(USER) === 'answered');
   const plain = await hooks.promptContext('What should I cook tonight?', SESSION);
   assert.equal(plain.answer, undefined);
   assert.equal(sent.at(-1).payload.action, 'memory-context');
   // The exact call, with the tool id the small model otherwise gets wrong.
   assert.match(plain.hint, /tool_call with id "openclaw:pixel-ods:pixel_ods_notes"/);
   assert.match(plain.hint, /"action": "remember"/);
-  assert.ok(!answeredTurns(shared).has(USER), 'the next turn may propose again');
+  assert.ok(!noProposalTurns(shared).has(USER), 'the next turn may propose again');
 });
 
 test('in the turn that answers a memory card, a new proposal is refused without reaching the service', async () => {
@@ -133,6 +133,27 @@ test('in the turn that answers a memory card, a new proposal is refused without 
   const other = await notes({submit, sessionKey: `agent:pixel:openai-user:ods-${'b'.repeat(64)}`, shared})
     .execute('2', {action: 'remember', text: 'The owner likes tea.'});
   assert.equal(other.details.status, 'awaiting_user');
+});
+
+test('a reminder turn gets no learning hint, and a remember call is refused with the reminder call', async () => {
+  const shared = {};
+  const {sent, submit} = recorder({'memory-context': {ok: true, text: '- The owner is vegetarian.', enabled: true, quiet: false},
+    'memory-propose': {ok: true, status: 'ask', id: 'm3', text: 'The owner reminds them to stretch in 2 minutes'}});
+  const hooks = createMemoryHooks({submit, shared});
+  const turn = await hooks.promptContext('remind me in 2 minutes to stretch', SESSION, {reminder: true});
+  assert.equal(turn.hint, undefined);
+  assert.match(turn.facts, /vegetarian/, 'the facts still come with the turn');
+  assert.equal(noProposalTurns(shared).get(USER), 'reminder');
+  const refused = await notes({submit, sessionKey: SESSION, shared})
+    .execute('1', {action: 'remember', text: 'The owner reminds them to stretch in 2 minutes'});
+  assert.equal(refused.details.status, 'done');
+  assert.match(refused.content[0].text, /asked for a reminder/);
+  assert.match(refused.content[0].text, /openclaw:pixel-ods:pixel_ods_notify/);
+  assert.ok(!sent.some(item => item.payload.action === 'memory-propose'));
+  // The next ordinary turn may propose again.
+  const next = await hooks.promptContext('I live in Lisbon', SESSION);
+  assert.match(next.hint, /"action": "remember"/);
+  assert.ok(!noProposalTurns(shared).has(USER));
 });
 
 test('a quiet chat, memory off, other sessions and a missing service add nothing', async () => {

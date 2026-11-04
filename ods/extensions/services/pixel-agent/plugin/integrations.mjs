@@ -1,5 +1,5 @@
 import net from 'node:net';
-import { answeredTurns, chatSession, MEMORY_CHOICES, MEMORY_QUESTION_ID, memoryQuestion } from './integration-memory.mjs';
+import { noProposalTurns, chatSession, MEMORY_CHOICES, MEMORY_QUESTION_ID, memoryQuestion } from './integration-memory.mjs';
 
 // Portal tools for the owner's integrations: an Obsidian vault, ntfy notifications, and MCP
 // servers, among them the owner's apps. The gateway holds no token or vault path: every call
@@ -91,8 +91,14 @@ function notesRequest(params) {
 // itself still comes: told to wait, the small model never answered a question the owner asked
 // (e2e: "Suggest one dinner..." ended with no answer after a proposal).
 async function remember(submit, params, sessionKey, signal, shared) {
-  if (answeredTurns(shared).has(chatSession(sessionKey))) {
+  const blocked = noProposalTurns(shared).get(chatSession(sessionKey));
+  if (blocked === 'answered') {
     return text('The owner has just answered your memory question; this reply only acknowledges it. Save nothing else now.', {status: 'done'});
+  }
+  if (blocked === 'reminder') {
+    // Pointing at the right call, so the turn still schedules what the owner asked for.
+    return text('Nothing was saved: the owner asked for a reminder, not a memory. Schedule it with one call: '
+      + 'tool_call with id "openclaw:pixel-ods:pixel_ods_notify" as described in the note on the owner\'s message.', {status: 'done'});
   }
   let reply;
   try {

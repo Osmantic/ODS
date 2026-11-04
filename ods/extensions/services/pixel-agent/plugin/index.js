@@ -465,8 +465,8 @@ export default definePluginEntry({
       // A turn that mentions the shipped example without naming it.
       const exampleContext = toolLoopGuard.exampleContextForRun(context?.runId ?? event?.runId);
       const ownerText = currentUserText(ownerEvent?.messages, ownerEvent?.prompt);
-      const memory = accessRuntime.isProbe(context) ? {} : await memoryHooks.promptContext(ownerText, context?.sessionKey);
       const reminder = accessRuntime.isProbe(context) ? '' : reminderHint(ownerText);
+      const memory = accessRuntime.isProbe(context) ? {} : await memoryHooks.promptContext(ownerText, context?.sessionKey, {reminder: Boolean(reminder)});
       const prependContext = [contract?.prependContext,cancelContext,deliveryContext,exampleContext,memory.facts].filter(Boolean).join('\n\n');
       // Beside the owner turn (OpenClaw appendContext), also model-only. A
       // child's announce continuation of a clarification answer carries that
