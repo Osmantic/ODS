@@ -42,18 +42,6 @@ success_block="$(awk '
 
 [[ -n "$success_block" ]] || fail "could not locate host-agent bootstrap success block"
 
-plist_block="$(awk '
-    /cat > "\$ODS_AGENT_PLIST"/ { in_block=1 }
-    in_block { print }
-    in_block && /^AGENT_PLIST_EOF/ { exit }
-' "$TARGET" | grep -v '^[[:space:]]*#')"
-
-grep -qF '<string>--install-dir</string>' <<<"$plist_block" \
-    || fail "host-agent LaunchAgent must pass --install-dir explicitly"
-grep -qF '<string>${INSTALL_DIR}</string>' <<<"$plist_block" \
-    || fail "host-agent LaunchAgent must pass the installer-selected INSTALL_DIR"
-pass "host-agent LaunchAgent passes explicit install directory"
-
 grep -qE 'launchctl kickstart -p "gui/\$\(id -u\)/\$\{ODS_AGENT_PLIST_LABEL\}"' <<<"$success_block" \
     || fail "host-agent bootstrap success block must call \`launchctl kickstart -p\` to defeat launchd spawn-pending throttling"
 pass "host-agent bootstrap kickstarts the service after bootstrap"
@@ -90,7 +78,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 (
     export HOME="$TMP/home"
-    INSTALL_DIR="$TMP/install"
+    INSTALL_DIR="$TMP/ODS & QA"
     ODS_LOG_FILE="$TMP/install.log"
     ODS_AGENT_PLIST_LABEL="com.ods.host-agent"
     ODS_AGENT_PLIST="$HOME/Library/LaunchAgents/$ODS_AGENT_PLIST_LABEL.plist"
@@ -118,6 +106,7 @@ trap 'rm -rf "$TMP"' EXIT
         [[ "$mode" != runtime-fails ]] || return 1
         AGENT_PYTHON="$INSTALL_DIR/.venv/host-agent/bin/python"
     }
+    macos_check_host_agent_port() { [[ "$mode" != foreign-listener ]]; }
     macos_retire_owned_host_agent_listener() {
         printf 'retire-owned\n' >> "$calls"
         [[ "$mode" != foreign-listener ]]
@@ -141,14 +130,20 @@ trap 'rm -rf "$TMP"' EXIT
         printf 'authenticated-proof\n' >> "$calls"
         [[ "$mode" != health-fails && "$mode" != auth-fails ]]
     }
+    mkdir -p "$INSTALL_DIR/.venv/host-agent/bin"
+    ln -s "$(command -v python3)" "$INSTALL_DIR/.venv/host-agent/bin/python"
+    export DOCKER_HOST="unix://$TMP/QA & Docker.sock"
     mode=ok
     : > "$calls"
     ods_macos_install_host_agent || fail "healthy host-agent setup failed"
     [[ "$(cat "$calls")" == $'runtime\nbootout\nretire-owned\nbootstrap\nkickstart\nhealth\nbridge\nauthenticated-proof' ]] \
         || fail "host-agent setup order changed"
     python3 - "$ODS_AGENT_PLIST" "$INSTALL_DIR" <<'PY'
+import os
 import plistlib
+import stat
 import sys
+assert stat.S_IMODE(os.stat(sys.argv[1]).st_mode) == 0o600
 with open(sys.argv[1], "rb") as stream:
     value = plistlib.load(stream)
 assert value["ProgramArguments"] == [
@@ -156,9 +151,20 @@ assert value["ProgramArguments"] == [
     sys.argv[2] + "/bin/ods-host-agent.py",
     "--install-dir", sys.argv[2],
 ]
+assert value["WorkingDirectory"] == sys.argv[2]
+assert value["EnvironmentVariables"]["DOCKER_HOST"] == os.environ["DOCKER_HOST"]
 assert value["RunAtLoad"] is True
 assert value["KeepAlive"] == {"SuccessfulExit": False}
 PY
+    # A value that cannot be encoded in XML must leave the working definition
+    # and the loaded job alone so the owner can retry after correcting it.
+    cp "$ODS_AGENT_PLIST" "$TMP/prior.plist"
+    : > "$calls"
+    if DOCKER_CONTEXT=$'invalid\x01context' ods_macos_install_host_agent 2>/dev/null; then
+        fail "invalid transport context was installed"
+    fi
+    cmp -s "$ODS_AGENT_PLIST" "$TMP/prior.plist" || fail "render failure changed the retained plist"
+    [[ "$(cat "$calls")" == runtime ]] || fail "render failure stopped the retained service"
     for mode in runtime-fails foreign-listener bootstrap-fails health-fails bridge-fails auth-fails; do
         : > "$calls"
         if ods_macos_install_host_agent; then
@@ -168,7 +174,8 @@ PY
             runtime-fails)
                 [[ "$(cat "$calls")" == runtime ]] || fail "failed runtime touched launchd" ;;
             foreign-listener)
-                ! grep -qx bootstrap "$calls" || fail "foreign listener was replaced" ;;
+                [[ "$(cat "$calls")" == runtime ]] || fail "foreign listener stopped the working service"
+                cmp -s "$ODS_AGENT_PLIST" "$TMP/prior.plist" || fail "foreign listener changed the working plist" ;;
             bootstrap-fails)
                 ! grep -qx health "$calls" || fail "failed bootstrap reached health probe" ;;
             health-fails)

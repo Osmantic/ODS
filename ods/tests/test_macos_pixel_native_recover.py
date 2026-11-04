@@ -408,7 +408,9 @@ read_env_value() {
 }
 """)
     (library / 'bridge-manager.sh').write_text('macos_configure_port_bridge() { test "$1" = false; }\n')
-    (library / 'host-agent-listener.sh').write_text('macos_retire_owned_host_agent_listener() { return 0; }\n')
+    (library / 'host-agent-listener.sh').write_text(
+        'macos_check_host_agent_port() { return 0; }\n'
+        'macos_retire_owned_host_agent_listener() { return 0; }\n')
     scripts = {
         'launchctl': 'printf "%s\\n" "$*" >> "$HOME/launchctl.calls"\n',
         'curl': 'exit 0\n',
