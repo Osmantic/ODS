@@ -3806,12 +3806,27 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_
         verify()
         if plan.get('source_lifecycle') is not None:
             with bridge.bounded(900):
-                if journal.value['phase'] == 'active':
-                    _resume_source_upgrade_active(plan, records, journal, verify_snapshots=verify)
-                    outcome = 'active'
-                else:
-                    _recover_upgrade(plan, records, journal, verify_snapshots=verify,
-                        previous_guard=_previous_upgrade_guard(records), source_bridge=bridge)
+                source_bridge = bridge
+                if journal.value['phase'] == 'prepared':
+                    # The recovery bridge is an inert lock holder bound to the
+                    # candidate context. Before staging, Source discovery must
+                    # instead qualify the exact still-installed old controller.
+                    # These images have already passed the context/journal binding
+                    # checks; never adopt arbitrary current settings as authority.
+                    from pixel_macos_custody import protected_bytes
+                    path = str(_destination(ACCESS_FILES['config']))
+                    settings = next((item['before'] for item in records if item['path'] == path), None)
+                    if settings is None or protected_bytes(path) != settings:
+                        raise InstallError('native-source-installer-target-binding-changed')
+                    source_bridge = _bridge_from_recovery_plan(
+                        dict(plan, access_settings=json.loads(settings)), owner_name=owner_name)
+                with (source_bridge.bounded(900) if source_bridge is not bridge else nullcontext()):
+                    if journal.value['phase'] == 'active':
+                        _resume_source_upgrade_active(plan, records, journal, verify_snapshots=verify)
+                        outcome = 'active'
+                    else:
+                        _recover_upgrade(plan, records, journal, verify_snapshots=verify,
+                            previous_guard=_previous_upgrade_guard(records), source_bridge=source_bridge)
         else:
             _recover_upgrade(plan, records, journal, verify_snapshots=verify,
                              previous_guard=_previous_upgrade_guard(records))

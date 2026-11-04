@@ -3044,11 +3044,16 @@ def test_previous_guard_is_derived_from_archived_code_without_execution(kind):
     'unrecognized-adapter', 'old-job-missing', 'snapshot-drift'])
 def test_prepared_schema_five_legacy_recovery_preserves_six_running_services(tmp_path, monkeypatch, fault):
     import pixel_access_bridge as bridge_module
+    import pixel_macos_custody as custody
     from test_native_source_installer_recovery import source_images, binding, context_plan
     records = source_images()
     authority = binding(records)
     plan = context_plan(records)
     plan['access_settings']['gateway_port'] = 18789
+    old_settings = b'{"fixture":"approved old settings"}'
+    config_path = str(installer.ACCESS_FILES['config'])
+    records.append(dict(path=config_path, before=old_settings,
+        after=json.dumps(plan['access_settings']).encode(), mode=0o600, gid=0))
     records.extend(dict(path=p, before=None, after=b'candidate code', mode=0o644, gid=0)
                    for p in sorted(installer._upgrade.SCHEDULE_ADDITIONS | installer._upgrade.INTEGRATION_ADDITIONS))
     guard = str(installer.ACCESS_PROGRAM_ROOT / 'pixel_access_bridge.py')
@@ -3067,6 +3072,12 @@ def test_prepared_schema_five_legacy_recovery_preserves_six_running_services(tmp
     monkeypatch.setattr(installer.os, 'geteuid', lambda: 0)
     adapter = object.__new__(bridge_module.LaunchdAccessBridge)
     adapter.state = tmp_path
+    def old_bridge(selected, *, owner_name):
+        assert selected['access_settings'] == json.loads(old_settings)
+        assert owner_name == plan['owner'].pw_name
+        return adapter
+    monkeypatch.setattr(installer, '_bridge_from_recovery_plan', old_bridge)
+    monkeypatch.setattr(custody, 'protected_bytes', lambda path: old_settings)
     held, events = [], []
     @contextmanager
     def locked(_self):
@@ -3154,6 +3165,98 @@ def test_prepared_schema_five_legacy_recovery_preserves_six_running_services(tmp
         assert all(read_image(item['path']) == item['before'] for item in records)
     assert loaded == original_loaded and not held
     assert not (tmp_path / 'never-held.json').exists()
+
+
+@pytest.mark.parametrize('fault', [None, 'config-after', 'config-unknown', 'definition', 'owner'])
+def test_prepared_source_recovery_uses_old_live_binding_under_original_lock_and_deadline(
+        bundled_deployment, tmp_path, monkeypatch, fault):
+    import time
+    import pixel_access_bridge as bridge_module
+    import pixel_macos_custody as custody
+    plan = installer.make_plan(**bundled_deployment)
+    owner = plan['owner']
+    original = plistlib.loads(plan['source_bytes'])
+    original.update(UserName=owner.pw_name, GroupName='staff')
+    plan['source_bytes'] = plistlib.dumps(original)
+    old_binding = installer._launchd.binding(original, owner=owner.pw_name,
+        executable=plan['source_process']['executable'], uid=owner.pw_uid, gid=owner.pw_gid)
+    assert old_binding != plan['gateway_binding']
+    monkeypatch.setattr(installer._launchd, 'ACCESS_STATE', tmp_path)
+    plan['access_settings']['state_dir'] = str(tmp_path)
+    before = dict(plan['access_settings'], gateway_binding=old_binding, gateway_process=plan['source_process'])
+    records = [dict(path=str(installer._destination(installer._launchd.GATEWAY_PLIST)),
+                    before=plan['source_bytes'], after=installer._launchd.encode(plan['gateway'])),
+               dict(path=str(installer._destination(installer.ACCESS_FILES['config'])),
+                    before=json.dumps(before).encode(), after=json.dumps(plan['access_settings']).encode())]
+    journal = SimpleNamespace(value={'phase': 'prepared', 'sourceAddition': {'contextSha256': 'c' * 64}})
+    plan['source_lifecycle'] = {'mode': 'absent'}
+    plan['upgrade_qualification'] = {'currentDigest': 'a' * 64, 'candidateDigest': 'b' * 64}
+    adapter = installer._bridge_from_recovery_plan(plan, owner_name=owner.pw_name)
+    held, events, scopes = [], [], []
+    @contextmanager
+    def locked(self):
+        assert self is adapter
+        held.append(True)
+        try: yield
+        finally: held.pop()
+    monkeypatch.setattr(bridge_module.LaunchdAccessBridge, 'recovery_locked', locked)
+    monkeypatch.setattr(installer.sys, 'platform', 'darwin')
+    monkeypatch.setattr(installer.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(bridge_module, '_native_source_clock_ns', time.monotonic_ns)
+    (tmp_path / 'runtime-upgrade.json').write_text('retained prepared fixture')
+    def load(**_kwargs):
+        assert held == [True]
+        return plan, journal, records
+    monkeypatch.setattr(installer, '_load_upgrade_recovery', load)
+    images = {item['path']: item['before'] for item in records}
+    config_path = str(installer._destination(installer.ACCESS_FILES['config']))
+    if fault == 'config-after': images[config_path] = records[1]['after']
+    if fault == 'config-unknown': images[config_path] = b'unknown config'
+    monkeypatch.setattr(custody, 'protected_bytes', lambda path, **_kw: images[str(path)])
+    monkeypatch.setattr(installer, '_source_snapshot_read', lambda path, **_kw: images[str(path)])
+    # Keep the actual protected document/definition/binding comparison. Only
+    # the OS loaded-job observation and policy read are represented here.
+    def loaded(self):
+        self._verify_launchd_definition()
+    monkeypatch.setattr(bridge_module.LaunchdAccessBridge, '_verify_launchd_loaded', loaded)
+    monkeypatch.setattr(bridge_module.LaunchdAccessBridge, '_policy_state', lambda self: {})
+    def discover(source_bridge):
+        assert held == [True]
+        if fault in ('definition', 'owner'):
+            document = dict(original)
+            if fault == 'definition': document['WorkingDirectory'] = '/different-directory'
+            else: document['UserName'] = 'different-owner'
+            images[records[0]['path']] = plistlib.dumps(document)
+        source_bridge.verify_gateway_installation_binding()
+        assert source_bridge is not adapter and source_bridge.gateway_binding == old_binding
+        scope = bridge_module._NATIVE_SOURCE_DEADLINE.get()
+        assert scope.bridge is source_bridge and scope.parent.bridge is adapter
+        assert scope.ceiling <= scope.parent.ceiling
+        assert bridge_module.LaunchdAccessBridge._native_runtime_lease(source_bridge) is not None
+        assert bridge_module.LaunchdAccessBridge._native_runtime_lease(adapter) is None
+        scopes.append(scope)
+        events.append('old-binding-qualified')
+    monkeypatch.setattr(installer, '_discover_source_installer_bridge', discover)
+    monkeypatch.setattr(installer, '_previous_upgrade_guard', lambda _r: True)
+    monkeypatch.setattr(installer, '_rollover_source_installer_history', lambda *_a: events.append('history'))
+    monkeypatch.setattr(installer, '_upgrade_services', lambda *_a: ({}, {}))
+    monkeypatch.setattr(installer, '_recover_unstarted_upgrade', lambda *_a, **_kw: events.append('recovery') or True)
+    def forbidden(*_a, **_kw):
+        pytest.fail('prepared Source binding must not execute or mutate a service')
+    monkeypatch.setattr(installer.subprocess, 'run', forbidden)
+    def recover():
+        return installer.recover_install(adapter, current_digest='a' * 64,
+            candidate_digest='b' * 64, owner_name=owner.pw_name)
+    if fault:
+        with pytest.raises((installer.InstallError, bridge_module.AccessError)): recover()
+        assert not events
+    else:
+        assert recover() == 'restored'
+        assert events == ['old-binding-qualified', 'history', 'recovery']
+    assert journal.value['phase'] == 'prepared'
+    assert (tmp_path / 'runtime-upgrade.json').read_text() == 'retained prepared fixture'
+    assert not held and all(not scope.active and not scope.parent.active for scope in scopes)
+    assert bridge_module.LaunchdAccessBridge._native_runtime_lease(adapter) is None
 
 
 @pytest.mark.parametrize('fault', ['missing-check', 'different-journal', 'swallowed-error',
