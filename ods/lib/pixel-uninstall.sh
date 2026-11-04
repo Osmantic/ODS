@@ -3013,7 +3013,7 @@ PY
         log_error "ODS-managed Pixel owner artifact cleanup was incomplete"
         return 1
     fi
-    rm -f -- "$marker"
+    rm -f -- "$marker" "$owner_home/.config/ods/.pixel-install-transaction.json" "${install_dir:-.}/.ods-pixel-transaction"
     [[ ! -e "$marker" && ! -L "$marker" ]] || {
         log_error "ODS-managed Pixel marker cleanup was incomplete"
         return 1
