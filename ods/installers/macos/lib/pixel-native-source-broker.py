@@ -724,7 +724,19 @@ def _material(selection):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     root = Path(doc['nodePath']).parent
-    manifest, _checksum = module.verify(root, expected_digest=doc['bundleSha256'])
+    from pixel_access_bridge import LaunchdAccessBridge, _native_runtime_bundle_cache
+    operation = LaunchdAccessBridge._native_runtime_lease(selection.bridge)
+    import inspect
+    parameter = inspect.signature(module.verify).parameters.get('_operation')
+    if (operation is not None and root == operation.bundle_root
+            and parameter is not None and parameter.kind is inspect.Parameter.KEYWORD_ONLY
+            and parameter.default is None):
+        # Only the already-qualified current Root may reuse its immutable hashes.
+        # Other roots/legacy helpers stay cold; verify repeats this exact binding.
+        _native_runtime_bundle_cache(operation, root)
+        manifest, _checksum = module.verify(root, expected_digest=doc['bundleSha256'], _operation=operation)
+    else:
+        manifest, _checksum = module.verify(root, expected_digest=doc['bundleSha256'])
     selected = module._read_release_selection(root, manifest['entries'])
     files = bundle_payloads(root, ref=selected['pixelSourceRevision'], python=doc['hostPythonPath'], protected=True)
     return custody, doc, files, selected['pixelSourceRevision']

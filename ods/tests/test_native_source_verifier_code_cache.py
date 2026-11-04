@@ -126,3 +126,103 @@ def test_warm_verifier_rejects_changed_provenance_and_another_bundle_root(comple
         assert len(trace.compiles) == compiled
     with pytest.raises(module.BundleError, match='operation-unqualified'):
         module._verify_native_source(n.f.root, manifest['entries'], selected, _operation=lease)
+
+
+def material_selection(n, trace):
+    from pixel_connections import custody
+    value = n.f.bridge.connection_deployment()
+    selected = custody.native_source_selection(n.f.bridge, value)
+    publisher = next(item for item in reversed(trace.modules) if item.__name__ == 'verify_native_source')
+    return publisher, selected
+
+
+def material_operations(publisher, selected):
+    operations, previous = [], sys.getprofile()
+    def profile(frame, event, _arg):
+        if (event == 'call' and frame.f_code.co_name == 'verify'
+                and frame.f_back.f_code.co_name == '_material'):
+            operations.append(frame.f_locals.get('_operation'))
+    sys.setprofile(profile)
+    try: result = publisher._material(selected)
+    finally: sys.setprofile(previous)
+    return result, operations
+
+
+def test_material_reuses_only_current_root_operation_with_fresh_proofs(complete_loaders):
+    n, trace = complete_loaders
+    path = n.f.source / 'installers/macos/lib/pixel-native-source-broker.py'
+    with n.f.bridge._native_runtime_operation():
+        publisher, selected = material_selection(n, trace)
+        lease = n.f.bridge._native_runtime_lease()
+        first, operations = material_operations(publisher, selected)
+        before = trace.reads.count(path), len(n.acl_reads)
+        second, repeated = material_operations(publisher, selected)
+        assert first == second and operations == repeated == [lease]
+        assert trace.reads.count(path) > before[0] and len(n.acl_reads) > before[1]
+        assert trace.compiles.count(str(path)) == 1
+        modules = [item for item in trace.modules if item.__name__ == 'verify_native_source']
+        assert len({id(module) for module in modules}) == len(modules)
+
+
+@pytest.mark.parametrize('state', ['different-root', 'foreign-bridge', 'revoked'])
+def test_material_keeps_unrelated_or_revoked_operation_cold(complete_loaders, monkeypatch, state):
+    import contextvars
+    n, trace = complete_loaders
+    with n.f.bridge._native_runtime_operation():
+        publisher, selected = material_selection(n, trace)
+        lease = n.f.bridge._native_runtime_lease()
+        saved = lease.bundle_root
+        copied = contextvars.copy_context()
+        if state == 'different-root':
+            authority = publisher._source_authority
+            def changed(selection):
+                result = authority(selection)
+                lease.bundle_root = saved.parent / ('f' * 64)
+                return result
+            monkeypatch.setattr(publisher, '_source_authority', changed)
+            try:
+                _result, operations = material_operations(publisher, selected)
+                assert operations == [None]
+            finally: lease.bundle_root = saved
+        elif state == 'foreign-bridge':
+            other = copy.copy(n.f.bridge)
+            with other._native_runtime_operation():
+                foreign = other._native_runtime_lease()
+                _result, operations = material_operations(publisher, selected)
+                assert operations == [None] and foreign.bundle_root is None and foreign.custody._cache == {}
+    assert not lease.active and lease.code == {}
+    if state == 'revoked':
+        _result, operations = copied.run(material_operations, publisher, selected)
+        assert operations == [None] and lease.code == {}
+
+
+@pytest.mark.parametrize('change', ['bytes', 'acl', 'namespace'])
+def test_material_warm_operation_still_refuses_current_source_drift(complete_loaders, change):
+    n, trace = complete_loaders
+    with n.f.bridge._native_runtime_operation():
+        publisher, selected = material_selection(n, trace)
+        material_operations(publisher, selected)
+        path = n.f.source / 'installers/macos/lib/pixel-native-source-broker.py'
+        if change == 'bytes': path.write_bytes(path.read_bytes() + b'\n# unexpected\n')
+        elif change == 'acl': n.rejected_acls.add(path)
+        else: (n.f.root / 'native-source/unknown.py').write_bytes(b'pass')
+        compiled = len(trace.compiles)
+        with pytest.raises((bridge.AccessError, mac.CustodyError, OSError, ValueError)):
+            material_operations(publisher, selected)
+        assert len(trace.compiles) == compiled
+
+
+def test_material_legacy_verify_signature_stays_cold_without_retry(complete_loaders, monkeypatch):
+    import inspect
+    n, trace = complete_loaders
+    original = inspect.signature
+    def signature(function):
+        value = original(function)
+        if function.__module__ == 'publication_bundle' and function.__name__ == 'verify':
+            return value.replace(parameters=[item for name, item in value.parameters.items() if name != '_operation'])
+        return value
+    with n.f.bridge._native_runtime_operation():
+        publisher, selected = material_selection(n, trace)
+        monkeypatch.setattr(inspect, 'signature', signature)
+        _result, operations = material_operations(publisher, selected)
+        assert operations == [None]

@@ -1,7 +1,7 @@
 """Public publisher and real qualification; explicit Linux Darwin metadata simulation.
 
 No Source/provider/SDK/model jobs are exercised.
-The existing cold _material.verify remains real and is measured separately.
+The independent _material.verify remains real; only the same Root lease may reuse immutable hashes.
 """
 # ruff: noqa: E402
 import copy
@@ -113,7 +113,7 @@ def test_public_publisher_reuses_one_qualifier_then_next_call_is_cold(observed):
     assert not lease.active and lease.custody._cache == {}
     assert bridge._NATIVE_RUNTIME_OPERATION.get() is None
     assert bridge._DEADLINE.get() == deadline
-    assert trace.outsideBytes > 0  # Cold verification and fixture metadata walks remain separate.
+    assert trace.outsideBytes == 0  # Same-root bundle verification reuses the first inspected hash, with fresh custody.
     assert int(first['invocation']['admissionDeadlineNs']) - n.now == 30 * 10**9
     assert int(first['invocation']['workerDeadlineNs']) - n.now == 300 * 10**9
     before = (custody.NATIVE_STATE / 'custody.json').read_bytes()

@@ -56,6 +56,11 @@ def material(native, built, monkeypatch):  # noqa: F811
     f.root = root
     f.value = f.bridge.connection_deployment()
     n.selected = custody.native_source_selection(f.bridge,f.value)
+    # Only the relocated protected import location is modeled. The code bytes
+    # and every immutable provenance/component proof remain the actual ones.
+    copied_helper = root / 'ods-source/installers/macos/lib/pixel-native-source-broker.py'
+    assert copied_helper.read_bytes() == Path(helper.__file__).read_bytes()
+    monkeypatch.setattr(helper, '__file__', str(copied_helper))
     # Read-only OS metadata observations. Every other command is an error.
     n.commands=[]
     def command(argv,timeout=20):
