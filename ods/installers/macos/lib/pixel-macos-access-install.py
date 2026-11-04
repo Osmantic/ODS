@@ -1617,8 +1617,27 @@ def _upgrade_services(plan, records):
             plist=path, verify_definition=verify_definition, process=process,
             save_stop=save, load_stop=load, allow_root_process=role == 'promoter')
 
-    return tuple({role: create(role, version, *definition) for role, definition in definitions.items()}
-                 for version in ('previous', 'candidate'))
+    previous, candidate = ({role: create(role, version, *definition) for role, definition in definitions.items()}
+        for version in ('previous', 'candidate'))
+    for role in previous:
+        old, new = previous[role], candidate[role]
+        record = by_path[str(_destination(old.plist))]
+        if (getattr(old, 'prior_absent', False) or record['before'] != record['after']
+                or old.process != new.process or old.allow_root_process != new.allow_root_process):
+            continue
+        # These two snapshots describe the same process contract. Keep their
+        # distinct durable slots, but invalidate both before either bootstrap.
+        # Never transfer a valid witness: a pre-bootstrap tree cannot establish
+        # absence of a later instance merely because its plist is unchanged.
+        stores = (old.save_stop, new.save_stop)
+        for index, service in enumerate((old, new)):
+            def save_stop(value, own=stores[index], peer=stores[1 - index]):
+                if value is None:
+                    peer(None)
+                own(value)
+            service.save_stop = save_stop
+        old._upgrade_stop_peer, new._upgrade_stop_peer = new, old
+    return previous, candidate
 
 
 def _assert_integration_job_absent(target):
@@ -1771,7 +1790,13 @@ def _observe_upgrade_service(previous, candidate):
         if error.code == 'host-command-failed' and error.returncode == 113:
             return 'absent'
         raise
-    for version, service in (('previous', previous), ('candidate', candidate)):
+    versions = (('previous', previous), ('candidate', candidate))
+    if (getattr(previous, '_upgrade_stop_peer', None) is candidate
+            and getattr(candidate, '_upgrade_stop_peer', None) is previous):
+        # Absence selects candidate first too. A fresh stop of this equivalent
+        # contract must therefore publish in that same slot, including replay.
+        versions = tuple(reversed(versions))
+    for version, service in versions:
         try:
             service.verify_definition()
         except InstallError as error:
