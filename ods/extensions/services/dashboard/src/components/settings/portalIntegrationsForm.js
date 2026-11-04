@@ -101,3 +101,34 @@ export function toolEffect(tool) {
 }
 
 export const sameDraft = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+
+const isRecord = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+
+// One object of the draft: what the owner changed (mine against from) on top of the newer values.
+function rebaseRecord(mine, from, latest) {
+  const keys = new Set([...Object.keys(latest), ...Object.keys(mine)])
+  return Object.fromEntries([...keys].flatMap(key => {
+    if (sameDraft(mine[key], from?.[key])) return key in latest ? [[key, latest[key]]] : []
+    if (isRecord(mine[key]) && isRecord(latest[key]) && isRecord(from?.[key])) return [[key, rebaseRecord(mine[key], from[key], latest[key])]]
+    return [[key, mine[key]]]
+  }))
+}
+
+// The owner's unsaved changes moved onto settings saved meanwhile elsewhere (all three are drafts):
+// what the owner did not touch takes the newer value, so a change made in another window, such as
+// a permission turned off, is never put back by a save from this one.
+export function rebaseDraft(draft, base, latest) {
+  const mine = new Map(draft.servers.map(server => [server.id, server]))
+  const from = new Map(base.servers.map(server => [server.id, server]))
+  const now = new Set(latest.servers.map(server => server.id))
+  const servers = latest.servers.flatMap(server => {
+    if (!mine.has(server.id)) return from.has(server.id) ? [] : [server] // Removed here, or added elsewhere.
+    return [rebaseRecord(mine.get(server.id), from.get(server.id), server)]
+  })
+  const added = draft.servers.filter(server => !from.has(server.id) && !now.has(server.id))
+  return {
+    notifications: rebaseRecord(draft.notifications, base.notifications, latest.notifications),
+    notes: rebaseRecord(draft.notes, base.notes, latest.notes),
+    servers: [...servers, ...added],
+  }
+}
