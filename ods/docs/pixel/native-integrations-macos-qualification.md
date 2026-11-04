@@ -447,8 +447,9 @@ then refused at `pixel-native-integrations-service.py:239`, before the baseline
 gate or another ordinary update. The running service publishes `discovery.json`
 beside its socket, while the preservation validator allowed only `control.sock`.
 The observed directory and both children had the expected owner and modes.
-Code order places the refusal after sealing the capsule and before phase change,
-service stop or moving originals; the next protected read must confirm that prefix.
+Code order placed the refusal after sealing the capsule and before phase change,
+service stop or moving originals. The next command's protected read confirmed
+that exact prefix, including the original inodes and ready bindings.
 
 The correction validates the literal discovery filename through a nofollow FD,
 including owner/group/mode, ACL, link count, size, stable bytes/inode and the
@@ -460,7 +461,42 @@ preserving the runtime directory, socket and JSON. It made no Root changes.
 The 22b9 CI protected-entry job passed 16 cases, and operation-cache passed all
 74 after the quoting fix. Its planning fixture omitted `plugins.allow`; declaring
 the intended Source-off allowlist fixed both cases, with a separate missing-list
-refusal retained. Physical recovery and the next revision's CI remain pending.
+refusal retained.
+
+The physical command pinned to `b4bde0538` passed its initial Root read-only
+inspection: schema 5 remained active with 114 exact images, the sealed capsule
+contained only its three control files, all four originals remained in place,
+and the older archive and ledger were stable. Recovery then stopped all seven
+native jobs and refused at `pixel_gateway_service.py:158` while qualifying a
+stop witness. The baseline gate and ordinary update did not run. Owner-side
+observation still found the candidate plist and both original owner sidefiles;
+the exact protected journal phase and per-service witness state require the
+prepared read-only diagnostic. No service was manually bootstrapped afterward.
+
+An isolated reproduction identified inconsistent selection for identical service
+definitions: observation selected the previous slot, while stopped-state proof
+selected the candidate slot. A separate case showed that starting either version
+must invalidate both equivalent slots, or a later exited instance could inherit
+an earlier tree's proof. The prospective correction pairs only identical plist
+bytes and process contracts, selects the candidate slot consistently, and clears
+both slots before either bootstrap. It never copies a valid stop witness or
+adopts the already-stopped legacy prefix. Eighteen new cases passed with actual
+service adapters and file-backed receipt stores; only OS observations were
+invented. One additional driver case preserved the stopped legacy prefix,
+simulated a new boot with seven new process identities, and required fresh
+canonical stop receipts before restoration. It did not adopt the old witnesses
+and does not establish a physical reboot or the full Source composition.
+Independent review found no material issue. The affected seven legacy
+fixtures passed in the isolated Linux environment; six encounter this Mac's
+existing runtime before reaching the changed factory. Physical recovery remains
+pending, and none of these tests establishes a fresh live stop witness.
+
+The `b4bde0538` CI is terminal with 156 successful checks and one intentional
+skip, without failures, cancellations or reruns. Its final active-publication
+packet passed all 26 cases in 2,054.24 seconds. This CI result belongs to b4,
+does not include the later stop-witness correction, and does not resolve the
+physical failure above. The corrected revision requires its own CI and live
+recovery evidence.
 
 Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
 notifications and reboot acceptance remain pending. The Mac has not been
