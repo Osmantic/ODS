@@ -74,6 +74,7 @@ ROOT_SOURCE_FILES = {
     'bin/model_transaction.py': 'extensions/services/pixel-agent/host/model_transaction.py',
     'bin/native_mcp_oauth.mjs': 'extensions/services/pixel-agent/host/native_mcp_oauth.mjs',
     'bin/native_mcp_owner.py': 'extensions/services/pixel-agent/host/native_mcp_owner.py',
+    'bin/pixel_connections/native_executor.py': 'bin/pixel_connections/native_executor.py',
     'bin/ods-pixel-route-lease': 'bin/ods-pixel-route-lease',
     'bin/pixel_access_bridge.py': 'bin/pixel_access_bridge.py',
     'bin/pixel_access_client.py': 'bin/pixel_access_client.py',
@@ -1542,11 +1543,17 @@ def _active_record(custody, record, origin, binding, expected):
         return
     txn_keys = {'label', 'invocation', 'before', 'after', 'images'}
     change = txn.get('change') if type(txn) is dict else None
-    if (type(txn) is not dict or not txn_keys <= set(txn) <= txn_keys | {'change'}
+    if (type(txn) is not dict or not txn_keys <= set(txn) <= txn_keys | {'change', 'admissionCeilingNs'}
             or type(txn['images']) is not dict or set(txn['images']) != (
                 {'manifest', 'gate', 'before'} if change is not None else {'definition', 'manifest', 'gate', 'before'})):
         raise ValueError('native-source-active-record-changed')
     invocation = custody._native_invocation(txn['invocation']).document
+    if 'admissionCeilingNs' in txn:
+        ceiling = txn['admissionCeilingNs']
+        if (type(ceiling) is not str or not re.fullmatch('[1-9][0-9]{0,18}', ceiling) or int(ceiling) >= 2**63
+                or int(invocation['admissionDeadlineNs']) > int(ceiling)
+                or invocation['role'] != 'sync' and int(invocation['workerDeadlineNs']) > int(ceiling)):
+            raise ValueError('native-source-active-ceiling-invalid')
     label, body = _active_definition(custody, json.loads(expected), invocation['role'], invocation['identifier'], True)
     if txn['label'] != label or invocation['generation'] != origin['generation']:
         raise ValueError('native-source-active-record-changed')
@@ -1581,7 +1588,8 @@ def _active_record(custody, record, origin, binding, expected):
 
 def _active_change(custody, change, before, label, invocation):
     """Closed per-invocation transitions; completion never means a provider effect."""
-    if (type(change) is not dict or set(change) != {'id', 'kind', 'expectedNonce', 'phase'}
+    change_keys = {'id', 'kind', 'expectedNonce', 'phase'}
+    if (type(change) is not dict or not change_keys <= set(change) <= change_keys | {'stopProof'}
             or type(change['id']) is not str or not re.fullmatch('[a-f0-9]{32}', change['id'])
             or type(change['expectedNonce']) is not str or not re.fullmatch('[a-f0-9]{32}', change['expectedNonce'])):
         raise ValueError('native-source-lifecycle-control-invalid')
@@ -1589,6 +1597,14 @@ def _active_change(custody, change, before, label, invocation):
     if row is None or row['invocation']['nonce'] != change['expectedNonce']:
         raise ValueError('native-source-lifecycle-nonce-changed')
     old = row['invocation']
+    if 'stopProof' in change:
+        proof = change['stopProof']
+        if (change['kind'] != 'rearm' and change['phase'] not in ('completed', 'retired')
+                or type(proof) is not dict or set(proof) != {'job', 'sha256'}
+                or type(proof['job']) is not dict or proof['job'].get('nonce') != old['nonce']
+                or (proof['job'].get('role'), proof['job'].get('identifier')) != (old['role'], old['identifier'])
+                or proof['sha256'] != sha(custody._native_encoded(proof['job']))):
+            raise ValueError('native-source-stop-proof-invalid')
     if change['kind'] == 'rearm':
         if (change['phase'] != 'prepared' or old['role'] not in ('sync', 'direct')
                 or row['phase'] not in ('completed', 'retired')
@@ -1751,24 +1767,25 @@ def _archive_active(custody, jobs, record, guard, save):
                 os.close(fd)
 
 
-def transition_active_slot(selection, role, identifier=None, *, expected_nonce, phase):
+def transition_active_slot(selection, role, identifier=None, *, expected_nonce, phase, per_job=False):
     """Root-only durable handoff/revocation, not launchd control or effect success.
 
     The executor must call running only after its owned READY/GO handoff. Quiescing
     and unknown revoke dispatch before any stop. Completed/retired require the
     fixed global no-jobs/no-broker-process observation; no caller proof is trusted.
     """
-    return _change_active_slot(selection, role, identifier, expected_nonce, 'phase', phase)
+    return _change_active_slot(selection, role, identifier, expected_nonce, 'phase', phase, per_job=per_job)
 
 
-def rearm_active_slot(selection, role, identifier=None, *, expected_nonce):
+def rearm_active_slot(selection, role, identifier=None, *, expected_nonce, per_job=False, _admission_ceiling_ns=None):
     """Explicit new admission only for quiescent repeatable sync/direct jobs.
 
     Effect-bearing one-shots are never replayed here. A lost reply observes the
     exact original new nonce and deadlines. This call requires a live bounded Root
     scope and never borrows a role budget as the admission deadline.
     """
-    return _change_active_slot(selection, role, identifier, expected_nonce, 'rearm', 'prepared')
+    return _change_active_slot(selection, role, identifier, expected_nonce, 'rearm', 'prepared',
+        per_job=per_job, _admission_ceiling_ns=_admission_ceiling_ns)
 
 
 def abort_rearm_active_slot(selection, role, identifier=None, *, expected_nonce):
@@ -1790,14 +1807,14 @@ def abort_rearm_active_slot(selection, role, identifier=None, *, expected_nonce)
         return _publish_active_slot(selection, role, identifier, rollback=True, _abort_nonce=expected_nonce)
 
 
-def _change_active_slot(selection, role, identifier, nonce, kind, phase):
+def _change_active_slot(selection, role, identifier, nonce, kind, phase, *, per_job=False, _admission_ceiling_ns=None):
     from pixel_access_bridge import LaunchdAccessBridge
     from pixel_connections import custody
     from pixel_connections.planner import ConnectionDeployment
     if (type(selection) is not custody._NativeSourceSelection or selection.seal is not custody._NATIVE_SEAL
             or type(selection.bridge) is not LaunchdAccessBridge or type(selection.deployment) is not ConnectionDeployment):
         raise custody.CustodyError('native-source-deployment-required')
-    if (type(nonce) is not str or not re.fullmatch('[a-f0-9]{32}', nonce)
+    if (type(per_job) is not bool or type(nonce) is not str or not re.fullmatch('[a-f0-9]{32}', nonce)
             or phase not in ('prepared', 'running', 'quiescing', 'unknown', 'completed', 'retired')):
         raise ValueError('native-source-lifecycle-control-invalid')
     if kind == 'rearm':
@@ -1805,8 +1822,13 @@ def _change_active_slot(selection, role, identifier, nonce, kind, phase):
         # runtime publication. Check again when computing the actual admission.
         LaunchdAccessBridge._native_source_deadline_ns(selection.bridge)
     with LaunchdAccessBridge._native_runtime_operation(selection.bridge):
+        change = {'kind': kind, 'expectedNonce': nonce, 'phase': phase}
+        if per_job:
+            from pixel_connections.native_executor import verify_stopped
+            job = verify_stopped(selection, role, identifier, nonce)
+            change['stopProof'] = {'job': job, 'sha256': sha(custody._native_encoded(job))}
         return _publish_active_slot(selection, role, identifier,
-            _change={'kind': kind, 'expectedNonce': nonce, 'phase': phase})
+            _change=change, _admission_ceiling_ns=_admission_ceiling_ns)
 
 
 def publish_active_slot(selection, role, identifier=None, *, rollback=False):
@@ -1825,7 +1847,21 @@ def publish_active_slot(selection, role, identifier=None, *, rollback=False):
         return _publish_active_slot(selection, role, identifier, rollback=rollback)
 
 
-def _publish_active_slot(selection, role, identifier=None, *, rollback=False, _change=None, _abort_nonce=None):
+def admit_active_slot(selection, role, identifier=None, *, _admission_ceiling_ns=None):
+    """Executable admission requires the existing Root bounded-operation ceiling."""
+    from pixel_access_bridge import LaunchdAccessBridge
+    from pixel_connections import custody
+    from pixel_connections.planner import ConnectionDeployment
+    if (type(selection) is not custody._NativeSourceSelection or selection.seal is not custody._NATIVE_SEAL
+            or type(selection.bridge) is not LaunchdAccessBridge or type(selection.deployment) is not ConnectionDeployment):
+        raise custody.CustodyError('native-source-deployment-required')
+    LaunchdAccessBridge._native_source_deadline_ns(selection.bridge)
+    with LaunchdAccessBridge._native_runtime_operation(selection.bridge):
+        return _publish_active_slot(selection, role, identifier, _admit=True, _admission_ceiling_ns=_admission_ceiling_ns)
+
+
+def _publish_active_slot(selection, role, identifier=None, *, rollback=False, _change=None, _abort_nonce=None,
+                        _admit=False, _admission_ceiling_ns=None):
     """Root-only fixed publisher, caller holds existing admission lock.
 
     No launchctl mutation/Source dispatch. Root inputs and intent precede the
@@ -1878,6 +1914,9 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False, _c
                     'originSha256': sha(origin_raw), 'phase': 'committed', 'current': state,
                     'transaction': None, 'retained': {}, 'retired': []}
             _active_record(custody, record, origin, binding, expected)
+            if (_admit and record['phase'] != 'committed' and record['transaction'] is not None
+                    and 'admissionCeilingNs' not in record['transaction']):
+                raise ValueError('native-source-execution-unbound-preparation')
             if record['phase'] in ('unknown', 'retired'):
                 raise ValueError('native-source-active-explicit-recovery-required')
             if _abort_nonce is not None:
@@ -1962,9 +2001,21 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False, _c
                 custody._native_verify_prepared_logs(metadata, identity, base_binding)
                 if custody._native_boot_uuid() != origin['witness']['boot']:
                     raise ValueError('native-source-active-boot-changed')
-                change = _change or (record.get('transaction') or {}).get('change')
+                # A committed transaction is a receipt. Its old stopped job
+                # may already have been replaced by the executor's next nonce;
+                # only this operation or unfinished publication needs a fresh
+                # live stop proof. Archived receipts never grant authority.
+                change = _change
+                if change is None and record['phase'] not in ('committed', 'restored'):
+                    change = (record.get('transaction') or {}).get('change')
                 must_quiesce = change is not None and (change['kind'] == 'rearm' or change['phase'] in ('completed', 'retired'))
-                if (must_quiesce or role in ('exchange', 'revoke') and change is None) and _no_actors(selection, custody, metadata, _generation=True) != origin['witness']:
+                if must_quiesce and 'stopProof' in change:
+                    from pixel_connections.native_executor import verify_stopped
+                    proof = change['stopProof']
+                    actual = verify_stopped(selection, proof['job']['role'], proof['job']['identifier'], change['expectedNonce'])
+                    if actual != proof['job'] or sha(custody._native_encoded(actual)) != proof['sha256']:
+                        raise ValueError('native-source-stop-proof-changed')
+                elif (must_quiesce or role in ('exchange', 'revoke') and change is None) and _no_actors(selection, custody, metadata, _generation=True) != origin['witness']:
                     raise ValueError('native-source-active-grant-quiesce-required')
                 check_jobs = custody._native_job_directory(metadata, origin)
                 os.close(check_jobs)
@@ -2095,6 +2146,9 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False, _c
                 current = record['current']
                 row = current['gate']['document'].get('launch', {}).get('invocations', {}).get(label)
                 if row is not None and _change is None:
+                    if _admit and (txn is None or txn['label'] != label or txn['invocation'] != row['invocation']
+                            or 'admissionCeilingNs' not in txn):
+                        raise ValueError('native-source-execution-unbound-preparation')
                     return {'status': 'observed', 'label': label, 'invocation': row['invocation'],
                         'eligible': row['phase'] in ('prepared', 'running') and custody._native_clock_ns() < int(
                             row['invocation']['admissionDeadlineNs' if row['phase'] == 'prepared' else 'workerDeadlineNs'])}
@@ -2104,7 +2158,7 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False, _c
                     if row is None:
                         raise ValueError('native-source-lifecycle-slot-missing')
                     previous = (txn or {}).get('change')
-                    if previous is not None and {key: previous[key] for key in _change} == _change:
+                    if previous is not None and {key: previous.get(key) for key in _change} == _change:
                         # The committed transition is the recovery receipt. Its
                         # old expected nonce may differ after a successful rearm.
                         return {'status': 'observed', 'label': label, 'phase': row['phase'], 'invocation': row['invocation']}
@@ -2139,9 +2193,13 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False, _c
                 now = custody._native_clock_ns()
                 admission = now + (30 if role == 'sync' else custody.NATIVE_CHILD_BUDGETS[role]) * 10**9
                 worker = now + custody.NATIVE_CHILD_BUDGETS[role] * 10**9
-                if _change is not None and _change['kind'] == 'rearm':
+                if _admit or _change is not None and _change['kind'] == 'rearm':
                     from pixel_access_bridge import LaunchdAccessBridge
                     ceiling = LaunchdAccessBridge._native_source_deadline_ns(selection.bridge)
+                    if _admission_ceiling_ns is not None:
+                        if type(_admission_ceiling_ns) is not int or not 0 < _admission_ceiling_ns < 2**63:
+                            raise ValueError('native-source-active-ceiling-invalid')
+                        ceiling = min(ceiling, _admission_ceiling_ns)
                     admission = min(admission, ceiling)
                     if role != 'sync':
                         worker = min(worker, ceiling)
@@ -2160,6 +2218,8 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False, _c
                         ('definition', 'manifest', 'gate', 'before') if _change is None else ('manifest', 'gate', 'before'))}}
                 if _change is not None:
                     record['transaction']['change'] = dict(_change, id=uuid.uuid4().hex)
+                if _admit or _change is not None and _change['kind'] == 'rearm':
+                    record['transaction']['admissionCeilingNs'] = str(ceiling)
                 record['phase'] = 'staging'
                 refresh()
                 if len(custody._native_encoded(after['gate']['document'])) > 16384 or len(after['definitions']) > 64:
@@ -2174,7 +2234,7 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False, _c
                 raise ValueError('native-source-active-pending-slot-preserved')
             actual_change = txn.get('change')
             if ((actual_change is None) != (_change is None) or actual_change is not None
-                    and {key: actual_change[key] for key in _change} != _change):
+                    and {key: actual_change.get(key) for key in _change} != _change):
                 raise ValueError('native-source-lifecycle-pending-preserved')
             if record['phase'] == 'staging':
                 for key in ('definition', 'manifest', 'gate', 'before'):

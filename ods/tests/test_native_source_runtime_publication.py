@@ -91,7 +91,8 @@ def test_actual_bundle_copies_only_reviewed_closed_source_and_binds_inputs(built
     manifest, checksum = bundle.verify(f.root, expected_digest=f.digest)
     assert checksum == f.digest
     files = {p.relative_to(f.root / 'ods-source').as_posix() for p in (f.root / 'ods-source').rglob('*') if p.is_file()}
-    assert files == set(helper.ROOT_SOURCE_FILES) and len(files) == 107
+    assert files == set(helper.ROOT_SOURCE_FILES) and len(files) == 108
+    assert 'bin/pixel_connections/native_executor.py' in files
     proof = json.loads((f.root / 'ods-source.json').read_bytes())
     assert proof['commit'] == f.source.ref
     for target, origin in helper.ROOT_SOURCE_FILES.items():
@@ -136,7 +137,8 @@ def test_new_flat_source_workers_use_only_actual_bound_bundle_bytes(built):
            for name in installer.CONNECTION_FILES}}
     (built.source.ods / 'bin/pixel_connections/custody.py').write_bytes(b'owner checkout changed, never published')
     assert dict(installer._source_flat_files(selection)) == expected
-    assert len(expected) == 26
+    assert len(expected) == 27
+    assert 'pixel_connections/native_executor.py' in expected
     (built.root / 'ods-source/bin/pixel_connections/custody.py').write_bytes(b'changed approved copy')
     with pytest.raises((bundle.BundleError, installer._bundle.BundleError)):
         installer._source_flat_files(selection)

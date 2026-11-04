@@ -77,7 +77,7 @@ SOURCE_HOST_FILES = ('connection_transaction.py', 'native_mcp_owner.py', 'native
 CONNECTION_FILES = ('__init__.py', 'activity.py', 'approvals.py', 'catalog.py', 'converge.py',
     'coordinator.py', 'custody.py', 'drafts.py', 'google_app.py', 'host_api.py', 'lifecycle.py',
     'native_access.py', 'native_apps.py', 'native_contract.py', 'native_enrollment.py', 'native_host_api.py',
-    'native_mcp.py', 'native_public.py', 'oauth.py', 'planner.py', 'plugins.py', 'state.py', 'status.py')
+    'native_mcp.py', 'native_public.py', 'native_executor.py', 'oauth.py', 'planner.py', 'plugins.py', 'state.py', 'status.py')
 SETTINGS_FILES = ("__init__.py", "contract.py", "projection.py", "runtime.py", "coordinator.py")
 PROVIDER_FILES = ("__init__.py", "config.py", "store.py", "activation_config.py", "managed_deployment.py",
                   "service_environment.py", "service_activation.py", "runtime_custody.py", "coordinator.py")
