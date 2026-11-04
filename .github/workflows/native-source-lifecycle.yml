@@ -15,6 +15,8 @@ on:
       - 'ods/tests/test_pixel_installed_connections_package.py'
       - 'ods/tests/test_native_installer_support.py'
       - 'ods/tests/test_native_sidefiles_preservation.py'
+      - 'ods/tests/test_native_prepublication_selection.py'
+      - 'ods/tests/test_native_prepublication_preservation.py'
       - 'ods/vendor/pixel.bundle'
       - 'ods/vendor/pixel/**'
       - '.github/workflows/native-source-lifecycle.yml'
@@ -143,7 +145,7 @@ jobs:
           - packet: installer-callers
             files: ods/tests/test_native_source_installer_lifecycle.py ods/tests/test_native_source_installer_recovery.py ods/tests/test_native_source_installer_prepared_boundary.py ods/tests/test_native_source_installer_live_images.py ods/tests/test_native_source_retained_identities.py ods/tests/test_native_source_retirement_boundary.py
           - packet: sidefile-archive-history
-            files: ods/tests/test_native_source_sidefile_archives.py ods/tests/test_native_sidefiles_preservation.py
+            files: ods/tests/test_native_source_sidefile_archives.py ods/tests/test_native_sidefiles_preservation.py ods/tests/test_native_prepublication_selection.py ods/tests/test_native_prepublication_preservation.py
           - packet: installer-planning
             files: ods/tests/test_native_source_installer_plan.py
           - packet: installer-bootstrap

@@ -1,6 +1,7 @@
 """Closed archive reader on real FDs; explicit Darwin owner/ACL observations."""
 # ruff: noqa: E402,F401,F811
 import copy
+import base64
 import hashlib
 import json
 import os
@@ -21,6 +22,7 @@ from test_native_source_initial_backend import (initial, material, built, source
     publication, helper, qualification_operation)
 from pixel_connections import custody as c, native_retirement as retirement
 from pixel_connections import native_executor as ex
+import pixel_macos_custody as mac
 
 
 def sha(raw):
@@ -131,6 +133,68 @@ def read(a):
     return c.native_sidefile_archives(owner_uid=a.uid, owner_gid=a.gid)
 
 
+def make_bound_archive(n, monkeypatch):
+    """A second, ready-but-unpublished attempt retains the first exact capsule."""
+    previous = make_archive(n, monkeypatch)
+    n.owners[tuple(previous.manifest['parent']['inode'])] = (previous.uid, previous.gid)
+    candidate = 'c' * 64
+    context = copy.deepcopy(previous.context)
+    for item in (context['upgrade_qualification'], context['source_lifecycle']):
+        item['candidateDigest'] = candidate
+    context['runtime_bundle']['digest'] = candidate
+    records = [{**{key: row[key] for key in ('path', 'mode', 'gid')},
+        'before': None if row['before'] is None else base64.b64decode(row['before']),
+        'after': base64.b64decode(row['after'])} for row in previous.restored['files']]
+    runtime_record = next(row for row in records if row['path'] == str(c.NATIVE_META / 'source-runtime-installation.json'))
+    runtime_record['after'] = c._native_encoded(dict(schemaVersion=1, kind='ods-native-source-runtime-publication',
+        bundleSha256=candidate, sourceRef='f' * 40, odsSourceCommit='e' * 40,
+        componentSha256='1' * 64, manifestSha256='2' * 64, descriptorSha256='3' * 64, launcherSha256='4' * 64))
+    context['source_lifecycle']['familySha256'] = upgrade.source_family_hash(records)
+    raw = c._native_encoded(context)
+    addition = copy.deepcopy(previous.restored['sourceAddition'])
+    addition['familySha256'] = context['source_lifecycle']['familySha256']
+    addition['contextSha256'] = addition['proof']['transaction'] = sha(raw)
+    addition['proof']['candidateDigest'] = candidate
+    journal = upgrade.encode_recovery(records, current_digest=CURRENT, candidate_digest=candidate,
+        allowed_paths={row['path'] for row in records}, source_addition=addition)
+    assert journal['schemaVersion'] == 5
+    journal['phase'] = 'active'
+    archive = n.metadata / (c._SIDEFILE_ARCHIVE_PREFIX + candidate)
+    archive.mkdir(mode=0o700)
+    info = archive.stat()
+    authority = {}
+    for label, body, original in [('context', raw, 'runtime-upgrade-context-' + candidate + '.json'),
+            ('journal', c._native_encoded(journal), 'runtime-upgrade.json')]:
+        prior = write(n.metadata / original, body)
+        authority[label] = dict(write(archive / (label + '.json'), body), sourceName=original, sourceInode=prior['inode'])
+    files = {}
+    for name, text in context['runtime_bundle']['connection_sidefiles'].items():
+        image = write(archive / name, text.encode())
+        n.owners[tuple(image['inode'])] = (previous.uid, previous.gid)
+        files[name] = dict(image, uid=previous.uid, gid=previous.gid, mode=0o600)
+    receipt = json.loads((previous.path / 'source-sidefiles.json').read_bytes())
+    receipt['bundleSha256'] = candidate
+    receipt['children'] = {key: {'inode': files[key]['inode'], 'ready': True} for key in files}
+    runtime = next(row['after'] for row in records if row['path'] == str(c.NATIVE_META / 'source-runtime-installation.json'))
+    for name, body in [('source-sidefiles.json', c._native_encoded(receipt)), ('source-runtime-installation.json', runtime)]:
+        files[name] = dict(write(archive / name, body), uid=0, gid=0, mode=0o600)
+    ledger_raw = (n.metadata / c._SIDEFILE_ARCHIVES).read_bytes()
+    ledger_info = (n.metadata / c._SIDEFILE_ARCHIVES).stat()
+    history = dict(ledger={'inode': [ledger_info.st_dev, ledger_info.st_ino], 'sha256': sha(ledger_raw)},
+        archives=copy.deepcopy(previous.ledger['archives']))
+    manifest = dict(schemaVersion=2, kind='ods-native-source-sidefiles-archive', currentDigest=CURRENT,
+        candidateDigest=candidate, owner={'uid': previous.uid, 'gid': previous.gid},
+        directory={'inode': [info.st_dev, info.st_ino]}, parent=copy.deepcopy(previous.manifest['parent']),
+        authority=authority, files=files, absent=[], origin='bound-ready-before-source-publication', history=history)
+    image = write(archive / 'manifest.json', c._native_encoded(manifest))
+    ledger = copy.deepcopy(previous.ledger)
+    ledger['archives'][candidate] = {'directory': manifest['directory'],
+        'manifest': {key: image[key] for key in ('inode', 'sha256')}}
+    write(n.metadata / c._SIDEFILE_ARCHIVES, c._native_encoded(ledger))
+    return SimpleNamespace(n=n, path=archive, manifest=manifest, ledger=ledger, context=context, journal=journal,
+        records=records, uid=previous.uid, gid=previous.gid, previous=previous, candidate=candidate)
+
+
 def snapshot(a):
     return {str(path.relative_to(a.n.metadata)): (path.read_bytes(), path.stat().st_ino, path.stat().st_mode)
         for path in a.n.metadata.rglob('*') if path.is_file() and not path.is_symlink()}
@@ -138,7 +202,7 @@ def snapshot(a):
 
 def save_manifest(a):
     image = write(a.path / 'manifest.json', c._native_encoded(a.manifest))
-    a.ledger['archives'][CANDIDATE]['manifest'] = {key: image[key] for key in ('inode', 'sha256')}
+    a.ledger['archives'][a.manifest['candidateDigest']]['manifest'] = {key: image[key] for key in ('inode', 'sha256')}
     write(a.n.metadata / c._SIDEFILE_ARCHIVES, c._native_encoded(a.ledger))
 
 
@@ -216,7 +280,8 @@ def test_archive_refuses_drift_and_forged_capsules_without_repair(archived, faul
 
 
 @pytest.mark.parametrize('retained', [False, True])
-def test_legacy_absence_validates_history_without_turning_it_into_live_source(absent, monkeypatch, retained):
+@pytest.mark.parametrize('bound', [False, True])
+def test_legacy_absence_validates_history_without_turning_it_into_live_source(absent, monkeypatch, retained, bound):
     n = absent
     if not retained:
         (n.metadata / 'source-identity.json').unlink()
@@ -224,7 +289,7 @@ def test_legacy_absence_validates_history_without_turning_it_into_live_source(ab
     before = c._native_installer_absence_state(n.f.bridge)
     if not retained:
         assert before[:3] == (None, {}, {'kind': 'absent'})
-    a = make_archive(n, monkeypatch)
+    a = (make_bound_archive if bound else make_archive)(n, monkeypatch)
     assert c._native_installer_absence_state(n.f.bridge) == before
     (n.metadata / c._SIDEFILE_ARCHIVES).rename(n.world / 'saved-ledger')
     with pytest.raises(c.CustodyError, match='metadata-preserved'):
@@ -233,9 +298,10 @@ def test_legacy_absence_validates_history_without_turning_it_into_live_source(ab
 
 
 @pytest.mark.parametrize('grant', [False, True])
-def test_actual_initial_prepare_keeps_archive_and_grant_refusals(initial, monkeypatch, grant):
+@pytest.mark.parametrize('bound', [False, True])
+def test_actual_initial_prepare_keeps_archive_and_grant_refusals(initial, monkeypatch, grant, bound):
     n = initial
-    a = make_archive(n, monkeypatch)
+    a = (make_bound_archive if bound else make_archive)(n, monkeypatch)
     archive_before = {path.name: (path.read_bytes(), path.stat().st_ino) for path in a.path.iterdir()}
     publish, reached = helper.publish_initial_generation, []
     if grant:
@@ -290,3 +356,112 @@ def test_retirement_captures_complete_capsule_only_after_bound_reader(material, 
         assert node['entries']['gateway.env']['inode'] == a.manifest['files']['gateway.env']['inode']
         assert c._SIDEFILE_ARCHIVES in history['metadata']
         assert snapshot(a) == before
+
+
+def test_bound_ready_archive_preserves_both_attempts_without_live_source(absent, monkeypatch):
+    a = make_bound_archive(absent, monkeypatch)
+    before = snapshot(a)
+    view = read(a)
+    assert set(view['archives']) == {a.path.name, a.previous.path.name}
+    assert view['archives'][a.path.name]['manifest'] == a.manifest
+    assert not c.NATIVE_KIT.exists()  # Frozen failed prepublication; not complete Source.
+    assert snapshot(a) == before
+    for image in a.manifest['authority'].values():
+        (a.n.metadata / image['sourceName']).rename(a.n.world / image['sourceName'])
+    assert read(a) == view
+
+
+@pytest.mark.parametrize('fault', ['uid', 'gid', 'mode', 'inode', 'acl', 'hardlink', 'symlink', 'extra',
+    'ready-false', 'ready-integer', 'child-inode', 'journal-phase', 'journal-body', 'runtime-image',
+    'history-missing', 'history-image', 'history-self', 'authority-name'])
+def test_bound_ready_archive_refuses_changes_without_modifying_data(native, monkeypatch, fault):
+    a = make_bound_archive(native, monkeypatch)
+    path = a.path / 'gateway.env'
+    image = a.manifest['files']['gateway.env']
+    if fault == 'uid': a.n.owners[tuple(image['inode'])] = (0, a.gid)
+    elif fault == 'gid': a.n.owners[tuple(image['inode'])] = (a.uid, 0)
+    elif fault == 'mode': path.chmod(0o644)
+    elif fault == 'inode':
+        replacement = a.n.world / 'replacement'
+        info = write(replacement, path.read_bytes())
+        a.n.owners[tuple(info['inode'])] = (a.uid, a.gid)
+        os.replace(replacement, path)
+    elif fault == 'acl':
+        a.n.acl.acls[tuple(image['inode'])] = {'entries': [{'tag': 1, 'mask': 2, 'flags': 0, 'uuid': b'R' * 16}], 'flags': 0}
+    elif fault == 'hardlink': os.link(path, a.n.world / 'alias')
+    elif fault == 'symlink':
+        path.rename(a.n.world / 'retained')
+        path.symlink_to(a.n.world / 'retained')
+    elif fault == 'extra': write(a.path / 'foreign', b'preserved')
+    else:
+        if fault.startswith('ready-') or fault == 'child-inode':
+            receipt = json.loads((a.path / 'source-sidefiles.json').read_bytes())
+            if fault == 'child-inode': receipt['children']['gateway.env']['inode'][1] += 1
+            else: receipt['children']['gateway.env']['ready'] = False if fault == 'ready-false' else 1
+            a.manifest['files']['source-sidefiles.json'].update(write(a.path / 'source-sidefiles.json', c._native_encoded(receipt)))
+        elif fault.startswith('journal-'):
+            journal = copy.deepcopy(a.journal)
+            if fault == 'journal-phase': journal['phase'] = 'restored'
+            else: journal['files'][0]['afterSha256'] = '0' * 64
+            a.manifest['authority']['journal'].update(write(a.path / 'journal.json', c._native_encoded(journal)))
+        elif fault == 'runtime-image':
+            a.manifest['files']['source-runtime-installation.json'].update(
+                write(a.path / 'source-runtime-installation.json', b'other preserved installation'))
+        elif fault == 'history-missing': a.ledger['archives'].pop(CANDIDATE)
+        elif fault == 'history-image': a.manifest['history']['archives'][CANDIDATE]['manifest']['sha256'] = '0' * 64
+        elif fault == 'history-self': a.manifest['history']['archives'][a.candidate] = a.ledger['archives'][a.candidate]
+        else: a.manifest['authority']['journal']['sourceName'] = 'runtime-upgrade-other.json'
+        save_manifest(a)
+    before = snapshot(a)
+    with pytest.raises((c.CustodyError, OSError, ValueError)):
+        read(a)
+    assert snapshot(a) == before
+
+
+@pytest.mark.parametrize('fault', [None, 'uid', 'body', 'foreign-leaf'])
+def test_bound_ready_retirement_keeps_exact_owner_uid_through_recapture(material, monkeypatch, fault):
+    n = material
+    a = make_bound_archive(n, monkeypatch)
+    def publisher(selection):
+        helper._material(selection)
+        return helper
+    monkeypatch.setattr(ex, '_publisher', publisher)
+    metadata = {name: {'inode': [path.stat().st_dev, path.stat().st_ino], 'sha256': sha(path.read_bytes())}
+        for name in retirement._CURRENT if (path := n.metadata / name).is_file()}
+    history = retirement._capture_histories(n.selected, metadata, private=None)
+    assert history['schemaVersion'] == 2
+    node = history['metadata'][a.path.name]
+    assert set(node['entries']) == set(a.manifest['files']) | {'manifest.json', 'context.json', 'journal.json'}
+    for name in ('gateway.env', 'onboarding.json'):
+        assert node['entries'][name]['uid'] == a.uid
+        assert node['entries'][name]['inode'] == a.manifest['files'][name]['inode']
+    # No expected ownership map means the original Root-only capture remains closed.
+    with mac.protected_directory(n.metadata) as directory:
+        with pytest.raises(c.CustodyError, match='history-custody-changed'):
+            retirement._capture_node(directory, a.path.name, remaining=[1024, 32 * 1024 * 1024])
+    if fault == 'uid': n.owners[tuple(a.manifest['files']['gateway.env']['inode'])] = (a.uid + 1, a.gid)
+    elif fault == 'body': (a.path / 'onboarding.json').write_bytes(b'changed')
+    elif fault == 'foreign-leaf':
+        node['entries']['context.json']['uid'] = a.uid
+    if fault:
+        with pytest.raises(c.CustodyError):
+            retirement.verify_history(n.selected, {'history': history})
+    else:
+        before = snapshot(a)
+        retirement.verify_history(n.selected, {'history': history})
+        row = {'kind': 'metadata', 'name': a.path.name, 'expected': node}
+        with mac.protected_directory(n.metadata) as directory:
+            retirement._verify_entry(directory, a.path.name, row, {}, helper)
+        assert snapshot(a) == before
+        # The retirement cursor verifies the identical node after its rename;
+        # the private capsule keeps both original owner UIDs at that location.
+        destination = n.world / 'retirement-destination'
+        destination.mkdir(mode=0o700)
+        a.path.rename(destination / 'retained')
+        fd = os.open(destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            retirement._verify_entry(fd, 'retained', row, {}, helper)
+            moved = retirement._capture_node(fd, 'retained', remaining=[1024, 32 * 1024 * 1024], expected=node)
+            assert moved == node
+        finally:
+            os.close(fd)

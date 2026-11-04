@@ -70,12 +70,18 @@ def _name(value):
         and '/' not in value and not any(ord(char) < 32 or ord(char) == 127 for char in value))
 
 
-def _node(value, *, remaining):
+def _node(value, *, remaining, owners=None, path=()):
     """Pure finite manifest validation; capture is restricted by actual ledgers."""
     remaining[0] -= 1
     if remaining[0] < 0 or type(value) is not dict:
         _fail('history-invalid')
     common = {'kind', 'inode', 'mode', 'gid'}
+    owner = (owners or {}).get(path)
+    if owner is not None:
+        common.add('uid')
+        if (type(value.get('uid')) is not int or value['uid'] != owner[0]
+                or value.get('gid') != owner[1] or value.get('mode') != 0o600 or value.get('kind') != 'file'):
+            _fail('history-invalid')
     if (not common <= set(value) or not c._native_inode(value['inode'])
             or type(value['mode']) is not int or value['mode'] not in (0o600, 0o640, 0o644, 0o700, 0o755)
             or type(value['gid']) is not int or value['gid'] < 0):
@@ -90,7 +96,7 @@ def _node(value, *, remaining):
             _fail('history-invalid')
         for name, child in value['entries'].items():
             if not _name(name): _fail('history-invalid')
-            _node(child, remaining=remaining)
+            _node(child, remaining=remaining, owners=owners, path=(*path, name))
     else:
         _fail('history-invalid')
     return value
@@ -99,7 +105,7 @@ def _node(value, *, remaining):
 def validate_history(value, *, owner_uid, owner_gid, runtime):
     """Shape only. No path or physical archive authority is conferred."""
     if (type(value) is not dict or set(value) != {'schemaVersion', 'kind', 'metadata', 'kits'}
-            or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1 or value['kind'] != HISTORY_KIND
+            or type(value['schemaVersion']) is not int or value['schemaVersion'] not in (1, 2) or value['kind'] != HISTORY_KIND
             or type(owner_uid) is not int or owner_uid <= 0 or type(owner_gid) is not int or owner_gid < 0
             or not _runtime(runtime) or type(value['metadata']) is not dict or type(value['kits']) is not dict
             or len(value['metadata']) + len(value['kits']) > MAX_HISTORY_ENTRIES):
@@ -108,7 +114,20 @@ def validate_history(value, *, owner_uid, owner_gid, runtime):
     for family in ('metadata', 'kits'):
         for name, image in value[family].items():
             if not _name(name): _fail('history-invalid')
-            _node(image, remaining=remaining)
+            owners = {}
+            # Schema2 records the original owner on exactly these two frozen
+            # leaves. This is shape validation only: the initial capture still
+            # requires the complete Root ledger/capsule; later reads use that
+            # exact Root-witness-bound image, never a discovered prefix.
+            if (value['schemaVersion'] == 2 and family == 'metadata'
+                    and re.fullmatch(re.escape(c._SIDEFILE_ARCHIVE_PREFIX) + '[a-f0-9]{64}', name)
+                    and type(image) is dict and image.get('kind') == 'directory'
+                    and type(image.get('entries')) is dict and set(image['entries']) == {
+                        'manifest.json', 'context.json', 'journal.json', 'source-sidefiles.json',
+                        'source-runtime-installation.json', 'gateway.env', 'onboarding.json'}):
+                if (image.get('mode'), image.get('gid')) != (0o700, 0): _fail('history-invalid')
+                owners = {(leaf,): (owner_uid, owner_gid) for leaf in ('gateway.env', 'onboarding.json')}
+            _node(image, remaining=remaining, owners=owners)
     return value
 
 
@@ -138,7 +157,7 @@ def validate_code_only_inventory(value, *, owner_uid, owner_gid, runtime):
     return value
 
 
-def _capture_node(directory, name, *, remaining, depth=0):
+def _capture_node(directory, name, *, remaining, depth=0, expected=None):
     """Read only a ledger-validated history subtree, never the live data gate."""
     remaining[0] -= 1
     if remaining[0] < 0 or depth > 16 or not _name(name): _fail('history-limit')
@@ -147,12 +166,16 @@ def _capture_node(directory, name, *, remaining, depth=0):
         before = os.fstat(fd)
         c._native_no_acl(fd)
         inode = [before.st_dev, before.st_ino]
-        if before.st_uid != 0 or c._native_at_inode(directory, name) != inode:
+        uid = expected.get('uid', 0) if expected is not None else 0
+        if type(uid) is not int or uid < 0 or before.st_uid != uid or c._native_at_inode(directory, name) != inode:
             _fail('history-custody-changed')
         value = dict(inode=inode, mode=stat.S_IMODE(before.st_mode), gid=before.st_gid)
+        if uid:
+            value['uid'] = uid
         if stat.S_ISDIR(before.st_mode):
             names = sorted(os.listdir(fd))
-            value.update(kind='directory', entries={child: _capture_node(fd, child, remaining=remaining, depth=depth + 1)
+            value.update(kind='directory', entries={child: _capture_node(fd, child, remaining=remaining, depth=depth + 1,
+                expected=expected.get('entries', {}).get(child) if expected is not None else None)
                 for child in names})
             if sorted(os.listdir(fd)) != names: _fail('history-changed')
         elif stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and before.st_size <= MAX_HISTORY_BYTES:
@@ -235,7 +258,7 @@ def verify_history(selection, inventory):
     with protected_directory(c.NATIVE_META) as metadata, protected_directory(c.NATIVE_KIT.parent) as kits:
         for directory, family in ((metadata, 'metadata'), (kits, 'kits')):
             for name, expected in history[family].items():
-                if _capture_node(directory, name, remaining=remaining) != expected:
+                if _capture_node(directory, name, remaining=remaining, expected=expected) != expected:
                     _fail('history-changed')
     c._native_selected(selection, _publication=True)
     return history
@@ -311,7 +334,7 @@ def _capture_histories(selection, current_metadata, *, private):
                 if c._native_at_inode(metadata, '.source-binding-' + record['nonce'] + '-' + str(index)) is not None:
                     _fail('history-publication-unsettled')
 
-        # Unbound legacy sidefiles are retained data only, from a terminal
+        # Interrupted native sidefiles are retained data only, from a terminal
         # ledger and complete private capsule. No prefix grants a name.
         sidefiles = c.native_sidefile_archives(owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid'])
         if sidefiles['ledger'] is not None:
@@ -319,9 +342,14 @@ def _capture_histories(selection, current_metadata, *, private):
             if value['metadata'][c._SIDEFILE_ARCHIVES]['sha256'] != sidefiles['ledger']['sha256']:
                 _fail('history-sidefile-archive-changed')
             for name, item in sidefiles['archives'].items():
-                node = _capture_node(metadata, name, remaining=remaining)
+                manifest = item['manifest']
+                if manifest['schemaVersion'] == 2:
+                    value['schemaVersion'] = 2
+                owners = {'entries': {leaf: {'uid': image['uid']} for leaf, image in manifest['files'].items()
+                    if image['uid'] != 0}}
+                node = _capture_node(metadata, name, remaining=remaining, expected=owners)
                 if (node['inode'] != item['inode'] or (node['kind'], node['mode'], node['gid']) != ('directory', 0o700, 0)
-                        or set(node['entries']) != {'manifest.json', 'context.json', 'restored.json', 'source-sidefiles.json', 'gateway.env'}
+                        or set(node['entries']) != {'manifest.json', *(key + '.json' for key in manifest['authority']), *manifest['files']}
                         or node['entries']['manifest.json']['inode'] != item['manifestImage']['inode']
                         or node['entries']['manifest.json'] != dict(kind='file', mode=0o600, gid=0,
                             size=item['manifestSize'], **item['manifestImage'])):
@@ -332,6 +360,8 @@ def _capture_histories(selection, current_metadata, *, private):
                     **item['manifest']['files']}
                 for leaf, image in expected_files.items():
                     expected = dict(kind='file', **{key: image[key] for key in ('inode', 'mode', 'gid', 'sha256', 'size')})
+                    if image.get('uid', 0):
+                        expected['uid'] = image['uid']
                     if node['entries'][leaf] != expected:
                         _fail('history-sidefile-archive-changed')
                 expected_meta.add(name)
@@ -895,7 +925,7 @@ def _plan(witness, transaction, publisher, receipt=None, record=None):
             else:
                 _fail('metadata-changed')
         for name, image in history['metadata'].items():
-            if _capture_node(metadata, name, remaining=[MAX_HISTORY_ENTRIES, MAX_HISTORY_BYTES]) != image:
+            if _capture_node(metadata, name, remaining=[MAX_HISTORY_ENTRIES, MAX_HISTORY_BYTES], expected=image) != image:
                 _fail('history-changed')
             metadata_images[name] = image
         if private:
@@ -1000,7 +1030,7 @@ def _entry_inode(row):
 def _verify_entry(directory, name, row, witness, publisher):
     expected = row['expected']
     if row['kind'] in ('metadata', 'kit-history'):
-        if _capture_node(directory, name, remaining=[MAX_HISTORY_ENTRIES, MAX_HISTORY_BYTES]) != expected:
+        if _capture_node(directory, name, remaining=[MAX_HISTORY_ENTRIES, MAX_HISTORY_BYTES], expected=expected) != expected:
             _fail('archive-image-changed')
     elif row['kind'] == 'kit':
         publisher._kit_image(c, directory, name, expected=expected)
