@@ -433,10 +433,28 @@ def test_native_idle_reads_only_selected_loopback_gateway_and_fails_closed(tmp_p
         with pytest.raises(ValueError, match='native-ingress-active'): module.native_idle(source)
 
 
-@pytest.mark.parametrize('kind', ['cli-restart', 'finalize-clients', 'retained-recovery'])
+@pytest.mark.parametrize('change', ['operation', 'start-edge', 'shape', 'token', 'revision'])
+def test_owner_binding_is_validated_before_any_ingress_or_edge_action(tmp_path, monkeypatch, change):
+    binding = {'token': 'a' * 64, 'revision': 'b' * 64}
+    kind, start = 'finalize-clients', False
+    if change == 'operation': kind = 'cli-restart'
+    elif change == 'start-edge': start = True
+    elif change == 'shape': binding['extra'] = True
+    else: binding[change] = 'wrong'
+    monkeypatch.setattr(module, 'helper', lambda _name: pytest.fail('Invalid binding must have no effects'))
+    with pytest.raises(ValueError, match='native-client-admission-binding-required'):
+        module.refresh(None, None, install_dir=tmp_path, directory=tmp_path,
+            project='ods', dashboard_key='c' * 64, operation_kind=kind,
+            allow_stopped_edge=start, admission_binding=binding)
+
+
+@pytest.mark.parametrize('kind,supplied_hold', [
+    ('cli-restart', False), ('finalize-clients', False), ('retained-recovery', False),
+    ('finalize-clients', True)])
 @pytest.mark.parametrize('unchanged', [False, True])
 @pytest.mark.parametrize('fault', [None, 'operation', 'health', 'volume', 'source', 'ingress', 'selection', 'release'])
-def test_lifecycle_remains_held_through_final_work_even_for_unchanged_config(tmp_path, monkeypatch, kind, unchanged, fault):
+def test_lifecycle_remains_held_through_final_work_even_for_unchanged_config(
+        tmp_path, monkeypatch, kind, supplied_hold, unchanged, fault):
     source, _, document, observed = fixture(tmp_path)
     storage = StorageEngine(tmp_path)
     preparation = tmp_path / 'data/pixel-native/preparation'
@@ -459,9 +477,17 @@ def test_lifecycle_remains_held_through_final_work_even_for_unchanged_config(tmp
     volume = {'Name': 'ods_transition', 'Type': 'volume', 'Destination': '/pixel-transition-state', 'RW': True}
     monkeypatch.setattr(module, 'edge_storage', lambda *args: dict(volume,
         Name='foreign' if fault == 'volume' and 'operation' in events else 'ods_transition'))
+    owner_binding = {'token': '6' * 64, 'revision': 'e' * 64} if supplied_hold else None
+    admission = {'binding': owner_binding}
     def transition(*args, binding=None, release=False):
         events.append('release' if release else 'hold' if binding else 'inspect')
+        if binding is None:
+            assert admission['binding'] is None, 'An idle probe cannot validate an already held transition'
+        else:
+            assert admission['binding'] in (None, binding), 'A different owner cannot adopt the hold'
+            admission['binding'] = binding
         if release and fault == 'release': raise ValueError('lost-release-reply')
+        if release: admission['binding'] = None
         return {'revision': 'e' * 64}
     monkeypatch.setattr(compose, '_edge_transition', transition)
     def health(*args, **kwargs):
@@ -504,7 +530,8 @@ def test_lifecycle_remains_held_through_final_work_even_for_unchanged_config(tmp
         operation.validate_result = changed_after_readiness
     def forbidden(*args, **kwargs): pytest.fail('Final lifecycle failure must not use ingress-only rollback')
     def action(): return module.refresh_locked(run, storage, install_dir=tmp_path, project='ods',
-        dashboard_key='f' * 64, operation=operation, operation_kind=kind, operation_key='8' * 64)
+        dashboard_key='f' * 64, operation=operation, operation_kind=kind, operation_key='8' * 64,
+        admission_binding=owner_binding)
     if fault:
         with pytest.raises(ValueError): action()
     else:

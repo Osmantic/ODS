@@ -49,7 +49,8 @@ def test_update_retains_storage_and_supports_verified_replay(fault):
 
 
 @pytest.mark.parametrize('fault', [None, 'proof', 'replace', 'symlink-lock', 'directory-sync', 'clients'])
-def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, fault):
+@pytest.mark.parametrize('external_source', [False, True])
+def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, fault, external_source):
     stack = module.helper('pixel-native-stack')
     installed = tmp_path / 'ods'
     directory = installed / 'data/pixel-native/preparation'
@@ -66,6 +67,8 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
         path.write_text('services: {}\n')
     candidate = tmp_path / 'candidate'
     candidate.mkdir()
+    if external_source:
+        (tmp_path / 'clients').mkdir()
     prepared = dict(kind='legacy-native', status='prepared', phase='awaiting-joint-activation',
         currentDigest='a' * 64, runtimeDigest='c' * 64, serviceDigest='d' * 64,
         pixelSourceRef='e' * 40, installDir=str(installed))
@@ -90,15 +93,32 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
         if fault == 'clients' and len(refreshed) == 1: raise OSError('client recreation failed')
     monkeypatch.setattr(module, '_refresh_clients_held', refresh)
     original_helper = module.helper
+    binding = {'token': '7' * 64, 'revision': '8' * 64}
+    def client_begin(path):
+        assert path == tmp_path / 'clients' and calls and not held
+        return binding
+    def client_verify(path):
+        assert path == tmp_path / 'clients' and held == [True]
+    def client_complete(path):
+        assert path == tmp_path / 'clients' and not held
+    clients = SimpleNamespace(begin=client_begin, apply=lambda _path: refresh(installed),
+        selected_key=lambda _path: '9' * 64, verify=client_verify, complete=client_complete)
     def transaction(path, **kwargs):
         assert path == installed and kwargs['selection_locked'] is True
+        assert kwargs.get('admission_binding') == (binding if external_source else None)
         held.append(True)
         try:
-            return kwargs['operation']({}, {}, lambda value: None)
+            result = kwargs['operation']({}, {}, lambda value: None)
+            if external_source:
+                kwargs['operation'].validate_result({})
+            return result
         finally:
             held.pop()
-    monkeypatch.setattr(module, 'helper', lambda name: SimpleNamespace(refresh_installed=transaction)
-        if name == 'pixel-native-ingress-refresh' else original_helper(name))
+    def helper(name):
+        if name == 'pixel-native-ingress-refresh': return SimpleNamespace(refresh_installed=transaction)
+        if name == 'pixel-native-update': return SimpleNamespace(owner_clients=lambda: clients)
+        return original_helper(name)
+    monkeypatch.setattr(module, 'helper', helper)
     if fault == 'replace':
         def fail(*args): raise OSError('fixture publication failure')
         monkeypatch.setattr(module.os, 'replace', fail)

@@ -16,6 +16,44 @@ module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 
 
+def test_owner_client_loader_refuses_root_before_import(monkeypatch):
+    monkeypatch.setattr(module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(module.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(module.importlib.util, 'spec_from_file_location',
+        lambda *_args: pytest.fail('Root must not import owner-side publication code'))
+    with pytest.raises(ValueError, match='native-macos-owner-required'):
+        module.owner_clients()
+
+
+@pytest.mark.parametrize('fault', [None, 'install', 'status', 'outside', 'prepare-only'])
+def test_resume_only_finalizes_the_exact_completed_core_preparation(tmp_path, monkeypatch, fault):
+    installed, source = tmp_path / 'ods', tmp_path / 'source'
+    source.mkdir()
+    preparation = installed / 'data/pixel-native/update-fixture/preparation'
+    preparation.mkdir(parents=True)
+    if fault == 'outside':
+        preparation = tmp_path / 'unrelated/preparation'
+        preparation.mkdir(parents=True)
+    record = {'status': 'prepared' if fault != 'status' else 'preparing',
+        'installDir': str(installed) if fault != 'install' else str(source)}
+    calls = []
+    helpers = {'pixel-native-config': SimpleNamespace(private_json=lambda _path: record),
+        'pixel-native-finalize': SimpleNamespace(finalize_update=lambda path: calls.append(path) or {'status': 'selection-ready'})}
+    monkeypatch.setattr(module, 'helper', helpers.__getitem__)
+    monkeypatch.setattr(module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
+    monkeypatch.setattr(module.subprocess, 'run', lambda *_args, **_kwargs: pytest.fail('Resume must not activate Core'))
+    arguments = dict(install_dir=installed, ods_source=source, resume_preparation=preparation,
+        prepare_only=fault == 'prepare-only')
+    if fault:
+        with pytest.raises(ValueError, match='native-update-resume-'):
+            module.update(**arguments)
+        assert not calls
+    else:
+        assert module.update(**arguments) == {'status': 'selection-ready'}
+        assert calls == [preparation]
+
+
 @pytest.fixture
 def docker_endpoint():
     # Darwin's default pytest temp path can exceed sockaddr_un.sun_path.
@@ -45,11 +83,15 @@ python_fixture() { printf '%s\\n' "$@"; }
     assert 'update-pixel) cmd_update_pixel "$@" ;;' in script
 
 
-@pytest.mark.parametrize('failure', [None, 'prepare-only', 'acquire', 'prepare', 'activate', 'finalize'])
-def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path, monkeypatch, failure, docker_endpoint):
+@pytest.mark.parametrize('failure,external_source', [
+    (value, True) for value in (None, 'prepare-only', 'acquire', 'prepare', 'clients', 'activate', 'finalize')
+] + [(None, False), ('prepare-only', False)])
+def test_update_orders_existing_helpers_and_restores_docker_environment(
+        tmp_path, monkeypatch, failure, external_source, docker_endpoint):
     installed, source = tmp_path / 'ods', tmp_path / 'source'
     (installed / 'data/pixel-native').mkdir(parents=True)
-    source.mkdir()
+    if external_source: source.mkdir()
+    else: source = installed
     endpoint = docker_endpoint
     stages = []
     old = 'a' * 64
@@ -95,6 +137,11 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
         'pixel-native-finalize': SimpleNamespace(finalize_update=finalize),
     }
     monkeypatch.setattr(module, 'helper', modules.__getitem__)
+    def clients():
+        assert external_source, 'Installed-source updates do not republish their own public files'
+        return SimpleNamespace(prepare=lambda **kwargs: step('clients') or {'status': 'prepared'},
+            validate_pre_activation=lambda path: step('clients-verified'))
+    monkeypatch.setattr(module, 'owner_clients', clients)
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
     monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
     monkeypatch.setattr(module.shutil, 'which', lambda value: value)
@@ -110,9 +157,9 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
             assert stages[-1] == failure
         else:
             result = module.update(**arguments)
-            expected = ['acquire', 'stage', 'prepare']
+            expected = ['acquire', 'stage', 'prepare'] + (['clients'] if external_source else [])
             if failure is None:
-                expected += ['activate', 'finalize']
+                expected += (['clients-verified'] if external_source else []) + ['activate', 'finalize']
                 assert result['status'] == 'selection-ready'
                 assert result['portalIdentityMigration']['status'] == 'manual-review-required'
                 # The example step prints nothing; its outcome is only in the
@@ -126,6 +173,7 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
                 assert logged['status'] == 'manual-review-required' and logged['cause'].startswith('FileNotFoundError')
             else:
                 assert result['status'] == 'prepared'
+                assert result['clients'] == ('prepared' if external_source else 'installed-source')
             assert stages == expected
     finally:
         assert dict(os.environ) == before

@@ -334,6 +334,10 @@ def finalize_update(preparation):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
     config, stack = helper('pixel-native-config'), helper('pixel-native-stack')
+    clients_path = Path(preparation).parent / 'clients'
+    clients = None
+    if os.path.lexists(clients_path):
+        clients = helper('pixel-native-update').owner_clients()
     prepared = config.private_json(Path(preparation) / 'preparation.json')
     install_dir = Path(prepared['installDir']).resolve(strict=True)
     directory = install_dir / 'data/pixel-native/preparation'
@@ -354,6 +358,9 @@ def finalize_update(preparation):
             '--source-ref', prepared['pixelSourceRef']], stdout=subprocess.PIPE,
             text=True, timeout=180, check=True)
         document = update_selection_records(previous, activation, prepared, json.loads(result.stdout), install_dir)
+        binding = clients.begin(clients_path) if clients is not None else None
+        if clients is not None and binding is None:
+            return {'status': 'selection-ready', 'path': str(directory / stack.UPDATE_SELECTION), 'clients': 'ready'}
         def complete_held(selection, record, checkpoint):
             # One atomic record avoids a mismatched preparation/activation pair after a crash.
             with tempfile.TemporaryDirectory(prefix='.selection-', dir=directory) as temporary:
@@ -369,7 +376,10 @@ def finalize_update(preparation):
                     os.fsync(fd)
                 finally:
                     os.close(fd)
-            _refresh_clients_held(install_dir)
+            if clients is None:
+                _refresh_clients_held(install_dir)
+            else:
+                clients.apply(clients_path)
             # Recheck protected authority after the actual client handover,
             # while the same admission hold still excludes user requests.
             checked = subprocess.run(['/usr/bin/sudo', '/usr/bin/python3', str(Path(__file__).resolve()),
@@ -379,14 +389,22 @@ def finalize_update(preparation):
                 text=True, timeout=180, check=True)
             if json.loads(checked.stdout) != json.loads(result.stdout):
                 raise ValueError('native-update-protected-proof-changed')
-        operation_key = hashlib.sha256(json.dumps({'selection': document,
-            'source': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}, sort_keys=True).encode()).hexdigest()
+        if clients is not None:
+            complete_held.validate_result = lambda _record: clients.verify(clients_path)
+        identity = {'selection': document, 'source': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+        if clients is not None:
+            identity['clients'] = clients.selected_key(clients_path)
+        operation_key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        options = {'admission_binding': binding} if clients is not None else {}
         helper('pixel-native-ingress-refresh').refresh_installed(install_dir,
             selection_locked=True, operation=complete_held, operation_kind='finalize-clients',
-            operation_key=operation_key)
+            operation_key=operation_key, **options)
+        if clients is not None:
+            clients.complete(clients_path)
     finally:
         os.close(lock)
-    return {'status': 'selection-ready', 'path': str(directory / stack.UPDATE_SELECTION)}
+    return {'status': 'selection-ready', 'path': str(directory / stack.UPDATE_SELECTION),
+        **({'clients': 'ready'} if clients is not None else {})}
 
 
 def finalize(preparation, docker_preparation):

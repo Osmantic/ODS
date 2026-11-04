@@ -129,6 +129,33 @@ directory and private recovery journals. If it stops, record the first error
 before another attempt; do not force a reinstall, delete receipts or reset the
 model/connection state.
 
+When `--ods-source` selects an external checkout, the updater also prepares the
+owner-side host-agent code and both Portal web images before protected
+activation. It retains the installed Compose routes, environment and local
+extensions. The public file inventory excludes owner configuration, model
+weights, history and credentials. Images are built from the staged bytes;
+preparation leaves the running containers and their selected tags unchanged.
+After Core activates, public files and clients change under one owner admission
+hold shared with ingress finalization. Original public files are retained by
+rename, and the prior web image IDs and host-agent definition remain recorded.
+Readiness requires the expected images, mounts, health and authenticated host
+route before admission reopens. This does not update unrelated ODS services.
+
+An interrupted client handover does not mean Core activation was rolled back.
+Keep its preparation and the held operation. After resolving the reported
+failure, resume only that preparation from the same source checkout:
+
+```sh
+/usr/bin/python3 "$HOME/src/ODS/ods/installers/macos/lib/pixel-native-update.py" \
+    --install-dir "$HOME/ods" --ods-source "$HOME/src/ODS/ods" \
+    --resume-preparation "/exact/path/printed/by/the/update/preparation"
+```
+
+This command requires proof that protected Core activation already completed.
+It resumes owner finalization; it cannot activate a prepare-only result or
+recover an unrelated deployment. The installed-source `update-pixel` route
+continues to update the native runtime from already installed public code.
+
 After a successful update:
 
 ```sh
@@ -165,6 +192,44 @@ account contents or private receipts. Fresh install and retirement tests belong
 on a disposable Mac or guest; another user or install directory still shares
 the system services. Results apply to the recorded hardware, model, provider
 and access mode.
+
+### MacBook preparation observation, 4 November 2026
+
+The clean starting revision `4525380c411e2dfc85d5664b9f0040154fa2b77c`
+was inspected on a physical Apple M5 with 16 GB, macOS 26.5.1 (25F80), arm64.
+The existing installation was separate from both the reviewed checkout and the
+checkout used for fixes. Existing unrelated checkout edits were left intact.
+Docker Desktop was updated from 4.74.0 to 4.98.0 through its normal updater;
+the engine changed from 29.4.3 to 29.9.2 and all existing ODS services recovered.
+
+Before ODS activation, the installed Qwen 3.5 9B Q4_K_M at 65,536 context
+answered an invented no-tool request correctly in 3 minutes 25 seconds. The
+response survived reload and the Docker update. Reading Settings in another
+tab triggered the old frontend's stale-conversation warning; closing that tab
+and reloading retained the result. This was a baseline observation, not a
+candidate conversation-isolation pass.
+
+Private comparisons found unchanged environment, model-selection and active
+protected-configuration bytes, including the protected configuration inode.
+Both model files retained their inodes and sizes; their initial hashes were
+recorded privately. Twenty existing history files remained byte-identical.
+The invented QA result and its session index changed normally, and its request
+lock disappeared after completion. No existing scheduled tasks or Google grant
+were available in this installation to establish preservation of those items.
+
+The reviewed prepare-only command staged its source/runtime, then stopped at
+`native-migration-proof-or-authorization-failed`: noninteractive sudo required
+owner authentication. Its preparation was retained and Core was not activated.
+The proposed owner-client preparer separately passed the real Mac's file/ACL,
+Compose-baseline and host-agent binding checks and built both candidate web
+images under separate tags, without replacing running services. Preparation
+does not establish that a client handover or protected migration succeeds.
+
+Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
+notifications and reboot acceptance remain pending. The Mac has not been
+restarted for this qualification. A Google test client was not available;
+official application provisioning and verification remain separate maintainer
+work. These observations must not be reported as macOS acceptance.
 
 ### Scheduled Notes approval on Apple Silicon
 

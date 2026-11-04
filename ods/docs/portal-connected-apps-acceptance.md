@@ -146,10 +146,13 @@ that same Windows request. Mac implementation and qualification remain open.
 
 Coffee's native macOS MCP, notes, ntfy and app-provider service is implemented;
 its physical Apple Silicon qualification remains a separate handoff. Google,
-Calendar and fixed reviewed Connected-app routes still depend on the Linux/WSL
-Source Broker. Protected Mac Source staging exists, but its live execution,
-automatic triggers and connection activation remain an implementation gap,
-not only a physical test gate. See the
+Calendar and fixed reviewed Connected-app routes now include the composed
+native Source lifecycle and Darwin routing. Their implementation and owned-file
+coverage do not establish live Mac execution, automatic triggers or successful
+connection activation. The existing MacBook's prepare-only run stopped before
+protected activation because sudo required owner authentication. The installed
+Portal baseline and separately prepared client images are not candidate
+acceptance. See the
 [Mac qualification scope](pixel/native-integrations-macos-qualification.md).
 Production Google sign-in also depends on the project's official OAuth/domain
 verification; local account tests do not establish complete public onboarding.
