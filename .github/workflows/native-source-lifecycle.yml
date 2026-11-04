@@ -261,9 +261,27 @@ jobs:
         run: python -m pytest -q -p no:cacheprovider ods/tests/test_native_source_lifecycle.py -k "$PACKET_FILTER"
 
   compatibility:
-    name: Linux mechanics / existing publisher and custody
+    name: Linux mechanics / existing publisher and custody (${{ matrix.packet }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - packet: active-publication
+            file: ods/tests/test_native_source_active_publication.py
+          - packet: operation-cache
+            file: ods/tests/test_native_source_publisher_operation_cache.py
+          - packet: root-deadline
+            file: ods/tests/test_native_source_root_deadline.py
+          - packet: barrier
+            file: ods/tests/test_native_source_barrier.py
+          - packet: child
+            file: ods/tests/test_native_source_child.py
+          - packet: jobs
+            file: ods/tests/test_native_source_jobs.py
+          - packet: deployment-paths
+            file: ods/tests/test_connection_deployment_paths.py
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -275,12 +293,6 @@ jobs:
       - name: Preserve cold publication, inert jobs, deadlines and child ownership
         env:
           PYTHONDONTWRITEBYTECODE: '1'
-        run: >-
-          python -m pytest -q -p no:cacheprovider
-          ods/tests/test_native_source_active_publication.py
-          ods/tests/test_native_source_publisher_operation_cache.py
-          ods/tests/test_native_source_root_deadline.py
-          ods/tests/test_native_source_barrier.py
-          ods/tests/test_native_source_child.py
-          ods/tests/test_native_source_jobs.py
-          ods/tests/test_connection_deployment_paths.py
+          PYTHONUNBUFFERED: '1'
+          PACKET_FILE: ${{ matrix.file }}
+        run: python -m pytest -v -p no:cacheprovider --durations=10 "$PACKET_FILE"
