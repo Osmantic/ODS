@@ -2454,7 +2454,7 @@ def _native_slot_matches(snapshot, invocation, *, running=False):
     found = False
     for label, row in snapshot['invocations'].items():
         if (type(label) is not str or type(row) is not dict or set(row) != {'phase', 'invocation'}
-                or type(row['phase']) is not str or row['phase'] not in ('prepared', 'running', 'unknown', 'retired')):
+                or type(row['phase']) is not str or row['phase'] not in ('prepared', 'running', 'quiescing', 'completed', 'unknown', 'retired')):
             return False
         try:
             current = _native_invocation(row['invocation'])
@@ -2936,7 +2936,7 @@ def _native_broker_projection(value):
             continue  # A sibling's inactive/absent slot never authorizes I/O.
         invocation = _native_invocation(row['invocation'])
         doc = invocation.document
-        if (row['phase'] not in ('prepared', 'running', 'unknown', 'retired')
+        if (row['phase'] not in ('prepared', 'running', 'quiescing', 'completed', 'unknown', 'retired')
                 or (doc['role'], doc['identifier'], doc['generation'], doc['boot']) != (role, identifier, launch['generation'], launch['boot'])):
             raise CustodyError('native-source-broker-projection-invalid')
         definition = launch['definitions'].get(label)

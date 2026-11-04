@@ -1410,7 +1410,7 @@ def _active_manifest(custody, state, binding):
         'definitions': state['definitions']}
 
 
-def _active_projection(custody, before, binding, environment, label, invocation, image):
+def _active_projection(custody, before, binding, environment, label, invocation, image, *, phase='prepared'):
     import copy
     old = before['gate']['document']
     base = {key: value for key, value in old.items() if key not in ('launch', 'runtime')}
@@ -1424,7 +1424,7 @@ def _active_projection(custody, before, binding, environment, label, invocation,
     launch['phase'] = 'active'
     launch['definitions'][label] = {'inode': image['inode'], 'sha256': image['sha256'],
         'profileSha256': image['profileSha256']}
-    launch['invocations'][label] = {'phase': 'prepared', 'invocation': invocation}
+    launch['invocations'][label] = {'phase': phase, 'invocation': invocation}
     value['launch'] = launch
     return value
 
@@ -1487,7 +1487,7 @@ def _active_state(custody, state, origin, binding, expected, *, staging=False):
 
 def _active_record(custody, record, origin, binding, expected):
     keys = {'schemaVersion', 'kind', 'binding', 'originSha256', 'phase', 'current', 'transaction', 'retained', 'retired'}
-    if (type(record) is not dict or set(record) != keys or record['schemaVersion'] != 1
+    if (type(record) is not dict or not keys <= set(record) <= keys | {'history'} or record['schemaVersion'] != 1
             or type(record['schemaVersion']) is not int or record['kind'] != 'ods-native-source-active-journal'
             or record['binding'] != binding or record['originSha256'] != sha(custody._native_encoded(origin))
             or record['phase'] not in ('committed', 'staging', 'publishing', 'gate-ready', 'restoring', 'restored', 'unknown', 'retired')
@@ -1495,6 +1495,37 @@ def _active_record(custody, record, origin, binding, expected):
             or len(set(record['retired'])) != len(record['retired'])
             or type(record['retained']) is not dict or len(record['retained']) > 320):
         raise ValueError('native-source-active-record-changed')
+    if 'history' in record:
+        history = record['history']
+        if (type(history) is not dict or set(history) != {'directory', 'count', 'pending'}
+                or history['directory'] is not None and not custody._native_inode(history['directory'])
+                or type(history['count']) is not int or history['count'] < 0):
+            raise ValueError('native-source-history-record-changed')
+        pending = history['pending']
+        if pending is not None:
+            if (type(pending) is not dict or set(pending) != {'name', 'directory', 'files', 'receipt', 'image'}
+                    or type(pending['name']) is not str or not re.fullmatch('[a-f0-9]{32}', pending['name'])
+                    or pending['directory'] is not None and not custody._native_inode(pending['directory'])
+                    or type(pending['files']) is not dict or len(pending['files']) > 326
+                    or type(pending['receipt']) is not dict
+                    or set(pending['receipt']) != {'kind', 'binding', 'currentSha256', 'transaction', 'files'}
+                    or pending['receipt']['kind'] != 'ods-native-source-invocation-history'
+                    or pending['receipt']['binding'] != binding
+                    or pending['receipt']['currentSha256'] != sha(custody._native_encoded(record['current']))
+                    or pending['receipt']['transaction'] != record['transaction']
+                    or pending['receipt']['files'] != pending['files']
+                    or type(pending['image']) is not dict or set(pending['image']) != {'inode', 'ready'}
+                    or type(pending['image']['ready']) is not bool
+                    or pending['image']['inode'] is not None and not custody._native_inode(pending['image']['inode'])
+                    or pending['image']['ready'] and pending['image']['inode'] is None):
+                raise ValueError('native-source-history-record-changed')
+            for name, item in pending['files'].items():
+                if (not re.fullmatch(r'\.active-[a-f0-9]{32}\.(?:definition|manifest|gate|before|definition-old|manifest-old)', name)
+                        or type(item) is not dict or set(item) != {'inode', 'sha256', 'mode', 'gid'}
+                        or not custody._native_inode(item['inode']) or type(item['sha256']) is not str or not HEX.fullmatch(item['sha256'])
+                        or item['mode'] not in (0o600, 0o640, 0o644)
+                        or item['gid'] not in (0, json.loads(expected)['broker']['id'])):
+                    raise ValueError('native-source-history-record-changed')
     for label in record['retired']:
         custody._native_label_parts(label)
     for name, item in record['retained'].items():
@@ -1509,8 +1540,11 @@ def _active_record(custody, record, origin, binding, expected):
         if record['phase'] != 'committed':
             raise ValueError('native-source-active-record-changed')
         return
-    if (type(txn) is not dict or set(txn) != {'label', 'invocation', 'before', 'after', 'images'}
-            or type(txn['images']) is not dict or set(txn['images']) != {'definition', 'manifest', 'gate', 'before'}):
+    txn_keys = {'label', 'invocation', 'before', 'after', 'images'}
+    change = txn.get('change') if type(txn) is dict else None
+    if (type(txn) is not dict or not txn_keys <= set(txn) <= txn_keys | {'change'}
+            or type(txn['images']) is not dict or set(txn['images']) != (
+                {'manifest', 'gate', 'before'} if change is not None else {'definition', 'manifest', 'gate', 'before'})):
         raise ValueError('native-source-active-record-changed')
     invocation = custody._native_invocation(txn['invocation']).document
     label, body = _active_definition(custody, json.loads(expected), invocation['role'], invocation['identifier'], True)
@@ -1526,19 +1560,253 @@ def _active_record(custody, record, origin, binding, expected):
     _active_state(custody, txn['before'], origin, binding, expected)
     _active_state(custody, txn['after'], origin, binding, expected, staging=True)
     before, after = txn['before'], txn['after']
+    phase = 'prepared'
+    if change is not None:
+        phase = _active_change(custody, change, before, label, invocation)
     if (set(after['definitions']) != set(before['definitions']) | {label}
             or any(item != after['definitions'][name] for name, item in before['definitions'].items() if name != label)
-            or before['definitions'].get(label, {}).get('active')
+            or change is None and before['definitions'].get(label, {}).get('active')
             or after['definitions'][label]['sha256'] != sha(body)
-            or after['definitions'][label]['inode'] != txn['images']['definition']['inode']
+            or change is None and after['definitions'][label]['inode'] != txn['images']['definition']['inode']
+            or change is not None and after['definitions'] != before['definitions']
             or after['gate']['inode'] != txn['images']['gate']['inode']
             or after['manifest']['inode'] != txn['images']['manifest']['inode']
             or after['gate']['document'] != _active_projection(custody, before, binding,
-                origin['environment'], label, invocation, after['definitions'][label])
+                origin['environment'], label, invocation, after['definitions'][label], phase=phase)
             or record['current'] not in (before, after)
             or record['phase'] == 'committed' and record['current'] != after
             or record['phase'] == 'restored' and record['current'] != before):
         raise ValueError('native-source-active-record-changed')
+
+
+def _active_change(custody, change, before, label, invocation):
+    """Closed per-invocation transitions; completion never means a provider effect."""
+    if (type(change) is not dict or set(change) != {'id', 'kind', 'expectedNonce', 'phase'}
+            or type(change['id']) is not str or not re.fullmatch('[a-f0-9]{32}', change['id'])
+            or type(change['expectedNonce']) is not str or not re.fullmatch('[a-f0-9]{32}', change['expectedNonce'])):
+        raise ValueError('native-source-lifecycle-control-invalid')
+    row = before['gate']['document'].get('launch', {}).get('invocations', {}).get(label)
+    if row is None or row['invocation']['nonce'] != change['expectedNonce']:
+        raise ValueError('native-source-lifecycle-nonce-changed')
+    old = row['invocation']
+    if change['kind'] == 'rearm':
+        if (change['phase'] != 'prepared' or old['role'] not in ('sync', 'direct')
+                or row['phase'] not in ('completed', 'retired')
+                or invocation['nonce'] == old['nonce']
+                or any(invocation[key] != old[key] for key in ('role', 'identifier', 'boot', 'clock', 'generation'))
+                or int(invocation['issuedNs']) < int(old['issuedNs'])):
+            raise ValueError('native-source-lifecycle-rearm-refused')
+    elif change['kind'] == 'phase':
+        transitions = {'running': ('prepared',), 'quiescing': ('prepared', 'running', 'unknown'),
+            'unknown': ('prepared', 'running', 'quiescing'), 'completed': ('running',),
+            'retired': ('prepared', 'running', 'quiescing', 'unknown', 'completed')}
+        if invocation != old or row['phase'] not in transitions.get(change['phase'], ()):
+            raise ValueError('native-source-lifecycle-transition-refused')
+    else:
+        raise ValueError('native-source-lifecycle-control-invalid')
+    return change['phase']
+
+
+def _active_stem(txn):
+    return '.active-' + (txn['change']['id'] if 'change' in txn else txn['invocation']['nonce']) + '.'
+
+
+def _active_history(custody, jobs, record):
+    """Validate only live archival intent; sealed older evidence grants no authority.
+
+    The private history directory retains prior transaction images/receipts.
+    Its inode stays bound in the live journal; archived contents are never read
+    as a live Gate, stop witness, provider result or permission to replay work.
+    """
+    history = record.get('history')
+    if history is None:
+        return None, None
+    history_fd = archive_fd = None
+    try:
+        def directory(parent, name, inode):
+            present = custody._native_at_inode(parent, name)
+            if inode is None:
+                if present is not None:
+                    raise ValueError('native-source-history-unrecorded-directory')
+                return None
+            if present != inode:
+                raise ValueError('native-source-history-directory-changed')
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                info = os.fstat(fd)
+                if ([info.st_dev, info.st_ino] != inode or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (0, 0, 0o700)):
+                    raise ValueError('native-source-history-directory-changed')
+                custody._native_no_acl(fd)
+                return fd
+            except BaseException:
+                os.close(fd)
+                raise
+        history_fd = directory(jobs, 'history', history['directory'])
+        pending = history['pending']
+        if pending is not None:
+            if history_fd is None:
+                raise ValueError('native-source-history-directory-changed')
+            archive_fd = directory(history_fd, pending['name'], pending['directory'])
+            if archive_fd is not None:
+                if set(os.listdir(archive_fd)) - {'receipt.json', *pending['files']}:
+                    raise ValueError('native-source-history-foreign-file')
+                _generation_prefix(custody, archive_fd, 'receipt.json', custody._native_encoded(pending['receipt']), pending['image'])
+                for name, image in pending['files'].items():
+                    source, target = custody._native_at_inode(jobs, name), custody._native_at_inode(archive_fd, name)
+                    if (source is None) == (target is None):
+                        raise ValueError('native-source-history-file-changed')
+                    body, inode = custody._native_root_file(jobs if source is not None else archive_fd, name,
+                        mode=image['mode'], gid=image['gid'])
+                    if inode != image['inode'] or sha(body) != image['sha256']:
+                        raise ValueError('native-source-history-file-changed')
+        return history_fd, archive_fd
+    except BaseException:
+        for fd in (archive_fd, history_fd):
+            if fd is not None:
+                os.close(fd)
+        raise
+
+
+def _archive_active(custody, jobs, record, guard, save):
+    """Move exact obsolete publication images, preserving interruption evidence.
+
+    Only a committed transaction may enter. Each rename recovers by the original
+    inode/hash in either namespace, never by adopting a filename. Crashes before
+    a newly-created directory inode is recorded preserve/refuse that residue,
+    consistently with the existing native preparers.
+    """
+    if (record['phase'] != 'committed' and not (record['phase'] == 'restored'
+            and (record.get('transaction') or {}).get('change', {}).get('kind') == 'rearm')):
+        raise ValueError('native-source-history-uncommitted')
+    if 'history' not in record:
+        record['history'] = {'directory': None, 'count': 0, 'pending': None}
+        save()
+    history = record['history']
+    if history['directory'] is None:
+        guard()
+        os.mkdir('history', mode=0o700, dir_fd=jobs)
+        os.fsync(jobs)
+        fd = os.open('history', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=jobs)
+        try:
+            info = os.fstat(fd)
+            if (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (0, 0, 0o700) or os.listdir(fd):
+                raise ValueError('native-source-history-directory-changed')
+            custody._native_no_acl(fd)
+            history['directory'] = [info.st_dev, info.st_ino]
+            save()
+        finally:
+            os.close(fd)
+    if history['pending'] is None:
+        txn = record['transaction']
+        if txn is None and not record['retained']:
+            return
+        files = dict(record['retained'])
+        if txn is not None:
+            for name in os.listdir(jobs):
+                if name.startswith(_active_stem(txn)):
+                    mode = 0o640 if name.endswith(('.before', '.gate')) else 0o644 if 'definition' in name else 0o600
+                    gid = record['current']['gate']['document']['broker']['id'] if mode == 0o640 else 0
+                    body, inode = custody._native_root_file(jobs, name, mode=mode, gid=gid)
+                    files[name] = {'inode': inode, 'sha256': sha(body), 'mode': mode, 'gid': gid}
+        history['pending'] = {'name': uuid.uuid4().hex, 'directory': None, 'files': files,
+            'receipt': {'kind': 'ods-native-source-invocation-history', 'binding': record['binding'],
+                'currentSha256': sha(custody._native_encoded(record['current'])), 'transaction': txn, 'files': files},
+            'image': {'inode': None, 'ready': False}}
+        save()
+    pending = history['pending']
+    history_fd, archive_fd = _active_history(custody, jobs, record)
+    try:
+        if pending['directory'] is None:
+            guard()
+            os.mkdir(pending['name'], mode=0o700, dir_fd=history_fd)
+            os.fsync(history_fd)
+            archive_fd = os.open(pending['name'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=history_fd)
+            info = os.fstat(archive_fd)
+            if (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (0, 0, 0o700) or os.listdir(archive_fd):
+                raise ValueError('native-source-history-directory-changed')
+            custody._native_no_acl(archive_fd)
+            pending['directory'] = [info.st_dev, info.st_ino]
+            save()
+        _generation_stage(custody, archive_fd, 'receipt.json', custody._native_encoded(pending['receipt']), pending['image'], save, guard)
+        for name, image in pending['files'].items():
+            guard()
+            if custody._native_at_inode(jobs, name) is not None:
+                if custody._native_at_inode(archive_fd, name) is not None:
+                    raise ValueError('native-source-history-file-changed')
+                os.rename(name, name, src_dir_fd=jobs, dst_dir_fd=archive_fd)
+                os.fsync(jobs)
+                os.fsync(archive_fd)
+        guard()
+        if set(os.listdir(archive_fd)) != {'receipt.json', *pending['files']}:
+            raise ValueError('native-source-history-file-changed')
+        record['transaction'] = None
+        record['retained'] = {}
+        record['phase'] = 'committed'
+        history['pending'] = None
+        history['count'] += 1
+        save()
+    finally:
+        for fd in (archive_fd, history_fd):
+            if fd is not None:
+                os.close(fd)
+
+
+def transition_active_slot(selection, role, identifier=None, *, expected_nonce, phase):
+    """Root-only durable handoff/revocation, not launchd control or effect success.
+
+    The executor must call running only after its owned READY/GO handoff. Quiescing
+    and unknown revoke dispatch before any stop. Completed/retired require the
+    fixed global no-jobs/no-broker-process observation; no caller proof is trusted.
+    """
+    return _change_active_slot(selection, role, identifier, expected_nonce, 'phase', phase)
+
+
+def rearm_active_slot(selection, role, identifier=None, *, expected_nonce):
+    """Explicit new admission only for quiescent repeatable sync/direct jobs.
+
+    Effect-bearing one-shots are never replayed here. A lost reply observes the
+    exact original new nonce and deadlines. This call requires a live bounded Root
+    scope and never borrows a role budget as the admission deadline.
+    """
+    return _change_active_slot(selection, role, identifier, expected_nonce, 'rearm', 'prepared')
+
+
+def abort_rearm_active_slot(selection, role, identifier=None, *, expected_nonce):
+    """Explicitly withdraw one new repeatable admission after global quiescence.
+
+    Only its exact original new nonce may abort. The prior Gate must already be
+    completed/retired, so recovery cannot restore old dispatch authority. A lost
+    abort acknowledgement observes the same restored transaction.
+    """
+    from pixel_access_bridge import LaunchdAccessBridge
+    from pixel_connections import custody
+    from pixel_connections.planner import ConnectionDeployment
+    if (type(selection) is not custody._NativeSourceSelection or selection.seal is not custody._NATIVE_SEAL
+            or type(selection.bridge) is not LaunchdAccessBridge or type(selection.deployment) is not ConnectionDeployment):
+        raise custody.CustodyError('native-source-deployment-required')
+    if type(expected_nonce) is not str or not re.fullmatch('[a-f0-9]{32}', expected_nonce):
+        raise ValueError('native-source-lifecycle-control-invalid')
+    with LaunchdAccessBridge._native_runtime_operation(selection.bridge):
+        return _publish_active_slot(selection, role, identifier, rollback=True, _abort_nonce=expected_nonce)
+
+
+def _change_active_slot(selection, role, identifier, nonce, kind, phase):
+    from pixel_access_bridge import LaunchdAccessBridge
+    from pixel_connections import custody
+    from pixel_connections.planner import ConnectionDeployment
+    if (type(selection) is not custody._NativeSourceSelection or selection.seal is not custody._NATIVE_SEAL
+            or type(selection.bridge) is not LaunchdAccessBridge or type(selection.deployment) is not ConnectionDeployment):
+        raise custody.CustodyError('native-source-deployment-required')
+    if (type(nonce) is not str or not re.fullmatch('[a-f0-9]{32}', nonce)
+            or phase not in ('prepared', 'running', 'quiescing', 'unknown', 'completed', 'retired')):
+        raise ValueError('native-source-lifecycle-control-invalid')
+    if kind == 'rearm':
+        # Refuse missing/foreign/revoked scope before any archival intent or
+        # runtime publication. Check again when computing the actual admission.
+        LaunchdAccessBridge._native_source_deadline_ns(selection.bridge)
+    with LaunchdAccessBridge._native_runtime_operation(selection.bridge):
+        return _publish_active_slot(selection, role, identifier,
+            _change={'kind': kind, 'expectedNonce': nonce, 'phase': phase})
 
 
 def publish_active_slot(selection, role, identifier=None, *, rollback=False):
@@ -1557,7 +1825,7 @@ def publish_active_slot(selection, role, identifier=None, *, rollback=False):
         return _publish_active_slot(selection, role, identifier, rollback=rollback)
 
 
-def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
+def _publish_active_slot(selection, role, identifier=None, *, rollback=False, _change=None, _abort_nonce=None):
     """Root-only fixed publisher, caller holds existing admission lock.
 
     No launchctl mutation/Source dispatch. Root inputs and intent precede the
@@ -1594,7 +1862,7 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
             label, definition_body = _active_definition(custody, json.loads(expected), role, identifier, True)
             record, raw = custody._native_json_at(metadata, 'source-jobs-active.json')
             if record is None:
-                if rollback:
+                if rollback or _change is not None:
                     raise ValueError('native-source-active-recovery-missing')
                 before, inode = custody._native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id'], limit=16384)
                 custody._native_validate_inactive_generation(selection, metadata, gate, identity, base_binding, expected, before, inode)
@@ -1612,6 +1880,16 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
             _active_record(custody, record, origin, binding, expected)
             if record['phase'] in ('unknown', 'retired'):
                 raise ValueError('native-source-active-explicit-recovery-required')
+            if _abort_nonce is not None:
+                abort = record.get('transaction') or {}
+                if (abort.get('label') != label or abort.get('change', {}).get('kind') != 'rearm'
+                        or abort.get('invocation', {}).get('nonce') != _abort_nonce
+                        or abort['before']['gate']['document']['launch']['invocations'][label]['phase'] not in ('completed', 'retired')):
+                    raise ValueError('native-source-lifecycle-abort-mismatch')
+            elif rollback and (record.get('history') is not None or (record.get('transaction') or {}).get('change') is not None):
+                # A former prepared/running Gate must never be restored after
+                # lifecycle revocation or a completed invocation was archived.
+                raise ValueError('native-source-lifecycle-rollback-refused')
 
             def body_for(state, name):
                 if name == 'gate':
@@ -1635,7 +1913,7 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
                 txn = record['transaction']
                 if txn is None:
                     return {}
-                stem = '.active-' + txn['invocation']['nonce'] + '.'
+                stem = _active_stem(txn)
                 before, after = txn['before'], txn['after']
                 return {key: (stem + key, *body_for(before if key == 'before' else after,
                         'gate' if key == 'before' else txn['label'] if key == 'definition' else key))
@@ -1644,16 +1922,30 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
             def namespace():
                 txn = record['transaction']
                 allowed = {'manifest.json', '.gate-before', *record['retained']}
+                if 'history' in record:
+                    allowed.add('history')
                 if txn is not None:
-                    stem = '.active-' + txn['invocation']['nonce'] + '.'
+                    stem = _active_stem(txn)
                     allowed.update(name for name, *_rest in images().values())
                     allowed.update((stem + 'definition-old', stem + 'manifest-old'))
                 if set(os.listdir(jobs)) - allowed:
                     raise ValueError('native-source-active-unmanaged-directory')
-                for name, image in record['retained'].items():
-                    data, inode = custody._native_root_file(jobs, name, mode=image['mode'], gid=image['gid'])
-                    if inode != image['inode'] or sha(data) != image['sha256']:
-                        raise ValueError('native-source-active-retained-changed')
+                history_fd, archive_fd = _active_history(custody, jobs, record)
+                try:
+                    pending = record.get('history', {}).get('pending')
+                    for name, image in record['retained'].items():
+                        directory = jobs
+                        if custody._native_at_inode(jobs, name) is None and pending and name in pending['files']:
+                            directory = archive_fd
+                        if directory is None:
+                            raise ValueError('native-source-history-file-changed')
+                        data, inode = custody._native_root_file(directory, name, mode=image['mode'], gid=image['gid'])
+                        if inode != image['inode'] or sha(data) != image['sha256']:
+                            raise ValueError('native-source-active-retained-changed')
+                finally:
+                    for fd in (archive_fd, history_fd):
+                        if fd is not None:
+                            os.close(fd)
 
             def guard():
                 current_doc = custody._native_selected(selection, _publication=True)
@@ -1670,7 +1962,9 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
                 custody._native_verify_prepared_logs(metadata, identity, base_binding)
                 if custody._native_boot_uuid() != origin['witness']['boot']:
                     raise ValueError('native-source-active-boot-changed')
-                if role in ('exchange', 'revoke') and _no_actors(selection, custody, metadata, _generation=True) != origin['witness']:
+                change = _change or (record.get('transaction') or {}).get('change')
+                must_quiesce = change is not None and (change['kind'] == 'rearm' or change['phase'] in ('completed', 'retired'))
+                if (must_quiesce or role in ('exchange', 'revoke') and change is None) and _no_actors(selection, custody, metadata, _generation=True) != origin['witness']:
                     raise ValueError('native-source-active-grant-quiesce-required')
                 check_jobs = custody._native_job_directory(metadata, origin)
                 os.close(check_jobs)
@@ -1709,7 +2003,7 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
                 if txn is not None:
                     for key, (name, body, mode, gid) in images().items():
                         _generation_prefix(custody, jobs, name, body, txn['images'][key], mode=mode, gid=gid)
-                    stem = '.active-' + txn['invocation']['nonce'] + '.'
+                    stem = _active_stem(txn)
                     for suffix, key in (('definition-old', txn['label']), ('manifest-old', 'manifest')):
                         if custody._native_at_inode(jobs, stem + suffix) is not None:
                             if key not in txn['before']['definitions'] and key != 'manifest':
@@ -1723,9 +2017,11 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
                 txn = record['transaction']
                 if txn is not None:
                     after, image = txn['after'], txn['images']
-                    after['definitions'][txn['label']]['inode'] = image['definition']['inode']
+                    if 'definition' in image:
+                        after['definitions'][txn['label']]['inode'] = image['definition']['inode']
                     after['gate']['document'] = _active_projection(custody, txn['before'], binding, environment,
-                        txn['label'], txn['invocation'], after['definitions'][txn['label']])
+                        txn['label'], txn['invocation'], after['definitions'][txn['label']],
+                        phase=txn.get('change', {}).get('phase', 'prepared'))
                     after['gate']['inode'] = image['gate']['inode']
                     after['manifest']['document'] = _active_manifest(custody, after, binding)
                     after['manifest']['inode'] = image['manifest']['inode']
@@ -1742,13 +2038,15 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
             if rollback:
                 if txn is None or txn['label'] != label:
                     raise ValueError('native-source-active-recovery-mismatch')
+                if _abort_nonce is not None and record['phase'] == 'restored':
+                    return {'status': 'restored', 'label': label, 'generation': origin['generation']}
                 # Removing admitted authority requires explicit global quiesce.
                 # This does not relax the DATA-only no-actors guard.
                 if _no_actors(selection, custody, metadata, _generation=True) != origin['witness']:
                     raise ValueError('native-source-active-quiesce-required')
                 record['phase'] = 'restoring'
                 save()
-                stem = '.active-' + txn['invocation']['nonce'] + '.'
+                stem = _active_stem(txn)
                 before, after = txn['before'], txn['after']
                 tag = observed(gate, 'custody.json', [('before', body_for(before, 'gate')[0], before['gate']['inode']),
                     ('after', body_for(after, 'gate')[0], after['gate']['inode']),
@@ -1764,6 +2062,8 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
                     before['gate']['inode'] = txn['images']['before']['inode']
                     save()
                 for key, directory, name in (('definition', units, label + '.plist'), ('manifest', jobs, 'manifest.json')):
+                    if key not in txn['images']:
+                        continue
                     prior = before['definitions'].get(label) if key == 'definition' else before['manifest']
                     old_name, new_name = stem + key + '-old', stem + key
                     if custody._native_at_inode(directory, name) == txn['images'][key]['inode']:
@@ -1780,46 +2080,86 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
                         os.fsync(jobs)
                 record['current'] = before
                 record['phase'] = 'restored'
-                if label not in record['retired']:
+                if _abort_nonce is None and label not in record['retired']:
                     record['retired'].append(label)
                 save()
                 return {'status': 'restored', 'label': label, 'generation': origin['generation']}
             if record['phase'] in ('restoring', 'restored'):
-                raise ValueError('native-source-active-explicit-recovery-required')
+                if (record['phase'] == 'restored' and _change is not None and _change['kind'] == 'rearm'
+                        and (txn or {}).get('change', {}).get('kind') == 'rearm'):
+                    _archive_active(custody, jobs, record, guard, save)
+                    txn = record['transaction']
+                else:
+                    raise ValueError('native-source-active-explicit-recovery-required')
             if record['phase'] == 'committed':
                 current = record['current']
                 row = current['gate']['document'].get('launch', {}).get('invocations', {}).get(label)
-                if row is not None:
+                if row is not None and _change is None:
                     return {'status': 'observed', 'label': label, 'invocation': row['invocation'],
                         'eligible': row['phase'] in ('prepared', 'running') and custody._native_clock_ns() < int(
                             row['invocation']['admissionDeadlineNs' if row['phase'] == 'prepared' else 'workerDeadlineNs'])}
-                if label in record['retired']:
+                if _change is None and record.get('history', {}).get('pending') is not None:
+                    raise ValueError('native-source-history-recovery-required')
+                if _change is not None:
+                    if row is None:
+                        raise ValueError('native-source-lifecycle-slot-missing')
+                    previous = (txn or {}).get('change')
+                    if previous is not None and {key: previous[key] for key in _change} == _change:
+                        # The committed transition is the recovery receipt. Its
+                        # old expected nonce may differ after a successful rearm.
+                        return {'status': 'observed', 'label': label, 'phase': row['phase'], 'invocation': row['invocation']}
+                    if row['invocation']['nonce'] != _change['expectedNonce']:
+                        raise ValueError('native-source-lifecycle-nonce-changed')
+                    if _change['kind'] == 'phase' and row['phase'] == _change['phase']:
+                        return {'status': 'observed', 'label': label, 'phase': row['phase'], 'invocation': row['invocation']}
+                    probe = dict(_change, id=uuid.uuid4().hex)
+                    prospective = dict(row['invocation'])
+                    if _change['kind'] == 'rearm':
+                        prospective['nonce'] = probe['id']
+                    _active_change(custody, probe, current, label, prospective)
+                    # Archive only completed publication material. No active
+                    # authority or business data is moved or inferred from it.
+                    _archive_active(custody, jobs, record, guard, save)
+                    txn = record['transaction']
+                if _change is None and label in record['retired']:
                     raise ValueError('native-source-active-retired-slot')
-                if txn is not None:
+                if txn is not None and _change is None:
                     # Retain previous exact Root evidence, never delete/adopt it.
                     for name in os.listdir(jobs):
-                        if name.startswith('.active-' + txn['invocation']['nonce'] + '.'):
+                        if name.startswith(_active_stem(txn)):
                             data, inode = custody._native_root_file(jobs, name,
-                                mode=0o640 if name.endswith('.before') else 0o644 if 'definition' in name else 0o600,
-                                gid=identity['id'] if name.endswith('.before') else 0)
+                                mode=0o640 if name.endswith(('.before', '.gate')) else 0o644 if 'definition' in name else 0o600,
+                                gid=identity['id'] if name.endswith(('.before', '.gate')) else 0)
                             record['retained'][name] = {'inode': inode, 'sha256': sha(data),
-                                'mode': 0o640 if name.endswith('.before') else 0o644 if 'definition' in name else 0o600,
-                                'gid': identity['id'] if name.endswith('.before') else 0}
+                                'mode': 0o640 if name.endswith(('.before', '.gate')) else 0o644 if 'definition' in name else 0o600,
+                                'gid': identity['id'] if name.endswith(('.before', '.gate')) else 0}
                 boot = custody._native_boot_uuid()
                 if boot != origin['witness']['boot']:
                     raise ValueError('native-source-active-boot-changed')
                 now = custody._native_clock_ns()
-                invocation = custody._native_invocation({'role': role, 'identifier': identifier,
-                    'nonce': uuid.uuid4().hex, 'boot': boot, 'clock': 'darwin-clock-monotonic-raw-ns-v1',
-                    'generation': origin['generation'], 'issuedNs': str(now),
-                    'admissionDeadlineNs': str(now + (30 if role == 'sync' else custody.NATIVE_CHILD_BUDGETS[role]) * 10**9),
-                    'workerDeadlineNs': str(now + custody.NATIVE_CHILD_BUDGETS[role] * 10**9)}).document
+                admission = now + (30 if role == 'sync' else custody.NATIVE_CHILD_BUDGETS[role]) * 10**9
+                worker = now + custody.NATIVE_CHILD_BUDGETS[role] * 10**9
+                if _change is not None and _change['kind'] == 'rearm':
+                    from pixel_access_bridge import LaunchdAccessBridge
+                    ceiling = LaunchdAccessBridge._native_source_deadline_ns(selection.bridge)
+                    admission = min(admission, ceiling)
+                    if role != 'sync':
+                        worker = min(worker, ceiling)
+                invocation = (row['invocation'] if _change is not None and _change['kind'] == 'phase' else
+                    custody._native_invocation({'role': role, 'identifier': identifier,
+                        'nonce': uuid.uuid4().hex, 'boot': boot, 'clock': 'darwin-clock-monotonic-raw-ns-v1',
+                        'generation': origin['generation'], 'issuedNs': str(now),
+                        'admissionDeadlineNs': str(admission), 'workerDeadlineNs': str(worker)}).document)
                 after = copy.deepcopy(current)
-                after['definitions'][label] = {'role': role, 'identifier': identifier, 'active': True, 'inode': None,
-                    'sha256': sha(definition_body), 'profileSha256': sha(component['source-' + role + '.sb'])}
+                if _change is None:
+                    after['definitions'][label] = {'role': role, 'identifier': identifier, 'active': True, 'inode': None,
+                        'sha256': sha(definition_body), 'profileSha256': sha(component['source-' + role + '.sb'])}
                 after['gate']['inode'] = after['manifest']['inode'] = None
                 record['transaction'] = {'label': label, 'invocation': invocation, 'before': copy.deepcopy(current),
-                    'after': after, 'images': {key: {'inode': None, 'ready': False} for key in ('definition', 'manifest', 'gate', 'before')}}
+                    'after': after, 'images': {key: {'inode': None, 'ready': False} for key in (
+                        ('definition', 'manifest', 'gate', 'before') if _change is None else ('manifest', 'gate', 'before'))}}
+                if _change is not None:
+                    record['transaction']['change'] = dict(_change, id=uuid.uuid4().hex)
                 record['phase'] = 'staging'
                 refresh()
                 if len(custody._native_encoded(after['gate']['document'])) > 16384 or len(after['definitions']) > 64:
@@ -1832,16 +2172,24 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
                 txn = record['transaction']
             if txn['label'] != label:
                 raise ValueError('native-source-active-pending-slot-preserved')
+            actual_change = txn.get('change')
+            if ((actual_change is None) != (_change is None) or actual_change is not None
+                    and {key: actual_change[key] for key in _change} != _change):
+                raise ValueError('native-source-lifecycle-pending-preserved')
             if record['phase'] == 'staging':
                 for key in ('definition', 'manifest', 'gate', 'before'):
+                    if key not in txn['images']:
+                        continue
                     refresh()
                     name, body, mode, gid = images()[key]
                     _generation_stage(custody, jobs, name, body, txn['images'][key], save, guard, mode=mode, gid=gid)
                 record['phase'] = 'publishing'
                 save()
-            stem = '.active-' + txn['invocation']['nonce'] + '.'
+            stem = _active_stem(txn)
             if record['phase'] == 'publishing':
                 for key, directory, name in (('definition', units, label + '.plist'), ('manifest', jobs, 'manifest.json')):
+                    if key not in txn['images']:
+                        continue
                     old = txn['before']['definitions'].get(label) if key == 'definition' else txn['before']['manifest']
                     if custody._native_at_inode(directory, name) == (old['inode'] if old else None) and old is not None:
                         if custody._native_at_inode(jobs, stem + key + '-old') is not None:
@@ -1860,12 +2208,15 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
             guard()
             if observed(gate, 'custody.json', [('before', body_for(txn['before'], 'gate')[0], txn['before']['gate']['inode']),
                     ('after', body_for(txn['after'], 'gate')[0], txn['after']['gate']['inode'])], mode=0o640, gid=identity['id']) == 'before':
-                if custody._native_clock_ns() >= int(txn['invocation']['admissionDeadlineNs']) or custody._native_boot_uuid() != txn['invocation']['boot']:
+                granting = actual_change is None or actual_change['phase'] in ('prepared', 'running')
+                if (granting and custody._native_clock_ns() >= int(txn['invocation']['admissionDeadlineNs'])
+                        or custody._native_boot_uuid() != txn['invocation']['boot']):
                     raise ValueError('native-source-active-admission-expired')
                 # Root manifest + exact target definition must precede authority.
                 for key, directory, name in (('definition', units, label + '.plist'), ('manifest', jobs, 'manifest.json')):
                     data, inode = custody._native_root_file(directory, name, mode=0o644 if key == 'definition' else 0o600)
-                    if (data, inode) != (body_for(txn['after'], label if key == 'definition' else 'manifest')[0], txn['images'][key]['inode']):
+                    wanted_inode = (txn['images'][key]['inode'] if key in txn['images'] else txn['after']['definitions'][label]['inode'])
+                    if (data, inode) != (body_for(txn['after'], label if key == 'definition' else 'manifest')[0], wanted_inode):
                         raise ValueError('native-source-active-input-unconfirmed')
                 guard()
                 # Qualification above can block. Boot first, then read the
@@ -1873,7 +2224,7 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
                 # This is not an atomic clock+filesystem operation.
                 if custody._native_boot_uuid() != txn['invocation']['boot']:
                     raise ValueError('native-source-active-boot-changed')
-                if custody._native_clock_ns() >= int(txn['invocation']['admissionDeadlineNs']):
+                if granting and custody._native_clock_ns() >= int(txn['invocation']['admissionDeadlineNs']):
                     raise ValueError('native-source-active-admission-expired')
                 os.replace(stem + 'gate', 'custody.json', src_dir_fd=jobs, dst_dir_fd=gate)
                 os.fsync(gate)
@@ -1882,7 +2233,8 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False):
             record['current'] = txn['after']
             record['phase'] = 'committed'
             save()
-            return {'status': 'prepared', 'label': label, 'invocation': txn['invocation']}
+            return {'status': 'prepared' if actual_change is None else 'committed', 'label': label,
+                **({'phase': actual_change['phase']} if actual_change is not None else {}), 'invocation': txn['invocation']}
         finally:
             if jobs is not None:
                 os.close(jobs)
