@@ -75,7 +75,9 @@ def test_source_aliases_refuse_before_publication(support, change):
     source, python = support
     path = source / 'bin/pixel_access_protocol.py'
     if change == 'symlink':
-        saved = path.with_name('original.py'); path.rename(saved); path.symlink_to(saved)
+        saved = path.with_name('original.py')
+        path.rename(saved)
+        path.symlink_to(saved)
     else:
         os.link(path, path.with_name('other-link.py'))
     with pytest.raises((OSError, ValueError)):

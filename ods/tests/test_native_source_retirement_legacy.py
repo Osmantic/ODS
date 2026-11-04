@@ -68,7 +68,9 @@ def test_descriptor_only_classification_preserves_unknown_or_changed_source(old_
         c.NATIVE_STATE.mkdir(mode=0o700)
         (c.NATIVE_STATE / 'private-marker').write_bytes(b'MUST_BE_PRESERVED_UNREAD')
     elif fault == 'metadata':
-        path = n.metadata / 'source-unknown.json'; path.write_bytes(b'{}'); path.chmod(0o600)
+        path = n.metadata / 'source-unknown.json'
+        path.write_bytes(b'{}')
+        path.chmod(0o600)
     elif fault == 'account':
         n.records['Users'] = {'UniqueID': ['60001']}
     elif fault == 'runtime':

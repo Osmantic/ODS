@@ -85,7 +85,8 @@ def retirement_ready(executor, monkeypatch):
     witness = retirement.source_retirement_witness(core, source)
     raw = c._native_encoded(witness)
     n.witness = n.metadata / 'retirement.json'
-    n.witness.write_bytes(raw); n.witness.chmod(0o600)
+    n.witness.write_bytes(raw)
+    n.witness.chmod(0o600)
     n.transaction = retirement.source_retirement_transaction(raw)
     n.intent = helper.retirement_withdrawal_intent(n.selected, transaction=n.transaction)
     return n

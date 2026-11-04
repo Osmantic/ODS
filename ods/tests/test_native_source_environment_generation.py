@@ -251,7 +251,9 @@ def test_unknown_images_and_drift_are_preserved_and_refused(executor, monkeypatc
     elif change == 'replaced-definition':
         path = next(n.units.glob('*.plist'))
         other = path.with_name('replacement')
-        other.write_bytes(path.read_bytes()); other.chmod(0o644); other.replace(path)
+        other.write_bytes(path.read_bytes())
+        other.chmod(0o644)
+        other.replace(path)
     else:
         with c.NATIVE_ENV.open('ab') as stream:
             stream.write(b'# foreign drift\n')
@@ -416,15 +418,19 @@ def test_pending_child_boot_refuses_any_admission_or_unknown_prefix(pending_chil
         n.boot['value'] = 'ABCDEF01-2345-4678-8123-ABCDEF012345'
     elif change == 'incomplete':
         path = n.metadata / 'source-jobs-prepare.json'
-        value = json.loads(path.read_bytes()); value['phase'] = 'staging'
+        value = json.loads(path.read_bytes())
+        value['phase'] = 'staging'
         path.write_bytes(c._native_encoded(value))
     elif change == 'replaced-plist':
         path = next(n.units.glob('*.plist'))
         replacement = path.with_name('replacement')
-        replacement.write_bytes(path.read_bytes()); replacement.chmod(0o644); replacement.replace(path)
+        replacement.write_bytes(path.read_bytes())
+        replacement.chmod(0o644)
+        replacement.replace(path)
     else:
         path = n.metadata / 'source-execution.json'
-        path.write_bytes(b'{}\n'); path.chmod(0o600)
+        path.write_bytes(b'{}\n')
+        path.chmod(0o600)
     before = files(n)
     with pytest.raises((ValueError, c.CustodyError)):
         helper.publish_environment_generation(n.selected, n.wanted)

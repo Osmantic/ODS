@@ -54,7 +54,8 @@ def archive_ready(executor, monkeypatch):
     archive.ARCHIVE_ROOT.mkdir(mode=0o700)
     settings = dict(owner=n.f.bridge.owner.pw_name, install_dir=str(n.f.bridge.install),
         state_dir=str(n.metadata), openclaw_bin=str(archive.LAUNCHER))
-    archive.SETTINGS.write_bytes(c._native_encoded(settings)); archive.SETTINGS.chmod(0o600)
+    archive.SETTINGS.write_bytes(c._native_encoded(settings))
+    archive.SETTINGS.chmod(0o600)
     previous_directory = mac.protected_directory
     allowed = {n.world, n.metadata, n.kit.parent, n.units, c.NATIVE_CONNECTION_RECORD.parent,
         archive.ARCHIVE_ROOT, n.f.root.parent.parent}
@@ -101,7 +102,8 @@ def archive_ready(executor, monkeypatch):
         userGuid='11111111-2222-4333-8444-555555555555', groupGuid='66666666-7777-4888-8999-AAAAAAAAAAAA')
     for name, body in (('lock', b''), ('ops-identity.json', c._native_encoded(n.ops_identity)), ('ops-identity.lock', b'')):
         path = n.metadata / name
-        path.write_bytes(body); path.chmod(0o600)
+        path.write_bytes(body)
+        path.chmod(0o600)
     with n.f.bridge.bounded(900):
         inventory = archive.add_history(n.selected, c.native_retirement_inventory(n.selected))
         doc = c._native_selected(n.selected, _publication=True)
@@ -110,7 +112,8 @@ def archive_ready(executor, monkeypatch):
         child = subprocess.Popen([sys.executable, '-B', '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE)
         try: _parent, sec, usec = proc(child.pid)
         finally:
-            child.stdin.close(); child.wait(timeout=5)
+            child.stdin.close()
+            child.wait(timeout=5)
         core_before = dict(schema=1, owner=doc['ownerUid'], boot=inventory['boot'].lower(),
             hashes={str(path): digest(path.read_bytes()) for path in [archive.SETTINGS,
                 *[n.metadata / name for name in ('lock', 'ops-identity.json', 'ops-identity.lock')]]},
@@ -121,7 +124,8 @@ def archive_ready(executor, monkeypatch):
         n.witness = core.source_retirement_witness(core_before, source_before)
         n.raw = c._native_encoded(n.witness)
         path = n.metadata / 'retirement.json'
-        path.write_bytes(n.raw); path.chmod(0o600)
+        path.write_bytes(n.raw)
+        path.chmod(0o600)
         n.transaction = core.source_retirement_transaction(n.raw)
         n.intent = helper.retirement_withdrawal_intent(n.selected, transaction=n.transaction)
         n.withdrawal = helper.withdraw_retirement_generation(n.selected, transaction=n.transaction, intent=n.intent)
@@ -174,12 +178,14 @@ def test_archive_lost_ack_reuses_exact_frozen_cursor_and_item_inode(archive_read
     def renamed(first, second, **kwargs):
         result = original_rename(first, second, **kwargs)
         if where == 'item-rename' and not hits and str(second).startswith('source-item-'):
-            hits.append(True); raise OSError('invented archive reply loss')
+            hits.append(True)
+            raise OSError('invented archive reply loss')
         return result
     def saved(directory, name, value, **kwargs):
         result = original_save(directory, name, value, **kwargs)
         if not hits and name == archive.CURSOR and (where == 'cursor-bind' or where == 'cursor-ack' and value['next'] == 1):
-            hits.append(True); raise OSError('invented archive reply loss')
+            hits.append(True)
+            raise OSError('invented archive reply loss')
         return result
     monkeypatch.setattr(os, 'rename', renamed)
     monkeypatch.setattr(archive, '_save_at', saved)
@@ -203,11 +209,15 @@ def test_changed_archive_authority_preserves_all_items_before_any_rename(archive
     if fault == 'token-inode':
         token = c.NATIVE_STATE / 'private/google-token.json'
         replacement = token.with_name('next-token')
-        replacement.write_bytes(b'SYNTHETIC'); replacement.chmod(0o600)
-        info = replacement.stat(); n.owners[(info.st_dev, info.st_ino)] = (n.identity['id'], n.identity['id'])
+        replacement.write_bytes(b'SYNTHETIC')
+        replacement.chmod(0o600)
+        info = replacement.stat()
+        n.owners[(info.st_dev, info.st_ino)] = (n.identity['id'], n.identity['id'])
         os.replace(replacement, token)
     elif fault == 'new-metadata':
-        path = n.metadata / 'source-unbound.json'; path.write_bytes(b'{}'); path.chmod(0o600)
+        path = n.metadata / 'source-unbound.json'
+        path.write_bytes(b'{}')
+        path.chmod(0o600)
     elif fault == 'live-label':
         command = archive._command
         monkeypatch.setattr(archive, '_command', lambda argv: 'system = {\ncom.ods.pixel-native-gateway\n}\n'
@@ -285,12 +295,14 @@ def test_actual_core_and_final_control_lost_replies_reuse_one_plan(archive_ready
         result = rename(first, second, **kwargs)
         selected = fault['where'] == 'core-rename' and second == 'item-0' or fault['where'] == 'final-witness' and second == 'source-witness.json' or fault['where'] == 'final-lock' and second == 'source-controller-lock'
         if selected and fault['where'] not in hits:
-            hits.add(fault['where']); raise OSError('invented Core archive reply loss')
+            hits.add(fault['where'])
+            raise OSError('invented Core archive reply loss')
         return result
     def saved(directory, name, value, **kwargs):
         result = save(directory, name, value, **kwargs)
         if fault['where'] == 'core-cas' and fault['where'] not in hits and name == archive.CORE_PLAN and value['next'] == 1:
-            hits.add(fault['where']); raise OSError('invented Core archive reply loss')
+            hits.add(fault['where'])
+            raise OSError('invented Core archive reply loss')
         return result
     monkeypatch.setattr(os, 'rename', renamed)
     monkeypatch.setattr(archive, '_save_at', saved)
@@ -322,7 +334,8 @@ def test_public_retire_resumes_same_core_archive_after_settings_and_lock_moved(a
     def renamed(first, second, **kwargs):
         result = rename(first, second, **kwargs)
         if not hit and second == 'source-controller-lock':
-            hit.append(True); raise OSError('invented final lock reply loss')
+            hit.append(True)
+            raise OSError('invented final lock reply loss')
         return result
     monkeypatch.setattr(os, 'rename', renamed)
     try:

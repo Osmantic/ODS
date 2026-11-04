@@ -707,7 +707,8 @@ def _source_core_archive(archive, *, transaction, witness, paths=None):
                     authority=str(path) in witness['hashes'])) for path in paths], next=0)
             value['planSha256'] = hashlib.sha256(source._native_encoded(value['plan'])).hexdigest()
             _source_core_plan(value, transaction=transaction, witness=witness, cursor=cursor, archive=archive)
-            native._core_no_actors(witness); native._identity(witness)
+            native._core_no_actors(witness)
+            native._identity(witness)
             raw = native._save_at(target, native.CORE_PLAN, value, expected=None)
         else:
             value = _source_core_plan(json.loads(raw, object_pairs_hook=source._native_pairs),
@@ -716,7 +717,8 @@ def _source_core_archive(archive, *, transaction, witness, paths=None):
             raise ValueError('native-source-retirement-core-cursor-changed')
 
         def guard():
-            native._core_no_actors(witness); native._identity(witness)
+            native._core_no_actors(witness)
+            native._identity(witness)
             _source_operations_absent(witness)
             try: witness_raw, witness_inode = source._native_root_file(metadata, 'retirement.json', limit=32 * 1024 * 1024)
             except FileNotFoundError:
@@ -788,7 +790,8 @@ def _source_core_archive(archive, *, transaction, witness, paths=None):
                             authority=value['plan'][index]['image']['sha256'] is not None) != value['plan'][index]['image']:
                         raise ValueError('native-source-retirement-core-image-changed')
                     os.rename(origin.name, saved.name, src_dir_fd=parent, dst_dir_fd=target)
-                    os.fsync(parent); os.fsync(target)
+                    os.fsync(parent)
+                    os.fsync(target)
             value['next'] += 1
             raw = native._save_at(target, native.CORE_PLAN, value, expected=raw)
             receipt_raw, receipt, wanted = guard()
@@ -817,7 +820,8 @@ def _source_finish_controls(archive, *, transaction, witness):
             (native.CURSOR, 'source-cursor.json', dict(inode=cursor_inode, sha256=hashlib.sha256(cursor_raw).hexdigest())),
         )
         for current, saved, image in expected:
-            native._core_no_actors(witness); native._identity(witness)
+            native._core_no_actors(witness)
+            native._identity(witness)
             _source_operations_absent(witness)
             first, second = source._native_at_inode(metadata, current), source._native_at_inode(target, saved)
             if first == image['inode'] and second is None:
@@ -825,7 +829,8 @@ def _source_finish_controls(archive, *, transaction, witness):
                 if dict(inode=inode, sha256=hashlib.sha256(raw).hexdigest()) != image:
                     raise ValueError('native-source-retirement-final-control-changed')
                 os.rename(current, saved, src_dir_fd=metadata, dst_dir_fd=target)
-                os.fsync(metadata); os.fsync(target)
+                os.fsync(metadata)
+                os.fsync(target)
             elif first is not None or second != image['inode']:
                 raise ValueError('native-source-retirement-final-control-changed')
             raw, inode = source._native_root_file(target, saved, limit=32 * 1024 * 1024)

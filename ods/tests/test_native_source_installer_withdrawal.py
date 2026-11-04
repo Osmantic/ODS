@@ -65,7 +65,8 @@ def make_prepared(n, monkeypatch, *, runtime_bundle=None, candidate_digest=None,
     n.transaction = {'kind': 'native-installer-upgrade', 'transaction': digest(body),
         'currentDigest': doc['bundleSha256'], 'candidateDigest': candidate}
     n.context = n.metadata / ('runtime-upgrade-context-' + candidate + '.json')
-    n.context.write_bytes(body); n.context.chmod(0o600)
+    n.context.write_bytes(body)
+    n.context.chmod(0o600)
     n.intent = helper.installer_withdrawal_intent(n.selected, transaction=n.transaction)
     value = {'schemaVersion': 4, 'currentDigest': doc['bundleSha256'], 'candidateDigest': candidate,
         'phase': 'prepared', 'files': rows,
@@ -73,7 +74,8 @@ def make_prepared(n, monkeypatch, *, runtime_bundle=None, candidate_digest=None,
             'contextSha256': n.transaction['transaction'], 'familySha256': family, 'proof': n.intent,
             'absentPaths': sorted(row['path'] for row in rows if row['before'] is None)}}
     n.upgrade = n.metadata / 'runtime-upgrade.json'
-    n.upgrade.write_bytes(c._native_encoded(value)); n.upgrade.chmod(0o600)
+    n.upgrade.write_bytes(c._native_encoded(value))
+    n.upgrade.chmod(0o600)
     return n
 
 
@@ -112,7 +114,8 @@ def test_withdrawal_never_accepts_caller_only_or_changed_actual_authority(prepar
     if change == 'context':
         n.context.write_bytes(n.context.read_bytes() + b' ')
     elif change == 'journal':
-        value = json.loads(n.upgrade.read_bytes()); value['sourceAddition']['familySha256'] = 'f' * 64
+        value = json.loads(n.upgrade.read_bytes())
+        value['sourceAddition']['familySha256'] = 'f' * 64
         n.upgrade.write_bytes(c._native_encoded(value))
     elif change == 'intent':
         intent['gate']['sha256'] = 'f' * 64

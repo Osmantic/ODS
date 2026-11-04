@@ -163,7 +163,8 @@ def _capture_node(directory, name, *, remaining, depth=0):
             while True:
                 block = os.read(fd, min(65536, before.st_size + 1 - size))
                 if not block: break
-                size += len(block); digest.update(block)
+                size += len(block)
+                digest.update(block)
                 if size > before.st_size: _fail('history-changed')
             if size != before.st_size: _fail('history-changed')
             value.update(kind='file', sha256=digest.hexdigest(), size=size)
@@ -565,7 +566,8 @@ def archive_step(*, transaction):
                         if (c._native_root_file(metadata, CURSOR, limit=32 * 1024 * 1024)[0] != previous
                                 or _witness(transaction)[2] != witness_inode): _fail('cursor-changed')
                         os.rename(origin.name, target, src_dir_fd=parent, dst_dir_fd=archive)
-                        os.fsync(parent); os.fsync(archive)
+                        os.fsync(parent)
+                        os.fsync(archive)
                     elif source_inode is not None or target_inode != expected_inode:
                         _fail('archive-image-changed')
                     # Includes an exact rename whose acknowledgement was lost.
@@ -1039,9 +1041,12 @@ def _save_at(directory, name, value, *, expected):
     temporary = '.retirement-control-' + os.urandom(16).hex()
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
     try:
-        os.fchown(fd, 0, 0); os.fchmod(fd, 0o600)
+        os.fchown(fd, 0, 0)
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, 'wb', closefd=False) as stream:
-            stream.write(raw); stream.flush(); os.fsync(fd)
+            stream.write(raw)
+            stream.flush()
+            os.fsync(fd)
         try: fresh = c._native_root_file(directory, name, limit=32 * 1024 * 1024)[0]
         except FileNotFoundError: fresh = None
         if fresh != expected: _fail('control-changed')

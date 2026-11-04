@@ -38,7 +38,9 @@ def test_unbound_or_unqualified_source_is_preserved_before_legacy_stops(tmp_path
     state, _broker, settings, install, owner = owner_fixture(tmp_path, monkeypatch)
     residue = tmp_path / ('source-' + kind)
     if kind in ('environment', 'descriptor'): residue.write_bytes(b'INVENTED_UNBOUND_PRIVATE_IMAGE')
-    else: residue.mkdir(); (residue / 'private-child').write_bytes(b'INVENTED_PRIVATE_IMAGE')
+    else:
+        residue.mkdir()
+        (residue / 'private-child').write_bytes(b'INVENTED_PRIVATE_IMAGE')
     stamp = residue.stat()
     monkeypatch.setattr(retirement, 'SOURCE_RESIDUES', (str(residue),))
     if access_present: settings.write_bytes(b'not read before Source refusal')

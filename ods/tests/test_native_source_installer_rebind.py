@@ -111,7 +111,8 @@ def build_upgrade(n, monkeypatch, *, connected=False, activate=True):
                     'calendar.write': False, 'calendar.direct': False, 'gmail.read': True, 'gmail.drafts': False}}}}
         state.validate(record)
         path = n.metadata / 'portal-connections.json'
-        path.write_bytes(c._native_encoded(record)); path.chmod(0o644)
+        path.write_bytes(c._native_encoded(record))
+        path.chmod(0o644)
         monkeypatch.setattr(c, 'NATIVE_CONNECTION_RECORD', path)
         n.connected_token = broker_file(n, 'private/google-token.json', b'SYNTHETIC_TOKEN_NOT_READ')
         live_target = coordinator.gateway_target(record, custody_held=True)
@@ -120,7 +121,8 @@ def build_upgrade(n, monkeypatch, *, connected=False, activate=True):
         for path, body in ((n.f.env, env.encode()),
                 (n.f.answers, c._native_encoded(dict(answers, modelChoice='preserved-owner-model')))):
             staged = path.with_name('.admitted-' + path.name)
-            staged.write_bytes(body); staged.chmod(0o600)
+            staged.write_bytes(body)
+            staged.chmod(0o600)
             os.replace(staged, path)
         def worker(operation, **_kwargs):
             assert operation == 'connection-owner-status'
@@ -163,7 +165,8 @@ def build_upgrade(n, monkeypatch, *, connected=False, activate=True):
     descriptor = dict(old_descriptor, runtimeRoot=str(target / 'runtime'), sourceRoot=str(target / 'ods-source'),
         node=str(target / 'node'), manifestSha256=digest(manifest_body))
     config = n.f.config.with_name('openclaw-' + checksum + '.json')
-    config.write_bytes(n.f.config.read_bytes()); config.chmod(0o600)
+    config.write_bytes(n.f.config.read_bytes())
+    config.chmod(0o600)
     document = plistlib.loads(n.f.plist.read_bytes())
     document['ProgramArguments'] = [item.replace(str(n.f.root), str(target)).replace(str(n.f.config), str(config))
         for item in document['ProgramArguments']]
@@ -198,7 +201,8 @@ def build_upgrade(n, monkeypatch, *, connected=False, activate=True):
         return n
     for row in journal['files']:
         path = Path(row['path'])
-        path.write_bytes(base64.b64decode(row['after'])); path.chmod(row['mode'])
+        path.write_bytes(base64.b64decode(row['after']))
+        path.chmod(row['mode'])
     previous_read = runtime_custody._read
     def public_metadata(path, owner, maximum):
         # Darwin publishes these two NONSECRET Root metadata images644;

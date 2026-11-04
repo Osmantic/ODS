@@ -2575,7 +2575,6 @@ def _activate_upgrade(plan, records, journal, *, previous_guard=False, source_br
 
 def _recover_unstarted_upgrade(plan, records, journal, previous, candidate, *, verify_snapshots, previous_guard):
     """Finish a staging-only interruption without stopping healthy old jobs."""
-    from pixel_macos_custody import protected_inspection_bytes as protected_bytes
     hold_path = _edge_hold_journal(plan)
     if os.path.lexists(hold_path):
         return False
@@ -2614,7 +2613,7 @@ def _recover_upgrade(plan, records, journal, *, verify_snapshots, previous_guard
     The caller must load/authorize records with recovery_upgrade and supply
     immutable bundle/config verification. Unknown stop witnesses stay blocked.
     """
-    from pixel_macos_custody import protected_inspection_bytes as protected_bytes, replace_protected_inspection_bytes as replace_protected_bytes
+    from pixel_macos_custody import replace_protected_inspection_bytes as replace_protected_bytes
     if plan.get('source_lifecycle') is not None and journal.value.get('phase') == 'prepared':
         if source_bridge is None:
             raise InstallError('native-source-installer-file-custody-required')
@@ -3699,7 +3698,6 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise InstallError('macos-root-install-required')
     from pixel_access_bridge import LaunchdAccessBridge
-    from pixel_macos_custody import protected_inspection_bytes as protected_bytes
     if not isinstance(bridge, LaunchdAccessBridge) or bridge.state != _launchd.ACCESS_STATE:
         raise InstallError('runtime-upgrade-controller-state-changed')
     if not os.path.lexists(bridge.state / 'runtime-upgrade.json'):

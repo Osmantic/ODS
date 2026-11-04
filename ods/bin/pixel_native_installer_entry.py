@@ -344,8 +344,10 @@ def stage_support(source_root, *, python):
                 count = os.write(fd, body[offset:])
                 if count <= 0: raise ValueError('native-installer-support-write-failed')
                 offset += count
-            os.fchown(fd, 0, 0); os.fchmod(fd, 0o644)
-            os.fsync(fd); _acl(fd)
+            os.fchown(fd, 0, 0)
+            os.fchmod(fd, 0o644)
+            os.fsync(fd)
+            _acl(fd)
         finally:
             os.close(fd)
         # Source contents and original inode/stamps must still be exact before
@@ -356,7 +358,8 @@ def stage_support(source_root, *, python):
             if _read(source, origin) != (bodies[relative], images[relative]):
                 raise ValueError('native-installer-support-source-changed')
         for directory, _folders, _files in os.walk(temporary, topdown=False, followlinks=False):
-            os.chown(directory, 0, 0); os.chmod(directory, 0o755)
+            os.chown(directory, 0, 0)
+            os.chmod(directory, 0o755)
             fd = _directory(Path(directory), protected=True)
             try: os.fsync(fd)
             finally: os.close(fd)

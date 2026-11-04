@@ -104,7 +104,9 @@ def test_unknown_source_prefixed_nodes_are_never_archive_authority(publication, 
     n = publication
     helper.publish_kit(n.selected)
     unknown = (n.kit.parent if kind == 'kit' else n.metadata) / ('.source-kit-' + 'f' * 32 if kind == 'kit' else '.source-unknown')
-    if kind == 'file': unknown.write_bytes(b'INVENTED_PRIVATE_FILE_MUST_BE_PRESERVED'); unknown.chmod(0o600)
+    if kind == 'file':
+        unknown.write_bytes(b'INVENTED_PRIVATE_FILE_MUST_BE_PRESERVED')
+        unknown.chmod(0o600)
     else: unknown.mkdir(mode=0o700)
     inode = unknown.stat().st_ino
     with pytest.raises(c.CustodyError, match='namespace-unbound'):
@@ -122,12 +124,15 @@ def test_known_history_drift_or_link_refuses_without_renaming(publication, fault
     if fault == 'backup-bytes': target.write_bytes(b'changed historical Root code')
     elif fault == 'backup-inode':
         replacement = target.with_name('replacement')
-        replacement.write_bytes(target.read_bytes()); replacement.chmod(0o755)
+        replacement.write_bytes(target.read_bytes())
+        replacement.chmod(0o755)
         os.replace(replacement, target)
     elif fault == 'ledger-nonce':
-        record['nonce'] = 'f' * 32; record_path.write_bytes(c._native_encoded(record))
+        record['nonce'] = 'f' * 32
+        record_path.write_bytes(c._native_encoded(record))
     else:
-        target.unlink(); target.symlink_to(n.kit / 'broker.py')
+        target.unlink()
+        target.symlink_to(n.kit / 'broker.py')
     before = set(n.metadata.iterdir()), set(n.kit.parent.iterdir())
     with pytest.raises((ValueError, c.CustodyError, OSError)):
         retirement._capture_histories(n.selected, current_metadata(n), private={'generation': 'a' * 32})

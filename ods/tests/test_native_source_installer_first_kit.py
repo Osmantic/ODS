@@ -107,7 +107,8 @@ def first_target(material, built, monkeypatch, request):
         helper.publish_kit(n.selected)
     else:
         (n.metadata / 'source-sidefiles.json').unlink()
-        n.f.env.unlink(); n.f.answers.unlink()
+        n.f.env.unlink()
+        n.f.answers.unlink()
     monkeypatch.setattr(n.f.bridge, 'state', n.metadata, raising=False)
     monkeypatch.setattr(n.f.bridge.owner, 'pw_dir', str(n.f.bridge.home), raising=False)
     captured = None
@@ -150,7 +151,8 @@ def first_target(material, built, monkeypatch, request):
     descriptor = dict(old_descriptor, runtimeRoot=str(target / 'runtime'), sourceRoot=str(target / 'ods-source'),
         node=str(target / 'node'), manifestSha256=digest(manifest_body))
     config = n.f.config.with_name('openclaw-' + checksum + '.json')
-    config.write_bytes(n.f.config.read_bytes()); config.chmod(0o600)
+    config.write_bytes(n.f.config.read_bytes())
+    config.chmod(0o600)
     document = plistlib.loads(n.f.plist.read_bytes())
     document['ProgramArguments'] = [arg.replace(str(n.f.root), str(target)).replace(str(n.f.config), str(config))
         for arg in document['ProgramArguments']]
@@ -183,7 +185,8 @@ def first_target(material, built, monkeypatch, request):
     raw = c._native_encoded(context)
     n.transaction = dict(kind='native-installer-upgrade', transaction=digest(raw), currentDigest=n.f.root.name, candidateDigest=checksum)
     n.context = n.metadata / ('runtime-upgrade-context-' + checksum + '.json')
-    n.context.write_bytes(raw); n.context.chmod(0o600)
+    n.context.write_bytes(raw)
+    n.context.chmod(0o600)
     n.absence = c.native_absent_for_installer(n.f.bridge, transaction=n.transaction)
     assert (n.absence['kit'] is not None) == code_only
     assert n.absence['identity'] == {'kind': 'absent'}
@@ -191,14 +194,18 @@ def first_target(material, built, monkeypatch, request):
         sourceAddition=dict(schemaVersion=1, kind='ods-native-source-installer-addition', contextSha256=n.transaction['transaction'],
             familySha256=family, proof=n.absence, absentPaths=sorted(r['path'] for r in rows if r['before'] is None)))
     n.upgrade = n.metadata / 'runtime-upgrade.json'
-    n.upgrade.write_bytes(c._native_encoded(journal)); n.upgrade.chmod(0o600)
+    n.upgrade.write_bytes(c._native_encoded(journal))
+    n.upgrade.chmod(0o600)
     for row in rows:
-        path = Path(row['path']); path.write_bytes(base64.b64decode(row['after'])); path.chmod(row['mode'])
+        path = Path(row['path'])
+        path.write_bytes(base64.b64decode(row['after']))
+        path.chmod(row['mode'])
     # Equivalent fixed owner publication, actual files/inodes and Root receipt.
     # This is not an authority callback or a substituted Source result.
     if not code_only:
         for path, text in ((n.f.env, sidefiles['gateway.env']), (n.f.answers, sidefiles['onboarding.json'])):
-            path.write_text(text); path.chmod(0o600)
+            path.write_text(text)
+            path.chmod(0o600)
     parent = config.parent.stat()
     receipt = dict(schemaVersion=1, kind='ods-native-connection-sidefiles', ownerUid=owner.pw_uid, ownerGid=owner.pw_gid,
         configPath=str(config), bundleSha256=checksum, files={name: digest(body.encode()) for name, body in sidefiles.items()},
@@ -256,7 +263,8 @@ def test_first_kit_refuses_changed_actual_authority_or_owner_images_before_publi
     n = first_target
     if fault == 'context': n.context.write_bytes(n.context.read_bytes() + b' ')
     elif fault == 'restored':
-        journal = json.loads(n.upgrade.read_bytes()); journal['phase'] = 'restored'
+        journal = json.loads(n.upgrade.read_bytes())
+        journal['phase'] = 'restored'
         n.upgrade.write_bytes(c._native_encoded(journal))
     elif fault == 'new-private-state': c.NATIVE_STATE.mkdir(mode=0o700)
     elif fault == 'owner-file': n.f.env.write_text('PIXEL_EMAIL_INBOX=0\n')

@@ -177,7 +177,8 @@ def test_code_only_interrupted_prefix_reboot_then_actual_finish_and_first_prepar
     if released_hold:
         edge['phase'] = edge['status']['phase'] = 'released'
         edge['status']['admission_blocked'] = False
-    path.write_bytes(c._native_encoded(edge)); path.chmod(0o600)
+    path.write_bytes(c._native_encoded(edge))
+    path.chmod(0o600)
     if released_hold:
         snapshot = files(n)
         with pytest.raises((ValueError, c.CustodyError)):
@@ -244,7 +245,8 @@ def test_code_only_unknown_authority_or_owner_drift_refuses_before_publication(f
     elif fault == 'state': c.NATIVE_STATE.mkdir(mode=0o700)
     elif fault == 'publication':
         path = n.metadata / 'source-publication.json'
-        body = json.loads(path.read_bytes()); body['witness']['brokerUid'] = n.f.bridge.owner.pw_uid
+        body = json.loads(path.read_bytes())
+        body['witness']['brokerUid'] = n.f.bridge.owner.pw_uid
         path.write_bytes(c._native_encoded(body))
     else: (n.kit.parent / '.source-kit-unknown').mkdir(mode=0o700)
     snapshot = files(n)

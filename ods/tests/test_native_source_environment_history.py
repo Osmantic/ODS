@@ -14,7 +14,7 @@ if sys.platform != 'linux':
     pytest.skip('Linux owned-file harness, not physical Darwin', allow_module_level=True)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_native_source_environment_generation import (  # noqa: E402,F401
-    c, deployment, executor, generation, helper, material, native, package,
+    c, deployment, executor as executor, generation, helper, material, native, package,
     publication, qualification_operation, source, built, stopped, target,
 )
 

@@ -311,7 +311,9 @@ def owned_images(tmp_path):
     def create(path, *, expected, replacement, mode, gid):
         assert expected is None and not files[path].exists() and gid == 0
         fd = os.open(files[path], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
-        try: os.write(fd, replacement); os.fsync(fd)
+        try:
+            os.write(fd, replacement)
+            os.fsync(fd)
         finally: os.close(fd)
         calls.append(('create', path))
     def remove(path, *, expected, mode, gid):
