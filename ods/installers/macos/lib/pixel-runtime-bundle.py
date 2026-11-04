@@ -895,6 +895,7 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
         if source_helper:
             component = staged / source_helper.COMPONENT
             component.mkdir(mode=0o755)
+            component.chmod(0o755)
             for name, body in source_component.items():
                 with (component / name).open('xb') as output:
                     output.write(body)

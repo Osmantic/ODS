@@ -78,12 +78,28 @@ def built(source, package, tmp_path):  # noqa: F811
         (addon / 'openclaw.plugin.json').write_text(json.dumps({'id':name}))
         (addon / 'index.mjs').write_text('// invented loader metadata, never executed\n')
         plugins.append(addon)
-    digest = bundle.build(node=node, runtime=runtime, destination=destination,
+    build_args = dict(node=node, runtime=runtime,
         plugins=plugins, ods_source=s.ods,
         pixel_source_ref=package[1], ods_plugin_indices=[0], service_manifest=manifest,
         services_digest=__import__('hashlib').sha256(bundle._encode(manifest)).hexdigest(),
         source_component=component)
-    return SimpleNamespace(source=s, root=destination, digest=digest, package=package, python=python)
+    digest = bundle.build(destination=destination, **build_args)
+    return SimpleNamespace(source=s, root=destination, digest=digest, package=package, python=python,
+        build_args=build_args)
+
+
+def test_private_umask_preserves_source_bundle_identity(built, tmp_path):
+    destination = tmp_path / 'private-umask-bundle'
+    previous = os.umask(0o077)
+    try:
+        digest = bundle.build(destination=destination, **built.build_args)
+    finally:
+        os.umask(previous)
+    assert digest == built.digest
+    bundle.verify(destination, expected_digest=digest)
+    (destination / helper.COMPONENT).chmod(0o700)
+    with pytest.raises(bundle.BundleError, match='bundle-content-changed'):
+        bundle.verify(destination, expected_digest=digest)
 
 
 def test_actual_bundle_copies_only_reviewed_closed_source_and_binds_inputs(built):
