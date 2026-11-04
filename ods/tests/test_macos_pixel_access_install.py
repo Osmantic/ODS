@@ -3017,11 +3017,13 @@ def test_unstarted_recovery_requires_intact_live_previous_deployment(monkeypatch
         assert events == ['verify', 'restored', 'verify', 'finish']
 
 
-@pytest.mark.parametrize('kind', ['legacy', 'guarded', 'unknown', 'partial', 'syntax', 'missing'])
+@pytest.mark.parametrize('kind', ['legacy', 'guarded', 'guarded-no-wait', 'unknown', 'partial', 'syntax', 'missing'])
 def test_previous_guard_is_derived_from_archived_code_without_execution(kind):
     path = str(installer._destination(installer.ACCESS_PROGRAM_ROOT / 'pixel_access_bridge.py'))
     if kind == 'guarded':
         body = (ROOT / 'bin/pixel_access_bridge.py').read_bytes()
+    elif kind == 'guarded-no-wait':
+        body = (ROOT / 'tests/fixtures/macos-legacy-upgrade-guard.txt').read_bytes()
     elif kind == 'legacy':
         body = b'class LaunchdAccessBridge(SystemdAccessBridge):\n    pass\n'
     elif kind == 'partial':
@@ -3031,11 +3033,38 @@ def test_previous_guard_is_derived_from_archived_code_without_execution(kind):
     else:
         body = b'invalid python !'
     records = [] if kind == 'missing' else [dict(path=path, before=body)]
-    if kind in ('legacy', 'guarded'):
-        assert installer._previous_upgrade_guard(records) is (kind == 'guarded')
+    if kind in ('legacy', 'guarded', 'guarded-no-wait'):
+        assert installer._previous_upgrade_guard(records) is (kind != 'legacy')
     else:
         with pytest.raises(installer.InstallError, match='previous-guard-unqualified'):
             installer._previous_upgrade_guard(records)
+
+
+@pytest.mark.parametrize('fault', ['missing-check', 'different-journal', 'swallowed-error',
+    'unlocked', 'status-ready', 'different-reason', 'decorator', 'duplicate-lock', 'async-lock'])
+def test_legacy_guard_compatibility_rejects_each_changed_guard_semantic(fault):
+    body = (ROOT / 'tests/fixtures/macos-legacy-upgrade-guard.txt').read_text()
+    if fault == 'missing-check':
+        body = body.replace("if os.path.lexists(self.state / 'runtime-upgrade.json'):", 'if False:', 1)
+    elif fault == 'different-journal':
+        body = body.replace('runtime-upgrade.json', 'unrelated.json', 1)
+    elif fault == 'swallowed-error':
+        body = body.replace("raise AccessError('runtime-upgrade-recovery-required')", 'pass', 1)
+    elif fault == 'unlocked':
+        body = body.replace('with super().locked():', 'with contextlib.nullcontext():', 1)
+    elif fault == 'status-ready':
+        body = body.replace("'available': False", "'available': True", 1)
+    elif fault == 'different-reason':
+        body = body.replace("'reason': 'runtime-upgrade-recovery-required'", "'reason': 'ready'", 1)
+    elif fault == 'decorator':
+        body = body.replace('@contextlib.contextmanager', '@unreviewed', 1)
+    elif fault == 'duplicate-lock':
+        body += '\n    def locked(self):\n        yield\n'
+    elif fault == 'async-lock':
+        body = body.replace('def locked(self):', 'async def locked(self):', 1)
+    path = str(installer._destination(installer.ACCESS_PROGRAM_ROOT / 'pixel_access_bridge.py'))
+    with pytest.raises(installer.InstallError, match='previous-guard-unqualified'):
+        installer._previous_upgrade_guard([dict(path=path, before=body.encode())])
 
 
 @pytest.mark.parametrize('fault', [None, 'reply-lost', 'drift', 'rejected'])

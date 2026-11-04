@@ -2248,6 +2248,15 @@ def _activate(plan, services, journal):
         raise
 
 
+_LEGACY_UPGRADE_LOCK = '''@contextlib.contextmanager
+def locked(self):
+    with super().locked():
+        if os.path.lexists(self.state / 'runtime-upgrade.json'):
+            raise AccessError('runtime-upgrade-recovery-required')
+        yield
+'''
+
+
 def _previous_upgrade_guard(records):
     """Recognize reviewed guard methods without executing archived Python."""
     path = str(_destination(ACCESS_PROGRAM_ROOT / 'pixel_access_bridge.py'))
@@ -2273,6 +2282,13 @@ def _previous_upgrade_guard(records):
             return False
         current = methods((HERE.parents[2] / 'bin/pixel_access_bridge.py').read_bytes())
         if set(current) == {'locked', 'status'} and previous == current:
+            return True
+        # b0599adb07cedad5f95f8a423180f1407e8c8fdc used this exact guard
+        # before bounded schedule admission added the wait_seconds keyword.
+        # Its journal refusal is identical. Keep the complete status method
+        # and this explicit old lock AST exact; never execute archived code.
+        legacy_lock = ast.dump(ast.parse(_LEGACY_UPGRADE_LOCK).body[0], include_attributes=False)
+        if set(current) == {'locked', 'status'} and previous == dict(current, locked=legacy_lock):
             return True
     except (SyntaxError, ValueError, TypeError):
         pass
