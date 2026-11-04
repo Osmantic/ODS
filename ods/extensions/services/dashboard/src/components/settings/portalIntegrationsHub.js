@@ -12,7 +12,7 @@ export const HUB_TILES = [
   { id: 'photos', title: 'Immich', about: 'Your photos', logo: 'immich' },
   { id: 'watch', title: 'changedetection.io', about: 'Watched pages and prices', logo: 'changedetection' },
   { id: 'news', title: 'FreshRSS', about: 'Your news feeds', logo: 'freshrss' },
-  { id: 'mcp', title: 'Home Assistant & MCP', about: 'Your home and other tools', logo: 'homeAssistant' },
+  { id: 'mcp', title: 'Home Assistant', about: 'And other MCP servers', logo: 'homeAssistant' },
   { id: 'approvals', title: 'Approvals', about: 'Actions waiting for you', icon: 'approvals' },
   { id: 'activity', title: 'Activity', about: 'What Portal did recently', icon: 'activity' },
 ]

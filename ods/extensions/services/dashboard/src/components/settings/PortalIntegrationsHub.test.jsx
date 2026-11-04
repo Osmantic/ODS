@@ -142,8 +142,11 @@ describe('the hub', () => {
 
   it('opens a tile as its own view in the address, and goes back to that tile', async () => {
     show()
+    expect(await screen.findByText(/Connect Portal to the apps and services you use/)).toBeVisible()
     fireEvent.click(await tile('Telegram'))
     expect(address()).toBe('?section=portal-integrations&view=telegram')
+    // Inside a view, the settings come first: no introduction above them.
+    expect(screen.queryByText(/Connect Portal to the apps and services you use/)).toBeNull()
     expect(screen.getByRole('heading', { name: 'Telegram' })).toBeVisible()
     expect(screen.queryByRole('list', { name: 'Integrations list' })).toBeNull()
     expect(screen.getByLabelText('Send notifications through ntfy')).not.toBeVisible()

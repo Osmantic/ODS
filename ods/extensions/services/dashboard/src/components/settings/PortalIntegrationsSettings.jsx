@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ChevronRight } from 'lucide-react'
+import { ArrowLeft } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import McpServerCard from './McpServerCard'
 import PortalAppsSettings from './PortalAppsSettings'
@@ -93,17 +93,12 @@ function HubTile({ tile, status, edited, onOpen }) {
   return <li className="min-w-0">
     <button type="button" data-tile={tile.id} onClick={() => onOpen(tile.id)}
       aria-label={`${tile.title}, ${tile.about}, ${status.label}${edited ? ', unsaved changes' : ''}`}
-      className="group flex h-full w-full min-w-0 items-start gap-3 rounded-xl border border-theme-border bg-theme-bg/40 p-4 text-left transition hover:border-theme-accent hover:bg-theme-accent/5 focus:outline-none focus:ring-2 focus:ring-theme-accent">
+      className="group relative flex h-full w-full min-w-0 flex-col items-center gap-2 rounded-xl border border-theme-border bg-theme-bg/40 px-2 pb-3 pt-4 text-center transition hover:border-theme-accent hover:bg-theme-accent/5 focus:outline-none focus:ring-2 focus:ring-theme-accent">
+      {edited && <span aria-hidden="true" title="Unsaved changes" className="absolute right-2 top-2 h-2 w-2 rounded-full bg-theme-accent" />}
       <IntegrationMark logo={tile.logo} icon={tile.icon} />
-      <span className="min-w-0 flex-1 space-y-1">
-        <span className="block truncate font-semibold">{tile.title}</span>
-        <span className="block text-xs text-theme-text-muted">{tile.about}</span>
-        <span className="flex flex-wrap items-center gap-1.5 pt-1">
-          <StatusChip status={status} />
-          {edited && <span className="text-xs font-medium text-theme-accent">Unsaved changes</span>}
-        </span>
-      </span>
-      <ChevronRight aria-hidden="true" className="mt-1 h-4 w-4 shrink-0 text-theme-text-muted transition group-hover:translate-x-0.5" />
+      <span className="w-full text-sm font-semibold leading-tight [hyphens:manual] [overflow-wrap:anywhere]">{tile.title.replace(/^changedetection/, 'change\u00addetection')}</span>
+      <span className="line-clamp-2 w-full text-xs leading-snug text-theme-text-muted">{tile.about}</span>
+      <span className="mt-auto pt-1"><StatusChip status={status} /></span>
     </button>
   </li>
 }
@@ -116,7 +111,8 @@ function Hub({ tiles, view, edited, onOpen }) {
       <p className="text-sm font-medium">{waiting === 1 ? 'Portal is waiting for your approval.' : `Portal is waiting for ${waiting} approvals.`}</p>
       <button type="button" className={buttonStyle} onClick={() => onOpen('approvals')}>Review</button>
     </div>}
-    <ul className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 xl:grid-cols-3" aria-label="Integrations list">
+    {/* Columns follow the width Settings gives this page (a side panel or the full window), not the screen. */}
+    <ul className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(7rem, 1fr))' }} aria-label="Integrations list">
       {tiles.map(tile => <HubTile key={tile.id} tile={tile} status={tileStatus(tile.id, view)} edited={edited.has(tile.id)} onOpen={onOpen} />)}
     </ul>
   </section>
@@ -260,7 +256,7 @@ export default function PortalIntegrationsSettings() {
     <section className={cardStyle} aria-labelledby="portal-integrations-title">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0"><h2 id="portal-integrations-title" className="text-lg font-semibold">Portal integrations</h2>
-          <p className="text-sm text-theme-text-muted">Let Portal read your notes, send you notifications and reminders, remember what you tell it, chat with you on Telegram, use MCP servers such as Home Assistant, and work with your documents, photos, watched pages and news. Passwords and tokens stay on this computer.</p></div>
+          {!open && <p className="text-sm text-theme-text-muted">Connect Portal to the apps and services you use. Passwords and tokens stay on this computer.</p>}</div>
         <div className="flex gap-2">
           <button className={buttonStyle} disabled={busy} onClick={() => run([[null]], dirty ? 'Reloaded. Your unsaved changes are kept on top of the newest settings.' : '', { rebase: dirty })}>Reload</button>
           <button className={buttonStyle} disabled={busy || !dirty} onClick={save}>Save changes</button>

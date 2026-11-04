@@ -101,7 +101,7 @@ it('saves only what changed and never sends an empty password', async () => {
 
 it('shows a server’s tools and their effect before it can be turned on', async () => {
   const { posts } = fakeService()
-  await openTile('Home Assistant & MCP')
+  await openTile('Home Assistant')
   fireEvent.click(await screen.findByRole('button', { name: 'Add Home Assistant' }))
   const card = screen.getByRole('listitem', { name: 'MCP server Home Assistant' })
   expect(within(card).getByLabelText('Let Portal use this server')).toBeDisabled()
@@ -182,7 +182,7 @@ it('sets up a local server with secret variables, shows its status and restarts 
     tools: [{ ...TOOLS[0], name: 'echo', new: false }, { ...TOOLS[1], name: 'shout', policy: 'off', new: true }] }
   const processes = { echo: { running: false, lastError: 'Error: API_KEY is not valid' } }
   const { posts } = fakeService(view({ settings: settings(2, [saved]), processes }))
-  await openTile('Home Assistant & MCP')
+  await openTile('Home Assistant')
   const card = await screen.findByRole('listitem', { name: 'MCP server Echo' })
   expect(within(card).getByRole('note')).toHaveTextContent('runs on this computer with your permissions')
   expect(within(card).getByLabelText('Last error output')).toHaveTextContent('API_KEY is not valid')
@@ -214,7 +214,7 @@ it('restarts a running local server and clears the activity list', async () => {
   await openTile('Activity')
   expect(screen.getByText(/Restarted an MCP server: Echo/)).toBeVisible()
   backToHub()
-  await openTile('Home Assistant & MCP')
+  await openTile('Home Assistant')
   expect(screen.getByText(/Running\. It stops after 10 minutes/)).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'Restart' }))
   await screen.findByText('Echo was stopped. It starts again when it is next used.')
@@ -235,7 +235,7 @@ it('gives a new server the id of its name, with its secrets, and keeps saved ids
   const saved = { id: 'home', name: 'Home', kind: 'http', preset: '', enabled: false, url: 'http://a/api/mcp', command: '', workingFolder: '',
     envNames: [], hasEnv: {}, hasToken: true, discoveredAt: null, tools: [] }
   const { posts } = fakeService(view({ settings: settings(1, [saved]) }))
-  await openTile('Home Assistant & MCP')
+  await openTile('Home Assistant')
   fireEvent.click(await screen.findByRole('button', { name: 'Add MCP server' }))
   fireEvent.change(screen.getByRole('listitem', { name: 'MCP server MCP server' }).querySelector('input'), { target: { value: 'Files' } })
   const card = screen.getByRole('listitem', { name: 'MCP server Files' })
