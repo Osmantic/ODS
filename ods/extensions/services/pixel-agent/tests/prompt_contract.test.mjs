@@ -128,8 +128,9 @@ test('connected capabilities are a stable model contract, independent of request
     const options={configuredContextWindow};
     const plain=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:'Hello'},options);
     assert.ok(plain.appendSystemContext.includes(CONNECTED_RECORDS_CONTRACT));
+    assert.match(plain.appendSystemContext, /Knowledge wiki:.*?wiki_search.*?wiki_get.*?wiki_apply/);
     for(const prompt of ['meu email est\u00e1 conectado?','Is my Gmail connected?',
-      'Is the diary available to you?','Read my Gmail.','Count Calendar events.',
+      'Is the diary available to you?','Search my Knowledge wiki.','Read my Gmail.','Count Calendar events.',
       'Translate this email without using tools.','What software can I install?']) {
       const result=promptContractForAgent({agentId:'pixel'},'pixel',{prompt},options);
       assert.equal(result.appendSystemContext,plain.appendSystemContext);

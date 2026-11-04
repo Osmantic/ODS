@@ -313,12 +313,13 @@ test('MCP catalogs never imply absence of the separate native notification conne
   }
 });
 
-test('an unavailable notes connection does not diagnose documents or dispatch another action', async () => {
+test('an unavailable notes connection leaves the separate wiki and document sources available for discovery', async () => {
   const {sent, tools} = recording([{ok:false, error:'notes-off', message:'Notes are not set up.'}]);
   const reply = await tool(tools,'pixel_ods_notes').execute('read',{action:'read',path:'Example.md'});
   assert.equal(reply.isError, true);
   assert.deepEqual(reply.details, {status:'refused',code:'notes-off'});
   assert.match(reply.content[0].text, /only Obsidian notes, not the Paperless document connection/);
+  assert.match(reply.content[0].text, /Knowledge wiki.*wiki_search/);
   assert.deepEqual(sent, [{action:'notes-read',path:'Example.md'}]);
 });
 

@@ -158,7 +158,7 @@ async function run(submit, payload, signal, render, observed, admitted) {
         {status:'outcome-unknown', code:reply.error}, true);
     }
     const scope = reply?.error === 'notes-off' && payload.action?.startsWith('notes-')
-      ? ' This result concerns only Obsidian notes, not the Paperless document connection. Paperless documents use pixel_ods_mcp action list. Respect the owner\'s requested source.' : '';
+      ? ' This result concerns only Obsidian notes, not the Paperless document connection. For Knowledge wiki, discover wiki_search. Paperless documents use pixel_ods_mcp action list. Respect the owner\'s requested source.' : '';
     const namespaceRefusal = ['mcp-call','mcp-prepare'].includes(payload.action)
       && ['server-missing','tool-not-allowed'].includes(reply?.error);
     const separateNativeNamespace = namespaceRefusal && reply?.error==='server-missing';
