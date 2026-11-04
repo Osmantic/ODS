@@ -1,5 +1,5 @@
 import net from 'node:net';
-import { chatSession, MEMORY_CHOICES, MEMORY_QUESTION_ID, memoryQuestion } from './integration-memory.mjs';
+import { answeredTurns, chatSession, MEMORY_CHOICES, MEMORY_QUESTION_ID, memoryQuestion } from './integration-memory.mjs';
 
 // Portal tools for the owner's integrations: an Obsidian vault, ntfy notifications, and MCP
 // servers, among them the owner's apps. The gateway holds no token or vault path: every call
@@ -88,7 +88,10 @@ function notesRequest(params) {
 
 // Portal proposes a fact about the owner; unless the owner chose to save without asking, the
 // chat shows a card with the choices and the turn ends there (see integration-memory.mjs).
-async function remember(submit, params, sessionKey, signal) {
+async function remember(submit, params, sessionKey, signal, shared) {
+  if (answeredTurns(shared).has(chatSession(sessionKey))) {
+    return text('The owner has just answered your memory question; this reply only acknowledges it. Save nothing else now.', {status: 'done'});
+  }
   let reply;
   try {
     reply = await submit({action: 'memory-propose', text: str(params?.text), session: chatSession(sessionKey)}, {signal});
@@ -129,7 +132,7 @@ async function remind(submit, scheduleReminder, params, signal) {
 
 const noScheduler = () => Promise.reject(new Error('Reminders are not available here.'));
 
-export function createIntegrationTools({submit = submitIntegration, scheduleReminder = noScheduler, sessionKey = ''} = {}) {
+export function createIntegrationTools({submit = submitIntegration, scheduleReminder = noScheduler, sessionKey = '', shared = globalThis} = {}) {
   return [
     {
       name: 'pixel_ods_notes',
@@ -141,7 +144,7 @@ export function createIntegrationTools({submit = submitIntegration, scheduleRemi
           text: {type: 'string', description: 'For write: Markdown text to add. For remember: the fact, one short sentence.'},
           mode: {type: 'string', enum: ['append', 'create'], description: 'For write: append to an existing note or create a new one.'}}},
       execute: (_id, params, signal) => {
-        if (params?.action === 'remember') return remember(submit, params, sessionKey, signal);
+        if (params?.action === 'remember') return remember(submit, params, sessionKey, signal, shared);
         const request = notesRequest(params);
         return request ? run(submit, request, signal, notesText)
           : Promise.resolve(text('Use action search, read, write or remember.', {status: 'invalid'}, true));

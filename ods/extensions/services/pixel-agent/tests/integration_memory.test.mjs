@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chatSession, createMemoryHooks, MEMORY_CHOICES, memoryAnswer, memoryQuestion} from '../plugin/integration-memory.mjs';
+import {answeredTurns, chatSession, createMemoryHooks, MEMORY_CHOICES, memoryAnswer, memoryQuestion} from '../plugin/integration-memory.mjs';
 import {createIntegrationTools} from '../plugin/integrations.mjs';
 import {parseQuestions} from '../plugin/questions-schema.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
@@ -95,7 +95,8 @@ test('each chat turn gets the facts and the learning hint; an answer to a card i
     'memory-answer': {ok: true, status: 'saved'},
     'memory-context': {ok: true, text: 'Facts the owner chose…\n- The owner is vegetarian.', enabled: true, quiet: false},
   });
-  const hooks = createMemoryHooks({submit});
+  const shared = {};
+  const hooks = createMemoryHooks({submit, shared});
   const answer = `${memoryQuestion('The owner is vegetarian.')}\nSave`;
   const notesForTurn = await hooks.promptContext(answer, SESSION);
   assert.deepEqual(sent.map(item => item.payload), [
@@ -104,12 +105,32 @@ test('each chat turn gets the facts and the learning hint; an answer to a card i
   assert.ok(sent.every(item => item.options.timeoutMs === 5000), 'a slow service never holds a turn for long');
   assert.match(notesForTurn.answer, /saved the memory/);
   assert.match(notesForTurn.facts, /vegetarian/);
-  // The exact call, with the tool id the small model otherwise gets wrong.
-  assert.match(notesForTurn.hint, /tool_call with id "openclaw:pixel-ods:pixel_ods_notes"/);
-  assert.match(notesForTurn.hint, /"action": "remember"/);
+  // A turn answering a card only acknowledges it: no invitation to propose more.
+  assert.equal(notesForTurn.hint, undefined);
+  assert.ok(answeredTurns(shared).has(USER));
   const plain = await hooks.promptContext('What should I cook tonight?', SESSION);
   assert.equal(plain.answer, undefined);
   assert.equal(sent.at(-1).payload.action, 'memory-context');
+  // The exact call, with the tool id the small model otherwise gets wrong.
+  assert.match(plain.hint, /tool_call with id "openclaw:pixel-ods:pixel_ods_notes"/);
+  assert.match(plain.hint, /"action": "remember"/);
+  assert.ok(!answeredTurns(shared).has(USER), 'the next turn may propose again');
+});
+
+test('in the turn that answers a memory card, a new proposal is refused without reaching the service', async () => {
+  const shared = {};
+  const {sent, submit} = recorder({'memory-answer': {ok: true, status: 'saved'}, 'memory-context': {ok: true, text: '', enabled: true, quiet: false},
+    'memory-propose': {ok: true, status: 'ask', id: 'm2', text: "I will remember you're vegetarian."}});
+  await createMemoryHooks({submit, shared}).promptContext(`${memoryQuestion('The owner is vegetarian.')}\nSave`, SESSION);
+  const tool = notes({submit, sessionKey: SESSION, shared});
+  const refused = await tool.execute('1', {action: 'remember', text: "I will remember you're vegetarian."});
+  assert.equal(refused.details.status, 'done');
+  assert.match(refused.content[0].text, /just answered/);
+  assert.ok(!sent.some(item => item.payload.action === 'memory-propose'));
+  // Another chat is not affected.
+  const other = await notes({submit, sessionKey: `agent:pixel:openai-user:ods-${'b'.repeat(64)}`, shared})
+    .execute('2', {action: 'remember', text: 'The owner likes tea.'});
+  assert.equal(other.details.status, 'awaiting_user');
 });
 
 test('a quiet chat, memory off, other sessions and a missing service add nothing', async () => {

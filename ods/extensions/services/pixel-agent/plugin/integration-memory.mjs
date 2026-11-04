@@ -40,16 +40,28 @@ const ANSWERED = {
   unknown: 'That memory question is no longer waiting (it was answered in Settings or the chat was set not to be remembered). Say so in one short sentence; call no tools.',
 };
 
+// Chats whose current turn applied the owner's answer to a memory card. Shared across plugin
+// instances (the prompt hook and the tool can come from different ones), as the scheduler is.
+const ANSWERED_TURNS = Symbol.for('ods.pixel-ods.memoryAnsweredTurns');
+export function answeredTurns(shared = globalThis) {
+  shared[ANSWERED_TURNS] ??= new Set();
+  return shared[ANSWERED_TURNS];
+}
+
 // submit is integrations.mjs's submitIntegration, passed in: that module imports this one.
-export function createMemoryHooks({submit, warn = () => {}}) {
+export function createMemoryHooks({submit, warn = () => {}, shared = globalThis}) {
   return {
     // Before a turn: the owner's answer to a memory card is applied, then the facts for this chat.
     async promptContext(userText, sessionKey) {
       const session = chatSession(sessionKey);
       if (!session) return {};
       const notes = {};
+      const answer = memoryAnswer(userText);
+      // A turn that answers a card only acknowledges it: no new proposal (e2e: the small model
+      // proposed "I will remember you're vegetarian." right after the owner saved that fact).
+      if (answer) answeredTurns(shared).add(session);
+      else answeredTurns(shared).delete(session);
       try {
-        const answer = memoryAnswer(userText);
         if (answer) {
           const reply = await submit({action: 'memory-answer', session, ...answer}, {timeoutMs: CONTEXT_TIMEOUT_MS});
           if (reply?.ok) notes.answer = ANSWERED[reply.status] ?? ANSWERED.unknown;
@@ -57,7 +69,7 @@ export function createMemoryHooks({submit, warn = () => {}}) {
         }
         const reply = await submit({action: 'memory-context', session}, {timeoutMs: CONTEXT_TIMEOUT_MS});
         if (reply?.ok && reply.text) notes.facts = reply.text;
-        if (reply?.ok && reply.enabled && !reply.quiet) notes.hint = LEARN_HINT;
+        if (reply?.ok && reply.enabled && !reply.quiet && !answer) notes.hint = LEARN_HINT;
       } catch (error) {
         // The service is down or not on this system: the turn goes on without memory.
         warn(`Portal memory: unavailable for this turn: ${error.message}`);
