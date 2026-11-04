@@ -2949,17 +2949,33 @@ def _connection_sidefiles(plan):
                 with os.fdopen(fd, 'r+b') as stream:
                     before = os.fstat(stream.fileno())
                     _require_no_acl(stream.fileno())
+                    identity = [before.st_dev, before.st_ino]
+                    if child['inode'] is not None and child['inode'] != identity:
+                        raise InstallError('native-connection-sidefile-changed')
+                    # Darwin inherits the owner directory's group for an
+                    # exclusively created Root file. Only this empty creation
+                    # (or its already journaled inode) can normalize that group.
+                    # An unrecorded existing name still fails O_EXCL above.
+                    inherited = (not child['ready'] and before.st_uid == 0
+                        and before.st_gid == owner.pw_gid and before.st_gid != 0 and before.st_size == 0)
                     pairs = {(owner.pw_uid, owner.pw_gid)} if child['ready'] else {(0, 0), (owner.pw_uid, owner.pw_gid)}
-                    if (not stat.S_ISREG(before.st_mode) or (before.st_uid, before.st_gid) not in pairs
+                    if (not stat.S_ISREG(before.st_mode) or not (inherited or (before.st_uid, before.st_gid) in pairs)
                             or stat.S_IMODE(before.st_mode) != 0o600
                             or before.st_nlink != 1 or before.st_size > len(body)):
                         raise InstallError('native-connection-sidefile-unsafe')
-                    identity = [before.st_dev, before.st_ino]
                     if child['inode'] is None:
                         child['inode'] = identity
                         save(record)  # Before the first body byte/chown.
-                    elif child['inode'] != identity:
-                        raise InstallError('native-connection-sidefile-changed')
+                    if inherited:
+                        os.fchown(stream.fileno(), 0, 0)
+                        os.fsync(stream.fileno())
+                        normalized = os.fstat(stream.fileno())
+                        _require_no_acl(stream.fileno())
+                        if ([normalized.st_dev, normalized.st_ino] != identity
+                                or (normalized.st_uid, normalized.st_gid) != (0, 0)
+                                or stat.S_IMODE(normalized.st_mode) != 0o600
+                                or normalized.st_nlink != 1 or normalized.st_size != 0):
+                            raise InstallError('native-connection-sidefile-unsafe')
                     existing = stream.read(len(body) + 1)
                     if (existing != body) if child['ready'] else (not body.startswith(existing)):
                         raise InstallError('native-connection-sidefile-changed')
