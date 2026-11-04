@@ -97,7 +97,9 @@ root = Path(sys.argv[sys.argv.index('--install-dir') + 1])
     $script:composeFlagsFail = $true
     $script:stopped = @()
     Invoke-Disable -ServiceId 'example'
-    $receipt = @(Get-Content -LiteralPath (Join-Path $InstallDir 'receipt.json') -Raw -Encoding UTF8 | ConvertFrom-Json)
+    # No @(): Windows PowerShell 5.1 emits a JSON array as one object, so
+    # wrapping it would nest the whole receipt in element 0.
+    $receipt = Get-Content -LiteralPath (Join-Path $InstallDir 'receipt.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($receipt[0] -ne '--install-dir' -or $receipt[1] -ne $InstallDir) { throw 'Recovery stop lost the install path' }
     $services = @()
     for ($i = 2; $i -lt $receipt.Count; $i += 2) {
