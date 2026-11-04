@@ -232,10 +232,15 @@ class TelegramActions:
             given = request.get("token")
             new_token = token(given) if given not in (None, "") else None
             saved = secrets.get("telegramToken", "")
-            updated = validate(self.store.telegram(), request, bool(new_token or saved))
+            before = self.store.telegram()
+            updated = validate(before, request, bool(new_token or saved))
+            if updated["ownerId"] != before["ownerId"]:
+                # Another owner: whoever was refused before may be the owner now, and the
+                # "someone else wrote" note was about the old owner's bot.
+                updated = {**updated, "refused": [], "questions": None}
             if new_token and new_token != saved:
                 # Another bot: start reading its messages from scratch.
-                updated = {**updated, "bot": "", "offset": 0, "questions": None, "lastError": ""}
+                updated = {**updated, "bot": "", "offset": 0, "questions": None, "lastError": "", "refused": []}
                 secrets["telegramToken"] = new_token
                 self.store.save_secrets(secrets)
             if not updated["enabled"]:

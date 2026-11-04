@@ -220,6 +220,25 @@ class Bridge(unittest.TestCase):
         self.assertEqual(FakeTelegram.offsets[-1], 12)
         self.assertEqual(len(FakeIngress.requests), 1)
 
+    def test_a_new_owner_or_bot_forgets_who_was_refused(self):
+        # The owner wrote before saving their own ID (or a test left strangers behind): the
+        # "someone else wrote" note must not outlive the settings it was about.
+        self.owner("telegram-save", enabled=True, ownerId="999999999", apiRoot=self.api, token=TOKEN)
+        self.poll(update(10, "hi"))
+        self.assertEqual(self.owner("get")["telegram"]["refusedCount"], 1)
+        self.owner("telegram-save", enabled=True, ownerId="999999999", apiRoot=self.api)
+        self.assertEqual(self.owner("get")["telegram"]["refusedCount"], 1, "saving the same settings keeps the note")
+        self.owner("telegram-save", enabled=True, ownerId=OWNER, apiRoot=self.api)
+        self.assertEqual(self.owner("get")["telegram"]["refusedCount"], 0)
+        self.poll(update(11, "hi again"))
+        self.assertEqual(FakeTelegram.sent, [(int(OWNER), "Hello from Portal.")])
+        self.poll(update(12, "Let me in", sender="555555"))
+        self.assertEqual(self.owner("get")["telegram"]["refusedCount"], 1)
+        other = TOKEN.replace(TOKEN.split(":")[1][:4], "ZZZZ", 1)
+        FakeTelegram.token = other
+        self.owner("telegram-save", enabled=True, ownerId=OWNER, apiRoot=self.api, token=other)
+        self.assertEqual(self.owner("get")["telegram"]["refusedCount"], 0)
+
     def test_the_conversation_continues_and_new_starts_another(self):
         self.turn_on()
         self.poll(update(1, "My name is Ana."))
