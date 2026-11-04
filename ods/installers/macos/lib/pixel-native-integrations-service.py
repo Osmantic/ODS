@@ -230,14 +230,72 @@ def provision(owner, *, reuse=False, python=None, resume_partial=False):
     _published_common().validate_native_state(state_directory(entry), uid=entry.pw_uid)
 
 
+def _validate_discovery(directory, entry, custody):
+    """Preserve the service's bounded hint; it grants no execution authority.
+
+    A stopped service's snapshot may be expired. Custody and the closed
+    producer format still apply; freshness belongs to the prompt consumer.
+    """
+    def invalid(): raise ValueError('unsafe-native-integrations-discovery')
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            if key in value: invalid()
+            value[key] = item
+        return value
+    def stamp(info):
+        return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode,
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    fd = os.open('discovery.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    try:
+        before = os.fstat(fd)
+        custody._require_no_acl(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or (before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode)) != (entry.pw_uid, entry.pw_gid, 0o600)
+                or not 0 < before.st_size <= 8192): invalid()
+        with os.fdopen(fd, 'rb', closefd=False) as stream: raw = stream.read(8193)
+        after = os.fstat(fd)
+        named = os.stat('discovery.json', dir_fd=directory, follow_symlinks=False)
+        custody._require_no_acl(fd)
+        if len(raw) != before.st_size or stamp(before) != stamp(after) or stamp(before) != stamp(named): invalid()
+        try:
+            value = json.loads(raw.decode('utf-8'), object_pairs_hook=pairs, parse_constant=lambda _text: invalid())
+        except (ValueError, UnicodeError, RecursionError):
+            invalid()
+        if (type(value) is not dict or set(value) != {'version', 'revision', 'validUntil', 'servers', 'truncated'}
+                or type(value['version']) is not int or value['version'] != 1
+                or any(type(value[key]) is not int or value[key] < 0 for key in ('revision', 'validUntil'))
+                or type(value['truncated']) is not bool or type(value['servers']) is not list
+                or len(value['servers']) > 20): invalid()
+        identities = set()
+        for server in value['servers']:
+            if (type(server) is not dict or set(server) != {'id', 'name', 'tools'}
+                    or type(server['id']) is not str or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,31}', server['id'])
+                    or server['id'] in identities or type(server['name']) is not str or len(server['name']) > 96
+                    or re.search(r'[/\\\x00-\x1f\x7f]', server['name'])
+                    or type(server['tools']) is not list or len(server['tools']) > 200): invalid()
+            identities.add(server['id'])
+            tools = set()
+            for tool in server['tools']:
+                if (type(tool) is not dict or set(tool) != {'name', 'ask'} or type(tool['name']) is not str
+                        or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', tool['name'])
+                        or tool['name'] in tools or type(tool['ask']) is not bool): invalid()
+                tools.add(tool['name'])
+    finally:
+        os.close(fd)
+
+
 def _validate_runtime(entry, custody):
     fd = os.open(RUNTIME, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         info = os.fstat(fd)
+        names = set(os.listdir(fd))
         if (info.st_uid != entry.pw_uid or info.st_gid != entry.pw_gid
-                or stat.S_IMODE(info.st_mode) != 0o700 or set(os.listdir(fd)) - {'control.sock'}):
+                or stat.S_IMODE(info.st_mode) != 0o700 or names - {'control.sock', 'discovery.json'}):
             raise ValueError('unsafe-native-integrations-runtime')
         custody._require_no_acl(fd)
+        if 'discovery.json' in names:
+            _validate_discovery(fd, entry, custody)
         try:
             sock = os.stat('control.sock', dir_fd=fd, follow_symlinks=False)
         except FileNotFoundError:
