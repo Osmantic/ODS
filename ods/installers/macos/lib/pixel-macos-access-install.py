@@ -2688,7 +2688,8 @@ def _recover_unstarted_upgrade(plan, records, journal, previous, candidate, *, v
     return True
 
 
-def _recover_upgrade(plan, records, journal, *, verify_snapshots, previous_guard=False, source_bridge=None):
+def _recover_upgrade(plan, records, journal, *, verify_snapshots, previous_guard=False, source_bridge=None,
+                     preserve_private=None):
     """Restore an approved recovery journal while caller holds controller lock.
 
     The caller must load/authorize records with recovery_upgrade and supply
@@ -2749,12 +2750,17 @@ def _recover_upgrade(plan, records, journal, *, verify_snapshots, previous_guard
 
     verify()
     hold = _resume_migration_hold(plan)
+    def restore_files():
+        if preserve_private is not None:
+            for role in _upgrade.service_roles(previous, candidate):
+                _assert_upgrade_absent(previous[role], candidate[role])
+            preserve_private()
+        _upgrade.restore_deployment_files(records, read=read, replace=replace_protected_bytes, **source_restore)
     _upgrade.recover_previous(previous=previous, candidate=candidate,
         phase=journal.phase, verify_snapshots=verify,
         observe=_observe_upgrade_service, assert_absent=_assert_upgrade_absent,
         restore_owner=lambda: _restore_upgrade_owner(plan, previous, candidate),
-        restore_files=lambda: _upgrade.restore_deployment_files(
-            records, read=read, replace=replace_protected_bytes, **source_restore),
+        restore_files=restore_files,
         start=_start_upgrade_service, stop=_stop_upgrade_service, ready=ready)
     _finish_source_upgrade(plan, records, journal)
     _clear_candidate_stop_witnesses(plan)
@@ -3254,6 +3260,196 @@ def _preserve_unbound_sidefiles(plan, authority, *, expected_receipt, expected_g
                 custody.native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
                 verify(archive_name)
                 return archive_name
+            finally: os.close(archive)
+        finally: os.close(parent)
+
+
+def _bound_sidefile_archive(plan, *, authority=None, preserve=False, verify):
+    """Seal active authority first; preserve its four exact originals only stopped.
+
+    The caller holds the controller lock. Preparing copies private authority,
+    but moves nothing. Preservation is called only by recover_previous after
+    every service is proven stopped. Each original keeps its inode/owner/bytes;
+    a sealed interrupted prefix is replayable, an unsealed directory is not.
+    """
+    from pixel_macos_custody import protected_directory, _require_no_acl, replace_protected_bytes
+    from pixel_connections import custody
+    owner, selection = plan['owner'], plan['runtime_bundle']
+    candidate = selection['digest']
+    archive_name = custody._SIDEFILE_ARCHIVE_PREFIX + candidate
+    config_parent = Path(selection['config_path']).parent
+    names = {'context': 'runtime-upgrade-context-' + candidate + '.json', 'journal': 'runtime-upgrade.json'}
+    owners = {'gateway.env': (owner.pw_uid, owner.pw_gid), 'onboarding.json': (owner.pw_uid, owner.pw_gid),
+        'source-sidefiles.json': (0, 0), 'source-runtime-installation.json': (0, 0)}
+    if config_parent != RUNTIME_CONFIG_ROOT / str(owner.pw_uid):
+        raise InstallError('native-prepublication-preservation-path-invalid')
+
+    def fail(): raise InstallError('native-prepublication-preservation-changed')
+    def encoded(value):
+        return (json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n').encode()
+    def unique(rows):
+        value = {}
+        for key, item in rows:
+            if key in value: fail()
+            value[key] = item
+        return value
+    def inode(fd, name):
+        try: info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError: return None
+        return [info.st_dev, info.st_ino]
+    def directory(fd, uid, gid):
+        info = os.fstat(fd)
+        _require_no_acl(fd)
+        if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (uid, gid, 0o700): fail()
+        return [info.st_dev, info.st_ino]
+    def image(directory_fd, name, *, uid=0, gid=0, limit=32 * 1024 * 1024):
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+        try:
+            before = os.fstat(fd)
+            _require_no_acl(fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or (before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode)) != (uid, gid, 0o600)
+                    or not 0 < before.st_size <= limit): fail()
+            with os.fdopen(fd, 'rb', closefd=False) as stream: raw = stream.read(limit + 1)
+            after = os.fstat(fd)
+            key = lambda info: (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+                info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            if key(before) != key(after) or len(raw) != before.st_size or inode(directory_fd, name) != [before.st_dev, before.st_ino]: fail()
+            return raw, dict(inode=[before.st_dev, before.st_ino], uid=uid, gid=gid, mode=0o600,
+                size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+        finally: os.close(fd)
+    def write_new(fd, name, raw):
+        child = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        try:
+            _require_no_acl(child)
+            with os.fdopen(child, 'wb', closefd=False) as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(child)
+        finally: os.close(child)
+        os.fsync(fd)
+
+    with protected_directory(_launchd.ACCESS_STATE) as metadata, protected_directory(RUNTIME_CONFIG_ROOT) as config_root:
+        directory(metadata, 0, 0)
+        parent = os.open(str(owner.pw_uid), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=config_root)
+        try:
+            parent_id = directory(parent, owner.pw_uid, owner.pw_gid)
+            if inode(config_root, str(owner.pw_uid)) != parent_id: fail()
+            view = custody.native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+            ledger_raw, ledger_image = (image(metadata, custody._SIDEFILE_ARCHIVES, limit=131072)
+                if view['ledger'] is not None else (None, None))
+            ledger = json.loads(ledger_raw, object_pairs_hook=unique) if ledger_raw is not None else {
+                'schemaVersion': 1, 'kind': 'ods-native-source-sidefiles-archives', 'archives': {}}
+            verify(archive_name)
+            created = inode(metadata, archive_name) is None
+            if created:
+                if preserve or authority is None or candidate in ledger['archives'] or len(ledger['archives']) >= 16: fail()
+                files, bodies = {}, {}
+                for name, (uid, gid) in owners.items():
+                    bodies[name], files[name] = image(parent if uid else metadata, name, uid=uid, gid=gid, limit=131072)
+                os.mkdir(archive_name, 0o700, dir_fd=metadata)
+                os.fsync(metadata)
+            archive = os.open(archive_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=metadata)
+            try:
+                archive_id = directory(archive, 0, 0)
+                if created:
+                    copied = {}
+                    for key, name in names.items():
+                        raw, original = image(metadata, name)
+                        if raw != authority[key]: fail()
+                        write_new(archive, key + '.json', raw)
+                        body, child = image(archive, key + '.json')
+                        if body != raw: fail()
+                        copied[key] = dict(sourceName=name, sourceInode=original['inode'],
+                            **{field: child[field] for field in ('inode', 'sha256', 'size')})
+                    manifest = dict(schemaVersion=2, kind='ods-native-source-sidefiles-archive',
+                        currentDigest=plan['upgrade_qualification']['currentDigest'], candidateDigest=candidate,
+                        owner=dict(uid=owner.pw_uid, gid=owner.pw_gid), directory=dict(inode=archive_id),
+                        parent=dict(path=str(config_parent), inode=parent_id), authority=copied, files=files,
+                        absent=[], origin='bound-ready-before-source-publication',
+                        history=dict(ledger=view['ledger'], archives=ledger['archives']))
+                    custody._native_sidefile_archive_manifest(manifest, candidate, owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+                    custody._native_bound_sidefile_archive_authority(manifest, authority['context'], authority['journal'], bodies)
+                    write_new(archive, 'manifest.json', encoded(manifest))
+                manifest_raw, manifest_image = image(archive, 'manifest.json', limit=131072)
+                manifest = json.loads(manifest_raw, object_pairs_hook=unique)
+                custody._native_sidefile_archive_manifest(manifest, candidate, owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+                if (manifest.get('schemaVersion') != 2 or manifest_raw != encoded(manifest)
+                        or manifest['directory'] != {'inode': archive_id}
+                        or manifest['parent'] != {'path': str(config_parent), 'inode': parent_id}
+                        or manifest['currentDigest'] != plan['upgrade_qualification']['currentDigest']): fail()
+                entry = dict(directory=dict(inode=archive_id), manifest={key: manifest_image[key] for key in ('inode', 'sha256')})
+                baseline = manifest['history']['archives']
+                terminal = candidate in ledger['archives']
+                if terminal:
+                    if ledger['archives'] != {**baseline, candidate: entry}: fail()
+                elif ledger['archives'] != baseline or view['ledger'] != manifest['history']['ledger']: fail()
+                copies = {}
+                for key in names:
+                    raw, child = image(archive, key + '.json')
+                    wanted = manifest['authority'][key]
+                    if any(child[field] != wanted[field] for field in ('inode', 'sha256', 'size')): fail()
+                    if authority is not None and raw != authority[key]: fail()
+                    copies[key] = raw
+                expected_names = {'manifest.json', 'context.json', 'journal.json', *owners}
+                if set(os.listdir(archive)) - expected_names: fail()
+                bodies = {}
+                def locate(name):
+                    uid, gid = owners[name]
+                    source = parent if uid else metadata
+                    wanted = manifest['files'][name]
+                    before, after = inode(source, name), inode(archive, name)
+                    if before == wanted['inode'] and after is None: location = source
+                    elif before is None and after == wanted['inode']: location = archive
+                    else: fail()
+                    raw, observed = image(location, name, uid=uid, gid=gid, limit=131072)
+                    if observed != wanted: fail()
+                    return source, location, raw
+                for name in owners: bodies[name] = locate(name)[2]
+                custody._native_bound_sidefile_archive_authority(manifest, copies['context'], copies['journal'], bodies)
+                # Reconfirm durability on a sealed retry too: publication may
+                # have lost an fsync reply before any original was moved.
+                for name in ('context.json', 'journal.json', 'manifest.json'):
+                    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=archive)
+                    try: os.fsync(fd)
+                    finally: os.close(fd)
+                os.fsync(archive)
+                os.fsync(metadata)
+                verify(archive_name)
+                if not preserve:
+                    return copies
+                for name in owners:
+                    verify(archive_name)
+                    if (directory(parent, owner.pw_uid, owner.pw_gid) != parent_id
+                            or inode(config_root, str(owner.pw_uid)) != parent_id
+                            or directory(archive, 0, 0) != archive_id or inode(metadata, archive_name) != archive_id): fail()
+                    source, location, _raw = locate(name)
+                    if location != archive:
+                        _sidefile_archive_rename(source, name, archive, name)
+                        os.fsync(source)
+                        os.fsync(archive)
+                    if locate(name)[1] != archive: fail()
+                if set(os.listdir(archive)) != expected_names or image(archive, 'manifest.json', limit=131072)[0] != manifest_raw: fail()
+                verify(archive_name)
+                if not terminal:
+                    updated = dict(ledger, archives={**baseline, candidate: entry})
+                    # CAS the complete previous ledger, retaining every a9 entry.
+                    # A lost rename reply is replayed by its exact terminal value.
+                    if ledger_raw is not None:
+                        if image(metadata, custody._SIDEFILE_ARCHIVES, limit=131072) != (ledger_raw, ledger_image): fail()
+                        replace_protected_bytes(_launchd.ACCESS_STATE / custody._SIDEFILE_ARCHIVES,
+                            expected=ledger_raw, replacement=encoded(updated), mode=0o600, gid=0)
+                    else:
+                        temporary = '.sidefile-archive-ledger-' + os.urandom(16).hex()
+                        write_new(metadata, temporary, encoded(updated))
+                        try:
+                            os.link(temporary, custody._SIDEFILE_ARCHIVES, src_dir_fd=metadata, dst_dir_fd=metadata, follow_symlinks=False)
+                        finally:
+                            os.unlink(temporary, dir_fd=metadata)
+                            os.fsync(metadata)
+                custody.native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+                verify(archive_name)
+                return copies
             finally: os.close(archive)
         finally: os.close(parent)
 
@@ -4123,14 +4319,115 @@ def _verify_recovery_bindings(plan, records):
         raise InstallError('runtime-upgrade-recovery-binding-mismatch') from None
 
 
-def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_reproved=None):
+def _prepublication_source_absence(bridge, candidate, owner):
+    """Only the two inert receipts and verified history may precede first Source."""
+    from pixel_connections import custody
+    if any(os.path.lexists(path) for path in (custody.NATIVE_STATE, custody.NATIVE_ENV,
+            custody.NATIVE_LEGACY_ENV, custody.NATIVE_LOGS, custody.NATIVE_KIT)):
+        raise InstallError('native-prepublication-source-present')
+    if any(custody._native_ds_record(kind) is not None for kind in ('Users', 'Groups')):
+        raise InstallError('native-prepublication-source-present')
+    for lookup in (pwd.getpwnam, grp.getgrnam):
+        try: lookup(custody.NATIVE_BROKER)
+        except KeyError: continue
+        raise InstallError('native-prepublication-source-present')
+    history = custody.native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+    allowed = {'source-sidefiles.json', 'source-runtime-installation.json',
+        custody._SIDEFILE_ARCHIVE_PREFIX + candidate, *custody._native_sidefile_archive_names(history)}
+    names = {name for name in os.listdir(bridge.state)
+        if name.startswith(('source-', '.source-', 'native-source-', '.native-source-')) or name == 'native-app-enrollment.json'}
+    if names - allowed:
+        raise InstallError('native-prepublication-source-present')
+    raw = bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10)
+    if (not raw.startswith('system = {') or not raw.rstrip().endswith('}')
+            or len(raw) > 1024 * 1024 or custody.NATIVE_LABEL in raw):
+        raise InstallError('native-prepublication-source-present')
+    processes = bridge.command(['/bin/ps', '-axo', 'pid=,uid='], timeout=10)
+    seen = set()
+    for line in processes.splitlines():
+        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+([0-9]+)\s*', line)
+        if match is None or int(match[1]) in seen:
+            raise InstallError('native-prepublication-census-unavailable')
+        seen.add(int(match[1]))
+    if not seen or len(processes) > 1024 * 1024:
+        raise InstallError('native-prepublication-census-unavailable')
+
+
+def _recover_before_source_publication(plan, records, journal, bridge, *, verify_snapshots):
+    """Explicit rollback of an active Core whose first Source never published.
+
+    Default active recovery still resumes its target. This path additionally
+    requires typed original absence, complete after-images at first selection,
+    held admission, and a sealed preservation capsule before changing phase.
+    """
+    from pixel_macos_custody import protected_bytes
+    from pixel_connections import custody
+    candidate = plan['upgrade_qualification']['candidateDigest']
+    addition = journal.value.get('sourceAddition', {})
+    proof = addition.get('proof', {})
+    if (journal.value.get('schemaVersion') != 5 or plan.get('source_lifecycle', {}).get('mode') != 'absent'
+            or proof.get('kit') is not None or proof.get('identity') != {'kind': 'absent'}
+            or 'receipt' in addition or journal.value['phase'] not in ('active', 'rolling-back', 'recovery-required', 'restored')):
+        raise InstallError('native-prepublication-rollback-origin-unqualified')
+    transaction = dict(kind='native-installer-upgrade', transaction=addition['contextSha256'],
+        currentDigest=plan['upgrade_qualification']['currentDigest'], candidateDigest=candidate)
+    custody.native_installer_absence_receipt(proof, transaction=transaction,
+        owner_uid=plan['owner'].pw_uid, owner_gid=plan['owner'].pw_gid)
+    publication = next((item for item in records if item['path'] == _upgrade.SOURCE_PRIVATE_RECEIPT), None)
+    if publication is None or publication['before'] is not None or publication['after'] is None:
+        raise InstallError('native-prepublication-rollback-origin-unqualified')
+    context_path = _launchd.ACCESS_STATE / ('runtime-upgrade-context-' + candidate + '.json')
+    context_raw = protected_bytes(context_path, limit=_upgrade.JOURNAL_LIMIT)
+    archive_path = _launchd.ACCESS_STATE / (custody._SIDEFILE_ARCHIVE_PREFIX + candidate)
+    fresh = not os.path.lexists(archive_path)
+    if fresh and (journal.value['phase'] != 'active' or any(
+            _source_snapshot_read(item['path'], limit=8 * 1024 * 1024) != item['after'] for item in records)):
+        raise InstallError('native-prepublication-rollback-after-images-required')
+    hold = _resume_migration_hold(plan)
+    def verify(_archive_name):
+        if (protected_bytes(context_path, limit=_upgrade.JOURNAL_LIMIT) != context_raw
+                or json.loads(protected_bytes(journal.path, limit=_upgrade.JOURNAL_LIMIT)) != journal.value
+                or _resume_migration_hold(plan) != hold):
+            raise InstallError('native-prepublication-rollback-authority-changed')
+        for item in records:
+            actual = _source_snapshot_read(item['path'], limit=8 * 1024 * 1024)
+            allowed = (item['after'],) if journal.value['phase'] == 'active' else (item['before'], item['after'])
+            if actual not in allowed:
+                raise InstallError('native-prepublication-rollback-image-changed')
+        _prepublication_source_absence(bridge, candidate, plan['owner'])
+    verify_snapshots()
+    verify(archive_path.name)
+    authority = _bound_sidefile_archive(plan, authority=dict(context=context_raw,
+        journal=protected_bytes(journal.path, limit=_upgrade.JOURNAL_LIMIT)) if fresh else None, verify=verify)
+    original = json.loads(authority['journal'])
+    if (authority['context'] != context_raw or original.get('phase') != 'active'
+            or original != dict(journal.value, phase='active')):
+        raise InstallError('native-prepublication-rollback-authority-changed')
+    def preserve():
+        _bound_sidefile_archive(plan, authority=authority, preserve=True, verify=verify)
+    _recover_upgrade(plan, records, journal, verify_snapshots=verify_snapshots,
+        previous_guard=_previous_upgrade_guard(records), source_bridge=bridge, preserve_private=preserve)
+
+
+def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_reproved=None,
+                    rollback_before_source_publication=False):
     """Restore an interrupted runtime upgrade; CLI remains gated separately."""
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise InstallError('macos-root-install-required')
     from pixel_access_bridge import LaunchdAccessBridge
     if not isinstance(bridge, LaunchdAccessBridge) or bridge.state != _launchd.ACCESS_STATE:
         raise InstallError('runtime-upgrade-controller-state-changed')
+    if type(rollback_before_source_publication) is not bool:
+        raise InstallError('native-prepublication-rollback-selection-invalid')
     if not os.path.lexists(bridge.state / 'runtime-upgrade.json'):
+        if rollback_before_source_publication:
+            from pixel_connections import custody
+            owner = pwd.getpwnam(owner_name)
+            history = custody.native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+            archived = history['archives'].get(custody._SIDEFILE_ARCHIVE_PREFIX + candidate_digest)
+            if (archived is None or archived['manifest']['schemaVersion'] != 2
+                    or archived['manifest']['currentDigest'] != current_digest):
+                raise InstallError('native-prepublication-rollback-authority-required')
         return _finish_archived_upgrade(bridge, current_digest=current_digest,
             candidate_digest=candidate_digest, owner_name=owner_name, on_reproved=on_reproved)
     outcome = 'restored'
@@ -4165,13 +4462,17 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_
                     source_bridge = _bridge_from_recovery_plan(
                         dict(plan, access_settings=json.loads(settings)), owner_name=owner_name)
                 with (source_bridge.bounded(900) if source_bridge is not bridge else nullcontext()):
-                    if journal.value['phase'] == 'active':
+                    if rollback_before_source_publication:
+                        _recover_before_source_publication(plan, records, journal, source_bridge, verify_snapshots=verify)
+                    elif journal.value['phase'] == 'active':
                         _resume_source_upgrade_active(plan, records, journal, verify_snapshots=verify)
                         outcome = 'active'
                     else:
                         _recover_upgrade(plan, records, journal, verify_snapshots=verify,
                             previous_guard=_previous_upgrade_guard(records), source_bridge=source_bridge)
         else:
+            if rollback_before_source_publication:
+                raise InstallError('native-prepublication-rollback-origin-unqualified')
             _recover_upgrade(plan, records, journal, verify_snapshots=verify,
                              previous_guard=_previous_upgrade_guard(records))
     return outcome
@@ -4863,16 +5164,22 @@ def _recovery_main(argv):
     parser.add_argument('--owner', required=True)
     parser.add_argument('--current-bundle-digest', required=True)
     parser.add_argument('--bundle-digest', required=True)
+    parser.add_argument('--rollback-before-source-publication', action='store_true',
+        help='Explicitly preserve first-Source private files and restore the previous runtime; requires complete Source absence')
     args = parser.parse_args(argv)
     from pixel_access_bridge import AccessError
+    from pixel_macos_custody import CustodyError
+    from pixel_connections.custody import CustodyError as SourceCustodyError
     try:
         if sys.platform != 'darwin' or os.geteuid() != 0:
             raise InstallError('macos-root-install-required')
         selection = dict(current_digest=args.current_bundle_digest,
                          candidate_digest=args.bundle_digest, owner_name=args.owner)
         reproved = []
+        recovery_options = ({'rollback_before_source_publication': True}
+            if args.rollback_before_source_publication else {})
         outcome = recover_install(_recovery_bridge(**selection), **selection,
-                                  on_reproved=lambda: reproved.append(True))
+                                  on_reproved=lambda: reproved.append(True), **recovery_options)
         # Recovery may restore the previous runtime. Its installed policy, not
         # the candidate plan, determines the mode that must pass the tool proof.
         if not reproved:
@@ -4880,7 +5187,7 @@ def _recovery_main(argv):
     except InstallError as error:
         print('error: ' + error.code, file=sys.stderr)
         return 1
-    except (AccessError, _upgrade.UpgradeError, OSError, ValueError, KeyError, TypeError,
+    except (AccessError, CustodyError, SourceCustodyError, _upgrade.UpgradeError, OSError, ValueError, KeyError, TypeError,
             subprocess.SubprocessError) as error:
         # Environment/configuration errors can carry credentials in their text.
         detail, _guidance = _native_failure_diagnostic(error)
