@@ -180,9 +180,22 @@ test('a reminder set from another instance of the plugin finds the scheduler the
 });
 
 test('a turn asking for a reminder is told which tool sets one', () => {
-  for (const text of ['Remind me in 2 minutes to stretch', 'Set a reminder for 17:30', 'reminders for tomorrow please',
-    'Lembre-me daqui a 10 minutos']) assert.equal(reminderHint(text), REMINDER_HINT, text);
-  for (const text of ['What is the weather?', 'The reminiscence was nice', undefined]) assert.equal(reminderHint(text), '', String(text));
-  assert.match(REMINDER_HINT, /pixel_ods_notify/);
+  for (const text of ['Set a reminder for 17:30', 'reminders for tomorrow please', 'remind me at 5pm'])
+    assert.equal(reminderHint(text), REMINDER_HINT, text);
+  for (const text of ['What is the weather?', 'The reminiscence was nice', 'in 5 minutes, check the build', undefined])
+    assert.equal(reminderHint(text), '', String(text));
   assert.match(REMINDER_HINT, /tool_call with id "openclaw:pixel-ods:pixel_ods_notify"/, 'the hint gives the exact call');
+  // No number the model could copy: the general hint has placeholders only.
+  assert.doesNotMatch(REMINDER_HINT, /"inMinutes": \d|"at": "\d/);
+});
+
+test('a reminder hint uses the delay the owner asked for, so the model never copies another number', () => {
+  const minutes = text => JSON.parse(reminderHint(text).match(/args (\{.*?\})\./)[1]).inMinutes;
+  assert.equal(minutes('Remind me in 3 minutes to drink some water.'), 3);
+  assert.equal(minutes('remind me in 1 min'), 1);
+  assert.equal(minutes('Remind me in 2 hours to call Ana'), 120);
+  assert.equal(minutes('remind me in 1h'), 60);
+  assert.equal(minutes('Lembre-me daqui a 10 minutos'), 10);
+  assert.equal(minutes('Me lembre em 2 horas'), 120);
+  assert.match(reminderHint('Remind me in 3 minutes'), /tool_call with id "openclaw:pixel-ods:pixel_ods_notify"/);
 });

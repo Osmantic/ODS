@@ -26,10 +26,20 @@ function digestJob(plan, agentId) {
 const ASKS_REMINDER = /\bremind(?:er|ers|ing)?\b|\blembr(?:e|ete|ar|ança|ete-me)\b/i;
 // The exact call, because a small model that only knows the tool's name searches and describes it
 // again and again instead of calling it (e2e: three attempts for "Remind me in 3 minutes ...").
-export const REMINDER_HINT = 'To remind the owner later, make one call: tool_call with id "openclaw:pixel-ods:pixel_ods_notify" '
-  + 'and args {"message": "<the reminder>", "inMinutes": 10}, or "at": "17:30" instead of inMinutes. '
-  + 'It schedules the reminder and it reaches their phone then. No search is needed first. Never use sleep for this.';
-export const reminderHint = text => (typeof text === 'string' && ASKS_REMINDER.test(text) ? REMINDER_HINT : '');
+// The example uses the owner's own delay when the message gives one: a fixed example value is
+// copied as is (e2e: "in 3 minutes" was scheduled for 10, the example's number).
+const DELAY = /\b(?:in|daqui a|em)\s+(\d{1,4})\s*(min(?:ute|uto)?s?|h(?:ours?|oras?)?)\b/i;
+const REMINDER_CALL = 'To remind the owner later, make one call: tool_call with id "openclaw:pixel-ods:pixel_ods_notify" and args ';
+const REMINDER_END = ' It schedules the reminder and it reaches their phone then. No search is needed first. Never use sleep for this.';
+export const REMINDER_HINT = REMINDER_CALL + '{"message": "<the reminder>", "inMinutes": <minutes from now>}, '
+  + 'or {"message": "<the reminder>", "at": "<HH:MM>"} for a time of day.' + REMINDER_END;
+export function reminderHint(text) {
+  if (typeof text !== 'string' || !ASKS_REMINDER.test(text)) return '';
+  const delay = text.match(DELAY);
+  if (!delay) return REMINDER_HINT;
+  const minutes = Number(delay[1]) * (/^h/i.test(delay[2]) ? 60 : 1);
+  return REMINDER_CALL + JSON.stringify({message: '<the reminder>', inMinutes: minutes}) + '.' + REMINDER_END;
+}
 
 export function reminderJob(plan, agentId) {
   return {name: plan.name, description: plan.description, enabled: true, agentId,
