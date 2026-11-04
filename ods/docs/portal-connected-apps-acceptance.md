@@ -150,12 +150,16 @@ Calendar and fixed reviewed Connected-app routes now include the composed
 native Source lifecycle and Darwin routing. Their implementation and owned-file
 coverage do not establish live Mac execution, automatic triggers or successful
 connection activation. The existing MacBook's prepare-only run initially needed
-owner authentication. The subsequent authenticated full update prepared runtime
-and clients, but refused activation because the legacy deployment lacked the
-three newly introduced scheduler programs. The missing migration contract and
-the integration adapter's absent-path handling are under correction; the old
-configuration and running services remained intact. The installed Portal
-baseline and prepared client images are not candidate acceptance. See the
+owner authentication. Authenticated updates then exposed missing legacy
+scheduler additions, integration file-custody handling and recognition of the
+reviewed old controller guard. After those corrections, the third update
+created a recovery journal but stopped before publishing the candidate runtime:
+the Source live-image verifier did not handle the protected reader's wrapped
+missing-file error. The controller now requires qualified recovery. The old
+configuration/model bytes and inodes and all eleven running containers remain
+intact. The prepared recovery's absent integration role also has a targeted
+correction. Neither the installed Portal baseline, prepared client images nor
+these regression tests establish candidate acceptance. See the
 [Mac qualification scope](pixel/native-integrations-macos-qualification.md).
 Production Google sign-in also depends on the project's official OAuth/domain
 verification; local account tests do not establish complete public onboarding.

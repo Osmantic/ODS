@@ -249,11 +249,38 @@ status without executing archived code. Mutated guards remain refused. The
 old configuration bytes/inode and all eleven healthy containers were again
 preserved. Both failed preparations remain available privately.
 
+The third full update from `a2058e8ff69852f881b507abf82d022541eb3c43`
+stopped with `native-joint-migration-failed` after creating a protected recovery
+journal. The controller reports `runtime-upgrade-recovery-required`. The
+candidate runtime was not published; the old active configuration, model
+selection and file inodes remained unchanged, and all eleven containers stayed
+healthy. The real protected reader wraps a missing-file error as a custody
+error, but the Source journal's live-image verifier caught only the original
+file-not-found exception. A real descriptor regression reproduces that mismatch
+for the complete legacy addition families. The corrected reader proves absence
+again through protected ancestors only for an initially absent, fixed-family
+journal image; permission, ACL, link and unknown-path failures remain refusals.
+
+The prepared recovery path also incorrectly required a running previous process
+for the newly introduced integrations role. Only the exact approved absent-role
+adapter may now prove its missing definition and stopped job. The six existing
+roles still require their original live identity. Its journaled regression
+forbids stop/start, publication and restoration calls during this unstarted
+recovery. The composed installer/runtime/recovery tests passed 1,661 cases
+with one platform skip on this Mac. The new absence-reader cases also passed
+with the Linux metadata driver, including the actual withdrawal path; these
+remain simulated ownership evidence on Linux. Physical recovery remains
+pending; the retained journal must be qualified and completed before a fresh
+ordinary update. Do not delete it or
+reuse the failed preparation as if activation had succeeded.
+
 Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
 notifications and reboot acceptance remain pending. The Mac has not been
-restarted for this qualification. A Google test client was not available;
-official application provisioning and verification remain separate maintainer
-work. These observations must not be reported as macOS acceptance.
+restarted for this qualification. With explicit owner approval, a separate local
+Desktop OAuth test client and one test user were prepared and the Calendar API
+was enabled. No Calendar grant has been completed. Official application
+provisioning and verification remain separate maintainer work. These
+observations must not be reported as macOS acceptance.
 
 ### Scheduled Notes approval on Apple Silicon
 
