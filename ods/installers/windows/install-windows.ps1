@@ -158,19 +158,19 @@ function Get-UsableWindowsBash {
     if ($gitCmd -and $gitCmd.Source) {
         $gitRoot = Split-Path (Split-Path $gitCmd.Source -Parent) -Parent
         $gitBash = Join-Path $gitRoot "bin\bash.exe"
-        if (Test-Path $gitBash) {
+        if (Test-Path -LiteralPath $gitBash) {
             [void]$candidates.Add($gitBash)
         }
     }
 
     $programFilesBash = Join-Path $env:ProgramFiles "Git\bin\bash.exe"
-    if (Test-Path $programFilesBash) {
+    if (Test-Path -LiteralPath $programFilesBash) {
         [void]$candidates.Add($programFilesBash)
     }
 
     if (${env:ProgramFiles(x86)} -and $env:ProgramFiles -ne ${env:ProgramFiles(x86)}) {
         $programFilesX86Bash = Join-Path ${env:ProgramFiles(x86)} "Git\bin\bash.exe"
-        if (Test-Path $programFilesX86Bash) {
+        if (Test-Path -LiteralPath $programFilesX86Bash) {
             [void]$candidates.Add($programFilesX86Bash)
         }
     }
@@ -352,19 +352,19 @@ if ($dryRun) {
         # ── Download GGUF model ───────────────────────────────────────────────
         if ($tierConfig.GgufUrl -and -not $cloudMode) {
             $modelPath    = Join-Path (Join-Path $installDir "data\models") $tierConfig.GgufFile
-            $needsDownload = -not (Test-Path $modelPath)
+            $needsDownload = -not (Test-Path -LiteralPath $modelPath)
 
-            if ((Test-Path $modelPath) -and $tierConfig.GgufSha256) {
+            if ((Test-Path -LiteralPath $modelPath) -and $tierConfig.GgufSha256) {
                 Write-AI "Verifying model integrity (SHA256)..."
                 $integrity = Test-ModelIntegrity -Path $modelPath -ExpectedHash $tierConfig.GgufSha256
                 if ($integrity.Valid) {
                     Write-AISuccess "Model verified: $($tierConfig.GgufFile)"
                 } else {
                     Write-AIWarn "Model file is corrupt (hash mismatch). Removing and re-downloading..."
-                    Remove-Item $modelPath -Force
+                    Remove-Item -LiteralPath $modelPath -Force
                     $needsDownload = $true
                 }
-            } elseif (Test-Path $modelPath) {
+            } elseif (Test-Path -LiteralPath $modelPath) {
                 Write-AISuccess "Model already present: $($tierConfig.GgufFile)"
             }
 
@@ -398,7 +398,7 @@ if ($dryRun) {
                         Write-AIError "Downloaded file is corrupt (SHA256 mismatch)."
                         Write-AI "  Expected: $($integrity.ExpectedHash)"
                         Write-AI "  Got:      $($integrity.ActualHash)"
-                        Remove-Item $modelPath -Force
+                        Remove-Item -LiteralPath $modelPath -Force
                         Write-AIError "Re-run the installer to download again."
                         Exit-ODSInstallFailure
                     }
@@ -409,7 +409,7 @@ if ($dryRun) {
         # ── Patch .env for bootstrap model ────────────────────────────────────
         if ($bootstrapActive) {
             $envPath = Join-Path $installDir ".env"
-            if (Test-Path $envPath) {
+            if (Test-Path -LiteralPath $envPath) {
                 $envContent = Get-Content -LiteralPath $envPath -Raw -Encoding UTF8
                 # Same .NET group-substitution hazard as Update-HermesConfigFile:
                 # '$' in a replacement string is a token, not a literal.
@@ -506,16 +506,16 @@ if ($dryRun) {
         $enabledExtensionServices = @()
         $skippedExtensionServices = @()
 
-        if (Test-Path $extDir) {
-            $extServices = Get-ChildItem -Path $extDir -Directory | Sort-Object Name
+        if (Test-Path -LiteralPath $extDir) {
+            $extServices = Get-ChildItem -LiteralPath $extDir -Directory | Sort-Object Name
             foreach ($svcDir in $extServices) {
                 $manifestPath = Join-Path $svcDir.FullName "manifest.yaml"
-                if (-not (Test-Path $manifestPath)) {
+                if (-not (Test-Path -LiteralPath $manifestPath)) {
                     $manifestPath = Join-Path $svcDir.FullName "manifest.yml"
                 }
-                if (-not (Test-Path $manifestPath)) { continue }
+                if (-not (Test-Path -LiteralPath $manifestPath)) { continue }
 
-                $manifestLines = Get-Content $manifestPath -ErrorAction SilentlyContinue
+                $manifestLines = Get-Content -LiteralPath $manifestPath -ErrorAction SilentlyContinue
                 if (-not $manifestLines) { continue }
 
                 $hasSchema = $manifestLines | Where-Object { $_ -match "schema_version:\s*ods\.services\.v1" }
@@ -570,7 +570,7 @@ if ($dryRun) {
 
                 if ($currentBackend -eq "nvidia" -and -not $script:gpuPassthroughFailed) {
                     $gpuOverlay = Join-Path $svcDir.FullName "compose.nvidia.yaml"
-                    if (Test-Path $gpuOverlay) {
+                    if (Test-Path -LiteralPath $gpuOverlay) {
                         $useGpuOverlay = $true
                         if ($svcName -eq "whisper" -and -not (Test-ODSWindowsWhisperCudaSupported -GpuInfo $gpuInfo)) {
                             $useGpuOverlay = $false
@@ -583,7 +583,7 @@ if ($dryRun) {
                     }
                 } elseif ($currentBackend -eq "amd") {
                     $gpuOverlay = Join-Path $svcDir.FullName "compose.amd.yaml"
-                    if (Test-Path $gpuOverlay) {
+                    if (Test-Path -LiteralPath $gpuOverlay) {
                         $relOverlay = $gpuOverlay.Substring($installDir.Length + 1) -replace "\\", "/"
                         $composeFlags += @("-f", $relOverlay)
                     }
@@ -609,13 +609,13 @@ if ($dryRun) {
             -OdsMode $(if ($cloudMode) { "cloud" } else { "local" }))
 
         # Tier 0 memory overlay
-        if ($selectedTier -eq "0" -and (Test-Path (Join-Path $installDir "docker-compose.tier0.yml"))) {
+        if ($selectedTier -eq "0" -and (Test-Path -LiteralPath (Join-Path $installDir "docker-compose.tier0.yml"))) {
             $composeFlags += @("-f", "docker-compose.tier0.yml")
             Write-AI "Applying lightweight memory limits for Tier 0"
         }
 
         # User override
-        if (Test-Path (Join-Path $installDir "docker-compose.override.yml")) {
+        if (Test-Path -LiteralPath (Join-Path $installDir "docker-compose.override.yml")) {
             $composeFlags += @("-f", "docker-compose.override.yml")
         }
 
@@ -627,7 +627,7 @@ if ($dryRun) {
                 if (-not [System.IO.Path]::IsPathRooted($cfPath)) {
                     $cfPath = Join-Path $installDir $cfPath
                 }
-                if (-not (Test-Path $cfPath)) {
+                if (-not (Test-Path -LiteralPath $cfPath)) {
                     Write-AIError "Compose file not found: $cf"
                     Write-AI "  Expected path: $cfPath"
                     Write-AI "  Re-run with --Force or check that $installDir is intact."
@@ -726,7 +726,7 @@ if ($dryRun) {
             )
 
             $logDir = Join-Path $InstallDir "logs"
-            if (-not (Test-Path $logDir)) {
+            if (-not (Test-Path -LiteralPath $logDir)) {
                 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
             }
             $recordPath = Join-Path $logDir "compose-launch.txt"
@@ -824,7 +824,7 @@ if ($dryRun) {
 
         # Pre-flight: verify .env is readable from CWD before compose up
         $_envCheck = Join-Path $installDir ".env"
-        if (-not (Test-Path $_envCheck)) {
+        if (-not (Test-Path -LiteralPath $_envCheck)) {
             Write-AIError ".env file not found at $_envCheck -- cannot start services."
             Write-AI "  Re-run the installer to regenerate the .env file."
             Exit-ODSInstallFailure
@@ -1042,8 +1042,8 @@ if ($dryRun) {
                 [Parameter(Mandatory = $true)][string]$Path,
                 [Parameter(Mandatory = $true)][string]$Key
             )
-            if (-not (Test-Path $Path)) { return "" }
-            foreach ($line in Get-Content $Path) {
+            if (-not (Test-Path -LiteralPath $Path)) { return "" }
+            foreach ($line in Get-Content -LiteralPath $Path) {
                 if ($line -match "^$([regex]::Escape($Key))=(.+)$") {
                     return $Matches[1].Trim().Trim('"').Trim("'")
                 }
@@ -1295,7 +1295,7 @@ if ($dryRun) {
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = "SilentlyContinue"
         $_composeLogDir = Join-Path $installDir "logs"
-        if (-not (Test-Path $_composeLogDir)) { New-Item -ItemType Directory -Path $_composeLogDir -Force | Out-Null }
+        if (-not (Test-Path -LiteralPath $_composeLogDir)) { New-Item -ItemType Directory -Path $_composeLogDir -Force | Out-Null }
         $_composeLog = Join-Path $_composeLogDir "compose-up.log"
 
         # ── Rebuild local-built images ─────────────────────────────────────
@@ -1403,9 +1403,9 @@ if ($dryRun) {
                 Write-Host ""
                 Write-AIError "Local image build failed: $($_failedBuildServices -join ', ')"
                 Write-AI "Compose up will not be attempted because --no-build would otherwise use stale or missing images."
-                if (Test-Path $_buildLog) {
+                if (Test-Path -LiteralPath $_buildLog) {
                     Write-Host "  --- docker compose build log tail ---" -ForegroundColor DarkGray
-                    Get-Content $_buildLog -Tail 60 | ForEach-Object { Write-Host "  $_" }
+                    Get-Content -LiteralPath $_buildLog -Tail 60 | ForEach-Object { Write-Host "  $_" }
                 }
                 Write-ODSComposeDiagnostics -InstallDir $installDir -ComposeFlags $composeFlags `
                     -ComposeArgs (@("build") + $_failedBuildServices) `
@@ -1462,8 +1462,8 @@ if ($dryRun) {
             $ErrorActionPreference = $prevEAP
         }
         # Show tail of compose output for immediate feedback
-        if (Test-Path $_composeLog) {
-            Get-Content $_composeLog -Tail 20 | ForEach-Object { Write-Host "  $_" }
+        if (Test-Path -LiteralPath $_composeLog) {
+            Get-Content -LiteralPath $_composeLog -Tail 20 | ForEach-Object { Write-Host "  $_" }
         }
         if ($composeExit -ne 0) {
             Write-AIError "docker compose up failed (exit code: $composeExit)"
@@ -1499,7 +1499,7 @@ if ($dryRun) {
             $upgradeErrLog = Join-Path $logDir "model-upgrade-err.log"
             $upgradeScript = Join-Path $installDir "scripts\bootstrap-upgrade.sh"
 
-            if (Test-Path $upgradeScript) {
+            if (Test-Path -LiteralPath $upgradeScript) {
                 # Convert Windows path to Git Bash Unix-style
                 $bashInstallDir = ($installDir -replace "\\", "/" -replace "^([A-Za-z]):", '/$1').ToLower()
                 $bashScript = ($upgradeScript -replace "\\", "/" -replace "^([A-Za-z]):", '/$1').ToLower()
@@ -1819,7 +1819,7 @@ if ($enableVoice) {
     $sttModel = "Systran/faster-whisper-base"  # safe fallback
     $whisperPort = "9000"  # safe fallback
     $envPath = Join-Path $installDir ".env"
-    if (Test-Path $envPath) {
+    if (Test-Path -LiteralPath $envPath) {
         try {
             $envText = [System.IO.File]::ReadAllText($envPath, (New-Object System.Text.UTF8Encoding($false)))
             # Strip any leading BOM defensively in case the file was written
@@ -2066,7 +2066,7 @@ try {
     New-Item -Path $setupConfigDir -ItemType Directory -Force | Out-Null
     $completedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     $payload = @{ completed_at = $completedAt; version = "1.0.0" } | ConvertTo-Json -Compress
-    Set-Content -Path $setupCompleteFile -Value $payload -Encoding UTF8
+    Set-Content -LiteralPath $setupCompleteFile -Value $payload -Encoding UTF8
     Write-AISuccess "Setup wizard pre-marked complete"
 } catch {
     Write-AIWarn "Could not write setup-complete.json (non-fatal): $_"
