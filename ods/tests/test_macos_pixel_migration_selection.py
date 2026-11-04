@@ -161,7 +161,9 @@ def test_recovery_checks_installed_paths_without_requiring_staging(monkeypatch, 
     seen = []
     monkeypatch.setattr(module, '_validate_migration_recovery_context', lambda value: seen.append('context'))
     monkeypatch.setattr(custody, 'protected_tree_metadata', lambda path: seen.append(str(path)))
-    monkeypatch.setattr(module._bundle, 'verify', lambda path, **kw: ({'plugins': ['plugins/0']}, kw['expected_digest']))
+    # Even a historical non-Source manifest has the verified entries mapping.
+    monkeypatch.setattr(module._bundle, 'verify', lambda path, **kw: (
+        {'plugins': ['plugins/0'], 'entries': {}}, kw['expected_digest']))
     monkeypatch.setattr(module.os.path, 'lexists', lambda path: fault != 'unpublished')
     def read(path, uid):
         assert uid == 501 and str(path) in (old_path, new_path)
