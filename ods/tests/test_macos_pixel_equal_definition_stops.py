@@ -214,3 +214,51 @@ def test_reboot_still_invalidates_fresh_equivalent_stop(world):
     world.boot[0] = '22222222-2222-2222-2222-222222222222'
     with pytest.raises(access.InstallError, match='native-stop-witness-unavailable'):
         access._assert_upgrade_absent(previous['access'], candidate['access'])
+
+
+def test_natural_new_boot_recovers_legacy_prefix_only_by_stopping_seven_new_instances(world):
+    previous, candidate = world.build()
+    legacy = {}
+    frozen_records = tuple(tuple(row[key] for key in ('path', 'before', 'after', 'mode', 'gid')) for row in world.records)
+    frozen_files = {path: copy.read_bytes() for path, copy in world.copies.items()}
+    for role in access._upgrade.NATIVE_ROLES:
+        access._stop_upgrade_service(previous[role])
+        legacy[role] = previous[role].load_stop()
+        # This is the already-stopped prefix made by the earlier installer,
+        # not a call to the new paired invalidator or an adopted receipt.
+        bridge.atomic_json(access._runtime_upgrade_stop_witness('b' * 64, 'candidate', role), None)
+    with pytest.raises(access.InstallError, match='native-stop-witness-unavailable'):
+        access._assert_upgrade_absent(previous['access'], candidate['access'])
+    world.events.clear()
+    world.boot[0] = '22222222-2222-2222-2222-222222222222'
+    fresh = {}
+    for role in access._upgrade.NATIVE_ROLES:
+        item = world.live[candidate[role].target]
+        # OS adapter only: RunAtLoad has naturally created new real identities.
+        # No tested bootstrap method is called to manufacture missing jobs.
+        item.update(loaded=True, pid=item['pid'] + 1000, birth=(item['birth'][0] + 100000, 3))
+        fresh[role] = [[item['pid'], *item['birth']]]
+    previous, candidate = world.build()
+    phases, restored = [], []
+    def verify():
+        assert frozen_records == tuple(tuple(row[key] for key in ('path', 'before', 'after', 'mode', 'gid')) for row in world.records)
+        assert frozen_files == {path: copy.read_bytes() for path, copy in world.copies.items()}
+    def restore():
+        verify()
+        assert not any(item['loaded'] for item in world.live.values())
+        assert len(world.events) == 7 and all(event[1] == 'bootout' for event in world.events)
+        for role in access._upgrade.NATIVE_ROLES:
+            assert previous[role].load_stop() == legacy[role]
+            receipt = candidate[role].load_stop()
+            assert receipt['boot'] == world.boot[0] and receipt['processes'] == fresh[role]
+            assert receipt['boot'] != legacy[role]['boot'] and receipt['processes'] != legacy[role]['processes']
+            access._assert_upgrade_absent(previous[role], candidate[role])
+        restored.append(True)
+    def ready(services):
+        for service in services.values(): access._upgrade_service_identity(service)
+    access._upgrade.recover_previous(previous=previous, candidate=candidate, phase=phases.append,
+        verify_snapshots=verify, observe=access._observe_upgrade_service, assert_absent=access._assert_upgrade_absent,
+        restore_files=restore, start=access._start_upgrade_service, stop=access._stop_upgrade_service, ready=ready)
+    assert phases == ['rolling-back', 'restored'] and restored == [True]
+    verify()
+    assert all(item['loaded'] for item in world.live.values())
