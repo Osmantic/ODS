@@ -45,6 +45,40 @@ def ordered_open(monkeypatch, path, publish, *, before_open=False, every_open=Fa
     return seen
 
 
+@pytest.mark.parametrize("order", ["unlinked", "displaced", "in-place"])
+def test_path_stat_racing_publication(journal, monkeypatch, order):
+    original_stat = os.stat
+    sampled = []
+
+    def stat_after_lookup(path, *args, **kwargs):
+        if path != journal or kwargs.get("follow_symlinks") is not False or sampled:
+            return original_stat(path, *args, **kwargs)
+        # Hold the looked-up inode across a real directory-entry change.
+        fd = os.open(journal, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            if order == "unlinked":
+                atomic_json(journal, AFTER)
+            else:
+                # Ensure a distinct metadata snapshot even on coarse clocks.
+                before = os.fstat(fd)
+                os.utime(fd, ns=(before.st_atime_ns, before.st_mtime_ns - 1_000_000_000))
+            info = os.fstat(fd)
+            if order == "displaced":
+                atomic_json(journal, AFTER)
+            sampled.append(info.st_nlink)
+            return info
+        finally:
+            os.close(fd)
+
+    monkeypatch.setattr(os, "stat", stat_after_lookup)
+    if order == "in-place":
+        with pytest.raises(lifecycle.LifecycleError, match="changed while reading"):
+            lifecycle.read_operation(journal, owners=OWNERS)
+    else:
+        assert lifecycle.read_operation(journal, owners=OWNERS) == AFTER
+    assert sampled == [0 if order == "unlinked" else 1]
+
+
 def test_stable_snapshot_and_initial_absence(journal):
     assert lifecycle.read_operation(journal, owners=OWNERS) == BEFORE
     journal.unlink()
