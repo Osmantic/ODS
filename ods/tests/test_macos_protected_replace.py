@@ -118,13 +118,22 @@ def inspection_target(target, monkeypatch, request):
     target.unlink()
     monkeypatch.setattr(custody, request.param, frozenset([str(target)]))
     verify = custody._verify_fd
+    # protected_bytes walks from /. Model only the existing ancestors outside
+    # this disposable namespace, including a sticky /tmp on CI. Files and
+    # directories inside the fixture retain their actual mode checks.
+    ancestor_inodes = set()
+    for parent in target.parent.parents:
+        info = parent.stat()
+        ancestor_inodes.add((info.st_dev, info.st_ino))
     def root_group(fd, *, directory):
         value = os.fstat(fd) if directory else verify(fd, directory=False)
+        fields = {key: getattr(value, key) for key in dir(value) if key.startswith('st_')}
         if directory:
             assert stat.S_ISDIR(value.st_mode)
-            if value.st_mode & 0o022:
+            if (value.st_dev, value.st_ino) in ancestor_inodes:
+                fields['st_mode'] &= ~0o022
+            if fields['st_mode'] & 0o022:
                 raise custody.CustodyError('invalid-fixture-custody')
-        fields = {key: getattr(value, key) for key in dir(value) if key.startswith('st_')}
         fields['st_gid'] = 0
         return SimpleNamespace(**fields)
     monkeypatch.setattr(custody, '_verify_fd', root_group)
@@ -140,6 +149,22 @@ def test_inspection_addition_roundtrip_uses_real_filesystem(inspection_target):
     custody.replace_protected_inspection_bytes(path, expected=b'approved', replacement=None, mode=0o644)
     assert custody.protected_inspection_bytes(path) is None
     assert list(path.parent.iterdir()) == []
+
+
+@pytest.mark.parametrize('changed', ['file', 'directory'])
+def test_inspection_fixture_still_refuses_writable_owned_files_and_directories(inspection_target, changed):
+    path = inspection_target
+    path.write_bytes(b'owned code')
+    path.chmod(0o644)
+    damaged = path if changed == 'file' else path.parent
+    mode = stat.S_IMODE(damaged.stat().st_mode)
+    damaged.chmod(mode | 0o020)
+    try:
+        with pytest.raises(custody.CustodyError, match='^invalid-fixture-custody$'):
+            custody.protected_inspection_bytes(path)
+    finally:
+        damaged.chmod(mode)
+    assert path.read_bytes() == b'owned code'
 
 
 @pytest.mark.parametrize('fault', ['foreign', 'symlink', 'existing', 'mode', 'gid'])

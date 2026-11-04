@@ -1032,11 +1032,20 @@ def test_legacy_schedule_snapshot_journal_and_partial_cas_restore_real_files(tmp
         fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try: yield fd
         finally: os.close(fd)
+    # The root metadata boundary includes existing ancestors of the disposable
+    # namespace. A CI /tmp may be sticky/writable; only those pinned external
+    # inodes are modeled. All fixture descendants retain actual mode checks.
+    ancestor_inodes = set()
+    for parent in tmp_path.parents:
+        info = parent.stat()
+        ancestor_inodes.add((info.st_dev, info.st_ino))
     def verify(fd, *, directory):
         info = os.fstat(fd)
         assert stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode) and info.st_nlink == 1
-        assert not info.st_mode & 0o022
         fields = {key: getattr(info, key) for key in dir(info) if key.startswith('st_')}
+        if directory and (info.st_dev, info.st_ino) in ancestor_inodes:
+            fields['st_mode'] &= ~0o022
+        assert not fields['st_mode'] & 0o022
         return SimpleNamespace(**dict(fields, st_uid=0, st_gid=0))
     # Only the Root identity boundary is simulated; production FD/CAS I/O runs.
     monkeypatch.setattr(custody, 'protected_directory', directory)
