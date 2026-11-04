@@ -311,6 +311,32 @@ def _capture_histories(selection, current_metadata, *, private):
                 if c._native_at_inode(metadata, '.source-binding-' + record['nonce'] + '-' + str(index)) is not None:
                     _fail('history-publication-unsettled')
 
+        # Unbound legacy sidefiles are retained data only, from a terminal
+        # ledger and complete private capsule. No prefix grants a name.
+        sidefiles = c.native_sidefile_archives(owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid'])
+        if sidefiles['ledger'] is not None:
+            file_image(c._SIDEFILE_ARCHIVES, inode=sidefiles['ledger']['inode'])
+            if value['metadata'][c._SIDEFILE_ARCHIVES]['sha256'] != sidefiles['ledger']['sha256']:
+                _fail('history-sidefile-archive-changed')
+            for name, item in sidefiles['archives'].items():
+                node = _capture_node(metadata, name, remaining=remaining)
+                if (node['inode'] != item['inode'] or (node['kind'], node['mode'], node['gid']) != ('directory', 0o700, 0)
+                        or set(node['entries']) != {'manifest.json', 'context.json', 'restored.json', 'source-sidefiles.json', 'gateway.env'}
+                        or node['entries']['manifest.json']['inode'] != item['manifestImage']['inode']
+                        or node['entries']['manifest.json'] != dict(kind='file', mode=0o600, gid=0,
+                            size=item['manifestSize'], **item['manifestImage'])):
+                    _fail('history-sidefile-archive-changed')
+                expected_files = {
+                    **{key + '.json': dict(image, mode=0o600, gid=0)
+                       for key, image in item['manifest']['authority'].items()},
+                    **item['manifest']['files']}
+                for leaf, image in expected_files.items():
+                    expected = dict(kind='file', **{key: image[key] for key in ('inode', 'mode', 'gid', 'sha256', 'size')})
+                    if node['entries'][leaf] != expected:
+                        _fail('history-sidefile-archive-changed')
+                expected_meta.add(name)
+                value['metadata'][name] = node
+
         current_files = None
         if c._native_at_inode(kits, c.NATIVE_KIT.name) is not None:
             _image, current_files = publisher._kit_image(c, kits, c.NATIVE_KIT.name)

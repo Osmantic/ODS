@@ -29,8 +29,13 @@ import pixel_macos_custody as mac
 
 
 @pytest.fixture
-def second_prepared(first_target, monkeypatch):
+def second_prepared(first_target, monkeypatch, request):
     n = first_target
+    if getattr(request, 'param', None) == 'sidefile-archive':
+        from test_native_source_sidefile_archives import make_archive
+        n.sidefile_archive = make_archive(n, monkeypatch, real_code=True)
+        n.sidefile_archive_before = {path.name: (path.read_bytes(), path.stat().st_ino)
+            for path in n.sidefile_archive.path.iterdir()}
     # All old immutable components retain their actual inventory/digest proof.
     # Only the Apple UID/GID observation of these relocated QA files differs.
     actual_loader = c._native_installer_old_publisher
@@ -216,6 +221,18 @@ def test_two_actual_bundle_updates_then_first_prepare_preserve_all_previous_hist
     original = n.metadata / ledger['entries'][-1]['artifacts']['source-installer-code-only.json']['name']
     assert (original.read_bytes(), original.stat().st_ino) == n.original_record
     assert {path: (path.read_bytes(), path.stat().st_ino) for path in n.original_owner} == n.original_owner
+
+
+@pytest.mark.parametrize('first_target', ['code-only-history'], indirect=True)
+@pytest.mark.parametrize('second_prepared', ['sidefile-archive'], indirect=True)
+def test_two_actual_bundle_updates_then_first_prepare_keep_preserved_sidefiles(second_prepared, monkeypatch):
+    n = second_prepared
+    test_two_actual_bundle_updates_then_first_prepare_preserve_all_previous_history(n, monkeypatch)
+    assert {path.name: (path.read_bytes(), path.stat().st_ino) for path in n.sidefile_archive.path.iterdir()} == n.sidefile_archive_before
+    view = c.native_sidefile_archives(owner_uid=n.f.bridge.owner.pw_uid, owner_gid=n.f.bridge.owner.pw_gid)
+    assert n.sidefile_archive.path.name in view['archives']
+    print('retained sidefile capsule bytes', {
+        key: len(n.sidefile_archive_before[key][0]) for key in ('context.json', 'restored.json')})
 
 
 def test_second_connected_installer_rebind_slot_rollover_and_withdrawal_preserve_token_metadata(connected_upgraded, monkeypatch):

@@ -1456,6 +1456,13 @@ def _native_installer_context(bridge, transaction, *, mode='absent'):
     name = 'runtime-upgrade-context-' + transaction['candidateDigest'] + '.json'
     with protected_directory(NATIVE_META) as metadata:
         body, _inode = _native_root_file(metadata, name, limit=32 * 1024 * 1024)
+    value = _native_installer_context_bytes(body, transaction, mode=mode)
+    _native_installer_owner(bridge, context_owner=value['owner'])
+    return value, body
+
+
+def _native_installer_context_bytes(body, transaction, *, mode='absent'):
+    """Pure frozen-context decoding; grants no live bridge or mutation authority."""
     if hashlib.sha256(body).hexdigest() != transaction['transaction']:
         raise CustodyError('native-source-installer-context-changed')
     try:
@@ -1476,8 +1483,7 @@ def _native_installer_context(bridge, transaction, *, mode='absent'):
             raise ValueError()
     except (KeyError, TypeError, ValueError, UnicodeError, RecursionError):
         raise CustodyError('native-source-installer-context-invalid') from None
-    _native_installer_owner(bridge, context_owner=owner)
-    return value, body
+    return value
 
 
 def _native_installer_image(item):
@@ -1945,6 +1951,178 @@ def _native_retirement_inventory_state(selection, authority):
                 os.close(archive)
 
 
+_SIDEFILE_ARCHIVES = 'source-sidefiles-archives.json'
+_SIDEFILE_ARCHIVE_PREFIX = 'source-sidefiles-archive-'
+NATIVE_SIDEFILE_CONFIG_ROOT = Path('/private/var/lib/ods-pixel-native-config')
+
+
+def _native_sidefile_archive_manifest(value, candidate, *, owner_uid, owner_gid):
+    """Closed immutable preservation plan; never owner-file adoption authority."""
+    fields = {'schemaVersion', 'kind', 'currentDigest', 'candidateDigest', 'owner', 'directory',
+        'parent', 'authority', 'files', 'absent', 'origin'}
+    if (type(value) is not dict or set(value) != fields
+            or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+            or value['kind'] != 'ods-native-source-sidefiles-archive'
+            or type(candidate) is not str or not _NATIVE_SHA.fullmatch(candidate)
+            or value['candidateDigest'] != candidate
+            or type(value['currentDigest']) is not str or not _NATIVE_SHA.fullmatch(value['currentDigest'])
+            or value['currentDigest'] == candidate
+            or type(owner_uid) is not int or owner_uid <= 0 or type(owner_gid) is not int or owner_gid <= 0
+            or type(value['owner']) is not dict or set(value['owner']) != {'uid', 'gid'}
+            or any(type(value['owner'][key]) is not int for key in ('uid', 'gid'))
+            or value['owner'] != {'uid': owner_uid, 'gid': owner_gid}
+            or type(value['directory']) is not dict or set(value['directory']) != {'inode'}
+            or not _native_inode(value['directory']['inode'])
+            or type(value['parent']) is not dict or set(value['parent']) != {'path', 'inode'}
+            or value['parent']['path'] != str(NATIVE_SIDEFILE_CONFIG_ROOT / str(owner_uid))
+            or not _native_inode(value['parent']['inode'])
+            or value['origin'] != 'unbound-empty-inherited-group' or value['absent'] != ['onboarding.json']
+            or type(value['authority']) is not dict or set(value['authority']) != {'context', 'restored'}
+            or type(value['files']) is not dict or set(value['files']) != {'source-sidefiles.json', 'gateway.env'}):
+        raise CustodyError('native-source-sidefile-archive-invalid')
+    for key, suffix in (('context', 'runtime-upgrade-context-' + candidate + '.json'),
+                        ('restored', 'runtime-upgrade-' + candidate + '.completed.json')):
+        image = value['authority'][key]
+        if (type(image) is not dict or set(image) != {'sourceName', 'sourceInode', 'inode', 'sha256', 'size'}
+                or image['sourceName'] != suffix or not _native_inode(image['sourceInode'])
+                or not _native_installer_image({name: image[name] for name in ('inode', 'sha256')})
+                or image['sourceInode'] == image['inode']
+                or type(image['size']) is not int or not 0 < image['size'] <= 32 * 1024 * 1024):
+            raise CustodyError('native-source-sidefile-archive-invalid')
+    for key, gid, maximum in (('source-sidefiles.json', 0, 8192), ('gateway.env', owner_gid, 0)):
+        image = value['files'][key]
+        if (type(image) is not dict or set(image) != {'inode', 'uid', 'gid', 'mode', 'size', 'sha256'}
+                or not _native_installer_image({name: image[name] for name in ('inode', 'sha256')})
+                or any(type(image[name]) is not int for name in ('uid', 'gid', 'mode', 'size'))
+                or (image['uid'], image['gid'], image['mode']) != (0, gid, 0o600)
+                or not 0 <= image['size'] <= maximum
+                or key == 'source-sidefiles.json' and image['size'] == 0
+                or key == 'gateway.env' and image['sha256'] != hashlib.sha256(b'').hexdigest()):
+            raise CustodyError('native-source-sidefile-archive-invalid')
+    return value
+
+
+def _native_sidefile_archive_authority(value, context_raw, restored_raw, receipt_raw):
+    """Reopen the complete frozen context/journal and the unbound receipt."""
+    transaction = dict(kind='native-installer-upgrade', transaction=hashlib.sha256(context_raw).hexdigest(),
+        currentDigest=value['currentDigest'], candidateDigest=value['candidateDigest'])
+    context = _native_installer_context_bytes(context_raw, transaction)
+    restored, _records, _raw = _native_installer_journal_bytes(restored_raw, transaction, context, _completed=True)
+    try:
+        owner, selection = context['owner'], context['runtime_bundle']
+        proof = restored['sourceAddition']['proof']
+        if (restored['phase'] != 'restored' or type(owner) is not dict
+                or set(owner) != {'name', 'uid', 'gid', 'home'}
+                or any(type(owner[key]) is not int for key in ('uid', 'gid'))
+                or (owner['uid'], owner['gid']) != (value['owner']['uid'], value['owner']['gid'])
+                or type(owner['name']) is not str or not owner['name']
+                or type(owner['home']) is not str or not owner['home'].startswith('/')
+                or proof['kit'] is not None or proof['identity'] != {'kind': 'absent'} or proof['metadata'] != {}):
+            raise ValueError()
+        supplied = selection['connection_sidefiles']
+        if (type(supplied) is not dict or set(supplied) != {'gateway.env', 'onboarding.json'}
+                or any(type(text) is not str or not 0 < len(text.encode('utf-8')) <= 131072 for text in supplied.values())
+                or type(selection['config_path']) is not str
+                or str(Path(selection['config_path']).parent) != value['parent']['path']):
+            raise ValueError()
+        receipt = json.loads(receipt_raw, object_pairs_hook=_native_pairs)
+        expected = dict(schemaVersion=1, kind='ods-native-connection-sidefiles', ownerUid=owner['uid'], ownerGid=owner['gid'],
+            configPath=selection['config_path'], bundleSha256=value['candidateDigest'], parent=value['parent']['inode'],
+            files={key: hashlib.sha256(text.encode('utf-8')).hexdigest() for key, text in supplied.items()},
+            children={key: {'inode': None, 'ready': False} for key in supplied})
+        if (type(receipt) is not dict or receipt != expected or not _native_inode(receipt['parent'])
+                or any(type(receipt[key]) is not int for key in ('schemaVersion', 'ownerUid', 'ownerGid'))
+                or any(type(child['ready']) is not bool for child in receipt['children'].values())):
+            raise ValueError()
+    except (KeyError, TypeError, ValueError, UnicodeError, RecursionError):
+        raise CustodyError('native-source-sidefile-archive-authority-invalid') from None
+
+
+def native_sidefile_archives(*, owner_uid, owner_gid):
+    """Read only terminal archives named by the Root ledger; never discover grants.
+
+    Callers retain their complete namespace refusal checks. An unregistered
+    directory is not history, even when its name resembles a known candidate.
+    Private context/journal copies survive legitimate retire-runtime moves of
+    the originals. Their bytes and inode bindings remain part of the archive.
+    """
+    from pixel_macos_custody import protected_directory
+    result = {'ledger': None, 'archives': {}}
+    with protected_directory(NATIVE_META) as metadata:
+        try: ledger_raw, ledger_inode = _native_root_file(metadata, _SIDEFILE_ARCHIVES, limit=131072)
+        except FileNotFoundError: return result
+        try: ledger = json.loads(ledger_raw, object_pairs_hook=_native_pairs)
+        except (ValueError, UnicodeError, RecursionError):
+            raise CustodyError('native-source-sidefile-archives-invalid') from None
+        if (type(ledger) is not dict or set(ledger) != {'schemaVersion', 'kind', 'archives'}
+                or type(ledger['schemaVersion']) is not int or ledger['schemaVersion'] != 1
+                or ledger['kind'] != 'ods-native-source-sidefiles-archives'
+                or type(ledger['archives']) is not dict or not 1 <= len(ledger['archives']) <= 16):
+            raise CustodyError('native-source-sidefile-archives-invalid')
+        for candidate, image in ledger['archives'].items():
+            if (type(candidate) is not str or not _NATIVE_SHA.fullmatch(candidate)
+                    or type(image) is not dict or set(image) != {'directory', 'manifest'}
+                    or type(image['directory']) is not dict or set(image['directory']) != {'inode'}
+                    or not _native_inode(image['directory']['inode']) or not _native_installer_image(image['manifest'])):
+                raise CustodyError('native-source-sidefile-archives-invalid')
+            name = _SIDEFILE_ARCHIVE_PREFIX + candidate
+            directory = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=metadata)
+            try:
+                info = os.fstat(directory)
+                _native_no_acl(directory)
+                if (not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (0, 0, 0o700)
+                        or [info.st_dev, info.st_ino] != image['directory']['inode']
+                        or _native_at_inode(metadata, name) != image['directory']['inode']):
+                    raise CustodyError('native-source-sidefile-archive-changed')
+                expected_names = {'manifest.json', 'context.json', 'restored.json', 'source-sidefiles.json', 'gateway.env'}
+                if set(os.listdir(directory)) != expected_names:
+                    raise CustodyError('native-source-sidefile-archive-changed')
+                manifest_raw, manifest_inode = _native_root_file(directory, 'manifest.json', limit=131072)
+                if {'inode': manifest_inode, 'sha256': hashlib.sha256(manifest_raw).hexdigest()} != image['manifest']:
+                    raise CustodyError('native-source-sidefile-archive-changed')
+                try: value = json.loads(manifest_raw, object_pairs_hook=_native_pairs)
+                except (ValueError, UnicodeError, RecursionError):
+                    raise CustodyError('native-source-sidefile-archive-invalid') from None
+                _native_sidefile_archive_manifest(value, candidate, owner_uid=owner_uid, owner_gid=owner_gid)
+                if value['directory'] != image['directory']:
+                    raise CustodyError('native-source-sidefile-archive-changed')
+                bodies = {}
+                for key in ('context', 'restored'):
+                    wanted = value['authority'][key]
+                    raw, inode = _native_root_file(directory, key + '.json', limit=32 * 1024 * 1024)
+                    if (inode != wanted['inode'] or len(raw) != wanted['size']
+                            or hashlib.sha256(raw).hexdigest() != wanted['sha256']):
+                        raise CustodyError('native-source-sidefile-archive-changed')
+                    bodies[key] = raw
+                for key, wanted in value['files'].items():
+                    raw, inode = _native_root_file(directory, key, gid=wanted['gid'], limit=8192)
+                    if (inode != wanted['inode'] or len(raw) != wanted['size']
+                            or hashlib.sha256(raw).hexdigest() != wanted['sha256']):
+                        raise CustodyError('native-source-sidefile-archive-changed')
+                    bodies[key] = raw
+                _native_sidefile_archive_authority(value, bodies['context'], bodies['restored'], bodies['source-sidefiles.json'])
+                after = os.fstat(directory)
+                _native_no_acl(directory)
+                if ((after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode)) != (0, 0, 0o700)
+                        or (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns)
+                            != (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
+                        or set(os.listdir(directory)) != expected_names or _native_at_inode(metadata, name) != image['directory']['inode']
+                        or _native_root_file(directory, 'manifest.json', limit=131072) != (manifest_raw, manifest_inode)):
+                    raise CustodyError('native-source-sidefile-archive-changed')
+                result['archives'][name] = {'inode': image['directory']['inode'], 'manifest': value,
+                    'manifestImage': image['manifest'], 'manifestSize': len(manifest_raw)}
+            finally:
+                os.close(directory)
+        if _native_root_file(metadata, _SIDEFILE_ARCHIVES, limit=131072) != (ledger_raw, ledger_inode):
+            raise CustodyError('native-source-sidefile-archives-changed')
+        result['ledger'] = {'inode': ledger_inode, 'sha256': hashlib.sha256(ledger_raw).hexdigest()}
+    return result
+
+
+def _native_sidefile_archive_names(view):
+    return {_SIDEFILE_ARCHIVES, *view['archives']} if view['ledger'] is not None else set()
+
+
 def _native_installer_absence_state(bridge, *, qualified_runtime=None, _installer_publication=None, _installer_code_only=None):
     """Fixed file-only Source absence/identity inventory; no file is removed."""
     from pixel_macos_custody import protected_directory
@@ -1955,7 +2133,10 @@ def _native_installer_absence_state(bridge, *, qualified_runtime=None, _installe
     images, identity = {}, None
     with protected_directory(NATIVE_META) as metadata:
         names = {name for name in os.listdir(metadata) if name.startswith(('source-', '.source-', 'native-source-', '.native-source-'))}
-        extra = _native_installer_code_only_names(_installer_code_only)['metadata'] if _installer_code_only is not None else set()
+        archived = native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+        extra = _native_sidefile_archive_names(archived)
+        if _installer_code_only is not None:
+            extra |= _native_installer_code_only_names(_installer_code_only)['metadata']
         if 'source-installer-history.json' in names:
             retained = _native_installer_history_records(bridge)
             extra |= {'source-installer-history.json', *(item['name'] for item in retained),
@@ -2263,10 +2444,17 @@ def native_installer_history_records(selection):
 
 
 def native_installer_history(selection):
+    from pixel_macos_custody import protected_directory
+    extra = set()
+    with protected_directory(NATIVE_META) as metadata:
+        if _native_at_inode(metadata, _SIDEFILE_ARCHIVES) is not None:
+            doc = _native_selected(selection, _publication=True)
+            extra = _native_sidefile_archive_names(native_sidefile_archives(
+                owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid']))
     items = native_installer_history_records(selection)
     if not items:
-        return {'metadata': set(), 'kits': set()}
-    return {'metadata': {'source-installer-history.json', *(item['name'] for item in items),
+        return {'metadata': extra, 'kits': set()}
+    return {'metadata': {*extra, 'source-installer-history.json', *(item['name'] for item in items),
             *(name for item in items for name in item['metadata'])},
         'kits': {name for item in items for name in item['kits']}}
 
@@ -3074,9 +3262,14 @@ def _native_installer_journal(metadata, transaction, context, *, _completed=Fals
     The complete unrelated Core/service rollback contract remains installer
     owned. A Source producer can act only on this complete fixed Source family.
     """
-    import base64
     name = _native_installer_journal_name(metadata, transaction, completed=_completed, _history=_history)
     raw, _inode = _native_root_file(metadata, name, limit=32 * 1024 * 1024)
+    return _native_installer_journal_bytes(raw, transaction, context, _completed=_completed)
+
+
+def _native_installer_journal_bytes(raw, transaction, context, *, _completed=False):
+    """Decode frozen journal bytes, independently of their retained location."""
+    import base64
     try:
         value = json.loads(raw.decode(), object_pairs_hook=_native_pairs)
         if (type(value) is not dict or set(value) != {'schemaVersion', 'currentDigest', 'candidateDigest', 'phase', 'files', 'sourceAddition'}
