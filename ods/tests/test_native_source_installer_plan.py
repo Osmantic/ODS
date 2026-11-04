@@ -43,7 +43,8 @@ def test_normal_migration_plan_binds_actual_source_family_without_creating_autho
     config_path = Path(environment['OPENCLAW_CONFIG_PATH'])
     manifest = json.loads((built.root / 'bundle.json').read_bytes())
     original = json.dumps({'gateway': {'auth': {'token': 'invented-plan-token'}},
-        'plugins': {'load': {'paths': [str(built.root / relative) for relative in manifest['plugins']]},
+        'plugins': {'allow': ['pixel-ods'],
+                    'load': {'paths': [str(built.root / relative) for relative in manifest['plugins']]},
                     'entries': {'pixel-ods': {'enabled': True}}}}).encode()
     config_path.write_bytes(original)
     config_path.chmod(0o600)

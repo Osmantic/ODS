@@ -168,7 +168,7 @@ def test_real_producer_packages_inactive_connections_without_enabling_them(inact
         config.bundle.connection_plugins(root, incomplete)
 
 
-@pytest.mark.parametrize('fault', ['active-omitted', 'unknown-unloaded', 'duplicate', 'metadata-change'])
+@pytest.mark.parametrize('fault', ['active-omitted', 'unknown-unloaded', 'duplicate', 'missing-allow', 'metadata-change'])
 def test_root_candidate_mapping_refuses_unqualified_extra_payloads(inactive, fault):
     arguments, document, _original, _observed = inactive
     digest = config.stage_bundle(**arguments)
@@ -178,6 +178,7 @@ def test_root_candidate_mapping_refuses_unqualified_extra_payloads(inactive, fau
     elif fault == 'unknown-unloaded': document['plugins']['load']['paths'].pop()
     elif fault == 'duplicate':
         manifest['plugins'].append('plugins/4')
+    elif fault == 'missing-allow': document['plugins'].pop('allow')
     else: (root / 'plugins/4/openclaw.plugin.json').write_text('{"id":"unknown"}')
     with pytest.raises((installer.InstallError, installer._bundle.BundleError)):
         installer._configured_bundle_plugins(root, manifest, document)
