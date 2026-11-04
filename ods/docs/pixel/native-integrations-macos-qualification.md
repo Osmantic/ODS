@@ -1,14 +1,22 @@
 # Native Portal integrations qualification
 
-Status: implementation and offline regression coverage; **physical Apple
-Silicon qualification has not been completed**. A passing Linux/WSL test is
-not a launchd, Darwin ACL, Seatbelt, reboot or native process-custody result.
+Status: native lifecycle implementation and owned-file regression coverage;
+**physical Apple Silicon qualification has not been completed**. Linux/WSL
+metadata-driver results do not establish launchd, Darwin ACL, Seatbelt, reboot,
+Metal/model or native process behavior.
 
 This matrix covers the native Portal runtime, scheduling and Coffee integrations.
-Google/Calendar and fixed reviewed apps in Connected apps still depend on the
-Linux/WSL Source Broker; their host relay returns unavailable on macOS. They need
-a native custody/lifecycle/transaction implementation before a Mac connection
-journey can be qualified. Do not treat a pass here as support for those routes.
+The candidate includes the native Source Broker path for Google/Calendar and
+reviewed Connected apps, alongside the Linux/WSL route. Native custody, first
+connection, repeated updates, retained history and retirement now have Linux
+owned-file coverage. The Darwin catalog/relay and these owner journeys still
+require the physical run below; an offline pass is not Mac acceptance.
+
+The previously accepted Windows candidate (`fa2e`) used Source **4.3.46**
+(`bf6db06c`), with 51 installed SDK files and 26 canonical repair receipts. Its real Portal
+Calendar-count and scheduled-task journeys passed. The PR qualification note
+identifies the exact composed candidate and records its final Windows update
+result.
 
 ## First physical run
 
@@ -18,17 +26,32 @@ running. For a first native installation, use a disposable Apple Silicon Mac
 or macOS guest with no existing native Pixel deployment. A second user account
 or a different `ODS_HOME` still shares the system launchd services.
 
-On a Mac that already runs native Pixel, run the two preflights below and
-retain the installation, model and private receipts. The general preflight
-checks the host. The native preflight checks whether an initial installation
-can proceed. If it reports `existing-native-pixel-requires-migration-or-recovery`,
-stop before the initial install step and use the existing-install procedure
-below. The general `ods-macos.sh update` command uses the installed source.
+On a Mac that already runs native Portal, retain the installation, model and
+private receipts and use the existing-install procedure below. The native
+initial-install preflight deliberately reports
+`existing-native-pixel-requires-migration-or-recovery` for an existing deployment;
+that is not an instruction to remove it. The general `ods-macos.sh update`
+command uses the installed source.
+
+Before updating an existing MacBook installation, record the selected model,
+connected accounts, integration choices, existing tasks and retained results.
+Do not retire or reinstall a working installation to perform this test.
 
 For a checkout at `~/src/ODS` and installation at `~/ods`, record the source and
 platform first:
 
 ```sh
+git -C "$HOME/src/ODS" status --short
+```
+
+If there are local edits, stop and preserve them. Replace `QUALIFIED_PR_HEAD`
+below with the reviewed commit supplied in the PR qualification note. Fetch
+the PR and select that revision; a moving branch name is not an acceptance
+identity:
+
+```sh
+git -C "$HOME/src/ODS" fetch origin pull/8293/head
+git -C "$HOME/src/ODS" switch --detach QUALIFIED_PR_HEAD
 git -C "$HOME/src/ODS" rev-parse HEAD
 git -C "$HOME/src/ODS" status --short
 sw_vers
@@ -37,8 +60,11 @@ docker context show
 docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'
 ```
 
-Confirm that the commit matches the qualification note and the checkout is
-clean. Then run these separately, stopping at the first error:
+Record the actual `rev-parse HEAD` output with the results and confirm the
+checkout is clean. Use that recorded revision for the journeys below.
+For an existing installation, use **Update the existing MacBook installation**
+below. On a disposable Mac or guest for a fresh-install test, run these
+separately, stopping at the first error:
 
 ```sh
 ODS_HOME="$HOME/ods" bash "$HOME/src/ODS/ods/install.sh" --pixel --preflight-only
@@ -86,6 +112,60 @@ Record the first failing step, exact error and source commit. Share sanitized
 results, never credentials, account content or private receipt files. Passing
 the initial UI journeys does not replace the remaining physical matrix.
 
+### Update the existing MacBook installation
+
+From the normal owner's terminal, keep Docker Desktop running and invoke the
+reviewed checkout's updater directly:
+
+```sh
+/usr/bin/python3 "$HOME/src/ODS/ods/installers/macos/lib/pixel-native-update.py" \
+    --install-dir "$HOME/ods" --ods-source "$HOME/src/ODS/ods" --prompt-for-sudo
+```
+
+This uses the candidate's packaging and verification helpers. The older
+installed `ods-macos.sh update` does not select an unmerged checkout. Substitute
+the actual installation directory consistently. Preserve any preparation
+directory and private recovery journals. If it stops, record the first error
+before another attempt; do not force a reinstall, delete receipts or reset the
+model/connection state.
+
+After a successful update:
+
+```sh
+ODS_HOME="$HOME/ods" bash "$HOME/ods/ods-macos.sh" status
+```
+
+Record each owner journey separately:
+
+1. Portal loads, the expected installed model answers an ordinary chat, and
+   previous model choices, conversations and integration settings remain.
+2. Settings → Connected apps offers the native Google route. Use standard
+   sign-in if this deployment's Google app is provisioned. Otherwise, Advanced
+   may use a Desktop client the owner already manages. For this test select
+   only Calendar read. A maintainer's local test client is not the official
+   distributed app; Google's production verification remains external work.
+3. Pick an explicit date in the primary calendar and ask Portal for only that
+   day's event count, without names/details or changes. Compare with that same
+   primary calendar and owner-local day. Verify connection status and native
+   Calendar-read evidence separately; a plausible answer alone is not a pass.
+4. Create one clearly named disposable dated task a few minutes ahead, asking
+   for `14 + 8` with no tools or notifications. Close the browser before it is
+   due, then reopen Portal and verify one retained result. Remove only that
+   task through the rendered confirmation. Previous tasks/history must remain.
+5. Complete Notes approval, local MCP, ntfy and configured-app cases below.
+   Disabled or declined tools stay disabled or declined. Approval itself makes
+   no edit; the matching explicit retry consumes it once.
+6. Restart the Mac, start Docker Desktop and recheck saved choices, chat,
+   retained results and the native connection route. Record actual launchd,
+   Seatbelt and ACL behavior separately from Linux metadata-driver evidence.
+
+Share the exact source commit, OS/chip, model, access mode, per-journey result
+and first failure. Do not share client JSON, callback addresses, tokens,
+account contents or private receipts. Fresh install and retirement tests belong
+on a disposable Mac or guest; another user or install directory still shares
+the system services. Results apply to the recorded hardware, model, provider
+and access mode.
+
 ### Scheduled Notes approval on Apple Silicon
 
 Record the source commit, physical model, selected OpenClaw provider and model
@@ -119,11 +199,17 @@ installation as a separate physical qualification.
 
 ## Deployment contract
 
-The new snapshot publishes nine integrations programs and one owner-run
-launchd definition, with no new model tools. Dependency, vendor, image and trust
-pins remain unchanged. The composed PR separately carries 25 managed SDK
-compatibility repairs; their custody and runtime evidence do not replace the
-physical Mac checks below. The controller admits exactly the legacy three-role
+The integrations snapshot publishes nine programs and one owner-run launchd
+definition. The composed Source lifecycle includes a separate protected,
+code-only installer-support capsule and a fixed 111-file runtime Source
+closure. Ordinary discovery selects the actual old owner, gateway, runtime
+and configuration inside the bounded, locked operation; it does not initialize
+the bridge from candidate fields or relax the protected-program check.
+
+The composition retains the genuine Source 4.3.46 bundle/pins and 26 managed
+SDK compatibility repairs. Older Source45 evidence keeps its original identity.
+These custody results do not replace the physical Mac checks below. The
+controller admits exactly the legacy three-role
 or new four-role native service sets, selected from verified complete source
 snapshots. A partial set is refused.
 
@@ -159,13 +245,13 @@ limit claim.
 
 ## Upgrade and preservation
 
-### Prepare an existing native installation
+### Optional preparation without activation
 
-For a candidate in a separate checkout, run the updater **from that checkout**.
-It imports its packaging and verification helpers relative to its own file.
-Passing a newer source directory to an older installed helper can therefore
-select an older set of native services. Compare `git -C "$HOME/src/ODS" rev-parse HEAD`
-with the intended revision, then prepare the existing install.
+The MacBook command above performs the update. To inspect preparation alone,
+use the same reviewed checkout with `--prepare-only`. This does not complete
+the update or its acceptance journeys. Packaging and verification helpers are
+imported relative to that checkout; an older installed helper cannot select
+the candidate merely by receiving a newer source directory.
 
 ```sh
 cd "$HOME/src/ODS/ods"
@@ -192,6 +278,16 @@ ten-file integrations addition, or that addition together with the five
 inspection additions. Rollback restores prior file absence and old policy
 bytes. A protected never-started witness is consumed before bootstrap;
 loaded jobs require normal PID/birth/descendant stop evidence.
+
+Source updates use a separate closed schema 4 family. Before replacing code,
+runtime or kit bindings, the actual old selection either proves strict absence
+or quiesces all recorded Source roles and withdraws the exact old generation.
+The protected context and journal bind that receipt to the candidate. Owner
+model/environment/onboarding bytes are preserved from an admitted current
+snapshot; an old bootstrap receipt is retained as history. Rebinding preserves
+identity and token inode and leaves the new generation inactive until explicit
+connection activation. Repeated updates retain qualified fixed-slot records
+through a finite history ledger rather than overwriting earlier evidence.
 
 Private settings, credentials, delivery journals and notes are not copied
 into public deployment snapshots or deleted during rollback. Native retirement
@@ -221,10 +317,28 @@ its missing random suffix, and completes the exact missing owner ACL steps.
 A complete credential is never replaced or rotated. An already active new
 deployment does not use this path to repair drift.
 
-Automatic quarantine retry coverage concerns the retained integrations
-private-root prefix. The preexisting later full-native archive loop preserves
-interrupted archives for assisted recovery; this change does not claim
-automatic recovery from every possible full-uninstall crash.
+Normal Source retirement has a distinct transaction, protected Source cursor
+and fixed Core move plan. It preserves exact state, token, environment, logs,
+definitions and ledger-derived history by rename, then archives the final
+witness/lock/cursor. Lost acknowledgements resume the same archive and inodes,
+including after Core settings/runtime paths have moved. Source-bearing archives
+are excluded from legacy completed-retirement pruning. Tokens are not copied
+or read to repair custody.
+
+This is not universal stopped-state or reboot recovery. A fresh Source-bearing
+retirement with already-stopped Core services and no same-transaction witness,
+and Source-bearing `--prepare-stopped-recovery`/`--resume-stopped-recovery`, are
+refused. The new ordinary descriptor-only classification also does not admit
+fresh stopped recovery. The pre-existing no-descriptor legacy schema 1/2 assist
+path is unchanged. A reboot does not silently refresh a retirement witness.
+Unknown state, new actors/token, identity drift or cross-filesystem rename
+preserves the data and stops the operation.
+
+History capture is bounded to 1,024 nodes, 32 MiB and depth 16; Source and Core
+move plans each allow at most 1,024 items. Installer history has at most 64
+explicit entries, and pending-initial boot history has at most 16 transactions.
+Reaching a bound preserves/refuses; it does not authorize deletion or a prefix
+allowlist.
 
 ## Required physical matrix
 
@@ -245,7 +359,7 @@ ordinary native installer/update path from that reviewed source revision.
 | Role/replay/refusal | Bare request, wrong key, reused proof, changed arguments/version/role, overlong frame and drip client refused without effects |
 | Local MCP | Homebrew `npx`/`uvx`, tools, call, restart and idle stop work; SIGTERM and watcher failure leave no owned live descendants |
 | Apps and notes | Invented Paperless/Immich/FreshRSS/changedetection data, ntfy, notes, exact approval, task notification and digest recovery |
-| Retirement | Six-role legacy and seven-role new deployments retire with reboot barrier; private data and vault preserved; unknown residue refused |
+| Retirement | Six-role legacy and seven-role new deployments; applicable legacy reboot assist tested separately; ordinary Source retirement and same-transaction cursor retry preserve private data/vault; unknown already-stopped Source refused |
 
 The owner-key ACL ABI follows Apple's public
 [ACL header](https://github.com/apple-oss-distributions/Libc/blob/main/include/sys/acl.h)

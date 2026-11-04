@@ -23,20 +23,25 @@ disconnect at any time.
 ## Where your data lives
 
 - **The Google sign-in** is kept by ODS's Source Broker, in its own system
-  account on this machine (`pixel-source-broker`). Portal, the dashboard and
-  your own account can't read it.
+  account on this machine. Linux/WSL uses `pixel-source-broker`; native macOS
+  uses `_ods_pixel_sources`. Portal, the dashboard and your own account can't
+  read its token file.
 - **Summaries** of your mail and events are stored on this machine and
   refreshed every minute. Portal reads only these.
 - **When Portal runs on a cloud model**, that model's provider sees what Portal
   reads to answer you. On a local model, nothing leaves this machine except the
   sync with Google itself.
 - ODS backups don't include the sign-in. After a restore, the card shows
-  **Reconnect**.
+  **Reconnect**. Native macOS retirement can retain protected state in a
+  system-only recovery archive; this does not transfer a working connection
+  to a new installation.
 
 ## Before you start
 
-- ODS on Linux, or on Windows with WSL. macOS and native Windows show
-  "not available on this system yet".
+- ODS on Linux or Windows with WSL. This candidate also includes the native
+  Apple Silicon macOS route; its physical Mac qualification is still pending.
+  Native Windows without WSL is not supported. For the reviewed MacBook update
+  and acceptance steps, see [native qualification](native-integrations-macos-qualification.md).
 - Have the Google account you want to connect. Standard sign-in uses the
   Google app configured for your ODS installation. Each owner grants access
   to their own account.
@@ -53,9 +58,15 @@ If the wizard says “Standard Google sign-in is not available in this ODS
 installation yet,” the ODS maintainer needs to provide the Google app. You can
 leave the wizard and return when it is available. [ODS Google app setup](../PORTAL-GOOGLE-APP.md)
 
+Native platform support does not publish or verify the official ODS Google
+application. Maintainers still need the production domain, consent and scope
+verification. That release work is separate from connecting an individual
+owner's account.
+
 If you already manage your own Google Desktop app, you can instead open
 **Advanced: use your own Google app**, choose its client JSON file locally,
-and press **Continue to Google**.
+and press **Continue to Google**. Advanced is an owner-managed alternative;
+testing it does not establish readiness of the official distributed client.
 
 When Google finishes, the card says **Connected as you@example.com** and the
 first sync starts. A large mailbox takes a while.
@@ -181,8 +192,14 @@ Plugins don't need Google: they work whether or not Google is connected.
 
 Press **Disconnect** on the card. ODS stops syncing, removes its access at
 Google, and deletes the sign-in, every summary it saved and every calendar change
-still waiting. Portal then stops using your calendar and email. Uninstalling ODS
-does the same.
+still waiting. Portal then stops using your calendar and email.
+
+On Linux/WSL, the ordinary uninstall performs that cleanup. Native macOS
+retirement stops the old Source jobs and preserves protected state for recovery;
+it can retain the token in a system-only archive. If you want to revoke Google's
+grant and remove the active sign-in first, use **Disconnect** before retiring
+that installation. An interrupted retirement preserves its receipts and archive;
+do not delete them as a repair step.
 
 ## Turn connected apps off
 
