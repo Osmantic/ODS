@@ -440,6 +440,28 @@ The historical-mapping fixture initially failed three cases because its mocked
 manifest omitted the required `entries` mapping. Correcting that fixture alone
 restored all 60 cases in its file; production validation stayed unchanged.
 
+The physical command pinned to `22b9d7448` passed the Root Darwin public-link
+smoke: the mode-0700 control was refused to the owner, the new mode-0755 copy
+was readable, and the original link and target remained unchanged. Recovery
+then refused at `pixel-native-integrations-service.py:239`, before the baseline
+gate or another ordinary update. The running service publishes `discovery.json`
+beside its socket, while the preservation validator allowed only `control.sock`.
+The observed directory and both children had the expected owner and modes.
+Code order places the refusal after sealing the capsule and before phase change,
+service stop or moving originals; the next protected read must confirm that prefix.
+
+The correction validates the literal discovery filename through a nofollow FD,
+including owner/group/mode, ACL, link count, size, stable bytes/inode and the
+closed producer format. Expired hints remain preservable; they grant no execution
+authority. Unknown children still fail. The focused Mac packet passed 102 cases,
+including the real producer and malformed/custody cases. A separate actual
+owner-only read reproduced the old refusal and passed the corrected validator,
+preserving the runtime directory, socket and JSON. It made no Root changes.
+The 22b9 CI protected-entry job passed 16 cases, and operation-cache passed all
+74 after the quoting fix. Its planning fixture omitted `plugins.allow`; declaring
+the intended Source-off allowlist fixed both cases, with a separate missing-list
+refusal retained. Physical recovery and the next revision's CI remain pending.
+
 Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
 notifications and reboot acceptance remain pending. The Mac has not been
 restarted for this qualification. With explicit owner approval, a separate local
