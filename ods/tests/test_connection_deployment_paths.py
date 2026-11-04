@@ -6,6 +6,7 @@ No installed path, account, launchctl, provider or model is used.
 """
 # ruff: noqa: E402 -- isolated POSIX imports follow the platform skip and path binding.
 import ast
+import contextvars
 import hashlib
 import importlib.util
 import io
@@ -14,6 +15,7 @@ import os
 from pathlib import Path
 import platform
 import plistlib
+import stat
 import sys
 from types import SimpleNamespace
 
@@ -50,6 +52,80 @@ def private(path, data, mode=0o600):
     return path
 
 
+def metadata_tree_driver(namespace, owner):
+    """Run the production FD traversal with only relocated Darwin observations.
+
+    Private os bindings avoid modifying process-global functions or their
+    concurrent tests. Every call still opens/stats/enumerates the actual tree.
+    RuntimeCustody and bundle.verify retain their separate content/hash proofs.
+    """
+    namespace = Path(namespace)
+    module = load(ROOT / 'bin/pixel_macos_custody.py', 'fixture_metadata_custody')
+    real = SimpleNamespace(**vars(os))
+    local = SimpleNamespace(**vars(os))
+    external = {(info.st_dev, info.st_ino) for path in namespace.parents
+        for info in (real.stat(path, follow_symlinks=False),)}
+    active = contextvars.ContextVar('fixture_metadata_root', default=None)
+    locations, owners = {}, {}
+
+    def location(path, directory=None):
+        path = Path(path)
+        return path if path.is_absolute() else locations[directory] / path
+
+    def opened(path, flags, *args, **kwargs):
+        fd = real.open(path, flags, *args, **kwargs)
+        locations[fd] = location(path, kwargs.get('dir_fd'))
+        active.get()['fds'].add(fd)
+        return fd
+
+    def closed(fd):
+        locations.pop(fd, None)
+        active.get()['fds'].discard(fd)
+        return real.close(fd)
+
+    def observed(info, path):
+        root = active.get()
+        identity = (info.st_dev, info.st_ino)
+        fields = None
+        if root is not None and identity in external and stat.S_ISDIR(info.st_mode):
+            # Exact pre-observed ancestors outside the fixture stand for the
+            # canonical Root parents; /tmp's sticky writable mode is not one.
+            fields = dict(st_uid=0, st_mode=info.st_mode & ~0o022)
+        elif root is not None and (path == namespace or namespace in path.parents):
+            uid = owners.get(identity, info.st_uid)
+            fields = dict(st_uid=0 if uid == owner else uid)
+        if fields is None:
+            return info
+        return SimpleNamespace(**{key: fields.get(key, getattr(info, key))
+            for key in dir(info) if key.startswith('st_')})
+
+    def fstat(fd):
+        return observed(real.fstat(fd), locations[fd])
+
+    def current(path, *args, **kwargs):
+        return observed(real.stat(path, *args, **kwargs), location(path, kwargs.get('dir_fd')))
+
+    local.open, local.close, local.fstat, local.stat = opened, closed, fstat, current
+    module.os = local
+    module._require_no_acl = lambda fd: custody._acl(fd)
+
+    def check(path):
+        path = Path(path)
+        if path != namespace and namespace not in path.parents:
+            raise AssertionError('metadata fixture cannot qualify outside its namespace')
+        custody._parents(path / 'entry')
+        state = {'root': path, 'fds': set()}
+        token = active.set(state)
+        try:
+            return module.protected_tree_metadata(path)
+        except module.CustodyError as error:
+            raise mac_custody.CustodyError(str(error)) from None
+        finally:
+            active.reset(token)
+            assert not state['fds']
+    return SimpleNamespace(check=check, module=module, owners=owners)
+
+
 @pytest.fixture
 def deployment(tmp_path, monkeypatch):
     tmp_path.chmod(0o700)
@@ -72,12 +148,9 @@ def deployment(tmp_path, monkeypatch):
             raise mac_custody.CustodyError('macos-custody-file-too-large')
         return body
 
-    def protected_tree(path):
-        custody._parents(Path(path) / 'entry')
-        custody.tree_manifest(path)
-
+    metadata_tree = metadata_tree_driver(tmp_path, uid)
     monkeypatch.setattr(mac_custody, 'protected_bytes', protected_bytes)
-    monkeypatch.setattr(mac_custody, 'protected_tree_metadata', protected_tree)
+    monkeypatch.setattr(mac_custody, 'protected_tree_metadata', metadata_tree.check)
     bundle_helper = ROOT / 'installers/macos/lib/pixel-runtime-bundle.py'
     bundle_module = load(bundle_helper, '_test_connection_bundle')
     parent = tmp_path / 'runtimes'
@@ -141,7 +214,7 @@ def deployment(tmp_path, monkeypatch):
     bridge.install = tmp_path / 'ods'
     selected = bridge.connection_deployment()
     return SimpleNamespace(bridge=bridge, value=selected, root=root, source=source, config=config, env=env,
-        answers=answers, home=home, state=state, environment=environment, plist=plist)
+        answers=answers, home=home, state=state, environment=environment, plist=plist, metadata_tree=metadata_tree)
 
 
 def verify(f):
@@ -345,3 +418,60 @@ def test_fixture_protected_reader_keeps_production_keyword_limit(deployment):
     for limit in (True, 0, -1, '1'):
         with pytest.raises(mac_custody.CustodyError, match='path-invalid'):
             mac_custody.protected_bytes(path, limit=limit)
+
+
+def test_metadata_gate_uses_real_traversal_without_reading_content(deployment, monkeypatch):
+    driver = deployment.metadata_tree
+    (deployment.root / 'internal-link').symlink_to('runtime/openclaw.mjs')
+    monkeypatch.setattr(custody, 'tree_manifest', lambda *_args, **_kw: pytest.fail('metadata gate hashed content'))
+    monkeypatch.setattr(driver.module.os, 'read', lambda *_args: pytest.fail('metadata gate read content'))
+    monkeypatch.setattr(driver.module.os, 'fdopen', lambda *_args, **_kw: pytest.fail('metadata gate read content'))
+    driver.check(deployment.root)
+
+
+@pytest.mark.parametrize('change', ['mode', 'directory-mode', 'owner', 'acl', 'hardlink', 'outside-link', 'absolute-link'])
+def test_metadata_driver_keeps_root_fd_refusals(deployment, monkeypatch, change):
+    f = deployment
+    path = f.root / 'runtime/openclaw.mjs'
+    if change == 'mode': path.chmod(0o666)
+    elif change == 'directory-mode': path.parent.chmod(0o777)
+    elif change == 'owner':
+        info = path.stat()
+        f.metadata_tree.owners[(info.st_dev, info.st_ino)] = os.getuid() + 1
+    elif change == 'acl':
+        selected = (path.stat().st_dev, path.stat().st_ino)
+        def acl(fd):
+            info = os.fstat(fd)
+            if (info.st_dev, info.st_ino) == selected:
+                raise mac_custody.CustodyError('fixture-acl-present')
+        monkeypatch.setattr(custody, '_acl', acl)
+    elif change == 'hardlink': os.link(path, path.with_suffix('.alias'))
+    elif change == 'outside-link': (f.root / 'escaped').symlink_to('../../source')
+    else: (f.root / 'absolute').symlink_to(path)
+    with pytest.raises((mac_custody.CustodyError, bridge_module.AccessError)):
+        f.metadata_tree.check(f.root)
+
+
+@pytest.mark.parametrize('change', ['same-size-mtime', 'inode-body', 'namespace', 'size'])
+def test_metadata_only_gate_does_not_replace_runtime_or_bundle_hashes(deployment, change):
+    f = deployment
+    with f.bridge._native_runtime_operation():
+        f.bridge.connection_deployment()
+        path = f.root / 'runtime/openclaw.mjs'
+        if change == 'same-size-mtime':
+            before = path.stat()
+            body = path.read_bytes()
+            path.write_bytes(bytes([body[0] ^ 1]) + body[1:])
+            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        elif change == 'inode-body':
+            pending = path.with_suffix('.next')
+            pending.write_bytes(b'changed executable body')
+            pending.chmod(0o644)
+            os.replace(pending, path)
+        elif change == 'namespace': (f.root / 'unexpected.js').write_bytes(b'pass')
+        else: path.write_bytes(path.read_bytes() + b'changed-size')
+        # Valid metadata cannot confer content authority. The actual complete
+        # deployment still rejects the changed hash/inventory on this same tree.
+        f.metadata_tree.check(f.root)
+        with pytest.raises((bridge_module.AccessError, ValueError)):
+            f.bridge.connection_deployment()
