@@ -452,10 +452,12 @@ asks the owner to reconnect. A record that fails validation also leaves them off
 it never fails an install. Without the file, the onboarding contract is the same
 as before connected apps existed.
 
-Connecting happens in Settings, Connected apps ([owner guide](pixel/CONNECTED-APPS.md)).
-`PORTAL_CONNECTED_APPS_ENABLED=false` hides that section. The owner brings their own Google Cloud
-project: a Desktop-app OAuth client whose JSON file they upload. The agent's root
-access coordinator does the rest, without running owner code as root. Each install
+Owners connect Google in **Settings, Connected apps**. Standard sign-in uses
+the deployment's configured Google Desktop OAuth client. Owners who manage a
+client of their own can select its JSON file under **Advanced**. [Owner guide](pixel/CONNECTED-APPS.md)
+
+`PORTAL_CONNECTED_APPS_ENABLED=false` hides that section. The agent's root
+access coordinator handles setup without running owner code as root. Each install
 copies the exact Pixel broker, its systemd units and its environment template
 into a root-owned kit beside the coordinator
 (`/usr/local/libexec/ods-pixel-access/pixel_connections/source-broker-kit`);

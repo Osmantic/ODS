@@ -37,27 +37,25 @@ disconnect at any time.
 
 - ODS on Linux, or on Windows with WSL. macOS and native Windows show
   "not available on this system yet".
-- A Google account, and about ten minutes to set up your own Google sign-in app.
-  ODS has no Google app of its own, so each owner's sign-in stays theirs.
+- Have the Google account you want to connect. Standard sign-in uses the
+  Google app configured for your ODS installation. Each owner grants access
+  to their own account.
 
 ## Connect Google
 
 1. Open **Settings, Connected apps** and press **Connect Google**.
-2. Choose what Portal may use: your calendar, your email summaries, or both.
-   Calendar changes are off unless you turn them on.
-3. Create your Google sign-in app, once. The wizard links each page:
-   1. create a Google Cloud project;
-   2. turn on the Gmail API and the Google Calendar API;
-   3. on the **Branding** page, give the app a name and your email, and choose
-      **External** as its audience;
-   4. on the **Audience** page, press **Publish app**. An app left in Testing is
-      signed out by Google after 7 days;
-   5. on the **Clients** page, create a client of type **Desktop app** and
-      download its JSON file.
-4. Choose that JSON file in the wizard, then press **Continue to Google**.
-5. Sign in to Google and allow access. Google will say it hasn't verified the
-   app. That's expected for your own app: choose **Advanced**, then continue to
-   your app.
+2. Choose what Portal may use. For a read-only Calendar connection, select
+   only **Read your calendar**.
+3. Press **Continue to Google**, choose your account and review the requested
+   access before granting it.
+
+If the wizard says “Standard Google sign-in is not available in this ODS
+installation yet,” the ODS maintainer needs to provide the Google app. You can
+leave the wizard and return when it is available. [ODS Google app setup](../PORTAL-GOOGLE-APP.md)
+
+If you already manage your own Google Desktop app, you can instead open
+**Advanced: use your own Google app**, choose its client JSON file locally,
+and press **Continue to Google**.
 
 When Google finishes, the card says **Connected as you@example.com** and the
 first sync starts. A large mailbox takes a while.
@@ -77,7 +75,7 @@ bar, paste it into the wizard, and press **Finish connecting**.
 | Behind | Google was slow or unreachable; ODS keeps trying. **Sync now** tries at once. |
 | Needs reconnecting | Google no longer accepts the connection: access was removed, your password changed, or your app is still in Testing. **Reconnect**, and publish your app so it doesn't happen weekly. |
 | Missing permission | Google didn't grant everything you chose. **Grant access**, and leave every box checked on Google's screen. |
-| Setup needs a fix | An API your app needs is off, or Google no longer accepts your app's client. The card links the page to fix it. |
+| Setup needs a fix | For standard sign-in, ask the ODS maintainer to check the Google app. If you supplied your own client, check that Google accepts it and the requested APIs are enabled. |
 | Blocked by your administrator | Your Google Workspace administrator blocks the app. Ask them to allow it. |
 | Sync problem | ODS couldn't read the sync status. **Sync now**; if it stays, ask on Discord. |
 
