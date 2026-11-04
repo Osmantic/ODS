@@ -4471,6 +4471,48 @@ def _discover_source_installer_bridge(bridge):
     LaunchdAccessBridge.discover(bridge)
 
 
+def _native_failure_diagnostic(error):
+    """Only fixed categories and verified source locations; never exception data."""
+    categories = [(InstallError, 'InstallError'), (_upgrade.UpgradeError, 'UpgradeError'),
+                  (_bundle.BundleError, 'BundleError')]
+    for name, kind in (('pixel_access_bridge', 'AccessError'),
+                       ('pixel_macos_custody', 'CustodyError'),
+                       ('pixel_connections.custody', 'CustodyError')):
+        cls = getattr(sys.modules.get(name), kind, None)
+        if isinstance(cls, type) and issubclass(cls, BaseException):
+            categories.append((cls, name + '.' + kind))
+    categories.extend(((OSError, 'OSError'), (KeyError, 'KeyError'), (TypeError, 'TypeError'),
+                       (ValueError, 'ValueError'), (subprocess.SubprocessError, 'SubprocessError')))
+    root = HERE.parents[2]
+    category, location, guidance, seen = 'Exception', '', None, set()
+    cause = error
+    for _ in range(10):
+        if not isinstance(cause, BaseException) or id(cause) in seen:
+            break
+        seen.add(id(cause))
+        category = next((label for cls, label in categories if isinstance(cause, cls)), 'Exception')
+        if type(cause) is InstallError and type(cause.code) is str and cause.code in SANDBOX_RETIREMENT_GUIDANCE:
+            guidance = cause.code
+        trace = cause.__traceback__
+        for _ in range(128):
+            if trace is None:
+                break
+            filename = trace.tb_frame.f_code.co_filename
+            module_file = trace.tb_frame.f_globals.get('__file__')
+            try:
+                path = Path(filename).resolve(strict=True)
+                relative = path.relative_to(root).as_posix()
+                if (filename == str(path) and module_file == filename and path.is_file()
+                        and re.fullmatch(r'(?:bin|installers)/[A-Za-z0-9_./-]+\.py', relative)
+                        and type(trace.tb_lineno) is int and 0 < trace.tb_lineno <= 1000000):
+                    location = relative + ':' + str(trace.tb_lineno)
+            except (OSError, ValueError, TypeError, RuntimeError):
+                pass
+            trace = trace.tb_next
+        cause = cause.__cause__
+    return category + (' at ' + location if location else ''), guidance
+
+
 def _recovery_main(argv):
     parser = argparse.ArgumentParser(description='Recover a journaled native runtime update; requires root.')
     parser.add_argument('--owner', required=True)
@@ -4494,9 +4536,10 @@ def _recovery_main(argv):
         print('error: ' + error.code, file=sys.stderr)
         return 1
     except (AccessError, _upgrade.UpgradeError, OSError, ValueError, KeyError, TypeError,
-            subprocess.SubprocessError):
+            subprocess.SubprocessError) as error:
         # Environment/configuration errors can carry credentials in their text.
-        print('error: native-runtime-recovery-failed', file=sys.stderr)
+        detail, _guidance = _native_failure_diagnostic(error)
+        print('error: native-runtime-recovery-failed (' + detail + ')', file=sys.stderr)
         return 1
     print(json.dumps({'operation': 'runtime-recovery', 'status': outcome,
                       'runtimeBundleDigest': args.bundle_digest if outcome == 'active' else args.current_bundle_digest}))
@@ -4617,19 +4660,10 @@ def _migration_main(argv):
         return 1
     except (AccessError, CustodyError, _upgrade.UpgradeError, OSError, ValueError,
             KeyError, TypeError, subprocess.SubprocessError) as error:
-        # Upgrade rollback wraps its cause. Preserve known installer codes, not
-        # arbitrary exception text that could contain environment credentials.
-        cause, detail = error, ''
-        for _ in range(10):
-            if isinstance(cause, InstallError):
-                detail = ' (' + cause.code + ')'
-                break
-            cause = getattr(cause, '__cause__', None)
-            if cause is None:
-                break
-        print('error: native-joint-migration-failed' + detail + '; retain the preparation and protected recovery journal', file=sys.stderr)
-        if isinstance(cause, InstallError) and cause.code in SANDBOX_RETIREMENT_GUIDANCE:
-            print(SANDBOX_RETIREMENT_GUIDANCE[cause.code], file=sys.stderr)
+        detail, guidance = _native_failure_diagnostic(error)
+        print('error: native-joint-migration-failed (' + detail + '); retain the preparation and protected recovery journal', file=sys.stderr)
+        if guidance is not None:
+            print(SANDBOX_RETIREMENT_GUIDANCE[guidance], file=sys.stderr)
         return 1
     public = {'operation': 'native-migration', 'status': outcome,
         'runtimeBundleDigest': args.bundle_digest, 'serviceBundleDigest': args.services_digest}
