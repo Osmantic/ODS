@@ -52,7 +52,9 @@ test('remember asks the owner with a card the chat can show, unless the owner sa
   assert.equal(result.details.status, 'awaiting_user');
   assert.deepEqual(parseQuestions(result.details.questions), [{id: 'memory_save', question: 'Remember this about you? "The owner is vegetarian."',
     options: ['Save', "Don't save", 'Always save without asking']}]);
-  assert.match(result.content[0].text, /Wait for the answer/);
+  // The card waits for the owner, but the reply to their message still comes, without tools.
+  assert.match(result.content[0].text, /never answer it for them/);
+  assert.match(result.content[0].text, /answer the owner's message in plain text/);
   for (const [status, expected] of [['saved', 'Remembered: The owner is vegetarian.'], ['known', 'Already remembered: The owner is vegetarian.']]) {
     const reply = await notes({submit: async () => ({ok: true, status, text: 'The owner is vegetarian.'}), sessionKey: SESSION})
       .execute('2', {action: 'remember', text: 'The owner is vegetarian.'});

@@ -87,7 +87,9 @@ function notesRequest(params) {
 }
 
 // Portal proposes a fact about the owner; unless the owner chose to save without asking, the
-// chat shows a card with the choices and the turn ends there (see integration-memory.mjs).
+// chat shows a card with the choices below Portal's reply (see integration-memory.mjs). The reply
+// itself still comes: told to wait, the small model never answered a question the owner asked
+// (e2e: "Suggest one dinner..." ended with no answer after a proposal).
 async function remember(submit, params, sessionKey, signal, shared) {
   if (answeredTurns(shared).has(chatSession(sessionKey))) {
     return text('The owner has just answered your memory question; this reply only acknowledges it. Save nothing else now.', {status: 'done'});
@@ -102,7 +104,7 @@ async function remember(submit, params, sessionKey, signal, shared) {
   if (reply.status === 'known') return text(`Already remembered: ${reply.text}`, {status: 'done'});
   if (reply.status === 'saved') return text(`Remembered: ${reply.text}`, {status: 'done'});
   const questions = [{id: MEMORY_QUESTION_ID, question: memoryQuestion(reply.text), options: Object.keys(MEMORY_CHOICES)}];
-  return text(`${questions[0].question}\n\nThe owner decides on a card in the chat. Wait for the answer: do not call another tool or answer for the owner.`,
+  return text(`${questions[0].question}\n\nThe owner decides on a card shown below your reply; never answer it for them. Call no other tool now: answer the owner's message in plain text.`,
     {status: 'awaiting_user', questions});
 }
 
