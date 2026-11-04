@@ -2996,6 +2996,305 @@ def _connection_sidefiles(plan):
             os.close(directory)
 
 
+def _sidefile_archive_inode(value):
+    if (type(value) is not list or len(value) != 2
+            or any(type(part) is not int or part <= 0 for part in value)):
+        raise InstallError('native-sidefiles-archive-selection-invalid')
+    return value
+
+
+def _sidefile_archive_rename(source, name, target, destination):
+    """Darwin exclusive rename; never clobber a preserved inode."""
+    import ctypes
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = libc.renameatx_np
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(source, os.fsencode(name), target, os.fsencode(destination), 0x4):
+        raise OSError(ctypes.get_errno(), 'exclusive-sidefile-archive-rename-failed')
+
+
+def _preserve_unbound_sidefiles(plan, authority, *, expected_receipt, expected_gateway, verify):
+    """Preserve only the explicitly selected empty, unbound first-kit failure.
+
+    No original file is copied, rewritten, chowned or deleted. Capsule copies
+    keep the protected recovery authority available after runtime retirement.
+    The immutable manifest precedes every rename; only the final ledger entry
+    makes it committed history. An incomplete unbound directory is refused.
+    This narrow mutator permits only the first archive or its exact replay;
+    it never appends to or prunes other retained histories.
+    """
+    from pixel_macos_custody import protected_directory, _require_no_acl
+    from pixel_connections import custody
+    owner, selection = plan['owner'], plan['runtime_bundle']
+    expected_receipt, expected_gateway = map(_sidefile_archive_inode, (expected_receipt, expected_gateway))
+    candidate, current = selection['digest'], plan['upgrade_qualification']['currentDigest']
+    config = Path(selection['config_path'])
+    names = {'context': 'runtime-upgrade-context-' + candidate + '.json',
+             'restored': 'runtime-upgrade-' + candidate + '.completed.json'}
+    archive_name = 'source-sidefiles-archive-' + candidate
+    ledger_name = 'source-sidefiles-archives.json'
+    bodies = selection['connection_sidefiles']
+    expected_binding = {'schemaVersion': 1, 'kind': 'ods-native-connection-sidefiles',
+        'ownerUid': owner.pw_uid, 'ownerGid': owner.pw_gid, 'configPath': str(config),
+        'bundleSha256': candidate,
+        'files': {name: hashlib.sha256(value.encode()).hexdigest() for name, value in bodies.items()}}
+    empty = hashlib.sha256(b'').hexdigest()
+    if (type(owner.pw_uid) is not int or owner.pw_uid <= 0
+            or type(owner.pw_gid) is not int or owner.pw_gid <= 0
+            or config.parent != RUNTIME_CONFIG_ROOT / str(owner.pw_uid)
+            or set(bodies) != {'gateway.env', 'onboarding.json'}):
+        raise InstallError('native-sidefiles-archive-selection-invalid')
+
+    def fail():
+        raise InstallError('native-sidefiles-archive-image-changed')
+    def encoded(value):
+        return (json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n').encode()
+    def unique(rows):
+        value = {}
+        for key, item in rows:
+            if key in value: fail()
+            value[key] = item
+        return value
+    def inode(directory, name):
+        try: info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError: return None
+        return [info.st_dev, info.st_ino]
+    def image(directory, name, *, gid=0, maximum=32 * 1024 * 1024):
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            before = os.fstat(fd)
+            _require_no_acl(fd)
+            if (not stat.S_ISREG(before.st_mode) or (before.st_uid, before.st_gid) != (0, gid)
+                    or stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1
+                    or before.st_size > maximum): fail()
+            with os.fdopen(fd, 'rb', closefd=False) as stream: body = stream.read(maximum + 1)
+            after = os.fstat(fd)
+            identity = [before.st_dev, before.st_ino]
+            if (len(body) != before.st_size or inode(directory, name) != identity
+                    or (before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
+                       (after.st_size, after.st_mtime_ns, after.st_ctime_ns)): fail()
+            return body, {'inode': identity, 'uid': 0, 'gid': gid, 'mode': 0o600,
+                          'size': len(body), 'sha256': hashlib.sha256(body).hexdigest()}
+        finally: os.close(fd)
+    def directory_info(fd, *, uid, gid):
+        info = os.fstat(fd)
+        _require_no_acl(fd)
+        if (not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (uid, gid)
+                or stat.S_IMODE(info.st_mode) != 0o700): fail()
+        return [info.st_dev, info.st_ino]
+    def write_new(directory, name, body):
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        try:
+            _require_no_acl(fd)
+            with os.fdopen(fd, 'wb', closefd=False) as stream:
+                stream.write(body)
+                stream.flush()
+                os.fsync(fd)
+        finally: os.close(fd)
+        os.fsync(directory)
+
+    with protected_directory(_launchd.ACCESS_STATE) as metadata, protected_directory(RUNTIME_CONFIG_ROOT) as config_root:
+        directory_info(metadata, uid=0, gid=0)
+        parent = os.open(str(owner.pw_uid), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=config_root)
+        try:
+            parent_id = directory_info(parent, uid=owner.pw_uid, gid=owner.pw_gid)
+            if inode(config_root, str(owner.pw_uid)) != parent_id or inode(parent, 'onboarding.json') is not None: fail()
+            prior_ledger = None
+            if inode(metadata, ledger_name) is not None:
+                prior_ledger, _ledger_image = image(metadata, ledger_name, maximum=131072)
+                ledger = json.loads(prior_ledger, object_pairs_hook=unique)
+                if (set(ledger) != {'schemaVersion', 'kind', 'archives'} or ledger['schemaVersion'] != 1
+                        or ledger['kind'] != 'ods-native-source-sidefiles-archives'
+                        or set(ledger['archives']) != {candidate}): fail()
+            else:
+                ledger = {'schemaVersion': 1, 'kind': 'ods-native-source-sidefiles-archives', 'archives': {}}
+            verify(archive_name)
+            created = inode(metadata, archive_name) is None
+            if created:
+                receipt_body, receipt_image = image(metadata, 'source-sidefiles.json', maximum=8192)
+                gateway_body, gateway_image = image(parent, 'gateway.env', gid=owner.pw_gid, maximum=0)
+                if (receipt_image['inode'] != expected_receipt or gateway_image['inode'] != expected_gateway
+                        or gateway_body != b''): fail()
+                receipt = json.loads(receipt_body, object_pairs_hook=unique)
+                if receipt != {**expected_binding, 'parent': parent_id,
+                        'children': {name: {'inode': None, 'ready': False} for name in bodies}}: fail()
+                if (any(type(receipt[key]) is not int for key in ('schemaVersion', 'ownerUid', 'ownerGid'))
+                        or any(child['ready'] is not False for child in receipt['children'].values())
+                        or _sidefile_archive_inode(receipt['parent']) != parent_id): fail()
+                if prior_ledger is not None: fail()
+                os.mkdir(archive_name, 0o700, dir_fd=metadata)
+                os.fsync(metadata)
+            archive = os.open(archive_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=metadata)
+            try:
+                archive_id = directory_info(archive, uid=0, gid=0)
+                if created:
+                    capsule = {}
+                    for kind, name in names.items():
+                        raw, source_image = image(metadata, name)
+                        if raw != authority[kind]: fail()
+                        write_new(archive, kind + '.json', raw)
+                        copied, copied_image = image(archive, kind + '.json')
+                        if copied != raw: fail()
+                        capsule[kind] = {'sourceName': name, 'sourceInode': source_image['inode'],
+                            **{key: copied_image[key] for key in ('inode', 'sha256', 'size')}}
+                    manifest = {'schemaVersion': 1, 'kind': 'ods-native-source-sidefiles-archive',
+                        'currentDigest': current, 'candidateDigest': candidate,
+                        'owner': {'uid': owner.pw_uid, 'gid': owner.pw_gid},
+                        'directory': {'inode': archive_id}, 'parent': {'path': str(config.parent), 'inode': parent_id},
+                        'authority': capsule, 'files': {'source-sidefiles.json': receipt_image, 'gateway.env': gateway_image},
+                        'absent': ['onboarding.json'], 'origin': 'unbound-empty-inherited-group'}
+                    write_new(archive, 'manifest.json', encoded(manifest))
+                manifest_body, manifest_image = image(archive, 'manifest.json', maximum=131072)
+                manifest = json.loads(manifest_body, object_pairs_hook=unique)
+                custody._native_sidefile_archive_manifest(manifest, candidate,
+                    owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+                entry = {'directory': {'inode': archive_id},
+                         'manifest': {key: manifest_image[key] for key in ('inode', 'sha256')}}
+                if prior_ledger is not None:
+                    if ledger['archives'][candidate] != entry: fail()
+                    custody.native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+                if (manifest_body != encoded(manifest) or set(manifest) != {'schemaVersion', 'kind', 'currentDigest',
+                        'candidateDigest', 'owner', 'directory', 'parent', 'authority', 'files', 'absent', 'origin'}
+                        or type(manifest['schemaVersion']) is not int or manifest['schemaVersion'] != 1
+                        or manifest['kind'] != 'ods-native-source-sidefiles-archive'
+                        or (manifest['currentDigest'], manifest['candidateDigest']) != (current, candidate)
+                        or manifest['owner'] != {'uid': owner.pw_uid, 'gid': owner.pw_gid}
+                        or manifest['directory'] != {'inode': archive_id}
+                        or manifest['parent'] != {'path': str(config.parent), 'inode': parent_id}
+                        or manifest['absent'] != ['onboarding.json'] or manifest['origin'] != 'unbound-empty-inherited-group'
+                        or set(manifest['authority']) != set(names)
+                        or set(manifest['files']) != {'source-sidefiles.json', 'gateway.env'}): fail()
+                wanted_gateway = {'inode': expected_gateway, 'uid': 0, 'gid': owner.pw_gid,
+                                  'mode': 0o600, 'size': 0, 'sha256': empty}
+                if manifest['files']['gateway.env'] != wanted_gateway: fail()
+                if manifest['files']['source-sidefiles.json']['inode'] != expected_receipt: fail()
+                for kind, name in names.items():
+                    raw, source_image = image(metadata, name)
+                    copied, copied_image = image(archive, kind + '.json')
+                    expected = {'sourceName': name, 'sourceInode': source_image['inode'],
+                                **{key: copied_image[key] for key in ('inode', 'sha256', 'size')}}
+                    if raw != authority[kind] or copied != raw or manifest['authority'][kind] != expected: fail()
+                if set(os.listdir(archive)) - {'manifest.json', 'context.json', 'restored.json', *manifest['files']}: fail()
+                # Both selected originals (or their already preserved inodes)
+                # must qualify before the first move, including replay.
+                for source, name, gid in ((parent, 'gateway.env', owner.pw_gid), (metadata, 'source-sidefiles.json', 0)):
+                    expected = manifest['files'][name]
+                    before, after = inode(source, name), inode(archive, name)
+                    if before == expected['inode'] and after is None: location = source
+                    elif before is None and after == expected['inode']: location = archive
+                    else: fail()
+                    body, observed = image(location, name, gid=gid, maximum=0 if name == 'gateway.env' else 8192)
+                    if observed != expected: fail()
+                    if name == 'source-sidefiles.json':
+                        custody._native_sidefile_archive_authority(manifest, authority['context'], authority['restored'], body)
+                for source, name, gid in ((parent, 'gateway.env', owner.pw_gid), (metadata, 'source-sidefiles.json', 0)):
+                    verify(archive_name)
+                    if (directory_info(parent, uid=owner.pw_uid, gid=owner.pw_gid) != parent_id
+                            or inode(config_root, str(owner.pw_uid)) != parent_id
+                            or inode(metadata, archive_name) != archive_id or inode(parent, 'onboarding.json') is not None): fail()
+                    before, after = inode(source, name), inode(archive, name)
+                    expected = manifest['files'][name]
+                    if before == expected['inode'] and after is None:
+                        body, observed = image(source, name, gid=gid, maximum=0 if name == 'gateway.env' else 8192)
+                        if observed != expected: fail()
+                        if name == 'source-sidefiles.json' and json.loads(body, object_pairs_hook=unique) != {
+                                **expected_binding, 'parent': parent_id,
+                                'children': {leaf: {'inode': None, 'ready': False} for leaf in bodies}}: fail()
+                        _sidefile_archive_rename(source, name, archive, name)
+                        os.fsync(source)
+                        os.fsync(archive)
+                    elif before is not None or after != expected['inode']: fail()
+                    if inode(source, name) is not None or image(archive, name, gid=gid,
+                            maximum=0 if name == 'gateway.env' else 8192)[1] != expected: fail()
+                if set(os.listdir(archive)) != {'manifest.json', 'context.json', 'restored.json', *manifest['files']}: fail()
+                verify(archive_name)
+                if image(archive, 'manifest.json', maximum=131072)[0] != manifest_body: fail()
+                if candidate in ledger['archives']:
+                    if ledger['archives'][candidate] != entry: fail()
+                else:
+                    if inode(metadata, ledger_name) is not None: fail()
+                    ledger['archives'][candidate] = entry
+                    temporary = '.sidefile-archive-ledger-' + os.urandom(16).hex()
+                    write_new(metadata, temporary, encoded(ledger))
+                    try:
+                        os.link(temporary, ledger_name, src_dir_fd=metadata, dst_dir_fd=metadata, follow_symlinks=False)
+                    finally:
+                        os.unlink(temporary, dir_fd=metadata)
+                        os.fsync(metadata)
+                custody.native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+                verify(archive_name)
+                return archive_name
+            finally: os.close(archive)
+        finally: os.close(parent)
+
+
+def _archive_sidefiles_no_source(bridge, archive_name):
+    """Fresh absent-identity actor census; no pending archive is Source authority."""
+    from pixel_connections import custody
+    import grp
+    if any(os.path.lexists(path) for path in (custody.NATIVE_STATE, custody.NATIVE_ENV,
+            custody.NATIVE_LEGACY_ENV, custody.NATIVE_LOGS, custody.NATIVE_KIT)):
+        raise InstallError('native-sidefiles-archive-source-present')
+    if any(custody._native_ds_record(kind) is not None for kind in ('Users', 'Groups')):
+        raise InstallError('native-sidefiles-archive-source-present')
+    for lookup in (pwd.getpwnam, grp.getgrnam):
+        try: lookup(custody.NATIVE_BROKER)
+        except KeyError: continue
+        raise InstallError('native-sidefiles-archive-source-present')
+    names = {name for name in os.listdir(bridge.state)
+        if name.startswith(('source-', '.source-', 'native-source-', '.native-source-')) or name == 'native-app-enrollment.json'}
+    if names - {'source-sidefiles.json', 'source-sidefiles-archives.json', archive_name}:
+        raise InstallError('native-sidefiles-archive-source-present')
+    raw = bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10)
+    if (not raw.startswith('system = {') or not raw.rstrip().endswith('}')
+            or len(raw) > 1024 * 1024 or custody.NATIVE_LABEL in raw):
+        raise InstallError('native-sidefiles-archive-source-present')
+    processes = bridge.command(['/bin/ps', '-axo', 'pid=,uid='], timeout=10)
+    seen = set()
+    for line in processes.splitlines():
+        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+([0-9]+)\s*', line)
+        if match is None or int(match[1]) in seen:
+            raise InstallError('native-sidefiles-archive-census-unavailable')
+        seen.add(int(match[1]))
+    if not seen or len(processes) > 1024 * 1024:
+        raise InstallError('native-sidefiles-archive-census-unavailable')
+
+
+def archive_sidefiles(*, current_digest, candidate_digest, owner_name, expected_receipt, expected_gateway):
+    """Explicit preservation under the original controller lock, never bootstrap."""
+    if sys.platform != 'darwin' or os.geteuid() != 0: raise InstallError('macos-root-install-required')
+    from pixel_macos_custody import protected_bytes
+    bridge = _recovery_bridge(current_digest=current_digest, candidate_digest=candidate_digest, owner_name=owner_name)
+    selection = dict(current_digest=current_digest, candidate_digest=candidate_digest, owner_name=owner_name, completed=True)
+    with bridge.locked(), bridge.bounded(900):
+        plan, journal, records = _load_upgrade_recovery(**selection)
+        _verify_recovery_bindings(plan, records)
+        proof = journal.value.get('sourceAddition', {}).get('proof', {})
+        if (journal.value['phase'] != 'restored' or plan.get('source_lifecycle', {}).get('mode') != 'absent'
+                or proof.get('kit') is not None or proof.get('identity') != {'kind': 'absent'}
+                or proof.get('metadata') != {}):
+            raise InstallError('native-sidefiles-archive-origin-unqualified')
+        authority_paths = {'context': _launchd.ACCESS_STATE / ('runtime-upgrade-context-' + candidate_digest + '.json'),
+                           'restored': journal.path}
+        authority = {kind: protected_bytes(path, limit=_upgrade.JOURNAL_LIMIT) for kind, path in authority_paths.items()}
+        before = next(item['before'] for item in records if item['path'] == str(_destination(ACCESS_FILES['config'])))
+        old = _bridge_from_recovery_plan(dict(plan, access_settings=json.loads(before)), owner_name=owner_name)
+        with old.bounded(900):
+            def verify(archive_name):
+                fresh_plan, fresh_journal, fresh_records = _load_upgrade_recovery(**selection)
+                if (fresh_plan != plan or fresh_journal.value != journal.value or fresh_records != records
+                        or any(protected_bytes(path, limit=_upgrade.JOURNAL_LIMIT) != authority[kind]
+                               for kind, path in authority_paths.items())):
+                    raise InstallError('native-sidefiles-archive-authority-changed')
+                _verify_recovery_bindings(plan, records)
+                _verify_retirement_live(plan, records)
+                _discover_source_installer_bridge(old)
+                _archive_sidefiles_no_source(old, archive_name)
+            return _preserve_unbound_sidefiles(plan, authority, expected_receipt=expected_receipt,
+                expected_gateway=expected_gateway, verify=verify)
+
+
 def _preflight_source_publication(plan):
     selection = plan.get('runtime_bundle')
     if not selection or selection.get('connection_sidefiles') is None:
@@ -4607,6 +4906,36 @@ def _retirement_snapshots(*, current_digest, candidate_digest, history_digest=No
     return snapshots
 
 
+def _sidefiles_archive_main(argv):
+    parser = argparse.ArgumentParser(description='Preserve an explicitly selected unbound first-kit sidefile; requires root.',
+                                     allow_abbrev=False)
+    for name in ('owner', 'current-bundle-digest', 'bundle-digest', 'expected-receipt-inode', 'expected-gateway-inode'):
+        parser.add_argument('--' + name, required=True)
+    args = parser.parse_args(argv)
+    from pixel_access_bridge import AccessError
+    from pixel_macos_custody import CustodyError
+    from pixel_connections.custody import CustodyError as SourceCustodyError
+    try:
+        def selected_inode(value):
+            if type(value) is not str or not re.fullmatch(r'[1-9][0-9]{0,19}:[1-9][0-9]{0,19}', value):
+                raise InstallError('native-sidefiles-archive-selection-invalid')
+            return _sidefile_archive_inode([int(part) for part in value.split(':')])
+        archive = archive_sidefiles(current_digest=args.current_bundle_digest, candidate_digest=args.bundle_digest,
+            owner_name=args.owner, expected_receipt=selected_inode(args.expected_receipt_inode),
+            expected_gateway=selected_inode(args.expected_gateway_inode))
+    except InstallError as error:
+        print('error: ' + error.code, file=sys.stderr)
+        return 1
+    except (AccessError, CustodyError, SourceCustodyError, _upgrade.UpgradeError, OSError, ValueError, KeyError, TypeError,
+            subprocess.SubprocessError) as error:
+        detail, _guidance = _native_failure_diagnostic(error)
+        print('error: native-sidefiles-archive-failed (' + detail + ')', file=sys.stderr)
+        return 1
+    print(json.dumps({'operation': 'sidefiles-archive', 'status': 'preserved-unbound',
+                      'candidateDigest': args.bundle_digest, 'archive': archive}))
+    return 0
+
+
 def _retirement_main(argv):
     parser = argparse.ArgumentParser(description='Archive a verified restored runtime attempt; requires root.')
     parser.add_argument('--owner', required=True)
@@ -4705,6 +5034,9 @@ def main(argv=None):
     if argv and argv[0] == 'retire-runtime':
         sys.path.insert(0, str(HERE.parents[2] / 'bin'))
         return _retirement_main(argv[1:])
+    if argv and argv[0] == 'archive-sidefiles':
+        sys.path.insert(0, str(HERE.parents[2] / 'bin'))
+        return _sidefiles_archive_main(argv[1:])
     if argv and argv[0] == 'recover-runtime':
         sys.path.insert(0, str(HERE.parents[2] / 'bin'))
         return _recovery_main(argv[1:])
@@ -4851,7 +5183,7 @@ def _protected_cli(argv):
     if sys.platform != 'darwin' or os.geteuid() != 0 or any(flag in argv for flag in ('--help', '-h')):
         return None
     subcommand = argv[0] if argv else None
-    live_commands = ('migrate-native', 'recover-runtime', 'retire-runtime', 'repair-controller')
+    live_commands = ('migrate-native', 'recover-runtime', 'retire-runtime', 'repair-controller', 'archive-sidefiles')
     if subcommand not in live_commands and not any(flag in argv for flag in
             ('--install', '--activate-upgrade', '--verify-initial')):
         return None
