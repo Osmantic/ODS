@@ -2239,7 +2239,7 @@ def _native_installer_history_records(bridge):
             if custody_sha != entry['runtime']['custodySha256']:
                 raise CustodyError('native-source-installer-history-runtime-changed')
             publisher = _native_installer_old_publisher({'transaction': entry['transaction'], 'files': records,
-                'proof': {'runtime': {'custodySha256': custody_sha}}})
+                'proof': {'runtime': {'custodySha256': custody_sha}}}, _bridge=bridge)
             for fixed, image in entry['artifacts'].items():
                 item = _native_installer_history_artifact(bridge, publisher, metadata, kits, fixed, image, entry['runtime'])
                 if entry['phase'] == 'committed' and item['name'] != image['name']:
@@ -2448,7 +2448,7 @@ def native_installer_code_only_kit_authority(selection, *, transaction, proof, _
             raise CustodyError('native-source-installer-code-only-publication-invalid')
         old_authority = {'transaction': transaction, 'files': records,
             'proof': {'runtime': {'custodySha256': proof['oldRuntimeCustodySha256']}}}
-        old_publisher = _native_installer_old_publisher(old_authority)
+        old_publisher = _native_installer_old_publisher(old_authority, _bridge=selection.bridge)
         descriptor = json.loads(next(item['before'] for item in records if item['path'] == str(NATIVE_RUNTIME_DESCRIPTOR)), object_pairs_hook=_native_pairs)
         old_component = old_publisher.bundle_payloads(Path(proof['runtimeRoot']).parent,
             ref=old_publication['sourceRef'], python=descriptor['hostPython'], protected=True)
@@ -2659,7 +2659,7 @@ def native_installer_code_only_history(selection):
         old_runtime = {'deploymentSha256': old_pub['deploymentSha256'], 'custodySha256': proof['oldRuntimeCustodySha256'],
             'bundleSha256': transaction['currentDigest'], 'sourceRef': old_pub['sourceRef']}
         old_publisher = _native_installer_old_publisher({'transaction': transaction, 'files': records,
-            'proof': {'runtime': {'custodySha256': proof['oldRuntimeCustodySha256']}}})
+            'proof': {'runtime': {'custodySha256': proof['oldRuntimeCustodySha256']}}}, _bridge=selection.bridge)
         descriptor = json.loads(next(item['before'] for item in records if item['path'] == str(NATIVE_RUNTIME_DESCRIPTOR)), object_pairs_hook=_native_pairs)
         old_component = old_publisher.bundle_payloads(Path(proof['runtimeRoot']).parent,
             ref=old_pub['sourceRef'], python=descriptor['hostPython'], protected=True)
@@ -3225,7 +3225,7 @@ def _native_installer_live_images(records):
             raise CustodyError('native-source-installer-file-image-changed')
 
 
-def _native_installer_old_publisher(authority):
+def _native_installer_old_publisher(authority, *, _bridge=None):
     """Qualify immutable old Source independently of mixed live host files."""
     import importlib.util
     from pixel_provider.runtime_custody import digest, tree_manifest
@@ -3246,12 +3246,17 @@ def _native_installer_old_publisher(authority):
                 or tree_manifest(descriptor['sourceRoot']) != manifest['source']):
             raise ValueError()
         path = Path(descriptor['sourceRoot']) / 'installers/macos/lib/pixel-native-source-broker.py'
-        protected_bytes(path, limit=2 * 1024 * 1024)
+        body = protected_bytes(path, limit=2 * 1024 * 1024)
     except (KeyError, TypeError, ValueError, UnicodeError, RecursionError):
         raise CustodyError('native-source-installer-old-runtime-unqualified') from None
     spec = importlib.util.spec_from_file_location('qualified_native_source_installer_old_publisher', path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    from pixel_access_bridge import LaunchdAccessBridge, _native_runtime_code
+    operation = LaunchdAccessBridge._native_runtime_lease(_bridge) if _bridge is not None else None
+    if operation is None:
+        spec.loader.exec_module(module)
+    else:
+        exec(_native_runtime_code(operation, path, body), module.__dict__)
     return module
 
 
@@ -3318,7 +3323,7 @@ def _native_installer_withdrawal_state(bridge, receipt, *, transaction, _rebind=
         authority = {'transaction': dict(transaction), 'intent': context['source_lifecycle'], 'owner': context['owner'],
             'phase': journal['phase'], 'files': records, 'proof': intent, 'receipt': journal['sourceAddition'].get('receipt')}
         _native_installer_live_images(records)
-        publisher = _native_installer_old_publisher(authority)
+        publisher = _native_installer_old_publisher(authority, _bridge=bridge)
         parent_name = 'source-environment-generation.json'
         if _rebind is not None:
             retained = 'source-environment-generation-' + receipt['withdrawal'] + '.json'

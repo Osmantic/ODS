@@ -34,8 +34,8 @@ def second_prepared(first_target, monkeypatch):
     # All old immutable components retain their actual inventory/digest proof.
     # Only the Apple UID/GID observation of these relocated QA files differs.
     actual_loader = c._native_installer_old_publisher
-    def load(authority):
-        module = actual_loader(authority)
+    def load(authority, **kwargs):
+        module = actual_loader(authority, **kwargs)
         descriptor = json.loads(next(item['before'] for item in authority['files']
             if item['path'] == str(c.NATIVE_RUNTIME_DESCRIPTOR)))
         component = Path(descriptor['runtimeRoot']).parent / 'native-source'
@@ -223,8 +223,8 @@ def test_second_connected_installer_rebind_slot_rollover_and_withdrawal_preserve
     # Reuse two independently verified canonical bundles, now with an actual
     # admitted connected owner and a broker token whose body must stay unread.
     loader = c._native_installer_old_publisher
-    def load(authority):
-        module = loader(authority)
+    def load(authority, **kwargs):
+        module = loader(authority, **kwargs)
         descriptor = json.loads(next(item['before'] for item in authority['files'] if item['path'] == str(c.NATIVE_RUNTIME_DESCRIPTOR)))
         component = Path(descriptor['runtimeRoot']).parent / 'native-source'
         read = module._read_at

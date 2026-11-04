@@ -27,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import CodeType
 from urllib.parse import urlsplit
 import pixel_access_protocol as protocol
 from pixel_gateway_service import LaunchdGatewayService, SystemdGatewayService
@@ -2519,14 +2520,15 @@ def _native_source_deadline_chain(scope):
 
 
 class _NativeRuntimeOperation:
-    """Private hash-cache lease; never deployment or execution authority."""
-    __slots__ = ('bridge', 'custody', 'thread', 'active', 'seal', 'bundle_root')
+    """Private immutable-data lease; never deployment or execution authority."""
+    __slots__ = ('bridge', 'custody', 'thread', 'active', 'seal', 'bundle_root', 'code')
 
     def __init__(self, bridge, custody):
         self.bridge, self.custody = bridge, custody
         self.thread, self.active = threading.current_thread(), True
         self.seal = _NATIVE_RUNTIME_OPERATION_SEAL
         self.bundle_root = None
+        self.code = {}
 
 
 def _native_runtime_bundle_cache(operation, root):
@@ -2539,6 +2541,41 @@ def _native_runtime_bundle_cache(operation, root):
             or type(operation.custody._cache) is not dict):
         raise AccessError('provider-runtime-operation-unqualified')
     return operation.custody._cache
+
+
+def _native_runtime_code(operation, path, body):
+    """Compile freshly protected helper bytes; never cache qualification or globals.
+
+    Both callers still prove the current Source and read the complete helper on
+    every call. The cache only avoids parsing those same bytes again, within the
+    exact active Root lease. Its two fixed helper families may span old bundles.
+    """
+    if (type(operation) is not _NativeRuntimeOperation
+            or type(operation.bridge) is not LaunchdAccessBridge
+            or LaunchdAccessBridge._native_runtime_lease(operation.bridge) is not operation
+            or _NATIVE_RUNTIME_OPERATION.get() is not operation
+            or type(operation.code) is not dict):
+        raise AccessError('provider-runtime-operation-unqualified')
+    path = Path(path)
+    if (not path.is_absolute() or path.resolve(strict=True) != path
+            or path.parts[-4:-1] != ('installers', 'macos', 'lib')
+            or path.name not in ('pixel-runtime-bundle.py', 'pixel-native-source-broker.py')
+            or type(body) is not bytes):
+        raise AccessError('provider-runtime-operation-unqualified')
+    key = (str(path), hashlib.sha256(body).digest(), sys.flags.optimize)
+    code = operation.code.get(key)
+    if code is not None:
+        if type(code) is not CodeType or code.co_filename != str(path):
+            raise AccessError('provider-runtime-operation-unqualified')
+        return code
+    code = compile(body, str(path), 'exec', flags=0, dont_inherit=True, optimize=sys.flags.optimize)
+    # At most eight successful compilations, each from at most 2 MiB of source.
+    # Never retain failures, source bytes, modules, globals or mutable results.
+    if len(body) <= 2 * 1024 * 1024:
+        if len(operation.code) >= 8:
+            operation.code.clear()
+        operation.code[key] = code
+    return code
 
 
 class LaunchdAccessBridge(SystemdAccessBridge):
@@ -2587,7 +2624,7 @@ class LaunchdAccessBridge(SystemdAccessBridge):
 
     @contextlib.contextmanager
     def _native_runtime_operation(self):
-        """Reuse verified hashes only within this exact Root bridge operation.
+        """Reuse verified hashes and compiled code within this exact Root operation.
 
         An explicit scope may also cover initial publication outside bounded().
         It adds no deadline or authority; every inspect still qualifies files.
@@ -2602,9 +2639,10 @@ class LaunchdAccessBridge(SystemdAccessBridge):
             yield
         finally:
             # Context copies can retain this object after reset. Revoke first,
-            # then discard hashes rather than letting a later operation reuse it.
+            # then discard caches rather than letting a later operation reuse them.
             lease.active = False
             lease.custody._cache.clear()
+            lease.code.clear()
             _NATIVE_RUNTIME_OPERATION.reset(token)
 
     @contextlib.contextmanager

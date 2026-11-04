@@ -131,10 +131,14 @@ def _native_bundle_plugins(runtime, *, _operation=None):
         _native_runtime_bundle_cache(_operation, root)
     protected_tree_metadata(root)
     helper = Path(runtime['sourceRoot']) / 'installers/macos/lib/pixel-runtime-bundle.py'
-    protected_bytes(helper)
+    helper_body = protected_bytes(helper)
     spec = importlib.util.spec_from_file_location('_connection_bundle', helper)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    if _operation is None:
+        spec.loader.exec_module(module)
+    else:
+        from pixel_access_bridge import _native_runtime_code
+        exec(_native_runtime_code(_operation, helper, helper_body), module.__dict__)
     # Older protected helpers remain cold. Inspect the trusted signature, never
     # catch TypeError and retry a call that may already have done real work.
     import inspect

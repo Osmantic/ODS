@@ -30,6 +30,7 @@ from pixel_connections import custody as source
 from pixel_provider import runtime_custody as runtime
 from test_connection_deployment_paths import deployment  # noqa: F401
 _actual_tree_metadata = mac.protected_tree_metadata
+_actual_protected_bytes = mac.protected_bytes
 
 
 @pytest.fixture
@@ -402,3 +403,207 @@ def test_subclass_remains_cold_and_systemd_bounded_does_not_create_native_scope(
     linux = object.__new__(bridge.SystemdAccessBridge)
     with linux.bounded(30):
         assert bridge._NATIVE_RUNTIME_OPERATION.get() is None
+
+
+@pytest.fixture
+def code_loaders(native_runtime, monkeypatch):
+    """Real FD reader; only external directory UID/mode observations are modeled."""
+    import builtins
+    n = native_runtime
+    from pixel_connections import planner
+    actual_compile, actual_module = builtins.compile, planner.importlib.util.module_from_spec
+    actual_verify_fd, actual_tree = mac._verify_fd, mac.protected_tree_metadata
+    # The existing fixture models Root metadata below its disposable roots.
+    # /tmp and ancestors outside that namespace are not installation custody.
+    ancestors = {(path.stat().st_dev, path.stat().st_ino)
+        for root in (n.f.source, n.f.root) for path in root.parents}
+    def verify_fd(fd, *, directory):
+        info = os.fstat(fd)
+        if directory and (info.st_dev, info.st_ino) in ancestors:
+            mac._require_no_acl(fd)
+            return info
+        return actual_verify_fd(fd, directory=directory)
+    monkeypatch.setattr(mac, '_verify_fd', verify_fd)
+    trace = SimpleNamespace(compiles=[], modules=[], reads=[], trees=[])
+    def compile_body(body, filename, *args, **kwargs):
+        if str(filename).startswith(str(n.f.source) + '/'):
+            trace.compiles.append(str(filename))
+        return actual_compile(body, filename, *args, **kwargs)
+    def module(spec):
+        result = actual_module(spec)
+        if spec.name in ('_connection_bundle', 'qualified_native_source_installer_old_publisher'):
+            trace.modules.append(result)
+        return result
+    def read(path, **kwargs):
+        trace.reads.append(Path(path))
+        return _actual_protected_bytes(path, **kwargs)
+    def tree(path):
+        trace.trees.append(Path(path))
+        return actual_tree(path)
+    monkeypatch.setattr(builtins, 'compile', compile_body)
+    monkeypatch.setattr(planner.importlib.util, 'module_from_spec', module)
+    monkeypatch.setattr(mac, 'protected_bytes', read)
+    monkeypatch.setattr(mac, 'protected_tree_metadata', tree)
+    return n, trace
+
+
+def test_planner_code_hit_keeps_fresh_reads_tree_proof_and_module_globals(code_loaders):
+    n, trace = code_loaders
+    path = n.f.source / 'installers/macos/lib/pixel-runtime-bundle.py'
+    with n.f.bridge._native_runtime_operation():
+        first = n.f.bridge.connection_deployment()
+        trace.modules[-1].fixture_poison = object()
+        before = (trace.reads.count(path), len(trace.trees), len(n.acl_reads))
+        assert n.f.bridge.connection_deployment() == first
+        assert trace.compiles.count(str(path)) == 1
+        assert trace.reads.count(path) > before[0] and len(trace.trees) > before[1]
+        assert len(n.acl_reads) > before[2]
+        assert trace.modules[-2] is not trace.modules[-1]
+        assert not hasattr(trace.modules[-1], 'fixture_poison')
+        module = trace.modules[-1]
+        assert module.__file__ == str(path) and module.__spec__.origin == str(path)
+        assert module.__loader__ is module.__spec__.loader and module.__package__ == module.__spec__.parent
+
+
+@pytest.mark.parametrize('change', ['bytes', 'inode', 'acl', 'mode', 'symlink', 'missing'])
+def test_planner_code_hit_cannot_hide_fresh_source_drift(code_loaders, change):
+    n, trace = code_loaders
+    path = n.f.source / 'installers/macos/lib/pixel-runtime-bundle.py'
+    with n.f.bridge._native_runtime_operation():
+        n.f.bridge.connection_deployment()
+        compiled = len(trace.compiles)
+        if change == 'bytes':
+            info = path.stat()
+            path.write_bytes(path.read_bytes().replace(b'import os', b'import io', 1))
+            os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+        elif change == 'inode':
+            pending = path.with_suffix('.next')
+            pending.write_bytes(path.read_bytes())
+            pending.chmod(0o666)
+            os.replace(pending, path)
+        elif change == 'acl':
+            n.rejected_acls.add(path)
+        elif change == 'mode':
+            path.chmod(0o666)
+        elif change == 'symlink':
+            target = path.with_suffix('.moved')
+            path.rename(target)
+            path.symlink_to(target)
+        else:
+            path.unlink()
+        with pytest.raises((bridge.AccessError, mac.CustodyError, OSError)):
+            n.f.bridge.connection_deployment()
+        assert len(trace.compiles) == compiled
+
+
+def old_publisher_authority(n, monkeypatch):
+    path = n.f.source / 'installers/macos/lib/pixel-native-source-broker.py'
+    path.write_bytes((ROOT / 'installers/macos/lib/pixel-native-source-broker.py').read_bytes())
+    path.chmod(0o644)
+    descriptor = json.loads(n.descriptor.read_bytes())
+    manifest = json.loads(n.manifest.read_bytes())
+    manifest['source'] = runtime.tree_manifest(n.f.source)
+    body = json.dumps(manifest).encode()
+    descriptor['manifestSha256'] = hashlib.sha256(body).hexdigest()
+    monkeypatch.setattr(source, 'NATIVE_RUNTIME_DESCRIPTOR', n.descriptor)
+    monkeypatch.setattr(source, 'NATIVE_RUNTIME_MANIFEST', n.manifest)
+    monkeypatch.setattr(source, 'NATIVE_RUNTIMES', n.f.root.parent)
+    authority = {'files': [{'path': str(n.descriptor), 'before': json.dumps(descriptor).encode()},
+                          {'path': str(n.manifest), 'before': body}],
+        'proof': {'runtime': {'custodySha256': runtime.digest([descriptor, manifest])}},
+        'transaction': {'currentDigest': n.f.root.name}}
+    return path, authority
+
+
+def test_old_publisher_code_hit_requalifies_immutable_proof_and_new_globals(code_loaders, monkeypatch):
+    n, trace = code_loaders
+    path, authority = old_publisher_authority(n, monkeypatch)
+    actual_tree, proofs = runtime.tree_manifest, []
+    def tree(root, *args, **kwargs):
+        proofs.append(Path(root))
+        return actual_tree(root, *args, **kwargs)
+    monkeypatch.setattr(runtime, 'tree_manifest', tree)
+    with n.f.bridge._native_runtime_operation():
+        first = source._native_installer_old_publisher(authority, _bridge=n.f.bridge)
+        first.fixture_poison = object()
+        before = (trace.reads.count(path), len(proofs), len(n.acl_reads))
+        second = source._native_installer_old_publisher(authority, _bridge=n.f.bridge)
+        assert second is not first and not hasattr(second, 'fixture_poison')
+        assert second.__file__ == str(path) and second.__spec__.origin == str(path)
+        assert second.__loader__ is second.__spec__.loader and second.__package__ == second.__spec__.parent
+        assert trace.compiles.count(str(path)) == 1
+        assert trace.reads.count(path) > before[0] and len(proofs) > before[1] and len(n.acl_reads) > before[2]
+        authority['proof']['runtime']['custodySha256'] = '0' * 64
+        with pytest.raises(source.CustodyError, match='old-runtime-unqualified'):
+            source._native_installer_old_publisher(authority, _bridge=n.f.bridge)
+        assert trace.compiles.count(str(path)) == 1
+
+
+@pytest.mark.parametrize('change', ['bytes', 'inode', 'acl', 'mode', 'symlink', 'missing'])
+def test_old_publisher_code_hit_cannot_hide_current_source_drift(code_loaders, monkeypatch, change):
+    n, trace = code_loaders
+    path, authority = old_publisher_authority(n, monkeypatch)
+    with n.f.bridge._native_runtime_operation():
+        source._native_installer_old_publisher(authority, _bridge=n.f.bridge)
+        if change == 'bytes':
+            path.write_bytes(path.read_bytes() + b'\n# current unexpected body\n')
+        elif change == 'inode':
+            pending = path.with_suffix('.next')
+            pending.write_bytes(path.read_bytes())
+            pending.chmod(0o666)
+            os.replace(pending, path)
+        elif change == 'acl':
+            n.rejected_acls.add(path)
+        elif change == 'mode':
+            path.chmod(0o666)
+        elif change == 'symlink':
+            target = path.with_suffix('.moved')
+            path.rename(target)
+            path.symlink_to(target)
+        else:
+            path.unlink()
+        with pytest.raises((source.CustodyError, bridge.AccessError, mac.CustodyError, OSError)):
+            source._native_installer_old_publisher(authority, _bridge=n.f.bridge)
+        assert trace.compiles.count(str(path)) == 1
+
+
+@pytest.mark.parametrize('loader', ['planner', 'old-publisher'])
+def test_safe_new_inode_rechecks_custody_without_inventing_inode_pinning(code_loaders, monkeypatch, loader):
+    n, trace = code_loaders
+    path = n.f.source / 'installers/macos/lib/pixel-runtime-bundle.py'
+    if loader == 'old-publisher':
+        path, authority = old_publisher_authority(n, monkeypatch)
+        call = lambda: source._native_installer_old_publisher(authority, _bridge=n.f.bridge)
+    else:
+        call = n.f.bridge.connection_deployment
+    with n.f.bridge._native_runtime_operation():
+        first = call()
+        old_inode, before_reads, before_acl = path.stat().st_ino, trace.reads.count(path), len(n.acl_reads)
+        pending = path.with_suffix('.next')
+        pending.write_bytes(path.read_bytes())
+        pending.chmod(0o644)
+        os.replace(pending, path)
+        assert path.stat().st_ino != old_inode
+        second = call()
+        if loader == 'planner':
+            assert second == first
+        else:
+            assert second is not first
+        assert trace.reads.count(path) > before_reads and len(n.acl_reads) > before_acl
+        assert trace.compiles.count(str(path)) == 1
+
+
+def test_warm_code_does_not_bypass_current_operation_deadline(code_loaders, monkeypatch):
+    n, trace = code_loaders
+    clock = [100.0]
+    monkeypatch.setattr(bridge.time, 'monotonic', lambda: clock[0])
+    with pytest.raises(bridge.AccessError, match='operation-deadline-exceeded'):
+        with n.f.bridge.bounded(30):
+            n.f.bridge.connection_deployment()
+            compiled, modules = len(trace.compiles), len(trace.modules)
+            lease = n.f.bridge._native_runtime_lease()
+            clock[0] += 31
+            with pytest.raises(bridge.AccessError, match='operation-deadline-exceeded'):
+                n.f.bridge.connection_deployment()
+            assert len(trace.modules) == modules
+    assert len(trace.compiles) == compiled and not lease.active and lease.code == {}

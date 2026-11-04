@@ -26,8 +26,8 @@ def old_component_owner_observation(first_target, monkeypatch):
     """Only the immutable old component's Apple UID/GID observation differs."""
     original = c._native_installer_old_publisher
     component = Path(first_target.absence['runtimeRoot']).parent / 'native-source'
-    def load(authority):
-        module = original(authority)  # Actual old Root journal/runtime proof.
+    def load(authority, **kwargs):
+        module = original(authority, **kwargs)  # Actual old Root journal/runtime proof.
         read = module._read_at
         def old_read(directory, name, **kwargs):
             if Path(os.readlink('/proc/self/fd/' + str(directory))) == component:
