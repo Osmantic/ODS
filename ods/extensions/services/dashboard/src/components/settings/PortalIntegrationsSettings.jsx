@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import McpServerCard from './McpServerCard'
 import UnsavedIntegrationsNavigation from './UnsavedIntegrationsNavigation'
 import PortalAppsSettings from './PortalAppsSettings'
-import { HOME_ASSISTANT, NO_SECRETS, POLICY_LABELS, TASK_NOTICES, acknowledgeSecrets, approvalLinkFor, draftFrom, idsForSave, newServerId, rebaseDraft, renameServers, sameDraft, secretsFrom, settingsFrom, typedForDraft } from './portalIntegrationsForm'
+import { HOME_ASSISTANT, NO_SECRETS, POLICY_LABELS, TASK_NOTICES, acknowledgeSecrets, approvalLinkFor, credentialsAfterRefresh, draftFrom, idsForSave, newServerId, rebaseDraft, renameServers, sameDraft, secretsFrom, settingsFrom, typedForDraft } from './portalIntegrationsForm'
 
 const inputStyle = 'w-full rounded border border-theme-border bg-theme-bg px-3 py-2 text-theme-text focus:outline-none focus:ring-2 focus:ring-theme-accent'
 const buttonStyle = 'rounded border border-theme-border px-3 py-2 text-sm hover:bg-white/5 disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-theme-accent'
@@ -116,6 +116,7 @@ export default function PortalIntegrationsSettings() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [credentialCleared, setCredentialCleared] = useState(false)
   const [appResult, setAppResult] = useState(null)
   const typedSecrets = draft ? secretsFrom(typedForDraft(typed, draft)) : {}
   const dirty = Boolean(view && draft) && (!sameDraft(draft, draftFrom(view.settings)) || Object.keys(typedSecrets).length > 0)
@@ -127,7 +128,10 @@ export default function PortalIntegrationsSettings() {
     if (previous.view && result.settings.revision < previous.view.settings.revision) return false
     const nextDraft = rebaseDraft(submitted?.draft || (previous.view && draftFrom(previous.view.settings)),
       previous.draft, draftFrom(result.settings), submitted?.ids)
-    const nextTyped = submitted ? acknowledgeSecrets(previous.typed, submitted.secrets, submitted.ids) : previous.typed
+    const pending = submitted ? acknowledgeSecrets(previous.typed, submitted.secrets, submitted.ids) : previous.typed
+    const nextTyped = credentialsAfterRefresh(pending, previous.draft, nextDraft, submitted?.ids)
+    if (!sameDraft(secretsFrom(pending), secretsFrom(nextTyped))) setCredentialCleared(true)
+    else if (submitted) setCredentialCleared(false)
     editor.current = { view: result, draft: nextDraft, typed: nextTyped }
     setView(result)
     setDraft(nextDraft); setTyped(nextTyped)
@@ -220,7 +224,9 @@ export default function PortalIntegrationsSettings() {
 
   const editDraft = change => {
     const next = change(editor.current.draft)
-    editor.current = { ...editor.current, draft: next }; setDraft(next)
+    const typed = typedForDraft(editor.current.typed, next)
+    editor.current = { ...editor.current, draft: next, typed }
+    setDraft(next); setTyped(typed)
   }
   const editTyped = change => {
     const next = change(editor.current.typed)
@@ -237,7 +243,7 @@ export default function PortalIntegrationsSettings() {
   }
   const withSave = steps => (dirty ? [saveStep(), ...steps] : steps)
   const save = () => run([saveStep()], 'Saved.')
-  const discard = () => { editor.current = { ...editor.current, draft: draftFrom(view.settings), typed: NO_SECRETS }; setDraft(editor.current.draft); setTyped(NO_SECRETS); setError(''); setNotice('Changes discarded.') }
+  const discard = () => { editor.current = { ...editor.current, draft: draftFrom(view.settings), typed: NO_SECRETS }; setDraft(editor.current.draft); setTyped(NO_SECRETS); setError(''); setNotice('Changes discarded.'); setCredentialCleared(false) }
   const setNotifications = patch => editDraft(previous => ({ ...previous, notifications: { ...previous.notifications, ...patch } }))
   const setNotes = patch => editDraft(previous => ({ ...previous, notes: { ...previous.notes, ...patch } }))
   const setServer = (id, patch) => editDraft(previous => ({ ...previous, servers: previous.servers.map(server => {
@@ -283,6 +289,7 @@ export default function PortalIntegrationsSettings() {
       </div>
       {/* With unsaved changes the error shows in the bar, where the owner pressed Save. */}
       {error && !dirty && <p role="alert" className="text-sm text-red-400 whitespace-pre-wrap break-words">{error}</p>}
+      {credentialCleared && <p role="status" className="text-sm text-theme-text-muted">An integration destination changed. Re-enter any cleared credential for the new destination.</p>}
       {notice && <p role="status" className="text-sm text-theme-text-muted">{notice}</p>}
       <p role="note" className="text-xs text-theme-text-muted">Off, Ask first and Allowed apply to these integration tools. Full Access also lets Portal use your account’s files and commands, which can reach locally stored settings and secrets. Review <Link to="/settings?section=access" className="underline">Portal access</Link> before adding credentials.</p>
     </section>

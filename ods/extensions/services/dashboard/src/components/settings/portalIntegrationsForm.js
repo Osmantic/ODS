@@ -88,11 +88,34 @@ export function secretsFrom(typed) {
 
 // Typed values for variables the draft no longer lists are dropped, so a save never names them.
 export function typedForDraft(typed, draft) {
-  const names = Object.fromEntries(draft.servers.map(server => [server.id, new Set(server.envNames)]))
-  const mcpEnv = Object.fromEntries(Object.entries(typed.mcpEnv || {}).filter(([id]) => names[id])
-    .map(([id, values]) => [id, Object.fromEntries(Object.entries(values).filter(([name]) => names[id].has(name)))]))
-  const mcp = Object.fromEntries(Object.entries(typed.mcp).filter(([id]) => names[id]))
+  const names = new Map(draft.servers.map(server => [server.id, new Set(server.envNames)]))
+  const mcpEnv = Object.fromEntries(Object.entries(typed.mcpEnv || {}).filter(([id]) => names.has(id))
+    .map(([id, values]) => [id, Object.fromEntries(Object.entries(values).filter(([name]) => names.get(id).has(name)))]))
+  const mcp = Object.fromEntries(Object.entries(typed.mcp).filter(([id]) => names.has(id)))
   return { ...typed, mcp, mcpEnv }
+}
+
+// An unsaved credential belongs to the destination that was visible when it was entered.
+// A reload or poll may move other edits onto a newly saved destination.
+const sameReceiver = (before, after, fields) => before && after && fields.every(key => before[key] === after[key])
+const serverReceiverFields = ['kind', 'preset', 'url', 'command', 'workingFolder']
+
+export function credentialsAfterRefresh(typed, before, after, ids = {}) {
+  if (!before) return typed
+  const previous = new Map(before.servers.map(server => [ids[server.id] || server.id, server]))
+  const unchanged = new Set(after.servers.filter(server => {
+    const old = previous.get(server.id)
+    return sameReceiver(old, server, serverReceiverFields)
+      && sameDraft([...(old.envNames || [])].sort(), [...(server.envNames || [])].sort())
+  }).map(server => server.id))
+  const keep = values => Object.fromEntries(Object.entries(values).filter(([id]) => unchanged.has(id)))
+  return {
+    ...typed,
+    ntfyPassword: sameReceiver(before.notifications, after.notifications, ['url', 'topic', 'username']) ? typed.ntfyPassword : '',
+    mcp: keep(typed.mcp), mcpEnv: keep(typed.mcpEnv),
+    apps: Object.fromEntries(Object.entries(typed.apps).filter(([id]) =>
+      sameReceiver(before.apps[id], after.apps[id], ['url', 'username']))),
+  }
 }
 
 export function newServerId(name, servers) {
@@ -165,10 +188,11 @@ export function rebaseDraft(base, current, saved, ids = {}) {
       ...fields(base.apps?.[id], current.apps[id], saved.apps[id]),
       ...(id === 'news' ? { digest: fields(base.apps?.news.digest, current.apps.news.digest, saved.apps.news.digest) } : {}),
     }])),
-    servers: [...current.servers.map(server => {
+    servers: [...current.servers.flatMap(server => {
       const old = previous.get(server.id), next = received.get(server.id)
-      if (!old || !next) return server
-      return { ...fields(old, server, next), policies: fields(old.policies, server.policies, next.policies) }
+      if (!old) return [next || server] // Prefer the saved server if both windows added this id.
+      if (!next) return [] // The saved server was removed in another window.
+      return [{ ...fields(old, server, next), policies: fields(old.policies, server.policies, next.policies) }]
     }), ...saved.servers.filter(server => !present.has(server.id) && !previous.has(server.id))],
   }
 }
