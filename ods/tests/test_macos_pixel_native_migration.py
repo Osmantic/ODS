@@ -13,7 +13,9 @@ module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 
 
-@pytest.mark.parametrize('fault', [None, 'full-access', 'managed', 'plugins', 'agents', 'model', 'provider', 'port', 'auth', 'ambiguous-auth', 'null-auth-mode', 'workspace', 'state'])
+@pytest.mark.parametrize('fault', [None, 'full-access', 'managed', 'context-agent', 'context-defaults',
+    'context-both', 'context-absent', 'plugins', 'agents', 'model', 'provider', 'port', 'auth',
+    'ambiguous-auth', 'null-auth-mode', 'workspace', 'state'])
 def test_migration_keeps_owner_state_without_restoring_legacy_tool_policy(tmp_path, fault):
     state, workspace = tmp_path / 'state', tmp_path / 'owner-projects'
     state.mkdir()
@@ -37,6 +39,13 @@ def test_migration_keeps_owner_state_without_restoring_legacy_tool_policy(tmp_pa
     if fault == 'full-access':
         previous['agents']['list'][0]['tools'].update(exec={'host': 'gateway', 'security': 'full', 'ask': 'off'},
             fs={'workspaceOnly': False})
+    if fault in ('context-agent', 'context-both'):
+        previous['agents']['list'][0]['contextTokens'] = 32768
+    if fault in ('context-defaults', 'context-both'):
+        previous['agents']['defaults']['contextTokens'] = 65536
+    if fault == 'context-absent':
+        candidate['agents']['defaults']['contextTokens'] = 8192
+        candidate['agents']['list'][0]['contextTokens'] = 16384
     if fault == 'managed':
         previous['gateway']['auth'].pop('mode')
         previous['plugins']['allow'].append('pixel-operations-broker')
@@ -53,7 +62,8 @@ def test_migration_keeps_owner_state_without_restoring_legacy_tool_policy(tmp_pa
     if fault == 'workspace': previous['agents']['defaults']['workspace'] = str(tmp_path / 'missing')
     if fault == 'state': state = tmp_path / 'missing-state'
     before_old, before_new = copy.deepcopy(previous), copy.deepcopy(candidate)
-    if fault not in (None, 'full-access', 'managed'):
+    if fault not in (None, 'full-access', 'managed', 'context-agent', 'context-defaults',
+            'context-both', 'context-absent'):
         with pytest.raises((ValueError, OSError)): module.preserve_state(candidate, previous, state_dir=state)
     else:
         merged, contract = module.preserve_state(candidate, previous, state_dir=state)
@@ -64,6 +74,10 @@ def test_migration_keeps_owner_state_without_restoring_legacy_tool_policy(tmp_pa
         agent = merged['agents']['list'][0]
         assert agent['workspace'] == str(workspace) and agent['name'] == 'Owner Name'
         assert agent['params'] == {'temperature': 0.3}
+        for old_scope, new_scope in ((previous['agents']['defaults'], merged['agents']['defaults']),
+                (previous['agents']['list'][0], agent)):
+            assert ('contextTokens' in old_scope) == ('contextTokens' in new_scope)
+            assert old_scope.get('contextTokens') == new_scope.get('contextTokens')
         assert merged['plugins'] == candidate['plugins'] and merged['tools'] == candidate['tools']
         assert agent['sandbox'] == {'mode': 'off'}
         expected_tools = {'alsoAllow': ['pixel_ops_run']}
@@ -134,3 +148,25 @@ def test_preservation_verifier_checks_values_even_when_candidate_hash_is_recompu
         result = module.verify_state_preservation(previous, body, record, state_dir='/owner/state')
         assert result['workspace'] == '/owner/work' and result['stateDir'] == '/owner/state'
         assert 'keep' not in str(result)
+
+
+@pytest.mark.parametrize('scope', ['agent', 'defaults'])
+@pytest.mark.parametrize('change', ['same', 'removed', 'changed', 'added', 'null', 'bool', 'zero'])
+def test_new_context_admission_rejects_loss_or_reinterpretation(scope, change):
+    previous = {'agents': {'defaults': {}, 'list': [{'id': 'pixel'}]}}
+    target = previous['agents']['list'][0] if scope == 'agent' else previous['agents']['defaults']
+    if change != 'added':
+        target['contextTokens'] = 32768
+    candidate = copy.deepcopy(previous)
+    current = candidate['agents']['list'][0] if scope == 'agent' else candidate['agents']['defaults']
+    if change == 'removed': current.pop('contextTokens')
+    if change == 'changed': current['contextTokens'] = 65536
+    if change == 'added': current['contextTokens'] = 32768
+    if change == 'null': current['contextTokens'] = None
+    if change == 'bool': current['contextTokens'] = True
+    if change == 'zero': current['contextTokens'] = 0
+    if change == 'same':
+        module.verify_context_preservation(previous, candidate)
+    else:
+        with pytest.raises(ValueError, match='owner-context-changed'):
+            module.verify_context_preservation(previous, candidate)

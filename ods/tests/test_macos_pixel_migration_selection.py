@@ -32,7 +32,7 @@ def test_configuration_revisions_do_not_collide_for_the_same_runtime():
         assert not module._source_runtime_config(path, parent, digest)
 
 
-@pytest.mark.parametrize('fault', [None, 'active', 'state', 'candidate', 'services', 'drift'])
+@pytest.mark.parametrize('fault', [None, 'active', 'state', 'candidate', 'services', 'drift', 'context'])
 def test_migration_selection_binds_configuration_and_services_to_active_state(tmp_path, monkeypatch, fault):
     current_digest, candidate_digest = 'a' * 64, 'b' * 64
     current = module._bundle.INSTALL_ROOT / current_digest
@@ -43,7 +43,11 @@ def test_migration_selection_binds_configuration_and_services_to_active_state(tm
     previous = {'agents': {'list': [{'id': 'pixel', 'workspace': '/owner/work', 'model': 'ods-gateway/ods/current'}]},
         'models': {'providers': {'ods-gateway': {'apiKey': 'fixture-only'}}},
         'gateway': {'port': 18789, 'auth': {'mode': 'token', 'token': 'fixture-only'}}}
-    body = json.dumps(previous).encode()
+    previous['agents']['list'][0]['contextTokens'] = 32768
+    before = json.dumps(previous).encode()
+    proposed = json.loads(before)
+    if fault == 'context': proposed['agents']['list'][0].pop('contextTokens')
+    body = json.dumps(proposed).encode()
     record = {'schemaVersion': 1, 'kind': 'legacy-native', 'stateDir': '/owner/state', 'workspace': '/owner/work',
         'agentId': 'pixel', 'requiresJointActivation': True,
         'previousConfigSha256': hashlib.sha256(json.dumps(previous, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
@@ -54,7 +58,7 @@ def test_migration_selection_binds_configuration_and_services_to_active_state(tm
         assert uid == 501
         reads.append(str(path))
         if str(path) == previous_path:
-            return b'{}' if fault == 'drift' and reads.count(previous_path) > 1 else body
+            return b'{}' if fault == 'drift' and reads.count(previous_path) > 1 else before
         if Path(path).name == 'migration.json': return json.dumps(record).encode()
         return body
     monkeypatch.setattr(module, '_configuration_bytes', read)
@@ -80,12 +84,12 @@ def test_migration_selection_binds_configuration_and_services_to_active_state(tm
     else:
         selected = run()
         assert selected['preservation']['stateDir'] == '/owner/state'
-        assert selected['previousConfigBytes'] == body
+        assert selected['previousConfigBytes'] == before
         assert verified == ['current', 'services']
     assert not list(candidate.iterdir()) and not list(services.iterdir())
 
 
-@pytest.mark.parametrize('fault', [None, 'service', 'ref', 'state', 'previous', 'candidate',
+@pytest.mark.parametrize('fault', [None, 'legacy-context', 'service', 'ref', 'state', 'previous', 'candidate',
     'port', 'kind', 'missing', 'source-path'])
 def test_joint_recovery_context_retains_prior_bytes_and_rejects_mixed_selections(monkeypatch, fault):
     owner = SimpleNamespace(pw_uid=501, pw_gid=20, pw_name='owner', pw_dir='/owner')
@@ -93,7 +97,11 @@ def test_joint_recovery_context_retains_prior_bytes_and_rejects_mixed_selections
     old = {'agents': {'list': [{'id': 'pixel', 'workspace': '/owner/work', 'model': 'ods-gateway/ods/current'}]},
         'models': {'providers': {'ods-gateway': {'apiKey': 'fixture'}}},
         'gateway': {'port': 18789, 'auth': {'mode': 'token', 'token': 'fixture'}}}
-    body = json.dumps(old).encode()
+    if fault == 'legacy-context': old['agents']['list'][0]['contextTokens'] = 65536
+    old_body = json.dumps(old).encode()
+    proposed = json.loads(old_body)
+    if fault == 'legacy-context': proposed['agents']['list'][0].pop('contextTokens')
+    body = json.dumps(proposed).encode()
     previous_hash = hashlib.sha256(json.dumps(old, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     candidate_hash = hashlib.sha256(body).hexdigest()
     plan = {name: {} for name in module.RECOVERY_PLAN_FIELDS}
@@ -102,7 +110,7 @@ def test_joint_recovery_context_retains_prior_bytes_and_rejects_mixed_selections
         upgrade_qualification={'currentDigest': 'a' * 64, 'candidateDigest': 'b' * 64, 'kind': 'native-migration'},
         runtime_bundle={'digest': 'b' * 64, 'source_config': '/stage/candidate/openclaw.json',
             'source_config_bytes': body, 'config_bytes': body},
-        migration_source_config_bytes=body, native_manager_port=3002,
+        migration_source_config_bytes=old_body, native_manager_port=3002,
         native_services={'bundle': '/stage/services', 'expected_digest': 'c' * 64,
             'expected_ref': 'd' * 40, 'expected_config_digest': candidate_hash},
         migration_qualification={'currentDigest': 'a' * 64, 'candidateDigest': 'b' * 64,
@@ -123,11 +131,11 @@ def test_joint_recovery_context_retains_prior_bytes_and_rejects_mixed_selections
     def run():
         return module._decode_recovery_context(saved, current_digest='a' * 64,
             candidate_digest='b' * 64, owner_name='owner')
-    if fault:
+    if fault not in (None, 'legacy-context'):
         with pytest.raises(module.InstallError): run()
     else:
         recovered = run()
-        assert recovered['migration_source_config_bytes'] == body
+        assert recovered['migration_source_config_bytes'] == old_body
         assert recovered['native_services'] == plan['native_services']
         assert recovered['migration_qualification'] == plan['migration_qualification']
 

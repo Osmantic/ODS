@@ -536,6 +536,7 @@ def prepare(*, source, ref, answers, node, sandbox_image, destination, runtime,
             migration_contract['candidateConfigSha256'] = hashlib.sha256(config.read_bytes()).hexdigest()
             migration.verify_state_preservation(previous, config.read_bytes(), migration_contract,
                 state_dir=previous_state_dir)
+            migration.verify_context_preservation(previous, rebalanced)
             migration_record = output / 'migration.json'
             migration_record.write_text(json.dumps(migration_contract, sort_keys=True) + '\n')
             migration_record.chmod(0o600)

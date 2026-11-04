@@ -735,6 +735,7 @@ def qualify_migration_selection(*, owner_name, current_digest, gateway_port, can
         raise InstallError('active-native-state-directory-required')
     preservation = migration.verify_state_preservation(json.loads(before), candidate_body,
         json.loads(record_body), state_dir=state)
+    migration.verify_context_preservation(json.loads(before), json.loads(candidate_body))
     selected_runtime = _bundle_plan(runtime_bundle, bundle_digest,
         {'OPENCLAW_CONFIG_PATH': str(candidate_path)}, owner)
     _bundle.verify_service_binding(runtime_bundle, services_digest)
