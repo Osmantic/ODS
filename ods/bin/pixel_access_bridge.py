@@ -2546,7 +2546,7 @@ def _native_runtime_bundle_cache(operation, root):
 def _native_runtime_code(operation, path, body):
     """Compile freshly protected helper bytes; never cache qualification or globals.
 
-    Both callers still prove the current Source and read the complete helper on
+    Callers still prove the current Source and read the complete helper on
     every call. The cache only avoids parsing those same bytes again, within the
     exact active Root lease. Its two fixed helper families may span old bundles.
     """

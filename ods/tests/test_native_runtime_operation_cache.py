@@ -35,14 +35,18 @@ _actual_protected_bytes = mac.protected_bytes
 
 @pytest.fixture
 def native_runtime(deployment, monkeypatch):  # noqa: F811
-    f = deployment
+    return native_runtime_driver(deployment, monkeypatch)
+
+
+def native_runtime_driver(f, monkeypatch):
     original_stat, original_lstat, original_fstat = os.stat, os.lstat, os.fstat
     original_fdopen = os.fdopen
     descriptor = runtime.DESCRIPTOR
     manifest = Path(json.loads(descriptor.read_text())['manifest'])
     descriptor.chmod(0o644)
     manifest.chmod(0o644)
-    protected = {descriptor, manifest, Path(f.bridge.binary), f.plist, f.root.parent.parent / 'python'}
+    protected = {descriptor, manifest, Path(f.bridge.binary), f.plist,
+        Path(json.loads(descriptor.read_text())['hostPython'])}
     roots = (f.root, f.source)
 
     def root_metadata(path):
@@ -407,9 +411,12 @@ def test_subclass_remains_cold_and_systemd_bounded_does_not_create_native_scope(
 
 @pytest.fixture
 def code_loaders(native_runtime, monkeypatch):
+    return code_loader_driver(native_runtime, monkeypatch)
+
+
+def code_loader_driver(n, monkeypatch):
     """Real FD reader; only external directory UID/mode observations are modeled."""
     import builtins
-    n = native_runtime
     from pixel_connections import planner
     actual_compile, actual_module = builtins.compile, planner.importlib.util.module_from_spec
     actual_verify_fd, actual_tree = mac._verify_fd, mac.protected_tree_metadata
@@ -431,7 +438,7 @@ def code_loaders(native_runtime, monkeypatch):
         return actual_compile(body, filename, *args, **kwargs)
     def module(spec):
         result = actual_module(spec)
-        if spec.name in ('_connection_bundle', 'qualified_native_source_installer_old_publisher'):
+        if spec.name in ('_connection_bundle', 'qualified_native_source_installer_old_publisher', 'verify_native_source'):
             trace.modules.append(result)
         return result
     def read(path, **kwargs):

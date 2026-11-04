@@ -60,11 +60,17 @@ def deployment(tmp_path, monkeypatch):
     original_read = custody._read
     monkeypatch.setattr(custody, '_read', lambda path, owner, maximum: original_read(path, uid, maximum))
 
-    def protected_bytes(path):
+    def protected_bytes(path, *, limit=1024 * 1024):
+        if type(limit) is not int or limit < 1:
+            raise mac_custody.CustodyError('macos-custody-path-invalid')
         path = Path(path)
         custody._parents(path)
-        custody._regular(path)
-        return path.read_bytes()
+        custody._regular(path, maximum=limit)
+        with path.open('rb') as handle:
+            body = handle.read(limit + 1)
+        if len(body) > limit:
+            raise mac_custody.CustodyError('macos-custody-file-too-large')
+        return body
 
     def protected_tree(path):
         custody._parents(Path(path) / 'entry')
@@ -328,3 +334,14 @@ def test_linux_private_request_and_path_defaults_keep_exact_grammar(monkeypatch)
     with pytest.raises(Captured):
         root.worker('connection-owner-status')
     assert captured == [request]
+
+
+def test_fixture_protected_reader_keeps_production_keyword_limit(deployment):
+    path = deployment.root / 'runtime/openclaw.mjs'
+    body = path.read_bytes()
+    assert mac_custody.protected_bytes(path, limit=len(body)) == body
+    with pytest.raises(bridge_module.AccessError, match='file-too-large'):
+        mac_custody.protected_bytes(path, limit=len(body) - 1)
+    for limit in (True, 0, -1, '1'):
+        with pytest.raises(mac_custody.CustodyError, match='path-invalid'):
+            mac_custody.protected_bytes(path, limit=limit)

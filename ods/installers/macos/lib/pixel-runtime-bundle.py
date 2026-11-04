@@ -614,19 +614,29 @@ def verify(root, *, expected_digest=None, _operation=None):
     if package.get('name') != 'openclaw' or package.get('version') != value['openclawVersion']:
         raise BundleError('bundle-version-mismatch')
     selection = _read_release_selection(root, value['entries'])
-    _verify_native_source(root, value['entries'], selection)
+    _verify_native_source(root, value['entries'], selection, _operation=_operation)
     return value, checksum
 
 
-def _verify_native_source(root, entries, selection):
+def _verify_native_source(root, entries, selection, *, _operation=None):
+    if _operation is not None:
+        _operation_cache(_operation, root)
     capability = {'ods-source', 'ods-source.json', 'native-source'}
     present = any(name in capability or name.startswith(('ods-source/', 'native-source/')) for name in entries)
     if not present:
         return  # Existing bundles keep their exact absent-capability contract.
-    spec = importlib.util.spec_from_file_location('verify_native_source',
-        Path(__file__).with_name('pixel-native-source-broker.py'))
+    path = Path(__file__).with_name('pixel-native-source-broker.py')
+    spec = importlib.util.spec_from_file_location('verify_native_source', path)
     helper = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helper)
+    if _operation is None:
+        spec.loader.exec_module(helper)
+    else:
+        from pixel_access_bridge import _native_runtime_code
+        from pixel_macos_custody import protected_bytes
+        # Same verified Root operation and fresh helper custody on every call.
+        # Only parsing is reused; all source/provenance/payload checks below run.
+        body = protected_bytes(path, limit=2 * 1024 * 1024)
+        exec(_native_runtime_code(_operation, path, body), helper.__dict__)
     if (any(entries.get(name) != ['directory', 0o755] for name in ('ods-source', 'native-source'))
             or entries.get('ods-source.json', [None])[0] != 'file'
             or selection['odsSource']['state'] != 'verified-source-bindings'):

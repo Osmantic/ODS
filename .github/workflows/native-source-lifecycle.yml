@@ -276,7 +276,7 @@ jobs:
           - packet: active-publication
             file: ods/tests/test_native_source_active_publication.py
           - packet: operation-cache
-            file: ods/tests/test_native_source_publisher_operation_cache.py ods/tests/test_native_runtime_operation_cache.py ods/tests/test_macos_pixel_runtime_code_cache.py
+            file: ods/tests/test_native_source_publisher_operation_cache.py ods/tests/test_native_runtime_operation_cache.py ods/tests/test_macos_pixel_runtime_code_cache.py ods/tests/test_native_source_verifier_code_cache.py
           - packet: root-deadline
             file: ods/tests/test_native_source_root_deadline.py
           - packet: barrier
