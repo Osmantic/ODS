@@ -104,6 +104,15 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-compose-startup-recovery.ps1
 
+      - name: Windows disable stops extension companions (PowerShell 7)
+        shell: pwsh
+        run: ./tests/test-windows-disable-companions.ps1
+
+      - name: Windows disable stops extension companions (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-disable-companions.ps1
+
       - name: Windows chat HTTP response exit contract
         if: runner.os == 'Windows'
         shell: pwsh
