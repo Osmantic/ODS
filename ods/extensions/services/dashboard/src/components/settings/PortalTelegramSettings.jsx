@@ -4,6 +4,9 @@ const inputStyle = 'w-full rounded border border-theme-border bg-theme-bg px-3 p
 const buttonStyle = 'rounded border border-theme-border px-3 py-2 text-sm hover:bg-white/5 disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-theme-accent'
 const cardStyle = 'rounded-xl border border-theme-border bg-theme-card p-5 space-y-4'
 const DEFAULT_API = 'https://api.telegram.org'
+// As the service saves it (integrations_telegram.py _api_root): a trailing slash is dropped, so
+// "https://api.telegram.org/" is not an unsaved change that keeps Test disabled.
+const savedApiRoot = value => value.trim().replace(/\/+$/, '')
 
 // Chat with Portal from Telegram through the owner's own bot. Saved with its own button:
 // the bot token is a secret that is sent only when typed.
@@ -13,10 +16,10 @@ export default function PortalTelegramSettings({ telegram, busy, onAct }) {
   const [token, setToken] = useState('')
   const [apiRoot, setApiRoot] = useState(telegram.apiRoot)
   const [result, setResult] = useState(null)
-  const changed = enabled !== telegram.enabled || ownerId.trim() !== telegram.ownerId || token !== '' || apiRoot.trim() !== telegram.apiRoot
+  const changed = enabled !== telegram.enabled || ownerId.trim() !== telegram.ownerId || token !== '' || (savedApiRoot(apiRoot) || DEFAULT_API) !== telegram.apiRoot
   const save = async () => {
     setResult(null)
-    const outcome = await onAct([['telegram-save', { enabled, ownerId: ownerId.trim(), apiRoot: apiRoot.trim() || DEFAULT_API, ...(token ? { token } : {}) }]])
+    const outcome = await onAct([['telegram-save', { enabled, ownerId: ownerId.trim(), apiRoot: savedApiRoot(apiRoot) || DEFAULT_API, ...(token ? { token } : {}) }]])
     if (outcome.ok) setToken('')
     setResult(outcome)
   }

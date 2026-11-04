@@ -28,7 +28,8 @@ function fakeService(telegram = TELEGRAM) {
     posts.push([action, body])
     if (action === 'telegram-save') {
       if (body.enabled && !(body.ownerId && (body.token || current.telegram.hasToken))) return response({ detail: 'Give the bot token and your Telegram user ID, or turn Telegram off.', code: 'invalid-settings' }, 400)
-      current = { ...current, telegram: { ...current.telegram, enabled: body.enabled, ownerId: body.ownerId, apiRoot: body.apiRoot, hasToken: current.telegram.hasToken || Boolean(body.token) } }
+      // As the service: the address is saved without a trailing slash.
+      current = { ...current, telegram: { ...current.telegram, enabled: body.enabled, ownerId: body.ownerId, apiRoot: body.apiRoot.replace(/\/+$/, ''), hasToken: current.telegram.hasToken || Boolean(body.token) } }
       return response({ ...current, notice: 'Telegram saved.' })
     }
     if (action === 'telegram-test') {
@@ -67,6 +68,25 @@ it('saves Telegram with the token only when typed, then tests the bot', async ()
   fireEvent.change(telegram.getByLabelText('Your Telegram user ID'), { target: { value: '123456780' } })
   fireEvent.click(telegram.getByRole('button', { name: 'Save Telegram' }))
   await waitFor(() => expect(posts.at(-1)).toEqual(['telegram-save', { enabled: true, ownerId: '123456780', apiRoot: 'https://api.telegram.org' }]))
+})
+
+it('an API address typed with a trailing slash still lets Test run after saving', async () => {
+  const posts = fakeService()
+  const telegram = await card()
+  fireEvent.click(telegram.getByLabelText('Let me chat with Portal from Telegram'))
+  fireEvent.change(telegram.getByLabelText('Bot token'), { target: { value: TOKEN } })
+  fireEvent.change(telegram.getByLabelText('Your Telegram user ID'), { target: { value: '123456789' } })
+  fireEvent.change(telegram.getByLabelText('Telegram API address'), { target: { value: ' https://api.telegram.org/ ' } })
+  fireEvent.click(telegram.getByRole('button', { name: 'Save Telegram' }))
+  expect(await telegram.findByText('Telegram saved.')).toBeInTheDocument()
+  expect(posts.at(-1)[1].apiRoot).toBe('https://api.telegram.org')
+  expect(telegram.getByRole('button', { name: 'Save Telegram' })).toBeDisabled()
+  expect(telegram.getByRole('button', { name: 'Test' })).toBeEnabled()
+  // A slash alone is no change; a different address is.
+  fireEvent.change(telegram.getByLabelText('Telegram API address'), { target: { value: 'https://api.telegram.org//' } })
+  expect(telegram.getByRole('button', { name: 'Test' })).toBeEnabled()
+  fireEvent.change(telegram.getByLabelText('Telegram API address'), { target: { value: 'https://bot-api.example.org' } })
+  expect(telegram.getByRole('button', { name: 'Test' })).toBeDisabled()
 })
 
 it('a refused save says why next to the button', async () => {
