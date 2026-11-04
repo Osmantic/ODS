@@ -1,10 +1,10 @@
 # Portal connected-app acceptance
 
-Validation snapshot: 3 November 2026. The contributor's normal Windows/WSL
-installation of `ef0cc5672` now passes the Calendar journey below with its
-Source 4.3.45 pin `3fe50f1d75d13295bfbe964bfcd327a91df15814`.
-The composed Source 4.3.46 candidate still needs applicable installed acceptance;
-the earlier result does not certify new source or SDK bytes. Documents, photos
+Validation snapshot: 4 November 2026. The contributor's normal Windows/WSL
+installation of `fa2e144a05` now passes the installed Source 4.3.46 Calendar and
+natural-clock task journeys below, using the exact Source pin
+`bf6db06c5b432ec9e8a408d1cac785753693099c`. The earlier installed
+`ef0cc5672` Source 4.3.45 result remains historical evidence. Documents, photos
 and named-feed checks used the earlier Source 4.3.44 baseline; component
 campaigns are labeled below. Physical model smokes used
 local Qwen 3.5 9B at 64K context with an 8,192-token output budget. External-app
@@ -24,6 +24,40 @@ integration secrets, model/sampler profile, existing tasks and histories, prior
 backups and retained local extension files were preserved. Its services and
 sockets were healthy, runtime access was verified, and no model/source hold
 remained. The model stayed local Qwen 3.5 9B; no weights were replaced.
+
+The subsequent ordinary update to `fa2e144a05` also completed on this same
+Windows/WSL installation. An independent Root postflight verified the six
+selected Source 4.3.46 files, all 51 installed SDK repair files and 26 canonical
+receipts. The complete native configuration, original Google grant and
+integration files, model/sampler profile, earlier backups and local extension
+files remained unchanged. Four services and both integration sockets were
+healthy, with no pending access transition. This update used the existing
+weights and GPU; it did not require another WSL reset or mount recovery.
+
+A fresh request through the actual installed frontend then selected
+`pixel_calendar_count` without a forced tool or substituted model. The typed
+civil-day window, host ledger, native call/result pair and rendered response
+all agreed on the fresh, complete count of zero for 4 November in the owner's
+São Paulo timezone. No event records, mutation calls or unrelated tools were
+used. The UI displayed a correct sentence without the earlier source-check
+warning. This is one real empty-day journey, not a claim about every question,
+nonempty account data or OAuth refresh.
+
+One dated task was then created through the rendered task form. An independent
+process observation confirmed that its browser had closed before the deadline.
+The native clock started the task 26 ms after the scheduled instant; the same
+local model returned the bare answer `22`. The native run, isolated transcript,
+saved Portal result and displayed result agreed. Removal used the rendered
+confirmation for only that acknowledged task, and Past tasks retained its
+result. A consistent read-only snapshot preserved the two original task
+definitions and 32 original history rows, with exactly one new QA history row.
+Notification settings were unchanged, and no manual cron run was submitted.
+
+The browser driver needed label/loading corrections and later resumed the
+same acknowledged task; it did not create or rerun another task. An unnecessary
+refresh recorded a 503 response before the saved result was subsequently
+displayed and archived. That request failure remains in the qualification;
+these observations do not claim an uninterrupted first-pass browser run.
 
 One fresh request through the actual installed Portal frontend asked for only
 the number of events on an explicit owner-local day. The model independently
@@ -71,6 +105,8 @@ certify an empty slot they might occupy.
 | --- | --- |
 | Ordinary update | Installer and an independent postflight completed; existing native configuration and private connection state were preserved. |
 | Calendar — installed `ef0cc5672` | One real local 9B request selected the native count tool, used the requested civil-day bounds and returned a count supported by fresh complete data. No event records or mutations were requested. The response used a sentence rather than a bare number. |
+| Calendar — installed `fa2e144a05`, Source 4.3.46 | A fresh actual frontend request independently selected the native count tool and returned the fresh, complete owner-local count. Native and UI evidence agree; no source-check warning, event-record read or mutation. |
+| Task form — installed `fa2e144a05` | One UI-created dated task ran on the native clock with its browser independently absent. The same model returned `22`, Portal displayed it, and removing only this task retained the result in Past tasks and preserved all original definitions/history. |
 | Concurrent conversations | Two independent Chrome conversations retained their own histories after reload and accepted subsequent messages; native ledgers/sessions remained distinct, with no tools or cross-conversation text. One model reply shortened its own test code; the literal-answer oracle remains failed separately from storage isolation. |
 | Documents | Portal searched the connected library, read the invoice instead of its packing-slip decoy, and returned the correct amount and due date. |
 | Photos | Portal applied the requested city and exact day, excluded adjacent-day/other-city decoys, and returned the actual photo link. |
@@ -104,8 +140,9 @@ Off policies, but those wording changes have not closed the live-model failure.
 The next investigation must verify actual native discovery availability and
 selection; another ungrounded empty answer is not successful acceptance. The
 installed `ef0cc5672` journey above closes that specific local request with
-actual native evidence. The composed Source 4.3.46 and its updated native
-admission gate must be qualified separately before this PR is ready.
+actual native evidence. The subsequent installed `fa2e144a05` journey separately
+qualifies the selected Source 4.3.46 and its updated native admission gate for
+that same Windows request. Mac implementation and qualification remain open.
 
 Coffee's native macOS MCP, notes, ntfy and app-provider service is implemented;
 its physical Apple Silicon qualification remains a separate handoff. Google,
