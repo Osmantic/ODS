@@ -238,6 +238,17 @@ The preparation and private recovery material were retained. Fixes require
 complete approved addition families and journaled rollback; silently repairing
 missing files in an already capable deployment is not an accepted migration.
 
+The next full update from `adbf9f82c4eaa54ef94d82cbb8b10d7cc22240ac`
+passed those snapshots and stopped at
+`runtime-upgrade-previous-guard-unqualified`, still before activation. The
+installed controller's `locked()` and `status()` matched the reviewed legacy
+revision `b0599adb07cedad5f95f8a423180f1407e8c8fdc`; adding an optional wait
+parameter to the newer lock had made the exact-AST recognizer reject the old
+guard. Compatibility now recognizes that explicit old lock and unchanged
+status without executing archived code. Mutated guards remain refused. The
+old configuration bytes/inode and all eleven healthy containers were again
+preserved. Both failed preparations remain available privately.
+
 Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
 notifications and reboot acceptance remain pending. The Mac has not been
 restarted for this qualification. A Google test client was not available;
@@ -356,6 +367,12 @@ ten-file integrations addition, or that addition together with the five
 inspection additions. Rollback restores prior file absence and old policy
 bytes. A protected never-started witness is consumed before bootstrap;
 loaded jobs require normal PID/birth/descendant stop evidence.
+
+Schema 5 separately records the complete three-file schedule-helper addition.
+The protected previous bundle must establish that these helpers were not
+already part of the deployment. Current candidates cannot omit them from
+recovery. Schema 5 may include the unchanged Source proof described below;
+older schemas remain supported under their original contracts.
 
 Source updates use a separate closed schema 4 family. Before replacing code,
 runtime or kit bindings, the actual old selection either proves strict absence
