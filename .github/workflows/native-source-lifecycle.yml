@@ -300,4 +300,6 @@ jobs:
           PYTHONDONTWRITEBYTECODE: '1'
           PYTHONUNBUFFERED: '1'
           PACKET_FILE: ${{ matrix.file }}
-        run: python -m pytest -v -p no:cacheprovider --durations=10 "$PACKET_FILE"
+        run: |
+          read -r -a packet_files <<< "$PACKET_FILE"
+          python -m pytest -v -p no:cacheprovider --durations=10 "${packet_files[@]}"
