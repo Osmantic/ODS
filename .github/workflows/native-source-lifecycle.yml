@@ -138,7 +138,7 @@ jobs:
           - packet: public-routing
             files: ods/tests/test_native_source_public_routing.py
           - packet: installer-callers
-            files: ods/tests/test_native_source_installer_lifecycle.py ods/tests/test_native_source_installer_recovery.py ods/tests/test_native_source_installer_prepared_boundary.py ods/tests/test_native_source_retained_identities.py ods/tests/test_native_source_retirement_boundary.py
+            files: ods/tests/test_native_source_installer_lifecycle.py ods/tests/test_native_source_installer_recovery.py ods/tests/test_native_source_installer_prepared_boundary.py ods/tests/test_native_source_installer_live_images.py ods/tests/test_native_source_retained_identities.py ods/tests/test_native_source_retirement_boundary.py
           - packet: installer-planning
             files: ods/tests/test_native_source_installer_plan.py
           - packet: installer-bootstrap

@@ -3189,12 +3189,37 @@ def native_installer_withdrawal_transaction(selection, *, transaction):
         'receipt': value['sourceAddition'].get('receipt')}
 
 
+def _native_installer_code_absent(path):
+    """Reprove absence through every existing protected ancestor, without writes."""
+    from pixel_macos_custody import protected_directory
+    try:
+        with protected_directory(path.parent) as directory:
+            try:
+                os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                return True
+    except FileNotFoundError:
+        # protected_directory checks each opened ancestor before descending.
+        # A missing code-package directory is absence; unsafe existing custody
+        # and all other I/O errors remain refusals.
+        return True
+    return False
+
+
 def _native_installer_live_images(records):
-    from pixel_macos_custody import protected_bytes
+    from pixel_macos_custody import protected_bytes, CustodyError as FileCustodyError
+    inspection, integration = _native_installer_legacy_additions()
+    additions = native_installer_source_family() | inspection | integration | _native_installer_schedule_additions()
     for item in records:
+        path = Path(item['path'])
         try:
-            current = protected_bytes(Path(item['path']), limit=8 * 1024 * 1024)
-        except FileNotFoundError:
+            current = protected_bytes(path, limit=8 * 1024 * 1024)
+        except (FileCustodyError, FileNotFoundError):
+            # The protected reader wraps ENOENT. Never interpret its generic
+            # custody failure as absence: only a declared initially absent
+            # closed-family image may obtain a fresh, no-follow absence proof.
+            if item['before'] is not None or item['path'] not in additions or not _native_installer_code_absent(path):
+                raise
             current = None
         if current not in (item['before'], item['after']):
             raise CustodyError('native-source-installer-file-image-changed')

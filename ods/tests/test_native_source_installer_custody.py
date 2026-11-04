@@ -1,6 +1,7 @@
 """Fixed installer custody readers with real confined files; no Mac/provider claim."""
 # ruff: noqa: E402,F401,F811
 import base64
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -111,6 +112,25 @@ def withdrawal(executor, monkeypatch):
     program = n.world / 'program'
     program.mkdir(mode=0o755)
     monkeypatch.setattr(c, 'NATIVE_PROGRAM', program)
+    original_directory = mac.protected_directory
+    code_parents = {Path(path).parent for path in c.native_installer_source_family()
+                    if Path(path).is_relative_to(program)}
+    @contextmanager
+    def directory(path, **kwargs):
+        if Path(path) not in code_parents:
+            with original_directory(path, **kwargs) as fd:
+                yield fd
+            return
+        assert not kwargs
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(fd)
+            assert (info.st_uid, info.st_gid) == (0, 0) and not info.st_mode & 0o022
+            c._native_no_acl(fd)
+            yield fd
+        finally:
+            os.close(fd)
+    monkeypatch.setattr(mac, 'protected_directory', directory)
     original_read = mac.protected_bytes
     def protected_bytes(path, *, limit=8 * 1024 * 1024):
         body = original_read(path)
