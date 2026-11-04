@@ -192,7 +192,7 @@ jobs:
           - packet: emitted-linux-connections-package
             files: ods/tests/test_pixel_installed_connections_package.py
           - packet: protected-installer-support
-            files: ods/tests/test_native_installer_support.py
+            files: ods/tests/test_native_installer_support.py ods/tests/test_native_prepublication_selection.py::test_protected_entry_exposes_explicit_prepublication_option_from_complete_capsule
             basetemp: /root/ods-native-source-ci-support-tmp
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
