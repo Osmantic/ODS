@@ -128,13 +128,27 @@ def test_hybrid_native_schedule_reuses_fixed_authenticated_edge_transport(monkey
     transport.assert_called_once_with(request, config=config, path='/v1/schedules', timeout=190)
 
 
-def test_native_schedule_does_not_guess_a_transport_or_enable_connections(monkeypatch):
+@pytest.mark.parametrize('native_connections', [False, True])
+def test_native_schedule_does_not_guess_transport_or_waive_connection_gates(monkeypatch, native_connections):
+    from pixel_connections import catalog
+    platforms = ['linux-systemd', 'wsl-systemd'] + (['darwin'] if native_connections else [])
+    monkeypatch.setitem(catalog.GOOGLE, 'platforms', platforms)
     monkeypatch.setattr(relay.platform, 'system', lambda: 'Darwin')
     transport = Mock(side_effect=AssertionError('unconfigured native transport'))
-    monkeypatch.setattr(relay, '_request_runtime_controller', transport)
-    assert relay.request_runtime_schedules({'action': 'list', 'offset': 0}, config={}, data_dir='/owned/data')[0] == 503
-    assert relay.request_runtime_connection_action('connection-sync', {}, config={'PIXEL_OPENWEBUI_KEY': 'edge'})[0] == 409
+    with monkeypatch.context() as schedule:
+        schedule.setattr(relay, '_request_runtime_controller', transport)
+        assert relay.request_runtime_schedules({'action': 'list', 'offset': 0}, config={}, data_dir='/owned/data')[0] == 503
     transport.assert_not_called()
+    # Declaring native support does not authorize the owner transport. Keep the
+    # actual controller's authentication check and fail before any Docker call.
+    with patch.object(relay.subprocess, 'run') as run:
+        if native_connections:
+            with pytest.raises(relay.AccessRelayError, match='access-owner-auth-unavailable'):
+                relay.request_runtime_connection_action('connection-sync', {}, config={'PIXEL_OPENWEBUI_KEY': 'edge'})
+        else:
+            assert relay.request_runtime_connection_action('connection-sync', {}, config={'PIXEL_OPENWEBUI_KEY': 'edge'}) == (
+                409, {'error': 'not-available-on-this-system'})
+        run.assert_not_called()
 
 
 @pytest.mark.parametrize('system,status', [('Darwin', 200), ('Linux', 200), ('Windows', 503)])

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / 'bin'))
 import pixel_access_relay as relay
-from pixel_connections import status as connection_status
+from pixel_connections import catalog, status as connection_status
 
 OWNER_KEY = 'o' * 64
 CONFIG = {'DASHBOARD_API_KEY': OWNER_KEY, 'PIXEL_OPENWEBUI_KEY': 'c' * 64}
@@ -112,10 +112,11 @@ class AccessRelayTests(unittest.TestCase):
         self.assertNotIn(OWNER_KEY, ' '.join(calls[1][0]))
         self.assertIn("'/v1/connections'", relay._CLIENT)
 
-    def test_connections_are_not_available_without_the_linux_broker(self):
+    def test_connections_are_not_available_on_undeclared_native_platforms(self):
         for platform, config in (('Darwin', CONFIG), ('Darwin', {}), ('Windows', {})):
             with self.subTest(platform=platform, config=bool(config)), \
                     patch.object(relay.platform, 'system', return_value=platform), \
+                    patch.dict(catalog.GOOGLE, platforms=['linux-systemd', 'wsl-systemd']), \
                     patch.object(relay.subprocess, 'run') as run:
                 code, value = relay.request_runtime_connections(config=config)
                 self.assertEqual(code, 200)
@@ -202,9 +203,10 @@ class ConnectionActionRelayTests(unittest.TestCase):
                                  (400, {'error': 'invalid-request'}))
                 run.assert_not_called()
 
-    def test_connected_apps_are_not_available_without_the_linux_broker(self):
+    def test_connected_apps_are_not_available_on_undeclared_native_platforms(self):
         for platform, config in (('Darwin', CONFIG), ('Windows', {})):
             with self.subTest(platform=platform), patch.object(relay.platform, 'system', return_value=platform), \
+                    patch.dict(catalog.GOOGLE, platforms=['linux-systemd', 'wsl-systemd']), \
                     patch.object(relay.subprocess, 'run') as run:
                 self.assertEqual(relay.request_runtime_connection_action('connection-sync', {}, config=config),
                                  (409, {'error': 'not-available-on-this-system'}))

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,6 +30,10 @@ import pixel_macos_custody as mac
 
 @pytest.fixture(autouse=True)
 def history_driver(material, monkeypatch):
+    # The nested executor fixture uses this same simulated monotonic clock.
+    # Select it before the outer scope so a fresh runner's real uptime cannot
+    # turn its already-sealed deadline into an artificially expired one.
+    monkeypatch.setattr(bridge, 'time', SimpleNamespace(monotonic=lambda: 1000.0, sleep=time.sleep))
     raw_clock = lambda: time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
     monkeypatch.setattr(bridge, '_native_source_clock_ns', raw_clock)
     monkeypatch.setattr(c, '_native_clock_ns', raw_clock)

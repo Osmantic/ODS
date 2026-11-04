@@ -172,7 +172,7 @@ jobs:
 
   native-root-files:
     name: Linux Root files / ${{ matrix.packet }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -191,16 +191,18 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
-        with:
-          python-version: '3.12'
-      - run: python -m pip install 'pytest>=8,<9'
+      - name: Prepare a Root-owned Python 3.12 for custody qualification
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install --yes --no-install-recommends python3.12-venv
+          sudo -n /usr/bin/python3.12 -m venv --copies /root/ods-native-source-ci-python
+          sudo -n /root/ods-native-source-ci-python/bin/python -m pip install 'pytest>=8,<9'
       - name: Exercise actual Root ownership in confined temporary files
         env:
           PACKET_FILES: ${{ matrix.files }}
           PACKET_BASETEMP: ${{ matrix.basetemp }}
         run: |
-          python_bin="$(command -v python)"
+          python_bin=/root/ods-native-source-ci-python/bin/python
           sudo -n env PYTHONDONTWRITEBYTECODE=1 "$python_bin" -c 'import os; assert os.geteuid() == 0'
           if [ -n "$PACKET_BASETEMP" ]; then
             sudo -n env PYTHONDONTWRITEBYTECODE=1 "$python_bin" -m pytest -q -p no:cacheprovider $PACKET_FILES --basetemp="$PACKET_BASETEMP"

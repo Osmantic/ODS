@@ -155,12 +155,15 @@ def test_the_installer_prepares_the_kit_before_the_broker_and_converges_before_c
         "_ods_pixel_candidate_config_matches_live")
 
 
-def test_the_root_service_answers_from_the_status_module_on_linux_only():
+def test_the_root_service_uses_guarded_platform_specific_status_and_actions():
     server = (ROOT / "extensions/services/pixel-agent/host/access_mode_server.py").read_text(encoding="utf-8")
     branch = server.split('elif request == {"operation": "connection-status"}', 1)[1].split("elif ", 1)[0]
-    assert 'platform.system() == "Linux"' in branch
+    assert 'connections_platform_enabled()' in branch
+    assert "if platform.system() == 'Darwin':" in branch
+    assert 'from pixel_connections.status import native_report' in branch
+    assert 'native_report(adapter)' in branch
     assert "from pixel_connections.status import report as connection_report" in branch
     assert "connection_report(surface=surface)" in branch
     actions = server.split('elif request["operation"].startswith("connection-")', 1)[1].split("elif ", 1)[0]
-    assert 'platform.system() == "Linux"' in actions
+    assert 'connections_platform_enabled()' in actions
     assert 'adapter.connection_control(request["operation"], request["request"])' in actions

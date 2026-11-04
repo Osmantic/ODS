@@ -233,11 +233,19 @@ class AgentClientTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'posix', 'POSIX program custody')
     def test_program_custody_keeps_type_mode_owner_and_fixed_path_checks(self):
+        for platform in ('linux', 'darwin'):
+            with self.subTest(platform=platform), patch.object(helper.sys, 'platform', platform):
+                self._check_program_custody(platform)
+
+    def _check_program_custody(self, platform):
         real_lstat = Path.lstat
         with tempfile.TemporaryDirectory() as directory:
             program = Path(directory) / 'program'
             program.mkdir(mode=0o755)
-            files = [program / name for name in ('pixel_connection_agent_status.py', 'pixel_access_client.py')]
+            names = ('pixel_connection_agent_status.py', 'pixel_access_client.py')
+            if platform == 'darwin':
+                names += ('unix_peer.py',)
+            files = [program / name for name in names]
             for path in files:
                 path.write_bytes(b'# public synthetic program\n')
                 path.chmod(0o644)
@@ -252,26 +260,27 @@ class AgentClientTests(unittest.TestCase):
             with patch.object(helper, '__file__', str(files[0])), patch.object(helper, '_PROGRAM_ROOT', program), \
                     patch.object(Path, 'lstat', root_owned), patch.object(sys, 'path', list(sys.path)):
                 helper._protected_program()
-                files[1].chmod(0o666)
-                with self.assertRaises(ValueError):
-                    helper._protected_program()
-                files[1].chmod(0o644)
                 outside = program.parent / 'outside.py'
                 outside.write_bytes(b'# outside\n')
-                files[1].unlink()
-                files[1].symlink_to(outside)
-                with self.assertRaises(ValueError):
-                    helper._protected_program()
-                files[1].unlink()
-                files[1].write_bytes(b'# public fixture\n')
-                files[1].chmod(0o644)
-
-            def foreign_client(path, *args, **kwargs):
-                info = root_owned(path, *args, **kwargs)
-                return SimpleNamespace(st_mode=info.st_mode, st_uid=1000 if path == files[1] else 0, st_nlink=info.st_nlink)
-
-            with patch.object(helper, '__file__', str(files[0])), patch.object(helper, '_PROGRAM_ROOT', program), \
-                    patch.object(Path, 'lstat', foreign_client), self.assertRaises(ValueError):
+                for target in files:
+                    with self.subTest(program=target.name):
+                        target.chmod(0o666)
+                        with self.assertRaises(ValueError):
+                            helper._protected_program()
+                        target.chmod(0o644)
+                        target.unlink()
+                        target.symlink_to(outside)
+                        with self.assertRaises(ValueError):
+                            helper._protected_program()
+                        target.unlink()
+                        target.write_bytes(b'# public fixture\n')
+                        target.chmod(0o644)
+                        def foreign_program(path, *args, target=target, **kwargs):
+                            info = root_owned(path, *args, **kwargs)
+                            return SimpleNamespace(st_mode=info.st_mode, st_uid=1000 if path == target else 0,
+                                                   st_nlink=info.st_nlink)
+                        with patch.object(Path, 'lstat', foreign_program), self.assertRaises(ValueError):
+                            helper._protected_program()
                 helper._protected_program()
             with patch.object(helper, '__file__', str(files[0])), self.assertRaises(ValueError):
                 helper._protected_program()

@@ -84,7 +84,8 @@ def test_initial_unqualified_witness_or_private_history_refuses_without_root_res
         snapshots.append(files(n))
         return publish(selection)
     monkeypatch.setattr(helper, 'publish_initial_generation', changed)
-    with pytest.raises((ValueError, c.CustodyError)):
+    with pytest.raises((ValueError, c.CustodyError)) as failure:
         n.backend.prepare(reader=n.f.bridge.owner.pw_name)
-    assert snapshots and files(n) == snapshots[0]
+    assert snapshots, f'fault injection did not finish: {failure.value}'
+    assert files(n) == snapshots[0]
     assert not (n.metadata / 'source-initial-generation.json').exists()
