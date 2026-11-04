@@ -11,9 +11,9 @@ const fixture = () => ({schemaVersion:1,kind:'ods-connection-agent-status',scope
     calendar:{lastObservedState:'disabled',recent:null,lastSuccessAt:null,complete:null,error:null}},
   providerCheckedNow:false});
 
-test('status uses the fixed local helper without shell, credential environment or model arguments',async()=>{
+for (const platform of ['linux','darwin']) test(`${platform} status uses the fixed local helper without shell, credential environment or model arguments`,async()=>{
   const calls=[];
-  const value=await readConnectionStatus({platform:'linux',execute:(file,args,options,callback)=>{
+  const value=await readConnectionStatus({platform,execute:(file,args,options,callback)=>{
     calls.push({file,args,options});callback(null,JSON.stringify(fixture())+'\n');
   }});
   assert.deepEqual(value,fixture());
@@ -97,7 +97,7 @@ test('reject owner payloads, extra content and malformed status without reflecti
 
 test('unsupported platform, helper failure and malformed framing yield unknown without retry',async()=>{
   let calls=0;
-  await assert.rejects(readConnectionStatus({platform:'darwin',execute:()=>{calls++;}}));
+  await assert.rejects(readConnectionStatus({platform:'win32',execute:()=>{calls++;}}));
   assert.equal(calls,0);
   for(const [error,stdout] of [[Error('private-error'),''],[null,'{}\n'],
     [null,JSON.stringify(fixture())],[null,JSON.stringify(fixture())+'\n{}\n']]) {

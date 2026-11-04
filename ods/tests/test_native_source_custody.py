@@ -223,6 +223,12 @@ def native(deployment, tmp_path, monkeypatch):  # noqa: F811 -- imported pytest 
     monkeypatch.setattr(source.grp, 'getgrall', lambda: [])
     actual_user, actual_group = source.pwd.getpwnam, source.grp.getgrnam
     def user_lookup(name):
+        if name == f.bridge.gateway_owner:
+            # Directory Service's owner home is relocated with this confined
+            # Darwin namespace. Keep its actual Linux UID/GID/name unchanged.
+            current = actual_user(name)
+            return SimpleNamespace(pw_uid=current.pw_uid, pw_gid=current.pw_gid, pw_name=current.pw_name,
+                pw_dir=getattr(f.bridge.owner, 'pw_dir', str(f.bridge.home)))
         if name != source.NATIVE_BROKER:
             return actual_user(name)
         record = records['Users']

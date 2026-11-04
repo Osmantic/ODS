@@ -44,10 +44,22 @@ def request_access(operation, request=None, *, settings_data_dir=None):
         if operation.startswith("installer-") or operation == "connection-agent-status":
             # Installer authority and agent connection evidence both require
             # a Root peer; never send even the fixed request to a substitute.
-            if sys.platform != "linux" or not hasattr(socket, "SO_PEERCRED"):
-                raise ValueError("installer verification requires Linux peer credentials")
-            credentials = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
-            if struct.unpack("3i", credentials)[1] != 0:
+            if sys.platform == "darwin" and operation == "connection-agent-status":
+                # The installed controller already ships this kernel peer
+                # reader. Its getpeereid branch checks a connected Unix stream;
+                # no request field or socket pathname establishes Root identity.
+                # This does not extend the Linux-only installer protocol.
+                try:
+                    from unix_peer import peer_ids
+                    uid, _gid = peer_ids(connection)
+                except (ImportError, OSError, AttributeError, ValueError):
+                    raise ValueError("connection status requires kernel peer credentials") from None
+            else:
+                if sys.platform != "linux" or not hasattr(socket, "SO_PEERCRED"):
+                    raise ValueError("installer verification requires Linux peer credentials")
+                credentials = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+                uid = struct.unpack("3i", credentials)[1]
+            if uid != 0:
                 raise ValueError("installer verification requires root coordinator")
         connection.sendall(json.dumps(payload).encode() + b"\n")
         with connection.makefile("rb") as stream:

@@ -3205,7 +3205,7 @@ def test_load_upgrade_recovery_enforces_independent_contract(monkeypatch, fault)
         records.pop()
     if fault in ('mode', 'gid'):
         records[0][fault] = 1
-    value = {'files': records}
+    value = {'schemaVersion': 1, 'files': records}
     monkeypatch.setattr(bridge, 'private_json', Mock(return_value=value))
     journal, plan = SimpleNamespace(value=value), {'fixture': True}
     loader = Mock(return_value=(journal, records))

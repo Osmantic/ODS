@@ -27,6 +27,7 @@ TOKEN = BROKER_STATE / "private/google-token.json"
 BROKER_STATUS = BROKER_STATE / "projection/status.json"
 SCHEMA_VERSION = 1
 SUPPORTED_SURFACES = frozenset(catalog.GOOGLE["platforms"])
+SYSTEMD_SURFACES = frozenset({"linux-systemd", "wsl-systemd"})
 # The broker refreshes every minute; a status older than this means it stopped.
 STALE_AFTER = timedelta(minutes=10)
 MAX_STATUS_BYTES = 64 * 1024
@@ -356,8 +357,24 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
            status_path: Path = BROKER_STATUS, lifecycle_path: Path = lifecycle.PATH, now: datetime | None = None,
            owners: tuple[int, ...] = (0,), broker_state: Path = BROKER_STATE) -> dict[str, Any]:
     """The complete public status. Runs as root, which alone can see the sign-in."""
-    if surface not in SUPPORTED_SURFACES:
+    # Native status needs its sealed deployment and FD-only Source reader. A
+    # surface label alone never redirects these legacy systemd filesystem paths.
+    if surface not in SYSTEMD_SURFACES:
         return unavailable(surface)
+    return _report(surface=surface, record_path=record_path, token_path=token_path,
+        status_path=status_path, lifecycle_path=lifecycle_path, now=now, owners=owners,
+        broker_state=broker_state)
+
+
+def _report(*, surface: str, record_path: Path, token_path: Path, status_path: Path,
+            lifecycle_path: Path, now: datetime | None, owners: tuple[int, ...],
+            broker_state: Path, native_source=None) -> dict[str, Any]:
+    """Shared status join; native inputs come only from native_report below.
+
+    This formats observations and grants no authority. The native entry has
+    already reopened the sealed runtime, Source custody, token metadata and
+    projection FD under the existing Root lifecycle lock.
+    """
     now = now or datetime.now(timezone.utc)
     pending, journal_unusable = _pending(lifecycle_path, owners)
     pending, admission_held, admission_unusable = _admission_pending(lifecycle_path, owners, pending, now)
@@ -373,7 +390,7 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
         if plugin_change is not None:
             result["pluginChange"] = plugin_change
         return result
-    custody = token_path.is_file()
+    custody = token_path.is_file() if native_source is None else native_source['tokenIdentity'] is not None
     broker, broker_error, waiting, waiting_drafts = None, False, 0, 0
     if record is not None and "google" in record["connectors"]:
         # Only how many calendar changes and drafts wait for the owner; what they say never reaches status.
@@ -381,7 +398,8 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
         waiting_drafts = drafts.pending_count(approvals.Dirs.under(broker_state))
     if record is not None and "google" in record["connectors"] and custody:
         try:
-            broker = read_broker_status(status_path)
+            broker = (read_broker_status(status_path) if native_source is None else
+                parse_broker_status(native_source['rawStatus']) if native_source['rawStatus'] is not None else None)
         except StatusError:
             broker_error = True
     result = {
@@ -395,9 +413,32 @@ def report(*, surface: str, record_path: Path = state.PATH, token_path: Path = T
                                              waiting_drafts=waiting_drafts)},
         "plugins": plugin_flags(record),
     }
+    if native_source is not None and native_source['reason'] is not None and result['reason'] is None:
+        # An old-boot/inactive/pending Source gate is not a live connection.
+        # The fixed native reader supplies no projection in that state.
+        result['reason'] = native_source['reason']
     if plugin_change is not None:
         result["pluginChange"] = plugin_change
     return result
+
+
+def native_report(bridge, *, now: datetime | None = None) -> dict[str, Any]:
+    """Read-only Mac status, with no provisioning or provider request."""
+    from . import source_backend
+    with bridge.bounded(20), bridge.locked():
+        bridge.discover()
+        observed = source_backend.native_status_projection(bridge)
+        paths = observed['paths']
+        result = _report(surface='darwin', record_path=state.PATH, token_path=paths.token,
+            status_path=paths.state / 'projection/status.json',
+            lifecycle_path=Path(bridge.state) / lifecycle.PATH.name, now=now, owners=(0,),
+            broker_state=paths.state, native_source=observed)
+        return validate_public(result)
+
+
+def native_agent_report(bridge, *, now: datetime | None = None) -> dict[str, Any]:
+    """The same redacted agent view; private paths and identity never cross it."""
+    return agent_projection(native_report(bridge, now=now), now=now)
 
 
 def _agent_now(now):

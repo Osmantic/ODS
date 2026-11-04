@@ -492,7 +492,7 @@ class WireContractTests(unittest.TestCase):
                               for item in node.body))
         auth = {'mode': 'managed', 'state': 'not-configured', 'advancedAvailable': True}
         original = status.unavailable('windows')
-        context = {'platform': SimpleNamespace(release=lambda: 'fixture-microsoft')}
+        context = {'platform': SimpleNamespace(system=lambda: 'Linux', release=lambda: 'fixture-microsoft')}
         with patch.object(status, 'report', return_value=original) as report, \
                 patch.object(google_app, 'public_status', return_value=auth) as projection:
             exec(compile(ast.Module(body=branch.body, type_ignores=[]), '<actual Root connection status>', 'exec'), context)

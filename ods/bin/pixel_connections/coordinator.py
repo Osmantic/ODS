@@ -28,6 +28,7 @@ from pixel_model_coordinator import _managed_marker, _marker_digest
 from pixel_settings.coordinator import _identity, _read, _valid_identity
 
 from . import activity, approvals, catalog, custody, drafts, google_app, lifecycle, oauth, planner, plugins, state
+from . import source_backend
 
 LIFECYCLE = lifecycle.PATH.name
 PATHS = custody.Paths()
@@ -53,6 +54,10 @@ GRANTED_BY = {
                                "https://mail.google.com/"}),
 }
 CAPABILITY_IDS = tuple(capability["id"] for capability in catalog.GOOGLE["capabilities"])
+
+
+def _source_backend(bridge):
+    return source_backend.for_bridge(bridge, linux_paths=PATHS, linux_run=RUN)
 
 
 def _now() -> datetime:
@@ -193,13 +198,14 @@ def _follow_mode(bridge, record: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
-def _install_broker_env(record: dict[str, Any], target: dict[str, Any]) -> None:
+def _install_broker_env(record: dict[str, Any], target: dict[str, Any], *, source=None) -> None:
     """The broker's environment for the record; queued private changes that could not run go first."""
+    source = source if source is not None else _source_backend(None)
     google = record["connectors"]["google"]
-    if target["calendarDirect"] and not custody.direct_enabled(PATHS):
-        approvals.discard_unsent_direct(PATHS)
-    custody.install_env(PATHS, custody.connection_env(
-        PATHS, gateway=target, calendar_id=google["calendarId"], time_zone=record["ownerTimeZone"],
+    if target["calendarDirect"] and not source.direct_enabled():
+        approvals.discard_unsent_direct(source.paths)
+    source.install_env(source.connection_env(
+        gateway=target, calendar_id=google["calendarId"], time_zone=record["ownerTimeZone"],
         gmail_window_days=google["gmailWindowDays"]))
 
 
@@ -209,6 +215,7 @@ def pause_for_full_access(bridge) -> None:
     The broker stops at once. Portal's gateway catches up with the activation that
     follows the mode change; until then its private changes are refused, never queued.
     """
+    source = _source_backend(bridge)
     with bridge.bounded(60), bridge.locked():
         bridge.discover()
         # The server invokes this hook before its access-mode writer. Refuse
@@ -227,7 +234,7 @@ def pause_for_full_access(bridge) -> None:
         try:
             if record and google and google["capabilities"]["calendar.direct"] and not google.get("directPaused"):
                 _write_record(_with_pause(record, True))
-            custody.pause_direct(PATHS, RUN)
+            source.pause_direct()
         except (custody.CustodyError, OSError):
             raise AccessError("calendar-pause-failed") from None
 
@@ -238,6 +245,7 @@ def follow_access_mode(bridge) -> bool:
     The new mode is recorded first, and the step is journaled as activating, so a
     catch-up that cannot run now (Portal busy) waits in Settings behind Finish.
     """
+    source = _source_backend(bridge)
     with bridge.bounded(60), bridge.locked():
         bridge.discover()
         try:
@@ -256,11 +264,13 @@ def follow_access_mode(bridge) -> bool:
             return False
         google = (record or {"connectors": {}})["connectors"].get("google")
         if (not record or not google or not google["capabilities"]["calendar.direct"]
-                or not custody.holds_sign_in(PATHS)):
+                or not source.holds_sign_in()):
             return False
         journal = read_lifecycle(_lifecycle_path(bridge))
         if journal and (journal["phase"] == "consent" or journal.get("error") == EXCHANGE_INTERRUPTED):
             return False  # The open sign-in's own activation renders the mode.
+        if source.recovering_environment():
+            _install_broker_env(record, gateway_target(record, custody_held=True), source=source)
         _follow_mode(bridge, record)
         _write_lifecycle(bridge, _lifecycle("activating"))
         return True
@@ -365,17 +375,19 @@ def _without_google(record: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def _retire_google_data(bridge, flow_id: str | None = None) -> None:
-    custody.archive_google_actions(PATHS, flow_id)
-    custody.clear_google_data(PATHS)
+    source = _source_backend(bridge)
+    source.archive_google_actions(flow_id)
+    source.clear_google_data()
     _undo_ledger(bridge).unlink(missing_ok=True)
     _sync_directory(Path(bridge.state))
 
 
 def _abandon_google_exchange(bridge) -> None:
     """An interrupted exchange has no safe grant/record pair to reactivate."""
-    custody.quiesce_for_sign_in(PATHS, RUN)
+    source = _source_backend(bridge)
+    source.quiesce_for_sign_in()
     _write_record(_without_google(_record()))
-    custody.forget_sign_in(PATHS)
+    source.forget_sign_in()
     _retire_google_data(bridge)
     _write_lifecycle(bridge, _lifecycle("deactivating", error=EXCHANGE_INTERRUPTED))
 
@@ -383,8 +395,9 @@ def _abandon_google_exchange(bridge) -> None:
 def _failed_google_exchange(bridge, before: dict[str, Any] | None, disconnected: dict[str, Any] | None,
                             token_identity: tuple | None, error_class: str, hold: dict[str, Any]) -> dict[str, Any]:
     """Resume only an untouched old grant, never a saved token or uncertain reply."""
+    source = _source_backend(bridge)
     unchanged = (token_identity is not None and _record() == disconnected
-                 and custody.sign_in_identity(PATHS) == token_identity)
+                 and source.sign_in_identity() == token_identity)
     if unchanged and before is not None and "google" in before["connectors"]:
         # Old actions stay quarantined instead of being dispatched on resume.
         _retire_google_data(bridge)
@@ -401,6 +414,7 @@ def begin(bridge, request: Any) -> dict[str, Any]:
     An interrupted gateway change is settled by the activation that follows
     consent, which reconciles Portal's gateway with the record as it is then.
     """
+    source = _source_backend(bridge)
     request = _begin_request(request)
     with bridge.bounded(60), bridge.locked():
         bridge.discover()
@@ -419,9 +433,9 @@ def begin(bridge, request: Any) -> dict[str, Any]:
             except google_app.ManagedAppError as error:
                 raise AccessError(error.code) from None
         # Only one sign-in is ever open, so every earlier handoff goes, journaled or not.
-        custody.discard_flows(PATHS)
+        source.discard_flows()
         _clear_lifecycle(bridge)
-        custody.prepare(PATHS, RUN, reader=bridge.owner.pw_name)
+        source.prepare(reader=bridge.owner.pw_name)
         scopes = [*oauth.IDENTITY_SCOPES, *catalog.scopes_for("google", request["capabilities"])]
         try:
             handoff, public = oauth.new_flow(google_client=request["client"], scopes=scopes, now=_now(),
@@ -429,7 +443,7 @@ def begin(bridge, request: Any) -> dict[str, Any]:
                                              select_account=request['authMode'] == 'managed')
         except oauth.OAuthError as error:
             raise AccessError(error.code) from None
-        custody.write_handoff(PATHS, f"{public['flowId']}.flow.json", handoff)
+        source.write_handoff(f"{public['flowId']}.flow.json", handoff)
         _write_lifecycle(bridge, _lifecycle(
             "consent", flowId=public["flowId"], stateHash=public["stateHash"], redirectUri=public["redirectUri"],
             expiresAt=public["expiresAt"], request={"capabilities": request["capabilities"],
@@ -464,6 +478,7 @@ def _sign_in_failed(bridge, error_class: str) -> dict[str, Any]:
 
 def complete(bridge, request: Any) -> dict[str, Any]:
     """Finish consent: the broker exchanges the code, and the owner's record names what Google granted."""
+    source = _source_backend(bridge)
     request = _complete_request(request)
     with bridge.bounded(150), bridge.locked():
         bridge.discover()
@@ -480,11 +495,11 @@ def complete(bridge, request: Any) -> dict[str, Any]:
         if _google_transition(bridge) is not None:
             raise AccessError("connection-transition-in-progress")
         if _now() >= _instant(journal["expiresAt"]):
-            custody.discard_flow(PATHS, journal["flowId"])
+            source.discard_flow(journal["flowId"])
             _sign_in_failed(bridge, "sign-in-flow-expired")
             raise AccessError("sign-in-flow-expired")
         if "error" in request:
-            custody.discard_flow(PATHS, journal["flowId"])
+            source.discard_flow(journal["flowId"])
             return _sign_in_failed(bridge, request["error"])
         hold = _google_reserve(bridge, journal["flowId"])
         try:
@@ -502,22 +517,23 @@ def complete(bridge, request: Any) -> dict[str, Any]:
 def _complete_held_google(bridge, journal: dict[str, Any], request: dict[str, Any],
                           hold: dict[str, Any]) -> dict[str, Any]:
     """Exchange once, with both admission gates held until explicit activation."""
+    source = _source_backend(bridge)
     hold["google"]["stage"] = "exchanging"
     _write(bridge, hold)
-    custody.write_handoff(PATHS, f"{journal['flowId']}.code.json", {
+    source.write_handoff(f"{journal['flowId']}.code.json", {
         "schemaVersion": 1, "kind": "pixel-source-oauth-code", "flowId": journal["flowId"],
         "state": request["state"], "code": request["code"]})
     # Persist the barrier BEFORE stopping anything or allowing token
     # replacement. A crash/lost exchange reply can only finish by dropping
     # uncertain custody; no old Root record may authorize the new account.
-    custody.quiesce_for_sign_in(PATHS, RUN)
-    before, token_identity = _record(), custody.sign_in_identity(PATHS)
+    source.quiesce_for_sign_in()
+    before, token_identity = _record(), source.sign_in_identity()
     disconnected = _without_google(before)
     _write_record(disconnected)
     _write_lifecycle(bridge, _lifecycle("activating"))
     _retire_google_data(bridge, journal["flowId"])
     try:
-        result = custody.exchange(PATHS, RUN, journal["flowId"])
+        result = source.exchange(journal["flowId"])
     except custody.CustodyError as error:
         _failed_google_exchange(bridge, before, disconnected, token_identity, error.code, hold)
         raise
@@ -529,7 +545,7 @@ def _complete_held_google(bridge, journal: dict[str, Any], request: dict[str, An
     missing = [name for name in CAPABILITY_IDS if wanted["capabilities"][name] and not granted[name]]
     if result["account"] is None or not any(granted.values()):
         # Nothing usable came back, so nothing of it may stay on this box.
-        custody.revoke(PATHS, RUN)
+        source.revoke()
         _abandon_google_exchange(bridge)
         error = "account-unverified" if result["account"] is None else "missing-scope"
         _google_ready(bridge, hold, "failed", error)
@@ -555,6 +571,7 @@ def _complete_held_google(bridge, journal: dict[str, Any], request: dict[str, An
 
 
 def cancel(bridge, request: Any) -> dict[str, Any]:
+    source = _source_backend(bridge)
     if (not isinstance(request, dict) or set(request) != {"flowId"} or type(request["flowId"]) is not str
             or not oauth.FLOW_ID.fullmatch(request["flowId"])):
         raise AccessError("invalid-connection-request")
@@ -566,7 +583,7 @@ def cancel(bridge, request: Any) -> dict[str, Any]:
             return {"outcome": "cancelled"}
         journal = read_lifecycle(_lifecycle_path(bridge))
         if journal and journal["phase"] == "consent" and journal["flowId"] == request["flowId"]:
-            custody.discard_flow(PATHS, journal["flowId"])
+            source.discard_flow(journal["flowId"])
             _clear_lifecycle(bridge)
         return {"outcome": "cancelled"}
 
@@ -576,6 +593,7 @@ def disconnect(bridge, request: Any) -> dict[str, Any]:
 
     Running it again is safe: every step accepts the state the previous run left.
     """
+    source = _source_backend(bridge)
     if request != {"connector": "google"}:
         raise AccessError("invalid-connection-request")
     with bridge.bounded(150), bridge.locked():
@@ -585,11 +603,11 @@ def disconnect(bridge, request: Any) -> dict[str, Any]:
         _guard_fresh_source(bridge)
         journal = read_lifecycle(_lifecycle_path(bridge))
         if journal and journal["phase"] == "consent":
-            custody.discard_flow(PATHS, journal["flowId"])
-        custody.stop(PATHS, RUN)
-        revoked = custody.revoke(PATHS, RUN)
-        custody.erase(PATHS)
-        custody.remove_env(PATHS)
+            source.discard_flow(journal["flowId"])
+        source.stop()
+        revoked = source.revoke()
+        source.erase()
+        source.remove_env()
         try:
             record = state.read(RECORD, owners=OWNERS)
         except state.StateError:
@@ -605,14 +623,15 @@ def disconnect(bridge, request: Any) -> dict[str, Any]:
 
 
 def sync(bridge, request: Any) -> dict[str, Any]:
+    source = _source_backend(bridge)
     if request != {}:
         raise AccessError("invalid-connection-request")
     with bridge.bounded(30), bridge.locked():
         _guard_google_exchange(bridge)
         record = _record()
-        if not record or "google" not in record["connectors"] or not custody.holds_sign_in(PATHS):
+        if not record or "google" not in record["connectors"] or not source.holds_sign_in():
             raise AccessError("connection-not-connected")
-        custody.sync(RUN)
+        source.sync()
         return {"outcome": "started"}
 
 
@@ -620,8 +639,9 @@ def sync(bridge, request: Any) -> dict[str, Any]:
 
 def _approval_ids(bridge) -> approvals.Ids | None:
     """None before the broker identity exists, when Portal cannot have suggested anything."""
+    source = _source_backend(bridge)
     try:
-        broker_uid, _gid = custody.broker_ids()
+        broker_uid, _gid = source.broker_ids()
     except KeyError:
         return None
     return approvals.Ids(reader_uid=bridge.owner.pw_uid, reader_gid=bridge.owner.pw_gid, broker_uid=broker_uid)
@@ -643,25 +663,28 @@ def _is_draft(request: dict[str, Any]) -> bool:
 
 
 def _connected_google(bridge) -> dict[str, Any]:
+    source = _source_backend(bridge)
     _guard_google_exchange(bridge)
     google = (_record() or {"connectors": {}})["connectors"].get("google")
-    if not google or not custody.holds_sign_in(PATHS):
+    if not google or not source.holds_sign_in():
         raise AccessError("connection-not-connected")
     return google
 
 
 def proposals(bridge, request: Any) -> dict[str, Any]:
     """The calendar changes Portal suggested, oldest first, each with the hash that approves it."""
+    source = _source_backend(bridge)
     if request != {}:
         raise AccessError("invalid-connection-request")
     with bridge.bounded(30), bridge.locked():
         bridge.discover()
         ids = _approval_ids(bridge)
-        return approvals.listing(PATHS, ids) if ids else {"proposals": [], "more": 0}
+        return approvals.listing(source.paths, ids) if ids else {"proposals": [], "more": 0}
 
 
 def approve(bridge, request: Any) -> dict[str, Any]:
     """Make the one change, or create the one draft, the owner approved, exactly as they saw it."""
+    source = _source_backend(bridge)
     request = _change_request(request, {"proposalId", "sha256"}, drafts_too=True)
     draft = _is_draft(request)
     name = "gmail-draft" if draft else "calendar-change"
@@ -676,13 +699,13 @@ def approve(bridge, request: Any) -> dict[str, Any]:
         if ids is None:
             raise AccessError(f"{name}-unknown")
         try:
-            result = (drafts.approve if draft else approvals.approve)(PATHS, RUN, ids, request)
+            result = (drafts.approve if draft else approvals.approve)(source.paths, source.run, ids, request)
         except custody.CustodyError:
             # systemctl did not answer in time. The broker's journal keeps it from happening twice.
             raise AccessError(f"{name}-unconfirmed") from None
         if result["outcome"] == "applied" and not draft:
             try:
-                custody.sync(RUN)
+                source.sync()
             except custody.CustodyError:
                 pass  # Only a faster refresh is lost: the timer refreshes within a minute.
         return result
@@ -690,6 +713,7 @@ def approve(bridge, request: Any) -> dict[str, Any]:
 
 def reconcile(bridge, request: Any) -> dict[str, Any]:
     """Ask Google whether an unconfirmed new event or draft was made; nothing is sent again."""
+    source = _source_backend(bridge)
     request = _change_request(request, {"proposalId"}, drafts_too=True)
     draft = _is_draft(request)
     name = "gmail-draft" if draft else "calendar-change"
@@ -700,19 +724,20 @@ def reconcile(bridge, request: Any) -> dict[str, Any]:
         if ids is None:
             raise AccessError(f"{name}-unknown")
         try:
-            return (drafts.reconcile if draft else approvals.reconcile)(PATHS, RUN, ids, request)
+            return (drafts.reconcile if draft else approvals.reconcile)(source.paths, source.run, ids, request)
         except custody.CustodyError:
             raise AccessError(f"{name}-unconfirmed") from None
 
 
 def drafts_waiting(bridge, request: Any) -> dict[str, Any]:
     """The Gmail drafts Portal wrote, oldest first, each with the hash that approves it."""
+    source = _source_backend(bridge)
     if request != {}:
         raise AccessError("invalid-connection-request")
     with bridge.bounded(30), bridge.locked():
         bridge.discover()
         ids = _approval_ids(bridge)
-        return drafts.listing(PATHS, ids) if ids else {"drafts": [], "more": 0}
+        return drafts.listing(source.paths, ids) if ids else {"drafts": [], "more": 0}
 
 
 def _undo_ledger(bridge) -> Path:
@@ -721,16 +746,18 @@ def _undo_ledger(bridge) -> Path:
 
 def changes_made(bridge, request: Any) -> dict[str, Any]:
     """The private changes Portal made by itself this week, each with whether it can be undone."""
+    source = _source_backend(bridge)
     if request != {}:
         raise AccessError("invalid-connection-request")
     with bridge.bounded(30), bridge.locked():
         bridge.discover()
         ids = _approval_ids(bridge)
-        return activity.listing(PATHS, ids, _undo_ledger(bridge)) if ids else {"changes": [], "more": 0}
+        return activity.listing(source.paths, ids, _undo_ledger(bridge)) if ids else {"changes": [], "more": 0}
 
 
 def undo(bridge, request: Any) -> dict[str, Any]:
     """Reverse one change Portal made by itself; the owner's click is the approval."""
+    source = _source_backend(bridge)
     request = _change_request(request, {"proposalId"})
     with bridge.bounded(150), bridge.locked():
         bridge.discover()
@@ -740,13 +767,13 @@ def undo(bridge, request: Any) -> dict[str, Any]:
         if ids is None:
             raise AccessError("calendar-change-unknown")
         try:
-            result = activity.undo(PATHS, RUN, ids, _undo_ledger(bridge), request)
+            result = activity.undo(source.paths, source.run, ids, _undo_ledger(bridge), request)
         except custody.CustodyError:
             # systemctl did not answer in time. The broker's journal keeps the reversal from happening twice.
             raise AccessError("calendar-change-unconfirmed") from None
         if result["outcome"] == "applied":
             try:
-                custody.sync(RUN)
+                source.sync()
             except custody.CustodyError:
                 pass  # Only a faster refresh is lost: the timer refreshes within a minute.
         return result
@@ -754,9 +781,10 @@ def undo(bridge, request: Any) -> dict[str, Any]:
 
 def decline(bridge, request: Any) -> dict[str, Any]:
     """Take a suggested change or draft off the list, connected or not."""
+    source = _source_backend(bridge)
     request = _change_request(request, {"proposalId"}, drafts_too=True)
     with bridge.bounded(30), bridge.locked():
-        return approvals.decline(PATHS, request)
+        return approvals.decline(source.paths, request)
 
 
 # ---------------------------------------------------------------- Portal's gateway
@@ -873,8 +901,9 @@ def _google_error(bridge, hold: dict[str, Any], code: str) -> None:
 
 
 def _google_ready(bridge, hold: dict[str, Any], result: str, failure: str | None = None) -> None:
+    source = _source_backend(bridge)
     hold["google"].update(stage="ready", result=result, failure=failure,
-                         recordSha=digest(_record()), tokenSha=digest(custody.sign_in_identity(PATHS)))
+                         recordSha=digest(_record()), tokenSha=digest(source.sign_in_identity()))
     _write(bridge, hold)
     phase = "deactivating" if result == "failed" and "google" not in (_record() or {}).get("connectors", {}) else "activating"
     _write_lifecycle(bridge, _lifecycle(phase, error=failure))
@@ -882,6 +911,7 @@ def _google_ready(bridge, hold: dict[str, Any], result: str, failure: str | None
 
 def _google_reserve(bridge, flow_id: str) -> dict[str, Any]:
     """Reserve this Root lease before admission or custody can change."""
+    source = _source_backend(bridge)
     if bridge.pending() is not None:
         raise AccessError("transition-recovery-required")
     _guard_fresh_source(bridge)
@@ -895,7 +925,7 @@ def _google_reserve(bridge, flow_id: str) -> dict[str, Any]:
     if owner["pending"] or owner["configSha256"] != config_hash:
         raise AccessError("connection-owner-state-changed")
     _path, marker = _managed_marker(bridge)
-    record_sha, token_sha = digest(_record()), digest(custody.sign_in_identity(PATHS))
+    record_sha, token_sha = digest(_record()), digest(source.sign_in_identity())
     hold = {"kind": "connection", "phase": "acquiring", "token": os.urandom(32).hex(),
             "transactionId": os.urandom(32).hex(), "edge_revision": snapshot["_edge"]["revision"],
             "beforeSha": config_hash, "boundary": bridge.unit_boundary(), "mode": snapshot["configured_mode"],
@@ -911,8 +941,9 @@ def _google_reserve(bridge, flow_id: str) -> dict[str, Any]:
 
 
 def _google_original(bridge, hold: dict[str, Any], *, recovery=False) -> None:
+    source = _source_backend(bridge)
     if (digest(_record()) != hold["google"]["beforeRecordSha"]
-            or digest(custody.sign_in_identity(PATHS)) != hold["google"]["beforeTokenSha"]
+            or digest(source.sign_in_identity()) != hold["google"]["beforeTokenSha"]
             or _read(runtime_config_path(bridge), bridge.owner.pw_uid)[1] != hold["beforeSha"]
             or not recovery and _identity(bridge) != hold["beforeIdentity"]
             or bridge.unit_boundary() != hold["boundary"]):
@@ -969,9 +1000,10 @@ def _google_drain(bridge, hold: dict[str, Any], *, recovery=False) -> None:
         _write(bridge, hold)
 
 
-def _google_pair(hold: dict[str, Any]) -> None:
+def _google_pair(hold: dict[str, Any], *, source=None) -> None:
+    source = source if source is not None else _source_backend(None)
     if (digest(_record()) != hold["google"]["recordSha"]
-            or digest(custody.sign_in_identity(PATHS)) != hold["google"]["tokenSha"]):
+            or digest(source.sign_in_identity()) != hold["google"]["tokenSha"]):
         raise AccessError("connection-custody-changed")
 
 
@@ -991,33 +1023,35 @@ def _google_reset_step(bridge, hold: dict[str, Any]) -> None:
 
 
 def _google_abandon(bridge, hold: dict[str, Any], reason: str) -> None:
+    source = _source_backend(bridge)
     # A gateway rollback cannot make an old record safe against a new grant.
     # Discard uncertain custody, then reconcile a no-Google target while the
     # same admission lease stays closed. No authorization code is retried.
     hold["google"].update(stage="abandoning", failure=hold["google"]["failure"] or reason)
     _write(bridge, hold)
     _abandon_google_exchange(bridge)
-    custody.discard_flow(PATHS, hold["google"]["flowId"])
+    source.discard_flow(hold["google"]["flowId"])
     # Cleanup may crash after changing either custody half. The durable intent
     # above permits only repeating that cleanup, never checking the old pair or
     # exchanging a code. Publish ready WITH its fresh owner step in one write;
     # otherwise a crash could replay the previous completed child transaction.
     hold["google"].update(stage="ready", result="failed",
-        recordSha=digest(_record()), tokenSha=digest(custody.sign_in_identity(PATHS)))
+        recordSha=digest(_record()), tokenSha=digest(source.sign_in_identity()))
     _google_reset_step(bridge, hold)
     _write_lifecycle(bridge, _lifecycle("deactivating", error=hold["google"]["failure"]))
 
 
 def _google_owner_step(bridge, hold: dict[str, Any]) -> str:
+    source = _source_backend(bridge)
     _require_deployment(bridge, hold)
-    _google_pair(hold)
+    _google_pair(hold, source=source)
     if bridge.native().get("active") or bridge.edge().get("streams"):
         raise AccessError("runtime-busy")
     if _busy(bridge, hold):
         raise AccessError("runtime-busy")
     if hold["google"]["stage"] == "ready":
         record = _record()
-        held = custody.holds_sign_in(PATHS)
+        held = source.holds_sign_in()
         target = gateway_target(record, custody_held=held)
         answers = state.connection_answers(record, google_custody=held)
         config, config_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)
@@ -1064,7 +1098,8 @@ def _google_new_process(bridge, hold: dict[str, Any]) -> dict[str, Any]:
 
 def _google_committed(bridge, hold: dict[str, Any]) -> None:
     """The committed target, receipt and custody must remain exact."""
-    _google_pair(hold)
+    source = _source_backend(bridge)
+    _google_pair(hold, source=source)
     _owner_outcome(bridge, hold, {"status": "runtime-verified", "configSha256": hold["afterSha"]})
     config, config_hash = _read(runtime_config_path(bridge), bridge.owner.pw_uid)
     _path, marker = _managed_marker(bridge)
@@ -1149,6 +1184,7 @@ def _google_release(bridge, hold: dict[str, Any]) -> str:
 
 def _google_activate(bridge, hold: dict[str, Any]) -> str:
     """The existing Finish operation owns every admitted callback recovery."""
+    source = _source_backend(bridge)
     _journal(hold)
     try:
         stage = hold["google"]["stage"]
@@ -1157,7 +1193,7 @@ def _google_activate(bridge, hold: dict[str, Any]) -> str:
         if stage == "draining":
             _google_drain(bridge, hold, recovery=True)
             _google_original(bridge, hold)
-            custody.discard_flow(PATHS, hold["google"]["flowId"])
+            source.discard_flow(hold["google"]["flowId"])
             _google_ready(bridge, hold, "failed", hold["google"]["failure"] or "sign-in-not-completed")
         elif stage in ("exchanging", "abandoning"):
             _google_abandon(bridge, hold, EXCHANGE_INTERRUPTED)
@@ -1165,16 +1201,16 @@ def _google_activate(bridge, hold: dict[str, Any]) -> str:
             _google_abandon(bridge, hold, "gateway-change-rolled-back")
             if _google_owner_step(bridge, hold) != "applied":
                 raise AccessError("gateway-change-rolled-back")
-        _google_pair(hold)
+        _google_pair(hold, source=source)
         identity = _verify(bridge, hold)
         if identity != _google_new_process(bridge, hold):
             raise AccessError("connection-process-changed")
         _bind_marker(bridge, hold)
         record = _record()
-        if record and "google" in record["connectors"] and custody.holds_sign_in(PATHS):
+        if record and "google" in record["connectors"] and source.holds_sign_in():
             target = gateway_target(record, custody_held=True)
-            _install_broker_env(record, target)
-            custody.start(RUN, direct=target["calendarDirect"])
+            _install_broker_env(record, target, source=source)
+            source.start(direct=target["calendarDirect"])
         hold.update(phase="releasing", outcome="applied")
         hold["google"].update(stage="releasing", releaseIdentity=identity)
         _write(bridge, hold)
@@ -1578,6 +1614,7 @@ def _change_gateway(bridge, target: dict[str, Any], answers: dict[str, Any], *, 
 
 def activate(bridge, request: Any) -> dict[str, Any]:
     """Bring Portal's gateway in line with the owner's record; also how a stuck step finishes."""
+    source = _source_backend(bridge)
     if request != {}:
         raise AccessError("invalid-connection-request")
     with bridge.bounded(300), bridge.locked():
@@ -1605,14 +1642,16 @@ def activate(bridge, request: Any) -> dict[str, Any]:
         if lifecycle and lifecycle["phase"] == "failed":
             # A sign-in that did not connect leaves Portal nothing to finish.
             lifecycle = None
-        record, held = _record(), custody.holds_sign_in(PATHS)
+        record, held = _record(), source.holds_sign_in()
         try:
             if held and record and "google" in record["connectors"]:
                 # The broker follows the record first: a gateway still on the old tools is refused, never obeyed.
+                if source.recovering_environment():
+                    _install_broker_env(record, gateway_target(record, custody_held=True), source=source)
                 record = _follow_mode(bridge, record)
                 target = gateway_target(record, custody_held=True)
-                _install_broker_env(record, target)
-                custody.start(RUN, direct=target["calendarDirect"])
+                _install_broker_env(record, target, source=source)
+                source.start(direct=target["calendarDirect"])
             outcome = _change_gateway(bridge, gateway_target(record, custody_held=held),
                                       state.connection_answers(record, google_custody=held))
         except (AccessError, custody.CustodyError) as error:
@@ -1665,6 +1704,7 @@ def plugin_change(bridge, request: Any) -> dict[str, Any]:
     The choice is kept only when Portal's gateway takes it: a busy Portal or a
     change rolled back leaves the record as it was, so nothing waits half-done.
     """
+    source = _source_backend(bridge)
     request = _plugin_request(request)
     with bridge.bounded(300), bridge.locked():
         bridge.discover()
@@ -1689,7 +1729,7 @@ def plugin_change(bridge, request: Any) -> dict[str, Any]:
             updated_at = _iso(_now())
             record = _plugin_record(before, request["plugin"], request["enabled"], updated_at)
         metadata = _plugin_metadata(request["plugin"], request["enabled"], before, record, updated_at)
-        held = custody.holds_sign_in(PATHS)
+        held = source.holds_sign_in()
         outcome = _change_gateway(bridge, gateway_target(record, custody_held=held),
                                   state.connection_answers(record, google_custody=held),
                                   plugin_change=metadata)

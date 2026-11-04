@@ -456,6 +456,7 @@ write_access_fixture() {
         "bin/pixel_connections/custody.py"
         "bin/pixel_connections/planner.py"
         "bin/pixel_connections/coordinator.py"
+        "bin/pixel_connections/source_backend.py"
         "bin/pixel_connections/lifecycle.py"
         "bin/pixel_connections/approvals.py"
         "bin/pixel_connections/activity.py"

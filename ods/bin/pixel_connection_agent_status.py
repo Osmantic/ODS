@@ -99,7 +99,10 @@ def _protected_program():
         info = path.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
             raise AgentStatusError("unavailable program custody")
-    for name in ("pixel_connection_agent_status.py", "pixel_access_client.py"):
+    programs = ("pixel_connection_agent_status.py", "pixel_access_client.py")
+    if sys.platform == "darwin":
+        programs += ("unix_peer.py",)
+    for name in programs:
         info = (program / name).lstat()
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_nlink != 1):
             raise AgentStatusError("unavailable program custody")
@@ -109,7 +112,7 @@ def _protected_program():
 def main():
     sys.dont_write_bytecode = True
     try:
-        if len(sys.argv) != 1 or sys.platform != "linux":
+        if len(sys.argv) != 1 or sys.platform not in ("linux", "darwin"):
             raise AgentStatusError("unavailable connection status")
         _protected_program()
         from pixel_access_client import request_access

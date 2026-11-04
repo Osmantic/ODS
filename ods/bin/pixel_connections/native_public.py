@@ -29,7 +29,8 @@ def control(bridge, operation, request):
 
 def _dispatch(bridge, operation, request):
     if operation == 'connection-app-status':
-        surface = 'wsl-systemd' if 'microsoft' in platform.release().lower() else 'linux-systemd'
+        surface = ('darwin' if platform.system() == 'Darwin' else
+                   'wsl-systemd' if 'microsoft' in platform.release().lower() else 'linux-systemd')
         return {'schemaVersion': 1, 'available': True, 'surface': surface, 'reason': None,
                 'apps': {app: Observation(bridge, _controller(bridge, app)).status() for app in wire.APP_IDS}}
     controller = _controller(bridge, request['app'])

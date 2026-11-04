@@ -39,11 +39,11 @@ for name in ("pixel_model_contract.py", "pixel_model_coordinator.py", "model_tra
 for name in ('pixel_schedules.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs'):
     protected(PROGRAM / name)
 if platform.system() == "Linux":
-    protected(PROGRAM / "pixel_connection_agent_status.py")
     protected(PROGRAM / "pixel_source_upgrade.py")
-    # Connected apps use the systemd Source Broker, so only Linux and WSL ship them.
+if platform.system() in ("Linux", "Darwin"):
+    protected(PROGRAM / "pixel_connection_agent_status.py")
     for name in ("__init__.py", "state.py", "status.py", "catalog.py", "oauth.py", "custody.py",
-                 "planner.py", "coordinator.py", "lifecycle.py", "approvals.py", "activity.py", "drafts.py", "plugins.py",
+                 "planner.py", "coordinator.py", "source_backend.py", "lifecycle.py", "approvals.py", "activity.py", "drafts.py", "plugins.py",
                  "native_mcp.py", "native_apps.py", "native_enrollment.py", "native_contract.py", "native_public.py", "native_access.py", "google_app.py"):
         protected(PROGRAM / "pixel_connections" / name)
     protected(PROGRAM / "connection_transaction.py")
@@ -52,6 +52,8 @@ if platform.system() == "Linux":
 if platform.system() == "Darwin":
     for name in ("pixel_macos_custody.py", "pixel_macos_process.py", "pixel_macos_policy.py"):
         protected(PROGRAM / name)
+    for name in ("native_executor.py", "native_retirement.py"):
+        protected(PROGRAM / "pixel_connections" / name)
 sys.path.insert(0, str(PROGRAM))
 from pixel_access_bridge import (AccessError, LaunchdAccessBridge,
                                  SystemdAccessBridge, private_json)
@@ -59,10 +61,19 @@ from pixel_access_protocol import control_request, decode_frame
 from unix_peer import peer_ids
 
 
+def connections_platform_enabled():
+    if platform.system() == 'Linux':
+        return True
+    if platform.system() == 'Darwin':
+        from pixel_connections.catalog import supports_surface
+        return supports_surface('darwin')
+    return False
+
+
 def follow_connections(adapter):
     """After an access-mode change, let Portal's gateway catch up with its calendar pause, in the background.
 
-    Linux and WSL only. The broker already follows the record; a catch-up that
+    The selected request-local backend follows the record; a catch-up that
     cannot run now keeps its reason in the connection journal, and Settings offers Finish.
     """
     from pixel_connections.coordinator import follow_access_mode
@@ -158,31 +169,39 @@ def main(*, reprove_installer_access=False):
                     else:
                         status, body = 200, adapter.schedules(request['request'], source=request['source'])
                 elif request == {"operation": "connection-agent-status"}:
-                    if platform.system() != "Linux":
+                    if not connections_platform_enabled():
                         status, body = 503, {"error": "connection-status-unavailable"}
+                    elif platform.system() == 'Darwin':
+                        from pixel_connections.status import native_agent_report
+                        status, body = 200, native_agent_report(adapter)
                     else:
                         from pixel_connections.status import agent_report
                         surface = "wsl-systemd" if "microsoft" in platform.release().lower() else "linux-systemd"
                         status, body = 200, agent_report(surface=surface)
-                elif request == {"operation": "connection-status"} and platform.system() == "Linux":
-                    from pixel_connections.status import report as connection_report
+                elif request == {"operation": "connection-status"} and connections_platform_enabled():
                     from pixel_connections.google_app import public_status as google_app_status
-                    surface = "wsl-systemd" if "microsoft" in platform.release().lower() else "linux-systemd"
+                    if platform.system() == 'Darwin':
+                        from pixel_connections.status import native_report
+                        connection_status = native_report(adapter)
+                    else:
+                        from pixel_connections.status import report as connection_report
+                        surface = "wsl-systemd" if "microsoft" in platform.release().lower() else "linux-systemd"
+                        connection_status = connection_report(surface=surface)
                     # Only Root reads deployment configuration. Windows/host
                     # relays receive this credential-free metadata, not a file.
-                    status, body = 200, dict(connection_report(surface=surface), googleAuth=google_app_status())
-                elif request["operation"].startswith("connection-") and platform.system() == "Linux":
+                    status, body = 200, dict(connection_status, googleAuth=google_app_status())
+                elif request["operation"].startswith("connection-") and connections_platform_enabled():
                     status, body = 200, adapter.connection_control(request["operation"], request["request"])
                 elif set(request) == {"operation", "request"} and request["operation"] == "change":
-                    linux = platform.system() == "Linux"
-                    if linux and request["request"].get("mode") == "full-access":
+                    connected_platform = connections_platform_enabled()
+                    if connected_platform and request["request"].get("mode") == "full-access":
                         # Decision 4: Portal makes no calendar change by itself while it has Full Access.
                         from pixel_connections.coordinator import pause_for_full_access
                         pause_for_full_access(adapter)
                     try:
                         status, body = 200, adapter.change(request["request"])
                     finally:
-                        if linux:
+                        if connected_platform:
                             follow_connections(adapter)
                 elif request == {"operation": "model-begin"}:
                     status, body = 200, adapter.model_begin()

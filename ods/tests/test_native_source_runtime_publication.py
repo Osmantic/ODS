@@ -91,7 +91,7 @@ def test_actual_bundle_copies_only_reviewed_closed_source_and_binds_inputs(built
     manifest, checksum = bundle.verify(f.root, expected_digest=f.digest)
     assert checksum == f.digest
     files = {p.relative_to(f.root / 'ods-source').as_posix() for p in (f.root / 'ods-source').rglob('*') if p.is_file()}
-    assert files == set(helper.ROOT_SOURCE_FILES) and len(files) == 108
+    assert files == set(helper.ROOT_SOURCE_FILES) and len(files) == 111
     assert 'bin/pixel_connections/native_executor.py' in files
     proof = json.loads((f.root / 'ods-source.json').read_bytes())
     assert proof['commit'] == f.source.ref
@@ -121,9 +121,12 @@ def test_actual_imports_from_the_qualified_copy_without_executing_entrypoints(bu
     bundle.verify(f.root, expected_digest=f.digest)
 
 
-def test_different_deployment_source_upgrade_refuses_before_config_or_publication(built):
-    installer = load(ROOT / 'installers/macos/lib/pixel-macos-access-install.py', 'source_initial_only_test')
-    with pytest.raises(installer.InstallError, match='native-source-upgrade-not-qualified'):
+def test_different_deployment_source_upgrade_refuses_unknown_current_before_config_or_publication(built, monkeypatch):
+    installer = load(ROOT / 'installers/macos/lib/pixel-macos-access-install.py', 'source_upgrade_current_test')
+    monkeypatch.setattr(installer._bundle, 'INSTALL_ROOT', built.root.parent / 'missing-installed-runtime')
+    monkeypatch.setattr(installer, '_configuration_bytes',
+        lambda *_args, **_kwargs: pytest.fail('unknown current runtime cannot read owner configuration'))
+    with pytest.raises((OSError, installer._bundle.BundleError)):
         installer._bundle_plan(built.root, built.digest, {}, SimpleNamespace(pw_uid=os.getuid()),
             upgrade=('0' * 64, 'stream-progress'))
     bundle.verify(built.root, expected_digest=built.digest)
@@ -137,7 +140,7 @@ def test_new_flat_source_workers_use_only_actual_bound_bundle_bytes(built):
            for name in installer.CONNECTION_FILES}}
     (built.source.ods / 'bin/pixel_connections/custody.py').write_bytes(b'owner checkout changed, never published')
     assert dict(installer._source_flat_files(selection)) == expected
-    assert len(expected) == 27
+    assert len(expected) == 30
     assert 'pixel_connections/native_executor.py' in expected
     (built.root / 'ods-source/bin/pixel_connections/custody.py').write_bytes(b'changed approved copy')
     with pytest.raises((bundle.BundleError, installer._bundle.BundleError)):
