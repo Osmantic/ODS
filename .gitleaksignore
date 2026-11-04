@@ -1,4 +1,7 @@
 # Gitleaks ignore file
+# Historical documentation's exact Git commit reference after "API checkpoint";
+# this names the functional code snapshot, not an issued API credential.
+71c21d8d12200ec9ad0c10f5efb7d9918a7409e4:ods/vendor/pixel/ODS-QUALIFICATION-4.3.45.md:generic-api-key:3
 # Exact historical literal localStorage index comparisons in concurrent-tab tests;
 # these are public browser storage namespace names, not authentication values.
 72a6150eeff14baa9c5cc618bff8a8367e0b1d4b:ods/extensions/services/dashboard/src/lib/pixelConversationWriter.test.js:generic-api-key:17
