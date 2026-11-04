@@ -52,25 +52,35 @@ def open_vault(config):
 
 
 @contextmanager
-def _parent(root, relative, *, create=False):
+def _parent(root, relative, *, create=False, expected=None):
     fd = os.dup(root)
     try:
-        for part in pathlib.PurePosixPath(relative).parts[:-1]:
-            if create:
+        parts = pathlib.PurePosixPath(relative).parts[:-1]
+        for index, part in enumerate(parts):
+            previous = expected["parents"][index] if expected is not None and index < len(expected["parents"]) else None
+            if create and previous is None:
+                if expected is not None and index == len(expected["parents"]):
+                    _check_stamp(fd, expected["destination"])
                 try:
                     os.mkdir(part, 0o755, dir_fd=fd)
                 except FileExistsError:
-                    pass
+                    if expected is not None:
+                        raise _changed() from None
             child = os.open(part, DIRECTORY_FLAGS, dir_fd=fd)
             os.close(fd)
             fd = child
+            if previous is not None:
+                info = os.fstat(fd)
+                if previous != [info.st_dev, info.st_ino]:
+                    raise _changed()
+        if create and expected is not None and len(parts) == len(expected["parents"]):
+            _check_stamp(fd, expected["destination"])
         yield fd, pathlib.PurePosixPath(relative).name
     finally:
         os.close(fd)
 
 
-def _regular(fd):
-    info = os.fstat(fd)
+def _regular(info):
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise IntegrationError("invalid-note", "Only regular notes without links can be used.")
     if info.st_size > MAX_NOTE_BYTES:
@@ -79,7 +89,7 @@ def _regular(fd):
 
 
 def _read_bytes(fd):
-    _regular(fd)
+    _regular(os.fstat(fd))
     data = bytearray()
     while len(data) <= MAX_NOTE_BYTES:
         piece = os.read(fd, min(65536, MAX_NOTE_BYTES + 1 - len(data)))
@@ -89,13 +99,15 @@ def _read_bytes(fd):
     raise IntegrationError("note-too-large", "That note is too large to read or change.")
 
 
-def _open_note(parent, name, flags):
+def _open_note(parent, name, flags, *, expected=None):
     info = os.stat(name, dir_fd=parent, follow_symlinks=False)
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise IntegrationError("invalid-note", "Only regular notes without links can be used.")
     fd = os.open(name, flags | FILE_FLAGS, dir_fd=parent)
     try:
-        _regular(fd)
+        _regular(os.fstat(fd))
+        if expected is not None:
+            _check_stamp(fd, expected["destination"])
     except BaseException:
         os.close(fd)
         raise
@@ -170,21 +182,73 @@ def read(config, relative):
     return relative, clip(text, MAX_NOTE_READ_CHARS)
 
 
-def write(config, relative, text, mode, *, root_fd=None):
+def _changed():
+    return IntegrationError("notes-changed", "The note destination changed. Request a new approval.")
+
+
+def _stamp(info):
+    stamp = {"device": info.st_dev, "inode": info.st_ino, "ctimeNs": info.st_ctime_ns}
+    for field in ("st_birthtime_ns", "st_birthtime", "st_gen"):
+        if hasattr(info, field):
+            stamp[field] = getattr(info, field)
+    if stat.S_ISREG(info.st_mode):
+        stamp.update(size=info.st_size, mtimeNs=info.st_mtime_ns)
+    return stamp
+
+
+def _check_stamp(fd, expected):
+    if _stamp(os.fstat(fd)) != expected:
+        raise _changed()
+
+
+def write_binding(root, relative, mode):
+    """Bind append to the reviewed file and create to its nearest existing parent."""
+    parts = pathlib.PurePosixPath(relative).parts
+    info = os.fstat(root)
+    binding = {"root": [info.st_dev, info.st_ino], "parents": []}
+    fd = os.dup(root)
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, DIRECTORY_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            info = os.fstat(fd)
+            binding["parents"].append([info.st_dev, info.st_ino])
+        info = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False)
+        _regular(info)
+        if mode == "create":
+            raise IntegrationError("note-exists", f"{relative} already exists; add to it instead.")
+    except FileNotFoundError:
+        if mode == "append":
+            raise IntegrationError("note-missing", f"There is no note {relative}.") from None
+        info = os.fstat(fd)
+    except OSError:
+        raise IntegrationError("invalid-note", "The note is unavailable or contains a symbolic link.") from None
+    finally:
+        os.close(fd)
+    binding["destination"] = _stamp(info)
+    return binding
+
+
+def validate_write(text, mode):
     if mode not in ("append", "create") or not isinstance(text, str) or not text.strip() or len(text) > MAX_WRITE_CHARS:
         raise IntegrationError("invalid-note", "Give the text to add, up to 20,000 characters.")
+
+
+def write(config, relative, text, mode, *, root_fd=None, expected=None):
+    validate_write(text, mode)
     relative = relative_name(relative)
     if root_fd is None:
         with open_vault(config) as root:
-            return write(config, relative, text, mode, root_fd=root)
+            return write(config, relative, text, mode, root_fd=root, expected=expected)
     try:
-        with _parent(root_fd, relative, create=mode == "create") as (parent, name):
+        with _parent(root_fd, relative, create=mode == "create", expected=expected) as (parent, name):
             if mode == "create":
                 fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | FILE_FLAGS, 0o644, dir_fd=parent)
             else:
-                fd = _open_note(parent, name, os.O_RDWR | os.O_APPEND)
+                fd = _open_note(parent, name, os.O_RDWR | os.O_APPEND, expected=expected)
             try:
-                _regular(fd)
+                _regular(os.fstat(fd))
                 existing = _read_bytes(fd) if mode == "append" else b""
                 separator = b"" if existing.endswith(b"\n\n") or not existing else b"\n" if existing.endswith(b"\n") else b"\n\n"
                 data = separator + (text.rstrip() + "\n").encode("utf-8")

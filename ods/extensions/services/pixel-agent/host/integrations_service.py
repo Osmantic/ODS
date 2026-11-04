@@ -34,8 +34,8 @@ import integrations_apps as apps  # noqa: E402
 import integrations_memory as memory  # noqa: E402
 import integrations_telegram as telegram  # noqa: E402
 import integrations_notes as notes  # noqa: E402
-from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES,  # noqa: E402
-                                 SCHEMA_VERSION, Store, digest, now)
+from integrations_common import (IntegrationError, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, note_approval_digest,  # noqa: E402
+                                 SCHEMA_VERSION, Store, digest, notification_context, now)
 from integrations_app_service import APP_TOOLS, AppActions, app_text  # noqa: E402
 from integrations_ntfy import send_notification  # noqa: E402
 from integrations_mcp import LocalServer, LocalServers, McpSession, describe_tool  # noqa: E402
@@ -159,6 +159,7 @@ def validate_settings(current, incoming):
 def public_config(config, secrets):
     """Settings for the owner's screen: whether each secret is set, never its value."""
     value = json.loads(json.dumps(config))
+    value.pop("approvalBindings", None)
     value["notifications"]["hasPassword"] = bool(secrets.get("ntfyPassword"))
     for server in value["mcp"]["servers"]:
         server["hasToken"] = bool(secrets["mcp"].get(server["id"]))
@@ -170,6 +171,15 @@ def public_config(config, secrets):
 
 
 # ---------------------------------------------------------------- the service
+
+def server_context(server, secrets):
+    """Private identity, never a public credential projection."""
+    return {**{key: server.get(key) for key in ('id', 'kind', 'url', 'command', 'workingFolder')},
+            'envNames': sorted(server.get('envNames', [])),
+            'token': secrets['mcp'].get(server['id'], ''),
+            'env': {name: secrets['mcpEnv'].get(server['id'], {}).get(name, '')
+                    for name in server.get('envNames', [])}}
+
 
 class _AdmittedLocalServers:
     """A session's immutable admission, checked again before publishing a local process."""
@@ -309,6 +319,31 @@ class Integrations(AppActions, memory.MemoryActions, telegram.TelegramActions):
             if missing:
                 raise IntegrationError("invalid-settings", f"Give the {missing[0]} key, or turn it off.")
             # Revoke first, so an interrupted settings write fails closed.
+            # These markers bind the credentials file to the intended provider.
+            # The two file renames can be separated by a crash or a disk error.
+            mcp_contexts = {server["id"]: digest(server_context(server, secrets))
+                            for server in updated["mcp"]["servers"]}
+            previous_contexts = config.get("approvalBindings", {}).get("mcpContexts", {})
+            saved_contexts = secrets.get("mcpContexts", {})
+            for server_id, target in mcp_contexts.items():
+                saved_target = saved_contexts.get(server_id)
+                if saved_target == previous_contexts.get(server_id) or target == saved_target:
+                    continue
+                # An unrelated save must not bind a replacement key to the old URL.
+                retained_token = secrets["mcp"].get(server_id) and server_id not in changes.get("mcp", {})
+                retained_env = set(secrets["mcpEnv"].get(server_id, {})) - set(env_changes.get(server_id, {}))
+                if retained_token or retained_env:
+                    raise IntegrationError("mcp-check-required", "Restore the intended MCP destination or re-enter its credentials before saving.")
+            updated.setdefault("approvalBindings", {})["mcpContexts"] = mcp_contexts
+            secrets["mcpContexts"] = mcp_contexts
+            notification_binding = notification_context(updated, secrets)
+            previous_ntfy = config.get("approvalBindings", {}).get("notificationContext")
+            staged_ntfy = secrets.get("notificationContext")
+            if (previous_ntfy != staged_ntfy and notification_binding != staged_ntfy
+                    and secrets.get("ntfyPassword") and "ntfyPassword" not in changes):
+                raise IntegrationError("notification-check-required", "Restore the intended notification destination or re-enter its password before saving.")
+            updated["approvalBindings"]["notificationContext"] = notification_binding
+            secrets["notificationContext"] = notification_binding
             self.store.save_approvals([])
             self.store.save_secrets(secrets)
             self.store.save_config(updated)
@@ -329,6 +364,13 @@ class Integrations(AppActions, memory.MemoryActions, telegram.TelegramActions):
             config, secrets = self.store.config(), self.store.secrets()
             if self._server(config, server["id"], enabled=False) != server:
                 raise IntegrationError("stale-revision", "These settings changed. Reload them and try again.")
+            bindings = config.get("approvalBindings", {})
+            if "mcpContexts" in bindings or "mcpContexts" in secrets:
+                expected = digest(server_context(server, secrets))
+                for contexts in (bindings.get("mcpContexts"), secrets.get("mcpContexts")):
+                    if not isinstance(contexts, dict) or contexts.get(server["id"]) != expected:
+                        raise IntegrationError("mcp-check-required", "The saved MCP destination and credentials could not be verified together. "
+                                               "Review and save Portal integrations again before connecting.")
             admitted = _AdmittedLocalServers(self, digest(config, secrets, self._runtime_revision))
             return McpSession(server, secrets["mcp"].get(server["id"], ""), secrets["mcpEnv"].get(server["id"], {}), admitted)
 
@@ -477,22 +519,24 @@ class Integrations(AppActions, memory.MemoryActions, telegram.TelegramActions):
     def _notes_write(self, config, request):
         mode, relative = request.get("mode", "append"), str(request.get("path", ""))
         relative = notes.relative_name(relative)
+        notes.validate_write(request.get("text"), mode)
         waiting, notification = None, None
         # Filesystem changes are bounded and remain in the admission lock. Use
         # one descriptor for the approved identity and the eventual write.
         with self.store.lock:
             config, secrets = self.store.config(), self.store.secrets()
-            policy = config["notes"]["write"]
-            if policy == "off":
+            policy = config["notes"].get("write")
+            if policy not in ("ask", "allow"):
                 raise IntegrationError("notes-write-off", "The owner has not allowed Portal to change notes.")
             with notes.open_vault(config) as root:
-                identity = os.fstat(root)
+                binding = None
                 if policy == "ask":
+                    binding = notes.write_binding(root, relative, mode)
                     summary = f"{'Add to' if mode == 'append' else 'Create'} note {relative}"
-                    waiting, notification = self._approval("note", summary, digest("note-v2", config, secrets,
-                        identity.st_dev, identity.st_ino, relative, mode, request.get("text")))
+                    waiting, notification = self._approval("note", summary, note_approval_digest(config, secrets,
+                        binding, relative, mode, request.get("text")))
                 if not waiting:
-                    written = notes.write(config, relative, request.get("text"), mode, root_fd=root)
+                    written = notes.write(config, relative, request.get("text"), mode, root_fd=root, expected=binding)
                     self.store.log("notes-write", written, mode)
         if notification:
             self._notify_approval(notification)
@@ -504,7 +548,7 @@ class Integrations(AppActions, memory.MemoryActions, telegram.TelegramActions):
     def _agent_servers(config):
         return [{"id": server["id"], "name": server["name"],
                  "tools": [{"name": tool["name"], "description": tool["description"], "inputSchema": tool["inputSchema"],
-                            "needsApproval": tool["policy"] == "ask"} for tool in server["tools"] if tool["policy"] != "off"]}
+                            "needsApproval": tool["policy"] == "ask"} for tool in server["tools"] if tool.get("policy") in ("ask", "allow")]}
                 for server in config["mcp"]["servers"] if server["enabled"]]
 
     def _mcp_call(self, config, request):
@@ -521,7 +565,7 @@ class Integrations(AppActions, memory.MemoryActions, telegram.TelegramActions):
             config, secrets = self.store.config(), self.store.secrets()
             server = self._server(config, request.get("server"), enabled=True)
             tool = next((item for item in server["tools"] if item["name"] == name), None)
-            if tool is None or tool["policy"] == "off":
+            if tool is None or tool.get("policy") not in ("ask", "allow"):
                 raise IntegrationError("tool-not-allowed", f"{server['name']} has no allowed tool named {name}. List its tools first.")
             if tool["policy"] == "ask":
                 summary = f"{server['name']}: {name} {json.dumps(arguments, sort_keys=True)[:300]}"

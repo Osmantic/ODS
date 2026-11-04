@@ -4,7 +4,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from integrations_common import IntegrationError, NETWORK_TIMEOUT, open_direct
+from integrations_common import IntegrationError, NETWORK_TIMEOUT, notification_context, open_direct
 
 
 def header_text(value):
@@ -20,6 +20,17 @@ def header_link(link):
 
 
 def send_notification(config, secrets, title, message, priority="default", link="", link_label="Open approvals"):
+    # Untouched legacy pairs keep working. Once either side has been saved with
+    # a marker, require both files to describe the same endpoint/credential pair.
+    # A save interrupted between the two writes must never send a new password
+    # to the old destination (or an old password to the new destination).
+    bindings = config.get("approvalBindings", {})
+    marked = "notificationContext" in bindings or "notificationContext" in secrets
+    if marked:
+        expected = notification_context(config, secrets)
+        if bindings.get("notificationContext") != expected or secrets.get("notificationContext") != expected:
+            raise IntegrationError("notification-check-required", "The saved notification destination and password could not be verified together. "
+                                   "Review and save Portal integrations again before sending notifications.")
     settings = config["notifications"]
     if not settings["enabled"]:
         raise IntegrationError("notifications-off", "Notifications are not set up. The owner can connect ntfy in Settings → Portal integrations.")

@@ -82,6 +82,86 @@ def test_old_note_approval_never_authorizes_changed_state(world, change):
     assert "approved-before-change" not in (target / "Note.md").read_text()
 
 
+@pytest.mark.parametrize("replace", ["rename", "recreate"])
+def test_note_grant_is_not_reusable_for_a_replacement_at_the_same_path(world, replace):
+    service, _, vault = world
+    note = vault / "Note.md"
+    request = dict(path=note.name, text="requested line", mode="append")
+    approve(service, agent(service, "notes-write", **request))
+    if replace == "rename":
+        note.rename(vault / "previous.md")
+    else:
+        note.unlink()
+    note.write_text("replacement\n")
+    renewed = agent(service, "notes-write", **request)
+    assert renewed["status"] == "approval-required"
+    assert note.read_text() == "replacement\n"
+    approve(service, renewed)
+    assert agent(service, "notes-write", **request)["written"] == note.name
+    assert note.read_text().splitlines().count("requested line") == 1
+
+
+def test_unrelated_note_does_not_revoke_an_append_approval(world):
+    service, _, vault = world
+    request = dict(path="Note.md", text="requested line", mode="append")
+    approve(service, agent(service, "notes-write", **request))
+    (vault / "Other.md").write_text("another note")
+    assert agent(service, "notes-write", **request)["written"] == "Note.md"
+
+
+def test_weaker_saved_note_grants_require_a_fresh_owner_request(world):
+    service, store, vault = world
+    req = dict(path="Note.md", text="review again", mode="append")
+    current = agent(service, "notes-write", **req)
+    original, = store.approvals()
+    legacy = {**original, "digest": "a" * 64}
+    mcp = {**legacy, "id": "other-tool", "kind": "mcp"}
+    store.save_approvals([legacy, {**legacy, "id": "previously-approved", "state": "approved"}, mcp])
+    assert store.approvals() == [mcp]
+    with pytest.raises(IntegrationError, match="no longer waiting"):
+        approve(service, current)
+    fresh = agent(service, "notes-write", **req)
+    assert fresh["status"] == "approval-required" and fresh["approvalId"] != current["approvalId"]
+    assert (vault / "Note.md").read_text() == "original\n"
+
+
+def test_create_approval_tracks_the_existing_parent_without_creating_folders(world):
+    service, _, vault = world
+    parent = vault / "Inbox"
+    parent.mkdir()
+    request = dict(path="Inbox/Week/Status.md", text="status", mode="create")
+    approve(service, agent(service, "notes-write", **request))
+    assert not (parent / "Week").exists()
+    parent.rename(vault / "OldInbox")
+    parent.mkdir()
+    replacement = agent(service, "notes-write", **request)
+    assert replacement["status"] == "approval-required" and not (parent / "Week").exists()
+    approve(service, replacement)
+    assert agent(service, "notes-write", **request)["written"] == request["path"]
+    assert (parent / "Week/Status.md").read_text() == "status\n"
+
+
+def test_replacement_at_final_open_cannot_receive_the_approved_append(world, monkeypatch):
+    service, _, vault = world
+    note = vault / "Note.md"
+    request = dict(path=note.name, text="approved", mode="append")
+    approve(service, agent(service, "notes-write", **request))
+    actual_open = os.open
+    replaced = []
+
+    def replace_at_open(path, flags, *args, **kwargs):
+        if path == note.name and flags & os.O_APPEND and not replaced:
+            replaced.append(True)
+            note.unlink()
+            note.write_text("different file\n")
+        return actual_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(notes.os, "open", replace_at_open)
+    with pytest.raises(IntegrationError, match="destination changed"):
+        agent(service, "notes-write", **request)
+    assert replaced and note.read_text() == "different file\n"
+
+
 def test_saved_settings_revoke_pending_ids_before_any_other_write(world):
     service, store, _ = world
     pending = agent(service, "notes-write", path="Note.md", text="later", mode="append")
@@ -468,3 +548,84 @@ def test_redirects_never_forward_secrets_or_replay_the_action(world, code, same_
         for server in (source, target):
             server.shutdown()
             server.server_close()
+
+@pytest.mark.parametrize("after_commit", [False, True])
+def test_interrupted_owner_save_keeps_destination_and_credentials_together(world, after_commit):
+    service, store, _ = world
+    received = []
+
+    class Receiver(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            received.append((self.server.label, self.headers.get("Authorization")))
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(403)
+            self.end_headers()
+
+        def log_message(self, *_):
+            pass
+
+    servers = []
+    try:
+        for label in ("old", "new"):
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Receiver)
+            server.label = label
+            servers.append(server)
+            threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01}, daemon=True).start()
+
+        def settings(target):
+            config = incoming(store)
+            config["mcp"] = {"servers": [{"id": "home", "name": "Home", "kind": "http", "preset": "home-assistant",
+                "enabled": False, "url": f"http://127.0.0.1:{target.server_port}/api/mcp", "policies": {}}]}
+            return config
+
+        save(service, store, settings(servers[0]), {"mcp": {"home": "old-key"}})
+        write = store.save_config
+
+        def interrupt(value):
+            if after_commit:
+                write(value)
+            raise OSError("fixture interruption")
+
+        with patch.object(store, "save_config", side_effect=interrupt), pytest.raises(OSError):
+            save(service, store, settings(servers[1]), {"mcp": {"home": "new-key"}})
+        reopened = Integrations(Store(store.root))
+        with pytest.raises(IntegrationError) as refused:
+            reopened.handle("owner", {"schemaVersion": 1, "action": "discover", "serverId": "home"})
+        if after_commit:
+            assert received == [("new", "Bearer new-key")]
+        else:
+            assert refused.value.code == "mcp-check-required" and received == []
+            with pytest.raises(IntegrationError) as unrelated:
+                save(reopened, reopened.store, settings(servers[0]))
+            assert unrelated.value.code == "mcp-check-required"
+        received.clear()
+        save(reopened, reopened.store, settings(servers[1]), {"mcp": {"home": "new-key"}})
+        assert "old-key" not in (store.root / "secrets.json").read_text()
+        with pytest.raises(IntegrationError):
+            reopened.handle("owner", {"schemaVersion": 1, "action": "discover", "serverId": "home"})
+        assert received == [("new", "Bearer new-key")]
+        assert "approvalBindings" not in reopened.handle("owner", {"schemaVersion": 1, "action": "get"})["settings"]
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+
+
+def test_interrupted_notification_rotation_requires_the_intended_destination_or_password(world):
+    service, store, _ = world
+    current = incoming(store)
+    current["notifications"].update(enabled=True, url="https://previous.invalid", topic="fixture")
+    save(service, store, current, {"ntfyPassword": "fixture-old"})
+    changed = copy.deepcopy(current)
+    changed["notifications"]["url"] = "https://replacement.invalid"
+    with patch.object(store, "save_config", side_effect=OSError("fixture")), pytest.raises(OSError):
+        save(service, store, changed, {"ntfyPassword": "fixture-new"})
+    reopened = Integrations(Store(store.root))
+    with pytest.raises(IntegrationError) as refused:
+        agent(reopened, "notify", title="Fixture", message="Do not send")
+    assert refused.value.code == "notification-check-required"
+    with pytest.raises(IntegrationError) as unrelated:
+        save(reopened, reopened.store, current)
+    assert unrelated.value.code == "notification-check-required"
+    save(reopened, reopened.store, changed)
+    assert reopened.store.config()["notifications"]["url"] == "https://replacement.invalid"

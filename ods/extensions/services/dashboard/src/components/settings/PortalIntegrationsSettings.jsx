@@ -3,7 +3,7 @@ import McpServerCard from './McpServerCard'
 import PortalAppsSettings from './PortalAppsSettings'
 import PortalMemorySettings from './PortalMemorySettings'
 import PortalTelegramSettings from './PortalTelegramSettings'
-import { HOME_ASSISTANT, NO_SECRETS, POLICY_LABELS, TASK_NOTICES, approvalLinkFor, draftFrom, idsForSave, newServerId, renameServers, sameDraft, secretsFrom, settingsFrom, typedForDraft } from './portalIntegrationsForm'
+import { HOME_ASSISTANT, NO_SECRETS, POLICY_LABELS, TASK_NOTICES, approvalLinkFor, draftFrom, idsForSave, newServerId, rebaseDraft, renameServers, sameDraft, secretsFrom, settingsFrom, typedForDraft } from './portalIntegrationsForm'
 
 const inputStyle = 'w-full rounded border border-theme-border bg-theme-bg px-3 py-2 text-theme-text focus:outline-none focus:ring-2 focus:ring-theme-accent'
 const buttonStyle = 'rounded border border-theme-border px-3 py-2 text-sm hover:bg-white/5 disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-theme-accent'
@@ -18,6 +18,8 @@ async function call(action, payload) {
   if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Portal integrations are unavailable. Reload to try again.')
   return body
 }
+
+const CHANGED_ELSEWHERE = 'These settings were saved in another window. Reload to keep your changes on top of them, or Discard your changes.'
 
 const when = seconds => new Date(seconds * 1000).toLocaleString()
 
@@ -70,6 +72,9 @@ function Activity({ entries, busy, onClear }) {
 
 export default function PortalIntegrationsSettings() {
   const [view, setView] = useState(null)
+  // The saved settings the draft was made from. Its revision goes with every save of the draft,
+  // so a save after another window's save is refused instead of undoing that window's changes.
+  const [base, setBase] = useState(null)
   const [draft, setDraft] = useState(null)
   const [typed, setTyped] = useState(NO_SECRETS)
   const [busy, setBusy] = useState(false)
@@ -77,22 +82,31 @@ export default function PortalIntegrationsSettings() {
   const [notice, setNotice] = useState('')
   const [appResult, setAppResult] = useState(null)
   const typedSecrets = draft ? secretsFrom(typedForDraft(typed, draft)) : {}
-  const dirty = Boolean(view && draft) && (!sameDraft(draft, draftFrom(view.settings)) || Object.keys(typedSecrets).length > 0)
+  const dirty = Boolean(base && draft) && (!sameDraft(draft, draftFrom(base)) || Object.keys(typedSecrets).length > 0)
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
+  const baseRef = useRef(base)
+  baseRef.current = base
 
-  const show = useCallback((result, { keepDraft = false } = {}) => {
+  // keepDraft: new approvals and activity only; rebase: the owner's edits moved onto the newer settings.
+  const show = useCallback((result, { keepDraft = false, rebase = false } = {}) => {
     setView(result)
-    if (!keepDraft) { setDraft(draftFrom(result.settings)); setTyped(NO_SECRETS) }
+    if (rebase && baseRef.current) {
+      const from = draftFrom(baseRef.current), latest = draftFrom(result.settings)
+      setDraft(previous => rebaseDraft(previous, from, latest))
+      setBase(result.settings)
+    } else if (!keepDraft) {
+      setBase(result.settings); setDraft(draftFrom(result.settings)); setTyped(NO_SECRETS)
+    }
   }, [])
 
   // What happened, also returned so a card far down the page can show it next to its button.
-  const run = useCallback(async (steps, done, { keepDraft = false } = {}) => {
+  const run = useCallback(async (steps, done, { keepDraft = false, rebase = false } = {}) => {
     setBusy(true); setError(''); setNotice('')
     let result
     try {
       for (const [action, payload] of steps) result = await call(action, payload)
-      show(result, { keepDraft })
+      show(result, { keepDraft, rebase })
       if (result.notice || done) setNotice(result.notice || done)
       return { ok: true, message: result.notice || done || '' }
     } catch (failure) {
@@ -109,10 +123,13 @@ export default function PortalIntegrationsSettings() {
   const loadWatches = useCallback(async () => (await call('watch-list')).watches, [])
 
   useEffect(() => { run([[null]]) }, [run])
-  // New approvals arrive while this page is open; keep the owner's unsaved edits.
+  // New approvals arrive while this page is open; keep the owner's unsaved edits, and say when the
+  // settings were saved elsewhere meanwhile.
   useEffect(() => {
-    const timer = setInterval(() => call(null).then(result => show(result, { keepDraft: dirtyRef.current }))
-      .catch(failure => setError(failure.message)), 15000)
+    const timer = setInterval(() => call(null).then(result => {
+      show(result, { keepDraft: dirtyRef.current })
+      if (dirtyRef.current && result.settings.revision !== baseRef.current?.revision) setNotice(CHANGED_ELSEWHERE)
+    }).catch(failure => setError(failure.message)), 15000)
     return () => clearInterval(timer)
   }, [show])
   // Leaving the page with unsaved changes asks first.
@@ -123,14 +140,14 @@ export default function PortalIntegrationsSettings() {
     return () => window.removeEventListener('beforeunload', warn)
   }, [dirty])
 
-  if (!view || !draft) return <section className={cardStyle}><p className="text-sm text-theme-text-muted" role={error ? 'alert' : 'status'}>{error || 'Loading Portal integrations…'}</p>
+  if (!view || !base || !draft) return <section className={cardStyle}><p className="text-sm text-theme-text-muted" role={error ? 'alert' : 'status'}>{error || 'Loading Portal integrations…'}</p>
     {error && <button className={buttonStyle} onClick={() => run([[null]])}>Reload</button>}</section>
 
-  const ids = idsForSave(draft, new Set(view.settings.mcp.servers.map(server => server.id)))
-  const saveStep = () => ['save', { expectedRevision: view.settings.revision, ...renameServers(settingsFrom(draft), typedSecrets, ids) }]
+  const ids = idsForSave(draft, new Set(base.mcp.servers.map(server => server.id)))
+  const saveStep = () => ['save', { expectedRevision: base.revision, ...renameServers(settingsFrom(draft), typedSecrets, ids) }]
   const withSave = steps => (dirty ? [saveStep(), ...steps] : steps)
   const save = () => run([saveStep()], 'Saved.')
-  const discard = () => { setDraft(draftFrom(view.settings)); setTyped(NO_SECRETS); setError(''); setNotice('Changes discarded.') }
+  const discard = () => { setBase(view.settings); setDraft(draftFrom(view.settings)); setTyped(NO_SECRETS); setError(''); setNotice('Changes discarded.') }
   const setNotifications = patch => setDraft(previous => ({ ...previous, notifications: { ...previous.notifications, ...patch } }))
   const setNotes = patch => setDraft(previous => ({ ...previous, notes: { ...previous.notes, ...patch } }))
   const setServer = (id, patch) => setDraft(previous => ({ ...previous, servers: previous.servers.map(server => server.id === id ? { ...server, ...patch } : server) }))
@@ -152,7 +169,7 @@ export default function PortalIntegrationsSettings() {
         <div className="min-w-0"><h2 id="portal-integrations-title" className="text-lg font-semibold">Portal integrations</h2>
           <p className="text-sm text-theme-text-muted">Let Portal read your notes, send you notifications and reminders, remember what you tell it, chat with you on Telegram, use MCP servers such as Home Assistant, and work with your documents, photos, watched pages and news. Passwords and tokens stay on this computer.</p></div>
         <div className="flex gap-2">
-          <button className={buttonStyle} disabled={busy} onClick={() => run([[null]], '', { keepDraft: dirty })}>Reload</button>
+          <button className={buttonStyle} disabled={busy} onClick={() => run([[null]], dirty ? 'Reloaded. Your unsaved changes are kept on top of the newest settings.' : '', { rebase: dirty })}>Reload</button>
           <button className={buttonStyle} disabled={busy || !dirty} onClick={save}>Save changes</button>
         </div>
       </div>

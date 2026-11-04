@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { createElement } from 'react'
 import { render } from '../../test/test-utils'
 import PortalIntegrationsSettings from './PortalIntegrationsSettings'
-import { newServerId, savedTools, secretsFrom, typedForDraft } from './portalIntegrationsForm'
+import { draftFrom, newServerId, rebaseDraft, savedTools, secretsFrom, typedForDraft } from './portalIntegrationsForm'
 
 const TOOLS = [
   { name: 'GetLiveContext', title: '', description: 'Read device states', readOnly: true, destructive: false, inputSchema: {}, policy: 'allow' },
@@ -70,7 +70,9 @@ function fakeService(initial = view(), { watches = WATCHES } = {}) {
   })
   vi.stubGlobal('fetch', fetchMock)
   render(createElement(PortalIntegrationsSettings))
-  return { posts, fetchMock }
+  // Another window saving: the settings change and their revision goes up.
+  const saveElsewhere = change => { current = { ...current, settings: change({ ...current.settings, revision: current.settings.revision + 1 }) } }
+  return { posts, fetchMock, saveElsewhere, saved: () => current.settings }
 }
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
@@ -406,4 +408,73 @@ it('explains why a digest cannot be sent while notifications are off', async () 
 
 it('drafts and saves every app field, and sends only typed app secrets', () => {
   expect(secretsFrom({ ntfyPassword: '', mcp: {}, mcpEnv: {}, apps: { documents: 'tok', photos: '' } })).toEqual({ apps: { documents: 'tok' } })
+})
+
+it('never puts back a change saved in another window, even after the page refreshes', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    const start = settings(1)
+    const { posts, saveElsewhere, saved } = fakeService(view({ settings: { ...start, notes: { ...start.notes, write: 'allow' } } }))
+    await screen.findByText('Notes (Obsidian vault)')
+    // A edits the ntfy user; B turns adding to notes off and saves.
+    fireEvent.change(screen.getByLabelText('User (optional)'), { target: { value: 'a-user' } })
+    saveElsewhere(current => ({ ...current, notes: { ...current.notes, write: 'off' } }))
+    // A's page refreshes in the background: the edit stays, and the page says what happened.
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(await screen.findByText(/saved in another window/)).toBeInTheDocument()
+    expect(screen.getByLabelText('User (optional)')).toHaveValue('a-user')
+    // A saves: refused, because A's edits were made on the older settings.
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('These settings changed in another window.')
+    expect(posts.at(-1)[1].expectedRevision).toBe(1)
+    expect(saved().notes.write).toBe('off')
+    // Reload keeps A's edit on top of B's settings; saving then keeps both.
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+    expect(await screen.findByText(/Your unsaved changes are kept/)).toBeInTheDocument()
+    expect(screen.getByLabelText('User (optional)')).toHaveValue('a-user')
+    expect(screen.getByLabelText('Adding to notes')).toHaveValue('off')
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await screen.findByText('Saved.')
+    expect(posts.at(-1)[1]).toMatchObject({ expectedRevision: 2, settings: { notifications: { username: 'a-user' }, notes: { write: 'off' } } })
+    expect(saved().notes.write).toBe('off')
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('a refresh without unsaved edits simply shows the newer settings', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    const { saveElsewhere } = fakeService()
+    await screen.findByText('Notes (Obsidian vault)')
+    saveElsewhere(current => ({ ...current, notes: { ...current.notes, write: 'off' } }))
+    await vi.advanceTimersByTimeAsync(15000)
+    await waitFor(() => expect(screen.getByLabelText('Adding to notes')).toHaveValue('off'))
+    expect(screen.queryByText(/saved in another window/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('moves only the owner\'s own changes onto newer settings, server by server and tool by tool', () => {
+  const tool = (name, policy) => ({ ...TOOLS[0], name, policy })
+  const server = (id, tools, extra = {}) => ({ id, name: id, kind: 'http', preset: '', enabled: true, url: `http://${id}/mcp`, command: '',
+    workingFolder: '', envNames: [], tools: tools.map(([name, policy]) => tool(name, policy)), discoveredAt: 1, ...extra })
+  const base = draftFrom(settings(1, [server('ha', [['Read', 'allow'], ['TurnOn', 'allow']]), server('old', [])]))
+  // Here: TurnOn asks first, "old" removed, "mine" added, ntfy user changed.
+  const draft = { ...base, notifications: { ...base.notifications, username: 'me' },
+    servers: [{ ...base.servers[0], policies: { Read: 'allow', TurnOn: 'ask' } }, draftFrom(settings(0, [server('mine', [])])).servers[0]] }
+  // Elsewhere: Read turned off, ntfy topic changed, "theirs" added.
+  const latestSettings = settings(2, [server('ha', [['Read', 'off'], ['TurnOn', 'allow']]), server('old', []), server('theirs', [])])
+  const latest = draftFrom({ ...latestSettings, notifications: { ...latestSettings.notifications, topic: 'family' } })
+  const merged = rebaseDraft(draft, base, latest)
+  expect(merged.notifications).toMatchObject({ username: 'me', topic: 'family' })
+  expect(merged.servers.map(item => item.id)).toEqual(['ha', 'theirs', 'mine'])
+  expect(merged.servers[0].policies).toEqual({ Read: 'off', TurnOn: 'ask' })
+  expect(rebaseDraft(base, base, latest)).toEqual(latest)
+  // Parts beyond these (the apps) move over the same way.
+  const withApps = (draft, documents) => ({ ...draft, apps: { documents: { enabled: documents, url: 'http://d' } } })
+  expect(rebaseDraft(withApps(base, true), withApps(base, false), withApps(latest, false)).apps.documents.enabled).toBe(true)
+  expect(rebaseDraft(withApps(base, false), withApps(base, false), withApps(latest, true)).apps.documents.enabled).toBe(true)
 })

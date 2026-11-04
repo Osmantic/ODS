@@ -170,6 +170,50 @@ class IntegrationsTests(unittest.TestCase):
             with self.assertRaises(service.IntegrationError):
                 self.agent("notes-read", path=bad)
 
+    def test_unknown_saved_note_policy_denies_writes_and_preserves_existing_approval(self):
+        self.save(self.settings(write='ask'))
+        fields = dict(path='Groceries.md', text='approved line', mode='append')
+        pending = self.agent('notes-write', **fields)
+        self.owner('decide', approvalId=pending['approvalId'], decision='approve')
+        grants = self.store.approvals()
+        original = (self.vault / 'Groceries.md').read_bytes()
+        for policy in ('unknown', None, True, {}, 'missing'):
+            with self.subTest(policy=policy):
+                config = self.store.config()
+                if policy == 'missing':
+                    config['notes'].pop('write', None)
+                else:
+                    config['notes']['write'] = policy
+                self.store.save_config(config)
+                self.assertEqual(self.agent('notes-read', path='Groceries.md')['path'], 'Groceries.md')
+                with self.assertRaises(service.IntegrationError) as refused:
+                    self.agent('notes-write', **fields)
+                self.assertEqual(refused.exception.code, 'notes-write-off')
+                self.assertEqual((self.vault / 'Groceries.md').read_bytes(), original)
+                self.assertEqual(self.store.approvals(), grants)
+
+    def test_unknown_saved_mcp_policy_hides_only_that_tool_and_refuses_direct_calls(self):
+        self.save(self.settings(servers=[self.home_server()]), secrets={'mcp': {'home': 'secret-token'}})
+        self.owner('discover', serverId='home')
+        self.save(self.settings(servers=[self.home_server(enabled=True)]))
+        for policy in ('unknown', None, True, {}, 'missing'):
+            with self.subTest(policy=policy):
+                config = self.store.config()
+                target = next(tool for tool in config['mcp']['servers'][0]['tools'] if tool['name'] == 'unlock')
+                if policy == 'missing':
+                    target.pop('policy', None)
+                else:
+                    target['policy'] = policy
+                self.store.save_config(config)
+                names = [item['name'] for item in self.agent('mcp-tools')['servers'][0]['tools']]
+                self.assertIn('get_state', names)
+                self.assertNotIn('unlock', names)
+                with self.assertRaises(service.IntegrationError) as refused:
+                    self.agent('mcp-call', server='home', tool='unlock', arguments={'entity': 'lock.front'})
+                self.assertEqual(refused.exception.code, 'tool-not-allowed')
+                self.assertFalse(FakeMcp.calls)
+                self.assertFalse(self.store.approvals())
+
     def test_note_writes_follow_the_owner_policy_and_approvals_are_single_use(self):
         self.save(self.settings(write="off"), secrets={"ntfyPassword": "pw"})
         with self.assertRaisesRegex(service.IntegrationError, "not allowed"):
