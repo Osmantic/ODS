@@ -271,3 +271,29 @@ it('moves only the owner\'s own changes onto newer settings, server by server an
   expect(merged.servers[0].policies).toEqual({ Read: 'off', TurnOn: 'ask' })
   expect(rebaseDraft(base, base, latest)).toEqual(latest)
 })
+
+it('drops a typed credential if its address changed in another window and keeps unrelated edits', async () => {
+  const server = { id: 'old', name: 'Old', kind: 'http', preset: '', url: 'https://old.example/mcp',
+    command: '', workingFolder: '', envNames: [], enabled: false, tools: [] }
+  const { posts, saveElsewhere } = fakeService(view({ settings: settings(1, [server]) }))
+  await screen.findByText('Notes (Obsidian vault)')
+  fireEvent.change(screen.getByLabelText('Password or access token'), { target: { value: 'for-old-host' } })
+  fireEvent.change(screen.getByLabelText('Vault folder (full path)'), { target: { value: '/qa/notes' } })
+  saveElsewhere(current => ({ ...current, notifications: { ...current.notifications, url: 'https://new.example' }, mcp: { servers: [] } }))
+  fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+  await waitFor(() => expect(screen.getByLabelText('ntfy address')).toHaveValue('https://new.example'))
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+  await screen.findByText('Saved.')
+  expect(posts.at(-1)[1]).toMatchObject({ expectedRevision: 2, settings: { notes: { vaultPath: '/qa/notes' }, mcp: { servers: [] } } })
+  expect(posts.at(-1)[1].secrets).toEqual({})
+})
+
+it('forgets a removed server token when a new server reuses the name', async () => {
+  fakeService()
+  const add = await screen.findByRole('button', { name: 'Add Home Assistant' })
+  fireEvent.click(add)
+  fireEvent.change(screen.getByLabelText('Long-lived access token'), { target: { value: 'for-removed-server' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Remove Home Assistant' }))
+  fireEvent.click(add)
+  expect(screen.getByLabelText('Long-lived access token')).toHaveValue('')
+})

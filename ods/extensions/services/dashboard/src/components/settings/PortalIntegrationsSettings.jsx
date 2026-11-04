@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import McpServerCard from './McpServerCard'
-import { HOME_ASSISTANT, NO_SECRETS, POLICY_LABELS, approvalLinkFor, draftFrom, idsForSave, newServerId, rebaseDraft, renameServers, sameDraft, secretsFrom, settingsFrom, typedForDraft } from './portalIntegrationsForm'
+import { HOME_ASSISTANT, NO_SECRETS, POLICY_LABELS, approvalLinkFor, credentialsAfterRefresh, draftFrom, idsForSave, newServerId, rebaseDraft, renameServers, sameDraft, secretsFrom, settingsFrom, typedForDraft } from './portalIntegrationsForm'
 
 const inputStyle = 'w-full rounded border border-theme-border bg-theme-bg px-3 py-2 text-theme-text focus:outline-none focus:ring-2 focus:ring-theme-accent'
 const buttonStyle = 'rounded border border-theme-border px-3 py-2 text-sm hover:bg-white/5 disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-theme-accent'
@@ -73,6 +73,8 @@ export default function PortalIntegrationsSettings() {
   const dirty = Boolean(base && draft) && (!sameDraft(draft, draftFrom(base)) || Object.keys(typedSecrets).length > 0)
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
+  const editorRef = useRef({ draft, typed })
+  editorRef.current = { draft, typed }
   const baseRef = useRef(base)
   baseRef.current = base
 
@@ -81,8 +83,11 @@ export default function PortalIntegrationsSettings() {
     setView(result)
     if (rebase && baseRef.current) {
       const from = draftFrom(baseRef.current), latest = draftFrom(result.settings)
-      setDraft(previous => rebaseDraft(previous, from, latest))
-      setBase(result.settings)
+      const previous = editorRef.current
+      const next = rebaseDraft(previous.draft, from, latest)
+      const retained = credentialsAfterRefresh(previous.typed, previous.draft, next)
+      setDraft(next); setTyped(retained); setBase(result.settings)
+      if (!sameDraft(secretsFrom(previous.typed), secretsFrom(retained))) return 'An integration destination changed. Re-enter any cleared credential for the new destination.'
     } else if (!keepDraft) {
       setBase(result.settings); setDraft(draftFrom(result.settings)); setTyped(NO_SECRETS)
     }
@@ -93,8 +98,8 @@ export default function PortalIntegrationsSettings() {
     try {
       let result
       for (const [action, payload] of steps) result = await call(action, payload)
-      show(result, { keepDraft, rebase })
-      if (result.notice || done) setNotice(result.notice || done)
+      const refreshNotice = show(result, { keepDraft, rebase })
+      if (refreshNotice || result.notice || done) setNotice(refreshNotice || result.notice || done)
     } catch (failure) {
       setError(failure.message)
     } finally {
@@ -133,7 +138,10 @@ export default function PortalIntegrationsSettings() {
   const setServer = (id, patch) => setDraft(previous => ({ ...previous, servers: previous.servers.map(server => server.id === id ? { ...server, ...patch } : server) }))
   const addServer = template => setDraft(previous => ({ ...previous, servers: [...previous.servers, {
     id: newServerId(template.name, previous.servers), enabled: false, url: '', command: '', workingFolder: '', envNames: [], policies: {}, preset: '', kind: 'http', ...template }] }))
-  const removeServer = id => setDraft(previous => ({ ...previous, servers: previous.servers.filter(server => server.id !== id) }))
+  const removeServer = id => {
+    const next = { ...draft, servers: draft.servers.filter(server => server.id !== id) }
+    setDraft(next); setTyped(previous => typedForDraft(previous, next))
+  }
   const savedServer = id => view.settings.mcp.servers.find(server => server.id === id)
   const setEnvValue = (id, name, value) => setTyped(previous => ({ ...previous, mcpEnv: { ...previous.mcpEnv, [id]: { ...previous.mcpEnv[id], [name]: value } } }))
   const notifications = draft.notifications
