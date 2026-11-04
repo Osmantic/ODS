@@ -82,6 +82,11 @@ const WOLF_HP_SCALE = 3;
 // ENEMY_SPEED_SCALE alone and is untouched. Keyed on kind "fenris" (the only wolf kind), so it
 // covers pack hounds and the hound boss Skarnax alike, same convention as WOLF_HP_SCALE.
 const WOLF_SPD_SCALE = .85;
+// The two cave trolls (Vhelmor, Druskral) were asked to feel tanky and to get scarier once hurt.
+// One HP dial next to the wolf precedent, keyed on kind "troll": the boss spawn multiplies it in,
+// and the regen / enraged-behaviour side lives in ui.js behind the same kind test plus boss.
+// Both BOSS_STATS.troll entries are trolls and no regular enemy is, so nothing else is affected.
+const TROLL_HP_SCALE = 1.3;   // +30% health for the troll bosses
 // +50% XP required to reach each level. Multiplies the XP gate itself, not the curve's growth
 // rate, so every threshold (including the initial one) is uniformly 1.5x further away.
 const XP_REQUIREMENT_SCALE = 1.5;
@@ -156,32 +161,129 @@ const LIGHT_FIRE_A = .93;
 const BOSS_REINFRESH_S = 60;
 const FINAL_BOSS_REINFRESH_S = 30;
 const FINAL_BOSS_KIND = "hollowcrown";
+// Rukhmak's special power: he calls his reinforcements twice as often as any other boss. Keyed on
+// kind rather than realm, so it follows him wherever he is posted.
+const CAPTAIN_BOSS_KIND = "captain";
+// Rukhmak's numbers, for readers of the constant block: 30 s in loop 1, 15 s from loop 2 on. They
+// are not declared as constants because the function below derives them from the general rule, and
+// a second copy of each value here could only drift from it, not guard it.
 
 /* ---------- endless quest: the six realms repeat forever ----------
    Clearing realm 6 no longer ends the run. The quest-victory panel still appears, its button
-   now reads Continue, and the next realm is realm 1 again with:
-     · +50% more enemies at every spawn (wave, boss escort, boss reinforcements),
-     · +50% more boss health,
+   now reads Continue, and the next realm is realm 1 again. Each completed loop now multiplies:
+     · enemy count by 1.25 at every spawn (wave, boss escort, boss reinforcements), capped at 4x
+       that spawn's size — 1.25, 1.56, 1.95, 2.44, 3.05, 3.81, then 4x from loop 8 on, which on a
+       capped wave base is the sequence 37, 46, 58, 73, 91, 114, 120,
+     · enemy health by 1.5 on top of the per-realm ramp, becoming x2 per loop on the loop after the
+       count locks, carrying on from where it stands rather than recomputing the earlier loops,
+     · enemy and boss damage by 1.15,
+     · enemy and boss movement speed by 1.1, capped at +50% in total,
+     · boss health by 2,
      · boss reinforcements already on the realm-6 cadence from the first boss of the loop.
    Realm 6's interval is the ceiling forever: deeper loops raise crowd size and boss bulk only,
-   never the clock. Enemy damage and ordinary wave-enemy HP stay at their loop values, so no
-   loop becomes instantly lethal — the pressure is numbers and a 1.5x-bulk boss, not a one-hit
-   wall.
-   Loop 1 multiplies by exactly 1, so a first pass plays as it always did. */
+   never the clock. XP and gold are untouched by loops, as before.
+   Loop 1 multiplies every factor below by exactly 1, so a first pass plays as it always did.
+
+   Why the count is capped and health is not. An uncapped count is what made deep loops read as
+   overcrowded rather than hard, and crowd rasterisation and AI are also what caused the frame
+   stalls; 4x a spawn's loop 1 size is the ceiling for all of it. Health is deliberately uncapped,
+   and deliberately doubles per loop once the count locks, so depth keeps being paid for after the
+   arena stops filling up. The loop at which the cap binds is a property of each spawn expression,
+   not a global constant: see countCapLoop, and the OWNER-SPECIFIED CURVES note below for
+   how the crossover is carried forward without a jump. */
 const REALM_COUNT = 6;                                    // realms per loop: always 1..6
-const LOOP_ENEMY_SCALE = 1.5;                             // x1.5 foes per completed loop
-const LOOP_BOSS_HP_SCALE = 1.5;                           // x1.5 boss HP per completed loop
+// --- per-loop progression -------------------------------------------------
+// Replaces the flat x1.5 on enemy count and x1.5 on boss HP. Each is a function of loop whose loop-1
+// value is exactly 1, so the first pass is untouched.
+//
+// OWNER-SPECIFIED CURVES, settled after two rounds of play. probe/loop-scaling.test.js pins every
+// number below, so a retune is a loud test failure rather than silent drift.
+//
+// (a) COUNT COMPOUNDS at x1.25 per loop and locks at 4x. Earlier drafts grew the crowd by a flat +25%
+//     OF LOOP 1 each loop (30, 37, 45, 52...), which pushed the cap out to loop 13. Compounding gives
+//     30, 37, 46, 58, 73, 91, 114, 120 and locks at loop 8 — matching the shipped x1.5 crowd curve at
+//     loops 2 and 3 rather than undercutting it, then flattening sooner.
+//
+// (b) HEALTH CARRIES FORWARD THROUGH THE CROSSOVER, with no jump. x1.35 per loop up to the cap, then
+//     x2 per loop after it, each loop multiplying the PREVIOUS loop's value. The naive form — swap the
+//     exponent base once capped — recomputes the whole history at the new rate, which at the shipped
+//     growCap of 7 makes loop 8 about 16x loop 7. That is what this shape removes: the crossover loop
+//     is exactly x1.35 x2 = x2.7 over the loop before it, then x2 per loop from there on.
+//
+//     The crossover is a property of the SPAWN, not a global constant, so the health curve is derived
+//     from the count curve: countCapLoop() reports the loop the crowd grew up to, and loopHpMul
+//     switches on it. A spawn whose curve locks at loop 3 (a hypothetical retune) gets its x3 crossover
+//     at loop 3. This is why loopHpMul takes a grow-cap rather than a boolean flag.
+//
+// (c) BOSS HEALTH is its own +100%-per-loop dial ALONE. The request moves the boss's existing
+//     per-loop term from +50% to +100%; it does not ask for the new enemy-health term to apply to
+//     bosses as well, so it does not. Bosses and their escorts stay in the same league because both
+//     roughly double per loop.
+const LOOP_COUNT_STEP = 1.25;   // x1.25 crowd per completed loop, compounding
+const LOOP_COUNT_CAP = 4;       // ...but never more than 4x that spawn's loop 1 size (loop 8 onward)
+const LOOP_HP_STEP = 1.35;      // x1.35 enemy HP per loop while the crowd is still growing
+const LOOP_HP_STEP_CAPPED = 2;  // x2 per loop once the crowd has locked
+const LOOP_DMG_STEP = 1.15;     // x1.15 enemy and boss damage per loop
+const LOOP_SPD_STEP = 1.1;      // x1.1 enemy and boss movement speed per loop, compounding...
+const LOOP_SPD_CAP = 0.5;       // ...capped at a +50% BONUS in total (reached at loop 6)
+const LOOP_BOSS_HP_STEP = 2;    // x2 boss health per completed loop
+function loopCountMul(loop) {
+  return Math.min(LOOP_COUNT_CAP, Math.pow(LOOP_COUNT_STEP, Math.max(0, (loop | 0) - 1)));
+}
+// How many loops the crowd still GREW, i.e. the loop on which it locked. The spawn's curve is
+// monotonic and caps at LOOP_COUNT_CAP, so once it locks it stays locked and one number describes it:
+// 7 for the shipped x1.25 curve, which locks at loop 8. Passed to loopHpMul so the crossover belongs
+// to the spawn rather than to a global loop number.
+function countCapLoop(mulAtLoop) {
+  let growing = 0;
+  for (let L = 1; L <= 64; L++) { if (mulAtLoop(L) < LOOP_COUNT_CAP - 1e-9) growing++; else break; }
+  return growing;
+}
+// Health carries forward through the crossover: x1.35 for every loop the crowd grew, then x2 from the
+// loop it locks on. With growCap = 7 that is x1.35 through loop 8, loop 8 over loop 7 is 1.35x2 = x2.7,
+// and every later loop is x2. No exponent is ever rebased, which is the whole point — the first
+// version swapped the base once capped and jumped hard at the crossover.
+function loopHpMul(loop, growCap) {
+  const grow = Math.max(0, growCap | 0), lp = Math.max(0, (loop | 0) - 1);
+  if (lp <= grow) return Math.pow(LOOP_HP_STEP, lp);
+  // The loop after the crowd locks is where x2 joins the x1.5, so it is a x3 step over the loop before
+  // it and every later loop is a plain x2. No exponent is rebased at any point — that is what made the
+  // superseded version jump ~51x.
+  return Math.pow(LOOP_HP_STEP, grow) * Math.pow(LOOP_HP_STEP_CAPPED, lp - grow);
+}
+function loopDmgMul(loop) { return Math.pow(LOOP_DMG_STEP, Math.max(0, (loop | 0) - 1)); }
+// Compounding, capped on the BONUS: each loop is x1.1 the last, and LOOP_SPD_CAP is the cap on the
+// bonus over loop 1, so the multiplier locks at exactly 1.5 (+50%) from loop 6, where 1.1^5 - 1 =
+// 0.61 exceeds it. LOOP_SPD_CAP is a BONUS cap (0.5), not a total (1.5): the 1 + is added after the
+// min, and reading the constant as a total multiplier silently gave +150%.
+function loopSpdMul(loop) {
+  return 1 + Math.min(LOOP_SPD_CAP, Math.pow(LOOP_SPD_STEP, Math.max(0, (loop | 0) - 1)) - 1);
+}
+function loopBossHpMul(loop) { return Math.pow(LOOP_BOSS_HP_STEP, Math.max(0, (loop | 0) - 1)); }
 // G.zone keeps counting upward (0, 1, 2 ...) and is never wrapped, so one value encodes both the
 // layout played and how deep the loop is. realmIndex() picks the ZONES entry; loopNumber() is 1
 // on the first pass, 2 after the first full circuit, and so on.
 function realmIndex(zone) { return ((zone | 0) % REALM_COUNT); }
 function loopNumber(zone) { return Math.floor((zone | 0) / REALM_COUNT) + 1; }
-function loopEnemyMul(loop) { return Math.pow(LOOP_ENEMY_SCALE, Math.max(0, (loop | 0) - 1)); }
-function loopBossHpMul(loop) { return Math.pow(LOOP_BOSS_HP_SCALE, Math.max(0, (loop | 0) - 1)); }
-// Boss-reinforcement cadence for a realm/loop pair. From loop 2 on every boss — not just the
-// Hollow Crown — uses the fast realm-6 interval, and that interval is never shortened further.
+// Boss-reinforcement cadence for a realm/loop pair, in seconds.
+//
+// Shipped rule, unchanged for every boss but Rukhmak: 60 s, halved to 30 s for the Hollow Crown and
+// for every boss from loop 2 on. That 30 s is the floor for them — deeper loops raise crowd size and
+// boss bulk, never the clock (see the endless-quest note above).
+//
+// Rukhmak is the one exception and the reason the general rule is kept as a separate expression
+// below: his interval is exactly half of whatever any other boss in the same loop gets, so he is
+// handled by scaling the general result rather than by adding another special case to it. He is
+// therefore the only boss below the 30 s floor, by design; the "never faster than realm 6" ceiling
+// still governs everyone else.
 function bossReinIntervalS(kind, loop) {
-  return (kind === FINAL_BOSS_KIND || (loop | 0) > 1) ? FINAL_BOSS_REINFRESH_S : BOSS_REINFRESH_S;
+  const general = (kind === FINAL_BOSS_KIND || (loop | 0) > 1) ? FINAL_BOSS_REINFRESH_S : BOSS_REINFRESH_S;
+  return kind === CAPTAIN_BOSS_KIND ? general / 2 : general;
+}
+// Rukhmak's cadence expressed directly, for callers and docs that want his number without the kind
+// test. Kept in terms of the general function so the two cannot drift apart.
+function captainReinIntervalS(loop) {
+  return bossReinIntervalS(CAPTAIN_BOSS_KIND, loop);
 }
 // Quest-victory panel tier, one step per completed circuit: as-shipped bronze, then silver, then
 // gold. Deeper loops keep the gold treatment rather than inventing new metals.

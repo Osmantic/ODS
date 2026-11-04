@@ -186,10 +186,14 @@ function spawnWave() {
   // silently cancelled the increase (zone 5 wave 4 stayed at 22). Raised to 30 so the increase
   // lands, while keeping a hard ceiling: crowd rasterisation and AI are what caused the stalls.
   // The loop multiplier is applied *outside* that ceiling on purpose. In loop 1 it is exactly 1,
-  // so the shipped curve is untouched; in deeper loops the crowd keeps growing past 30 instead
-  // of the +50% being silently eaten by the clamp, which is the whole point of the endless mode.
-  const n = Math.min(30, (6 + G.zone + G.waveNum + randi(0, 2)) * 1.5 * ROSTER_SCALE | 0) * loopEnemyMul(loopNumber(G.zone)) | 0;
-  for (let i = 0; i < n; i++) spawnEnemy(pick(z.enemies));
+  // so the shipped curve is untouched; in deeper loops the crowd grows past 30 instead of the
+  // per-loop increase being silently eaten by the clamp. It is now x1.25 per loop, compounding, and
+  // stops at 4x this wave's loop 1 size — the uncapped crowd was what made deep loops feel
+  // overcrowded rather than harder.
+  const lp = loopNumber(G.zone), rawCount = loopCountMul(lp);
+  const n = Math.min(30, (6 + G.zone + G.waveNum + randi(0, 2)) * 1.5 * ROSTER_SCALE | 0) * rawCount | 0;
+  const hpMul = loopHpMul(lp, countCapLoop(loopCountMul));
+  for (let i = 0; i < n; i++) spawnEnemy(pick(z.enemies), hpMul);
   if (G.waveNum > 1) announce("Wave " + G.waveNum, "More brutes pour into the hall");
   // replenish supplies each wave. Each call resolves independently against candidates spread
   // over the hall, so these four land apart from one another rather than in one grab.
@@ -209,24 +213,34 @@ function spawnWave() {
 // advance G.waveNum or reuse the wave banner, so wave pacing and the pre-boss progression stay
 // untouched. Capped against a smaller ceiling than a normal wave because this lands on top of
 // the boss and its escort rather than replacing them - the crowd is what caused the frame stalls.
-function spawnReinforceWave(isFinal) {
+// The banner keeps naming the caller, since "twice as often" is only readable to the player if the
+// call is announced distinctly for the boss doing it.
+function spawnReinforceWave(isFinal, callerName) {
   const z = ZONES[realmIndex(G.zone)];
   // Same treatment as a normal wave: loop scaling lands outside the ceiling, and the boss clock
   // itself is never accelerated past realm 6 — the reinforcement just arrives in bigger packs.
-  const n = Math.min(14, (6 + G.zone + (G.waveNum || 1) + randi(0, 2)) * 1.5 * ROSTER_SCALE | 0) * loopEnemyMul(loopNumber(G.zone)) | 0;
-  for (let i = 0; i < n; i++) spawnEnemy(pick(z.enemies));
-  announce(isFinal ? "The Hollow Crown calls for aid!" : "Reinforcements!", "More brutes pour into the hall");
+  const lp = loopNumber(G.zone), rawCount = loopCountMul(lp);
+  const n = Math.min(14, (6 + G.zone + (G.waveNum || 1) + randi(0, 2)) * 1.5 * ROSTER_SCALE | 0) * rawCount | 0;
+  const hpMul = loopHpMul(lp, countCapLoop(loopCountMul));
+  for (let i = 0; i < n; i++) spawnEnemy(pick(z.enemies), hpMul);
+  announce(isFinal ? "The Hollow Crown calls for aid!"
+    : callerName ? callerName + " calls for aid!" : "Reinforcements!",
+    "More brutes pour into the hall");
   G.shake = Math.max(G.shake, 5);
   updateHud();
 }
-function spawnEnemy(kind) {
+// loopHpMul defaults to 1 so every existing caller (and loop 1) is untouched. It carries the
+// compounding per-loop health term only; the per-realm ramp below is exactly as shipped.
+function spawnEnemy(kind, loopHpMul) {
   const st = ENEMY_STATS[kind];
   const spot = D ? D.farSpot(P.x, P.y, 300, st.r + 4) : { x: rand(80, DW - 80), y: rand(80, DH - 80) };
-  const mult = 1 + G.zone * 0.12;
+  const mult = (1 + G.zone * 0.12) * (loopHpMul || 1);
   // wolf hounds are 3x tankier than their base stat line
   const hpScale = (kind === "fenris" ? WOLF_HP_SCALE : 1);
   G.enemies.push({
-    kind, x: spot.x, y: spot.y, hp: st.hp * mult * hpScale, maxHp: st.hp * mult * hpScale, spd: st.spd * ENEMY_SPEED_SCALE * (kind === "fenris" ? WOLF_SPD_SCALE : 1), dmg: st.dmg * (1 + G.zone * .06),
+    kind, x: spot.x, y: spot.y, hp: st.hp * mult * hpScale, maxHp: st.hp * mult * hpScale,
+    spd: st.spd * ENEMY_SPEED_SCALE * loopSpdMul(loopNumber(G.zone)) * (kind === "fenris" ? WOLF_SPD_SCALE : 1),
+    dmg: st.dmg * (1 + G.zone * .06) * loopDmgMul(loopNumber(G.zone)),
     r: st.r,
     // Collision radius stays at the art's torso, but separation uses a stance radius so a hound
     // holds off at roughly nose length instead of pressing its muzzle into every packmate. A wolf
@@ -243,11 +257,18 @@ function spawnBoss() {
   const z = ZONES[realmIndex(G.zone)], bs = BOSS_STATS[z.boss.kind];
   G.wave = "boss";
   const spot = D ? D.farSpot(P.x, P.y, 320, bs.r + 6) : { x: DW - 240, y: DH / 2 };
-  // +50% boss HP per completed loop. The loop term replaces the old per-zone term for the boss:
-  // realm 6 was already the shipped difficulty peak, and multiplying a growing zone term by a
-  // growing loop term would compound two curves at once. One loop factor keeps each circuit
-  // exactly 1.5x the last.
-  const bossHp = bs.hp * 2 * BOSS_HP_SCALE * (z.boss.kind === "fenris" ? WOLF_HP_SCALE : 1) * loopBossHpMul(loopNumber(G.zone));
+  // +100% boss HP per completed loop, replacing the shipped +50%. As before, the loop term replaces
+  // a per-zone term rather than stacking on one: realm 6 was already the shipped difficulty peak, and
+  // multiplying a growing zone term by a growing loop term compounds two curves at once. One loop
+  // factor keeps each circuit an exact multiple of the last. This is deliberately the ONLY loop-health
+  // term on a boss — the request moves the boss's existing per-loop term from +50% to +100% and does
+  // not ask for the new enemy-health term to be multiplied in as well. An earlier draft did exactly
+  // that, which compounded three curves into one number (1.5x^2 * 2x^3 by loop 4). Bosses and their
+  // escorts stay in roughly the same league because both about double per loop.
+  const lp = loopNumber(G.zone);
+  const bossHp = bs.hp * 2 * BOSS_HP_SCALE * (z.boss.kind === "fenris" ? WOLF_HP_SCALE : 1)
+    * (z.boss.kind === "troll" ? TROLL_HP_SCALE : 1)   // +30% for Vhelmor and Druskral
+    * loopBossHpMul(lp);
   const e = {
     kind: z.boss.kind, boss: true, name: z.boss.name,
     x: spot.x, y: spot.y, hp: bossHp, maxHp: bossHp,
@@ -255,22 +276,45 @@ function spawnBoss() {
     // while a boss still walked at its raw BOSS_STATS.spd, so Skarnax crawled next to pack hounds and
     // the Hollow Crown trailed the brutes summoned around him. Same dial, so a boss keeps its
     // intended position relative to the crowd instead of becoming the slowest thing on screen.
-    spd: bs.spd * ENEMY_SPEED_SCALE * (z.boss.kind === "fenris" ? WOLF_SPD_SCALE : 1), dmg: bs.dmg * (1 + G.zone * .05),
+    spd: bs.spd * ENEMY_SPEED_SCALE * loopSpdMul(lp) * (z.boss.kind === "fenris" ? WOLF_SPD_SCALE : 1),
+    dmg: bs.dmg * (1 + G.zone * .05) * loopDmgMul(lp),
     r: bs.r, sepR: bs.r + 14, face: -1, faceHold: 0, atkT: 0, atkDur: .6, atkCdT: 1, hurtT: 0, wob: 2,
     aiT: 2, dashT: 0, dashDx: 0, dashDy: 0, spitT: 2, phase: 1, scale: bs.scale,
+    // Ghost state, explicit at spawn rather than left undefined: every other field on an enemy is
+    // declared here, and crownGhostTick treats ghostT<=0 as "solid" with ghostNextT arming the first
+    // window. Starting solid means the fight opens with him hittable — a boss who begins the encounter
+    // invulnerable would read as broken. Only the Crown reads these; the fields are inert on everyone
+    // else, which is cheaper and safer than a kind test at spawn.
+    ghostT: 0, ghostNextT: rand(CROWN_GHOST_GAP_S[0], CROWN_GHOST_GAP_S[1]),
   };
   G.enemies.push(e); G.boss = e;
   // Boss fights must never stall into a quiet duel: a fresh wave arrives on a timer so pressure
   // is continuous. The final boss halves the interval. Reset here so each boss owns its own clock.
-  // From loop 2 on, every boss gets realm 6's aggressive cadence (see bossReinIntervalS). That
-  // interval is the floor: deeper loops add bulk and pack size, never a shorter clock.
+  // From loop 2 on, every boss gets realm 6's aggressive cadence (see bossReinIntervalS). For every
+  // boss but Rukhmak that interval is the floor: deeper loops add bulk and pack size, never a shorter
+  // clock. Rukhmak is the deliberate exception and calls at half these rates (30 s / 15 s).
   G.bossReinT = bossReinIntervalS(z.boss.kind, loopNumber(G.zone));
   // escort of brutes storms in with the boss so it can't be kited from range;
-  // staggered with a spark flare as each one arrives
-  const escort = Math.min(12, 6 + G.zone * 2) * loopEnemyMul(loopNumber(G.zone)) | 0;
+  // staggered with a spark flare as each one arrives.
+  //
+  // The loop multiplier is measured against the boss's OWN realm at loop 1, not applied to the raw
+  // expression. Two reasons, both about zone: the base min(12, 6 + zone*2) saturates at 12 by realm 4,
+  // and zone keeps counting across loops (realm 1 of loop 4 is zone 18). Applying loopCountMul to an
+  // already-saturated 12 would hand a deep-loop boss 48 minions — four times the shipped pack, which
+  // is the overcrowding this change exists to remove. Normalising by the realm's loop-1 escort size
+  // makes "4x" mean 4x the escort THIS boss had in loop 1, and lets the 12 ceiling bind again for the
+  // late-realm bosses whose packs were already capped.
+  const escortBase = Math.min(12, 6 + realmIndex(G.zone) * 2);
+  const bossEscortMul = Math.max(1, (escortBase * loopCountMul(lp) | 0) / escortBase);
+  const escort = escortBase * bossEscortMul | 0;
+  // The escort's own multiplier, not the global one: integer truncation of a small pack can lock
+  // below loop 8 (a 4-brute pack reaches 4x at 16), and the health crossover follows that lock.
+  const escortGrowCap = countCapLoop((L) =>
+    Math.max(1, (escortBase * loopCountMul(L) | 0) / escortBase));
+  const escortHpMul = loopHpMul(lp, escortGrowCap);
   G.escorts = [];
   for (let i = 0; i < escort; i++) {
-    const e = spawnEnemy(pick(ZONES[realmIndex(G.zone)].enemies));
+    const e = spawnEnemy(pick(ZONES[realmIndex(G.zone)].enemies), escortHpMul);
     if (e) {
       const when = .25 + i * .14;
       G.escorts.push({ e, t: when, life: when });
@@ -421,6 +465,13 @@ function heroAtkMul() { return 1; }
 function cacheHeroDmg() { P.__dmgCached = Math.round(P.dmg * heroAtkMul()); }
 
 function hurtEnemy(e, dmg, ang) {
+  // Ghost mode: damage passes through the Hollow Crown. Returning before everything below — the damage
+  // number, the hit flash, the knockback, the phase latch and the kill path — is what makes it read as
+  // "the arrow went right through him" rather than as a hit that did no work. The caller in
+  // updateProjectiles still consumes the arrow on contact, so arrows disappear into him instead of
+  // sailing past to hit the wall or an enemy behind him. Guarded on crownGhosted, so this costs every
+  // other enemy one property read and nothing else.
+  if (crownGhosted(e)) return;
   dmg = Math.round(dmg * rand(.92, 1.12));
   e.hp -= dmg; e.hurtT = .18;
   popText(e.x + rand(-8, 8), e.y - e.r - 30, String(dmg), "#ffe9a8");

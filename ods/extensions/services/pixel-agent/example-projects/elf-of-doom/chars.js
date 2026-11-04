@@ -625,6 +625,29 @@ function drawBoss(g, e, time) {
     strokeRect(g, -2.5, -26, 5, 26, "#2c2735", 2); strokeCircle(g, 0, -30, 8, "#3c3747", 2.4);
     for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2; inkLine(g, [[Math.cos(a) * 6, -30 + Math.sin(a) * 6], [Math.cos(a) * 12, -30 + Math.sin(a) * 12]], "#3c3747", 3); }
     g.restore();
+    // Ghost tint. The translucency itself is applied by drawEnemy on the entity transform (see the
+    // note there); this is the colour, and it is clipped rather than composited.
+    //
+    // Why a clip and not source-atop: "atop" means the destination inside the region you are about to
+    // paint, so over the main canvas a source-atop fillRect would flood every pixel of that rect —
+    // floor, torchlight, a nearby bat — in light blue. Clipping to the figure's own silhouette makes it
+    // structurally impossible to put a blue pixel anywhere the Crown is not, which is the failure mode
+    // this file has been burned by before. The clip is the cloak outline, i.e. the largest continuous
+    // part of him; the crown, the mace and the eyes are deliberately left out of it and stay their own
+    // colours, which reads as a cold light still burning in the hood rather than a flat blue cutout.
+    // The tint is an opaque-ish light blue at low alpha so it lifts the near-black cloak toward blue
+    // without erasing the silhouette.
+    if (crownGhosted(e)) {
+      g.save();
+      g.beginPath(); g.moveTo(0, -66);
+      g.bezierCurveTo(-30, -50, -28, -14, -22 + Math.sin(time * .005) * 4, 0);
+      g.lineTo(22 + Math.sin(time * .005 + 2) * 4, 0);
+      g.bezierCurveTo(28, -14, 30, -50, 0, -66); g.closePath();
+      g.clip();
+      g.fillStyle = CROWN_GHOST_TINT;
+      g.fillRect(-32, -70, 64, 74);
+      g.restore();
+    }
     g.restore(); return;
   }
 }

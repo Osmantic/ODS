@@ -124,10 +124,21 @@
         </div>
       </div>
     </div>
-    <div class="hud-center">
+    <!-- id is what layoutBossBar() in ui.js keys on. The boss bar now lives inside this column as a
+         flex item, so its height is contributed below the text instead of overlaying it. -->
+    <div class="hud-center" id="hud-center">
       <div id="zone-label">The Gate of Ash</div>
       <div id="wave-label">Foes: 0</div>
       <div id="arrow-label">🏹 Arrows: 24</div>
+
+      <!-- Boss bar. Used to be a sibling of #hud positioned absolute at a fixed top, which is what put
+           the boss name on top of the Arrows counter whenever the realm title wrapped. As a child of the
+           center column it flows after that counter, so the counter cannot be covered at any number of
+           title lines. engine.js only toggles .hidden on it, so the move needs no JS. -->
+      <div id="boss-wrap" class="hidden">
+        <div id="boss-name">—</div>
+        <div class="bar boss-bar"><div id="boss-fill"></div></div>
+      </div>
     </div>
     <div class="hud-right">
       <div class="stat"><span class="stat-ico">🪙</span><span id="gold-text">0</span></div>
@@ -137,11 +148,6 @@
     </div>
   </div>
 
-  <!-- Boss bar -->
-  <div id="boss-wrap" class="hidden">
-    <div id="boss-name">—</div>
-    <div class="bar boss-bar"><div id="boss-fill"></div></div>
-  </div>
 
   <div id="vignette"></div>
 
