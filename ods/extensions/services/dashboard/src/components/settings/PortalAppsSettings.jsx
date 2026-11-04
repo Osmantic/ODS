@@ -71,10 +71,11 @@ function NewsOptions({ app, busy, onChange }) {
   </>
 }
 
-function AppCard({ id, app, saved, secret, busy, result, revision, notifications, onChange, onSecret, onTest, onSendDigest, onLoadWatches }) {
+function AppCard({ plain = false, id, app, saved, secret, busy, result, revision, notifications, onChange, onSecret, onTest, onSendDigest, onLoadWatches }) {
   const hasKey = Boolean(secret || saved?.hasKey)
   const meta = APPS[id]
-  return <li className="rounded-lg border border-theme-border p-4 space-y-3" aria-label={meta.title}>
+  // plain: the only app in its view, so no card inside the view's card.
+  return <li className={plain ? 'space-y-3' : 'rounded-lg border border-theme-border p-4 space-y-3'} aria-label={meta.title}>
     <div className="min-w-0">
       <h4 className="text-base font-semibold">{meta.title} <span className="text-sm font-normal text-theme-text-muted">· {meta.product}</span></h4>
       <p className="text-sm text-theme-text-muted">{meta.about}</p>
@@ -82,6 +83,7 @@ function AppCard({ id, app, saved, secret, busy, result, revision, notifications
     <Toggle checked={app.enabled} disabled={busy} onChange={enabled => onChange({ enabled })}>{meta.toggle}</Toggle>
     <div className="grid gap-3 md:grid-cols-2">
       <label className="text-sm md:col-span-2">{meta.product} address<input className={inputStyle} value={app.url} disabled={busy} spellCheck={false} onChange={event => onChange({ url: event.target.value })} /></label>
+      {plain && <p className="-mt-2 text-xs text-theme-text-muted md:col-span-2">Filled in with where the ODS extension catalog installs it.</p>}
       {id === 'news' && <label className="text-sm md:col-span-2">FreshRSS user<input className={inputStyle} value={app.username} disabled={busy} autoComplete="off" spellCheck={false} onChange={event => onChange({ username: event.target.value })} /></label>}
       <label className="text-sm md:col-span-2">{meta.secret}
         <input className={inputStyle} type="password" autoComplete="off" value={secret} disabled={busy}
@@ -104,14 +106,12 @@ function AppCard({ id, app, saved, secret, busy, result, revision, notifications
 export default function PortalAppsSettings({ ids = Object.keys(APPS), apps, saved, typed, busy, result, revision, notifications, onChange, onSecret, onTest, onSendDigest, onLoadWatches }) {
   const single = ids.length === 1
   return <section className="rounded-xl border border-theme-border bg-theme-card p-5 space-y-4" {...(single ? { 'aria-label': APPS[ids[0]].title } : { 'aria-labelledby': 'integrations-apps' })}>
-    {single
-      ? <p className="text-sm text-theme-text-muted">An app running on this computer, such as one from the ODS extension catalog. The address below is where the catalog installs it.</p>
-      : <div>
-        <h3 id="integrations-apps" className="font-semibold">Your apps</h3>
-        <p className="text-sm text-theme-text-muted">Apps running on this computer, such as the ones in the ODS extension catalog. The addresses below are where the catalog installs them.</p>
-      </div>}
+    {!single && <div>
+      <h3 id="integrations-apps" className="font-semibold">Your apps</h3>
+      <p className="text-sm text-theme-text-muted">Apps running on this computer, such as the ones in the ODS extension catalog. The addresses below are where the catalog installs them.</p>
+    </div>}
     <ul className="space-y-3">
-      {ids.map(id => <AppCard key={id} id={id} app={apps[id]} saved={saved[id]} secret={typed[id] || ''} busy={busy}
+      {ids.map(id => <AppCard key={id} plain={single} id={id} app={apps[id]} saved={saved[id]} secret={typed[id] || ''} busy={busy}
         result={result?.app === id ? result : null} revision={revision} notifications={notifications}
         onChange={patch => onChange(id, patch)} onSecret={value => onSecret(id, value)} onTest={() => onTest(id)}
         onSendDigest={onSendDigest} onLoadWatches={onLoadWatches} />)}
