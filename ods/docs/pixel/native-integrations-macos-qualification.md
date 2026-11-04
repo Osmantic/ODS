@@ -225,6 +225,19 @@ Compose-baseline and host-agent binding checks and built both candidate web
 images under separate tags, without replacing running services. Preparation
 does not establish that a client handover or protected migration succeeds.
 
+After owner authentication, the full updater from
+`6dea6ff3517ae0e30e8a0cfeef53e751f6dfb69f` prepared both runtime and clients,
+then stopped before activation at `runtime-upgrade-existing-file-missing`.
+The existing protected deployment lacked the three newly introduced scheduler
+programs. The updater incorrectly treated these new files as required old
+files. Inspection also found that the integration lifecycle's ten new paths
+were missing from the filesystem adapter's closed addition set, including its
+new code directory. The old configuration bytes and inode remained unchanged,
+and all eleven existing ODS containers remained healthy after the refusal.
+The preparation and private recovery material were retained. Fixes require
+complete approved addition families and journaled rollback; silently repairing
+missing files in an already capable deployment is not an accepted migration.
+
 Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
 notifications and reboot acceptance remain pending. The Mac has not been
 restarted for this qualification. A Google test client was not available;

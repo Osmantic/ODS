@@ -149,10 +149,13 @@ its physical Apple Silicon qualification remains a separate handoff. Google,
 Calendar and fixed reviewed Connected-app routes now include the composed
 native Source lifecycle and Darwin routing. Their implementation and owned-file
 coverage do not establish live Mac execution, automatic triggers or successful
-connection activation. The existing MacBook's prepare-only run stopped before
-protected activation because sudo required owner authentication. The installed
-Portal baseline and separately prepared client images are not candidate
-acceptance. See the
+connection activation. The existing MacBook's prepare-only run initially needed
+owner authentication. The subsequent authenticated full update prepared runtime
+and clients, but refused activation because the legacy deployment lacked the
+three newly introduced scheduler programs. The missing migration contract and
+the integration adapter's absent-path handling are under correction; the old
+configuration and running services remained intact. The installed Portal
+baseline and prepared client images are not candidate acceptance. See the
 [Mac qualification scope](pixel/native-integrations-macos-qualification.md).
 Production Google sign-in also depends on the project's official OAuth/domain
 verification; local account tests do not establish complete public onboarding.

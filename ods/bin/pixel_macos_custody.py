@@ -334,18 +334,106 @@ def replace_protected_bytes(filename, *, expected, replacement, mode, gid=0):
 INSPECTION_ADDITIONS = frozenset('/usr/local/libexec/ods-pixel-services/helpers/' + name for name in (
     'preview_inspection.py', 'preview_inspection_protocol.py', 'workspace_preview.py',
     'unix_peer.py', 'preview-inspection.json'))
+INTEGRATION_PROGRAM_ROOT = '/usr/local/libexec/ods-pixel-services/integrations'
+INTEGRATION_ADDITIONS = frozenset({
+    *(INTEGRATION_PROGRAM_ROOT + '/' + name for name in (
+        'integrations_common.py', 'integrations_mcp.py', 'integrations_notes.py',
+        'integrations_service.py', 'unix_peer.py', 'integrations_app_service.py',
+        'integrations_apps.py', 'integrations_ntfy.py', 'integrations_recovery.py')),
+    '/Library/LaunchDaemons/com.ods.pixel-native-integrations.plist'})
+SCHEDULE_ADDITIONS = frozenset('/usr/local/libexec/ods-pixel-access/' + name for name in (
+    'pixel_schedules.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs'))
+
+
+def _rename_addition_directory(directory, source, target):
+    if sys.platform != 'darwin':
+        raise CustodyError('macos-custody-platform-required')
+    libc = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+    operation = libc.renameatx_np
+    operation.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    operation.restype = ctypes.c_int
+    if operation(directory, os.fsencode(source), directory, os.fsencode(target), 0x4):  # RENAME_EXCL
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+def _publish_addition_directory(directory, name):
+    """Publish an empty, usable directory before its final name can be observed."""
+    temporary = '.ods-integrations-dir-' + os.urandom(16).hex()
+    os.mkdir(temporary, mode=0o700, dir_fd=directory)
+    child = None
+    try:
+        child = os.open(temporary, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+        _verify_fd(child, directory=True)
+        os.fchmod(child, 0o755)
+        os.fsync(child)
+        _rename_addition_directory(directory, temporary, name)
+        temporary = None
+        os.fsync(directory)
+    finally:
+        if child is not None:
+            try:
+                # Cleanup is limited to this exact unpublished empty inode.
+                # A lost rename acknowledgement preserves the final directory.
+                if temporary is not None:
+                    try:
+                        current = os.stat(temporary, dir_fd=directory, follow_symlinks=False)
+                    except FileNotFoundError:
+                        current = None
+                    opened = os.fstat(child)
+                    if current is not None and (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino):
+                        os.rmdir(temporary, dir_fd=directory)
+                        os.fsync(directory)
+            finally:
+                os.close(child)
+
+
+@contextmanager
+def _addition_directory(parent, *, create=False):
+    """Only the fixed integrations code directory may be new during migration.
+
+    Its existing parent must already have Root custody. A read-only snapshot
+    does not create it; publication creates just this one child and retains it
+    during rollback. No arbitrary missing ancestor is repaired or provisioned.
+    """
+    if parent != INTEGRATION_PROGRAM_ROOT:
+        with protected_directory(parent) as directory:
+            yield directory
+        return
+    ancestor, name = parent.rsplit('/', 1)
+    with protected_directory(ancestor) as directory:
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        try:
+            child = os.open(name, flags, dir_fd=directory)
+        except FileNotFoundError:
+            if not create:
+                yield None
+                return
+            _publish_addition_directory(directory, name)
+            child = os.open(name, flags, dir_fd=directory)
+        try:
+            info = _verify_fd(child, directory=True)
+            if stat.S_IMODE(info.st_mode) != 0o755:
+                raise CustodyError('macos-custody-integration-directory-mode')
+            yield child
+        finally:
+            os.close(child)
 
 
 def protected_inspection_bytes(filename, *, limit=8 * 1024 * 1024):
-    """Allow true absence only at the five fixed, journaled migration paths."""
+    """Allow true absence only in fixed, separately journaled code families."""
     value = os.fspath(filename)
+    if type(limit) is not int or limit < 1:
+        raise CustodyError('macos-custody-path-invalid')
     try:
         return protected_bytes(filename, limit=limit)
     except CustodyError:
-        if value not in INSPECTION_ADDITIONS:
+        if value not in INSPECTION_ADDITIONS | INTEGRATION_ADDITIONS | SCHEDULE_ADDITIONS:
             raise
         parent, name = value.rsplit('/', 1)
-        with protected_directory(parent) as directory:
+        with _addition_directory(parent) as directory:
+            if directory is None:
+                return None
             try:
                 os.stat(name, dir_fd=directory, follow_symlinks=False)
             except FileNotFoundError:
@@ -354,7 +442,7 @@ def protected_inspection_bytes(filename, *, limit=8 * 1024 * 1024):
 
 
 def replace_protected_inspection_bytes(filename, *, expected, replacement, mode, gid=0):
-    """Create/remove only journaled inspection additions under the deployment lock.
+    """Create/remove only fixed code additions under the deployment lock.
 
     Existing-file replacements retain the original custody contract. An absent
     target is published by atomic rename only after rechecking absence in its
@@ -365,12 +453,16 @@ def replace_protected_inspection_bytes(filename, *, expected, replacement, mode,
         return replace_protected_bytes(filename, expected=expected, replacement=replacement, mode=mode, gid=gid)
     value = os.fspath(filename)
     body = replacement if expected is None else expected
-    if (value not in INSPECTION_ADDITIONS or type(body) is not bytes or len(body) > 8 * 1024 * 1024
-            or mode != 0o644 or gid != 0 or (expected is None and replacement is None)):
+    if (value not in INSPECTION_ADDITIONS | INTEGRATION_ADDITIONS | SCHEDULE_ADDITIONS
+            or type(body) is not bytes or len(body) > 8 * 1024 * 1024
+            or type(mode) is not int or mode != 0o644 or type(gid) is not int or gid != 0
+            or (expected is None and replacement is None)):
         raise CustodyError('macos-custody-inspection-addition-invalid')
     parent, name = value.rsplit('/', 1)
     identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
-    with protected_directory(parent) as directory:
+    with _addition_directory(parent, create=expected is None) as directory:
+        if directory is None:
+            raise CustodyError('macos-custody-file-unavailable')
         if replacement is None:
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
             try:
