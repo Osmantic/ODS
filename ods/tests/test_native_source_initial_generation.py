@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,9 +12,56 @@ if sys.platform != 'linux' or not Path('/proc/self/fd').is_dir():
     pytest.skip('Linux metadata driver, not physical Darwin', allow_module_level=True)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_native_source_initial_backend import (initial, material, native, deployment, built, source,
-    package, publication, helper, qualification_operation)
+    package, publication, helper, qualification_operation, fresh_file_metadata)
 from test_native_source_installer_withdrawal import files
 from pixel_connections import custody as c
+from test_native_source_custody import AppleACL
+
+
+def test_initial_unqualified_new_inode_does_not_retain_a_retired_environment_acl(tmp_path, monkeypatch):
+    world = tmp_path / 'native'
+    world.mkdir()
+    acl = AppleACL()
+    driver = SimpleNamespace(world=world, acl=acl, owners={}, real_fstat=os.fstat)
+    original_open = os.open
+    retired_acl = {'entries': [{'tag': 1, 'mask': 1 << 1, 'flags': 0, 'uuid': b'R' * 16}], 'flags': 0}
+    def recycled(path, flags, *args, **kwargs):
+        fd = original_open(path, flags, *args, **kwargs)
+        if flags & os.O_CREAT and flags & os.O_EXCL:
+            info = driver.real_fstat(fd)
+            key = (info.st_dev, info.st_ino)
+            # A retired env inode can be reused by the next metadata file.
+            # Only the simulated side tables still remember the old inode.
+            acl.acls[key] = retired_acl
+            driver.owners[key] = (60001, 60001)
+        return fd
+    monkeypatch.setattr(os, 'open', recycled)
+    monkeypatch.setattr(c, '_native_acl_library', lambda: acl)
+    fresh_file_metadata(driver, monkeypatch)
+    path = world / 'fresh-metadata.json'
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        c._native_no_acl(fd)
+        info = driver.real_fstat(fd)
+        key = (info.st_dev, info.st_ino)
+        assert key not in driver.owners
+        # Reopening an existing file must retain the modeled ACL and refusal.
+        acl.acls[key] = retired_acl
+    finally:
+        os.close(fd)
+    fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o600)
+    try:
+        with pytest.raises(c.CustodyError, match='^native-source-acl-rights$'):
+            c._native_no_acl(fd)
+        assert acl.acls[key] == retired_acl
+    finally:
+        os.close(fd)
+    fd = os.open(tmp_path / 'outside.json', os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with pytest.raises(c.CustodyError, match='^native-source-acl-rights$'):
+            c._native_no_acl(fd)
+    finally:
+        os.close(fd)
 
 
 @pytest.mark.parametrize('where', ['publication-before', 'publication-after', 'child', 'terminal'])

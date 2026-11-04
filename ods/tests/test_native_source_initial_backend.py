@@ -25,9 +25,28 @@ import pixel_access_bridge as access
 import pixel_macos_custody as mac
 
 
+def fresh_file_metadata(n, monkeypatch):
+    """Forget simulated metadata only after a real exclusive file allocation."""
+    original_open = os.open
+    def opened(path, flags, *args, **kwargs):
+        fd = original_open(path, flags, *args, **kwargs)
+        if flags & os.O_CREAT and flags & os.O_EXCL:
+            location = Path(os.readlink('/proc/self/fd/' + str(fd)))
+            if location.is_relative_to(n.world):
+                info = n.real_fstat(fd)
+                key = (info.st_dev, info.st_ino)
+                n.owners.pop(key, None)
+                n.acl.acls.pop(key, None)
+        return fd
+    monkeypatch.setattr(os, 'open', opened)
+
+
 @pytest.fixture
 def initial(material, monkeypatch, request):
     n = material
+    # Replacing an env releases its inode. Linux may reuse it for the next
+    # journal file; the Apple metadata simulation must not carry its old ACL.
+    fresh_file_metadata(n, monkeypatch)
     # Ordinary new installer: no prior Source kit, identity or private data.
     for path in n.kit.iterdir():
         path.unlink()
