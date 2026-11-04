@@ -73,7 +73,7 @@ bar, paste it into the wizard, and press **Finish connecting**.
 | Syncing | Nothing; the first sync is running. |
 | Connected | Nothing. **Sync now** refreshes right away. |
 | Behind | Google was slow or unreachable; ODS keeps trying. **Sync now** tries at once. |
-| Needs reconnecting | Google no longer accepts the connection: access was removed, your password changed, or your app is still in Testing. **Reconnect**, and publish your app so it doesn't happen weekly. |
+| Needs reconnecting | Choose **Reconnect** to renew access. If this keeps happening, ask the ODS maintainer to check the app's publishing status. If you supplied your own client under **Advanced**, check its status in Google Cloud. |
 | Missing permission | Google didn't grant everything you chose. **Grant access**, and leave every box checked on Google's screen. |
 | Setup needs a fix | For standard sign-in, ask the ODS maintainer to check the Google app. If you supplied your own client, check that Google accepts it and the requested APIs are enabled. |
 | Blocked by your administrator | Your Google Workspace administrator blocks the app. Ask them to allow it. |
