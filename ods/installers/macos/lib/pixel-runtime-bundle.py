@@ -618,6 +618,33 @@ def verify(root, *, expected_digest=None, _operation=None):
     return value, checksum
 
 
+def connection_plugins(root, manifest):
+    """Require the fixed connection payloads without enabling their plugins.
+
+    Used by candidate preparation/admission, not by historical bundle verify.
+    An older incomplete artifact must remain readable for explicit recovery.
+    """
+    required = {'pixel-source-broker', 'pixel-operations-broker', 'pixel-frontier-broker'}
+    selected = {}
+    for relative in manifest['plugins']:
+        name = relative + '/openclaw.plugin.json'
+        entry = manifest['entries'].get(name)
+        with os.fdopen(_open_file(root, name), 'rb') as stream:
+            body = stream.read(1024 * 1024 + 1)
+        if (len(body) > 1024 * 1024 or entry is None or entry[0] != 'file'
+                or entry[2:] != [len(body), hashlib.sha256(body).hexdigest()]):
+            raise BundleError('native-connection-plugin-metadata-changed')
+        value = json.loads(body)
+        identifier = value.get('id') if type(value) is dict else None
+        if identifier in required:
+            if identifier in selected:
+                raise BundleError('native-connection-plugin-ambiguous')
+            selected[identifier] = relative
+    if set(selected) != required:
+        raise BundleError('native-connection-plugins-incomplete')
+    return selected
+
+
 def _verify_native_source(root, entries, selection, *, _operation=None):
     if _operation is not None:
         _operation_cache(_operation, root)

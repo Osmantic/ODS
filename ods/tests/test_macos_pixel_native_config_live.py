@@ -240,7 +240,9 @@ def test_real_native_candidate_preserves_shared_ods_policy(tmp_path, qualificati
         manifest, actual = module.bundle.verify(destination, expected_digest=digest)
         module.bundle.verify_service_binding(destination, service_digest)
         assert actual == digest
-        assert len(manifest['plugins']) == len(value['plugins']['load']['paths'])
+        assert len(manifest['plugins']) >= len(value['plugins']['load']['paths'])
+        assert set(module.bundle.connection_plugins(destination, manifest)) == {
+            'pixel-source-broker', 'pixel-operations-broker', 'pixel-frontier-broker'}
         assert (candidate / 'openclaw.json').read_bytes() == before
         assert not list(tmp_path.glob('.pixel-package-*'))
         installer_spec = importlib.util.spec_from_file_location('native_live_installer',
@@ -251,7 +253,8 @@ def test_real_native_candidate_preserves_shared_ods_policy(tmp_path, qualificati
             {'OPENCLAW_CONFIG_PATH': str(candidate / 'openclaw.json')}, pwd.getpwuid(os.getuid()))
         mapped = json.loads(plan['config_bytes'])
         assert mapped['plugins']['load']['paths'] == [
-            str(installer._bundle.INSTALL_ROOT / digest / relative) for relative in manifest['plugins']]
+            str(installer._bundle.INSTALL_ROOT / digest / relative)
+            for relative in manifest['plugins'][:len(value['plugins']['load']['paths'])]]
         mapped['plugins']['load']['paths'] = value['plugins']['load']['paths']
         assert mapped == value
         if migrating:

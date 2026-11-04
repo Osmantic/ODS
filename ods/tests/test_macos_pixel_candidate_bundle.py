@@ -53,7 +53,14 @@ def test_package_preserves_source_and_requires_relocated_loader(tmp_path, monkey
         path.mkdir()
         (path / 'openclaw.plugin.json').write_text(json.dumps({'id': name}))
         plugins.append(str(path))
-    monkeypatch.setattr(config, 'runtime_plugins', lambda *a: {'searxng': plugins[1] if fault != 'foreign' else '/foreign'})
+    dormant = {}
+    for _directory, name in config.bootstrap.PIXEL_PLUGINS:
+        path = tmp_path / name
+        path.mkdir()
+        (path / 'openclaw.plugin.json').write_text(json.dumps({'id': name}))
+        dormant[name] = str(path)
+    monkeypatch.setattr(config, 'runtime_plugins', lambda *a: {
+        'searxng': plugins[1] if fault != 'foreign' else '/foreign', **dormant})
     candidate = tmp_path / 'candidate'
     candidate.mkdir(mode=0o700)
     receipt = candidate / 'candidate.json'
@@ -95,7 +102,7 @@ def test_package_preserves_source_and_requires_relocated_loader(tmp_path, monkey
     monkeypatch.setattr(config.importlib.util, 'spec_from_file_location', source_dependencies)
     def build(**kwargs):
         calls.append('build')
-        assert kwargs['plugins'] == plugins
+        assert kwargs['plugins'] == plugins + list(dormant.values())
         assert kwargs['stream_progress_fix'] is True
         assert kwargs['shared_runtime_repairs'] is True
         assert kwargs['pixel_source_ref'] == 'a' * 40
@@ -106,6 +113,10 @@ def test_package_preserves_source_and_requires_relocated_loader(tmp_path, monkey
         assert kwargs['exec_wrapper'] == Path(__file__).resolve().parents[1] / 'extensions/services/pixel-agent/host/cancellable-exec.sh'
         assert kwargs['exec_wrapper'].is_file()
         kwargs['destination'].mkdir()
+        for index, plugin in enumerate(kwargs['plugins']):
+            target = kwargs['destination'] / 'plugins' / str(index)
+            target.mkdir(parents=True)
+            (target / 'openclaw.plugin.json').write_bytes((Path(plugin) / 'openclaw.plugin.json').read_bytes())
         return 'b' * 64
     monkeypatch.setattr(config.bundle, 'build', build)
     def validate(path, **kwargs):
@@ -124,6 +135,8 @@ def test_package_preserves_source_and_requires_relocated_loader(tmp_path, monkey
         calls.append('verify')
         assert kwargs['expected_digest'] == 'b' * 64
         if fault == 'mutation': raise ValueError('runtime changed')
+        return {'plugins': ['plugins/' + str(i) for i in range(len(plugins) + len(dormant))],
+                'entries': config.bundle.inventory(args[0])}, 'b' * 64
     monkeypatch.setattr(config.bundle, 'verify', verify)
     destination = tmp_path / 'Qualified Bundle'
     if fault == 'existing': destination.mkdir()

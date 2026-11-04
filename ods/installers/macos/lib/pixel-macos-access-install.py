@@ -291,6 +291,36 @@ def _configuration_bytes(path, uid):
         return body
 
 
+def _configured_bundle_plugins(source, manifest, config, *, current=None, _recovery=False):
+    """Select active paths without admitting unknown unloaded bundle payloads."""
+    plugins = config.get('plugins', {})
+    paths = plugins.get('load', {}).get('paths', [])
+    available = manifest['plugins']
+    if (type(paths) is not list or any(type(path) is not str for path in paths)
+            or len(set(paths)) != len(paths) or len(paths) > len(available) or plugins.get('installs')):
+        raise InstallError('bundle-plugin-mapping-unqualified')
+    # New candidates put active plugins first, unchanged, then fixed dormant
+    # connection payloads. Existing runtimes may have enabled a subset later.
+    selected = available[:len(paths)]
+    if current is not None:
+        selected = []
+        for path in paths:
+            if _path(path).parent.parent != current or _path(path).relative_to(current).as_posix() not in available:
+                raise InstallError('active-plugin-upgrade-source-mismatch')
+            selected.append(_path(path).relative_to(current).as_posix())
+    if 'native-source' in manifest['entries'] and (not _recovery or set(selected) != set(available)):
+        required = _bundle.connection_plugins(source, manifest)
+        inactive = set(available) - set(selected)
+        allowed = plugins.get('allow')
+        if (type(allowed) is not list or any(type(item) is not str for item in allowed)
+                or len(set(allowed)) != len(allowed) or inactive - set(required.values())
+                or any(name in allowed and relative in inactive for name, relative in required.items())):
+            raise InstallError('bundle-plugin-mapping-unqualified')
+    elif selected != available:
+        raise InstallError('bundle-plugin-mapping-unqualified')
+    return selected
+
+
 def _bundle_plan(source, digest, environment, owner, *, upgrade=None):
     if not isinstance(digest, str) or not re.fullmatch('[a-f0-9]{64}', digest):
         raise InstallError('approved-bundle-digest-required')
@@ -312,12 +342,10 @@ def _bundle_plan(source, digest, environment, owner, *, upgrade=None):
     config = json.loads(body)
     plugins = config.get('plugins', {})
     paths = plugins.get('load', {}).get('paths', [])
-    if (type(paths) is not list or len(paths) != len(manifest['plugins'])
-            or plugins.get('installs')):
-        raise InstallError('bundle-plugin-mapping-unqualified')
+    selected_plugins = _configured_bundle_plugins(source, manifest, config, current=current)
     # Match the approved plugin bytes to the configured paths, not only the
     # number or package names. Plugin order and all entry settings are retained.
-    for path, relative in zip(paths, manifest['plugins']):
+    for path, relative in zip(paths, selected_plugins):
         if current is not None and _path(path) != current / relative:
             raise InstallError('active-plugin-upgrade-source-mismatch')
         actual = _bundle.inventory(_path(path).resolve(strict=True))
@@ -327,7 +355,7 @@ def _bundle_plan(source, digest, environment, owner, *, upgrade=None):
             raise InstallError('bundle-plugin-content-mismatch')
     destination = _bundle.INSTALL_ROOT / checksum
     if paths:
-        plugins['load']['paths'] = [str(destination / path) for path in manifest['plugins']]
+        plugins['load']['paths'] = [str(destination / path) for path in selected_plugins]
     config_target = RUNTIME_CONFIG_ROOT / str(owner.pw_uid) / 'openclaw.json'
     result = {'source': str(source), 'digest': checksum, 'destination': str(destination),
             'source_config': str(config_path), 'source_config_bytes': body,
@@ -4318,7 +4346,8 @@ def _verify_recovery_runtime(plan):
         if migrating:
             manifest, _ = _bundle.verify(candidate, expected_digest=candidate_digest)
             config = json.loads(selection['source_config_bytes'])
-            config['plugins']['load']['paths'] = [str(candidate / path) for path in manifest['plugins']]
+            selected_plugins = _configured_bundle_plugins(candidate, manifest, config, _recovery=True)
+            config['plugins']['load']['paths'] = [str(candidate / path) for path in selected_plugins]
             if (json.dumps(config, indent=2, ensure_ascii=True) + '\n').encode() != selection['config_bytes']:
                 raise InstallError('native-migration-config-mapping-changed')
         else:

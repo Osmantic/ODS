@@ -320,7 +320,7 @@ def validate_candidate(config, *, node, entrypoint, expected, env, cwd):
 
 def stage_bundle(*, source, ref, candidate, node, runtime, destination, services_digest=None,
                  services_bundle=None, ods_source=None):
-    """Package exactly the configured plugins and prove their relocated loader.
+    """Package configured plugins plus inert payloads required by connections.
 
     The candidate configuration is not edited. Protected publication still uses
     the installer's content-checked mapping to its final runtime destination.
@@ -362,6 +362,13 @@ def stage_bundle(*, source, ref, candidate, node, runtime, destination, services
         expected[plugin_id] = 'plugins/' + str(index)
     if set(expected) != set(allowed):
         raise ValueError('native-bundle-plugin-mapping-incomplete')
+    packaged_paths = list(paths)
+    for _directory, plugin_id in bootstrap.PIXEL_PLUGINS:
+        if plugin_id not in expected:
+            path = known.get(plugin_id)
+            if path is None or path in packaged_paths:
+                raise ValueError('native-bundle-connection-plugin-unavailable')
+            packaged_paths.append(path)
     service_manifest = None
     if services_bundle is not None:
         services_bundle = Path(services_bundle).resolve(strict=True)
@@ -373,7 +380,7 @@ def stage_bundle(*, source, ref, candidate, node, runtime, destination, services
         raise ValueError('new-native-bundle-destination-required')
     destination = destination.parent.resolve(strict=True) / destination.name
     # Never place the output inside one of its own input trees.
-    roots = [runtime, candidate, *(Path(path).resolve(strict=True) for path in paths)]
+    roots = [runtime, candidate, *(Path(path).resolve(strict=True) for path in packaged_paths)]
     if any(root == destination or root in destination.parents for root in roots):
         raise ValueError('native-bundle-destination-inside-source')
     with tempfile.TemporaryDirectory(prefix='.pixel-package-', dir=destination.parent) as temporary:
@@ -392,7 +399,7 @@ def stage_bundle(*, source, ref, candidate, node, runtime, destination, services
         host_python = python_module.select_python()
         component = source_payload.source_payloads(source, ref, host_python)
         digest = bundle.build(node=protected_node, runtime=runtime / 'node_modules/openclaw',
-            destination=staged, plugins=paths, expected_version=release['openclaw'],
+            destination=staged, plugins=packaged_paths, expected_version=release['openclaw'],
             stream_progress_fix=True, shared_runtime_repairs=True, services_digest=services_digest,
             exec_wrapper=Path(__file__).resolve().parents[3] / 'extensions/services/pixel-agent/host/cancellable-exec.sh',
             ods_source=ods_source or Path(__file__).resolve().parents[3], pixel_source_ref=ref,
@@ -411,7 +418,8 @@ def stage_bundle(*, source, ref, candidate, node, runtime, destination, services
             expected={key: str(staged / value) for key, value in expected.items()},
             env={'HOME': str(home), 'XDG_CONFIG_HOME': str(home / '.config'),
                  'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}, cwd=temporary)
-        bundle.verify(staged, expected_digest=digest)
+        manifest, _checksum = bundle.verify(staged, expected_digest=digest)
+        bundle.connection_plugins(staged, manifest)
         if private_json(candidate / 'openclaw.json') != config:
             raise ValueError('native-bundle-candidate-changed')
         if os.path.lexists(destination):
