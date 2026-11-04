@@ -8,8 +8,11 @@ const CONTEXT_TIMEOUT_MS = 5000;
 export const MEMORY_QUESTION_ID = 'memory_save';
 export const MEMORY_CHOICES = Object.freeze({'Save': 'save', "Don't save": 'discard', 'Always save without asking': 'always'});
 const QUESTION = /^Remember this about you\? "([\s\S]{1,300})"\n(Save|Don't save|Always save without asking)\s*$/;
+// The exact call id, as for reminders: knowing only the tool's name, the small model called other
+// tools (pixel_ods_research, pixel_ods_skill) with remember's arguments (e2e).
 const LEARN_HINT = 'When the owner tells you a lasting fact about themselves or a preference (diet, people they mention, '
-  + 'how they like answers), save it with pixel_ods_notes action remember, as one short sentence about the owner.';
+  + 'how they like answers), save it with one call: tool_call with id "openclaw:pixel-ods:pixel_ods_notes" '
+  + 'and args {"action": "remember", "text": "<one short sentence about the owner>"}.';
 // Kept short and positive on purpose: a longer hint listing what not to save ("never a request, a task, a
 // reminder... do not call remember") made the small local model stop calling tools at all, reminders
 // included. A wrong proposal costs little: the owner is asked before anything is saved.

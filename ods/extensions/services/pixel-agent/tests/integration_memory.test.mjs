@@ -104,7 +104,9 @@ test('each chat turn gets the facts and the learning hint; an answer to a card i
   assert.ok(sent.every(item => item.options.timeoutMs === 5000), 'a slow service never holds a turn for long');
   assert.match(notesForTurn.answer, /saved the memory/);
   assert.match(notesForTurn.facts, /vegetarian/);
-  assert.match(notesForTurn.hint, /pixel_ods_notes action remember/);
+  // The exact call, with the tool id the small model otherwise gets wrong.
+  assert.match(notesForTurn.hint, /tool_call with id "openclaw:pixel-ods:pixel_ods_notes"/);
+  assert.match(notesForTurn.hint, /"action": "remember"/);
   const plain = await hooks.promptContext('What should I cook tonight?', SESSION);
   assert.equal(plain.answer, undefined);
   assert.equal(sent.at(-1).payload.action, 'memory-context');
