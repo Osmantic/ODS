@@ -36,7 +36,7 @@ export function unavailableCount(source, kind = null, reason = "source-unavailab
     mailboxTotal: null, canAnswerMailboxTotal: false, coverageState: "coverage-unknown",
     completeWithinConfiguredQueries: false, absenceWithinCoveredProjection: false }
     : { ...common, scope: "configured-calendar-projection", observedMatchCount: null, completeMatchCount: null,
-      requestCoveredByWindow: null, completeWithinWindow: false, unresolvedEventCount: 0,
+      requestCoveredByWindow: null, completeWithinWindow: false, unresolvedEventCount: 0, unresolvedAllDayEventCount: 0,
       windowKind: COUNT_KINDS.has(kind) ? kind : null, windowState: "unavailable",
       windowStart: null, windowEnd: null, windowDays: null, ownerTimeZone: null, calendarTimeZone: null };
 }

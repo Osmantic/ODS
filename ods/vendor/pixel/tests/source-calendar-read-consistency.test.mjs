@@ -52,8 +52,13 @@ test('unresolved events, missing/ambiguous zones and partial/stale coverage neve
   d=>{d.coverage.completeWithinWindow=false;},d=>{d.generatedAt=new Date(NOW-TTL-1).toISOString();}];
  for(const mutate of cases){const data=fixture();mutate(data);const {count,list}=compare(data);
   assert.equal(count.completeMatchCount,null);assert.equal(list.completeWithinWindow,false);}
- const {list}=compare(fixture(),civil,null);assert.equal(list.windowState,'unavailable');assert.equal(list.totalMatches,null);
- assert.equal(list.completeMatchCount,null);assert.equal(list.count,0);
+ for(const [params,owner] of [[civil,null],[{window:{kind:'civil-days',date:'2026-02-30',days:1}},ZONE]]){
+  const data=fixture(),before=JSON.stringify(data),{list}=compare(data,params,owner);
+  assert.equal(list.windowState,'unavailable');assert.equal(list.totalMatches,null);
+  assert.equal(list.completeMatchCount,null);assert.equal(list.count,0);
+  assert.equal(list.coverage.completeWithinWindow,false);
+  assert.equal(JSON.stringify(data),before,'unavailable window derives coverage without altering the projection');
+ }
 });
 test('legacy internal absolute adapter refuses mixed, partial, unknown and invalid arguments',()=>{
  const absolute={timeMin:'2026-11-04T03:00:00Z',timeMax:'2026-11-05T03:00:00Z'};
