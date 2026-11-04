@@ -567,6 +567,53 @@ def test_manifest_must_match_previously_selected_digest(artifacts):
         bundle.verify(artifacts['destination'], expected_digest='0' * 64)
 
 
+@pytest.mark.skipif(sys.platform != 'darwin', reason='actual Darwin symlink permission semantics')
+def test_private_umask_new_symlink_is_readable_without_changing_target(artifacts):
+    source = artifacts['runtime'] / 'node_modules'
+    target = source / 'dependency.js'
+    target.chmod(0o640)
+    before = target.read_bytes(), bundle._signature(target.stat())
+    previous = os.umask(0o077)
+    try:
+        (source / 'alias.js').symlink_to('dependency.js')
+        assert stat.S_IMODE((source / 'alias.js').lstat().st_mode) == 0o700
+        digest = bundle.build(**artifacts)
+    finally:
+        os.umask(previous)
+    copied = artifacts['destination'] / 'runtime/node_modules/alias.js'
+    assert copied.is_symlink() and stat.S_IMODE(copied.lstat().st_mode) == 0o755
+    assert os.readlink(copied) == 'dependency.js'
+    assert (target.read_bytes(), bundle._signature(target.stat())) == before
+    assert stat.S_IMODE((source / 'alias.js').lstat().st_mode) == 0o700
+    bundle.verify(artifacts['destination'], expected_digest=digest)
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='actual Darwin nofollow chmod')
+@pytest.mark.parametrize('fault', ['unchanged-mode', 'replaced-inode'])
+def test_new_symlink_normalization_refuses_drift(artifacts, monkeypatch, fault):
+    source = artifacts['runtime'] / 'node_modules'
+    (source / 'alias.js').symlink_to('dependency.js')
+    chmod = os.chmod
+    def changed(path, mode, *args, **kwargs):
+        path = Path(path)
+        if path.name == 'alias.js':
+            assert mode == 0o755 and kwargs == {'follow_symlinks': False}
+            if fault == 'unchanged-mode': return
+            other = path.with_name('different-inode.js')
+            other.symlink_to('dependency.js')
+            os.replace(other, path)
+        return chmod(path, mode, *args, **kwargs)
+    monkeypatch.setattr(os, 'chmod', changed)
+    previous = os.umask(0o077)
+    try:
+        with pytest.raises(bundle.BundleError, match='link-copy-changed'):
+            bundle.build(**artifacts)
+    finally:
+        os.umask(previous)
+    assert not artifacts['destination'].exists()
+    assert os.readlink(source / 'alias.js') == 'dependency.js'
+
+
 def test_manifest_duplicate_keys_are_not_accepted(artifacts):
     bundle.build(**artifacts)
     path = artifacts['destination'] / bundle.MANIFEST

@@ -569,6 +569,21 @@ def _copy_tree(source, target, entries):
             if os.readlink(source / relative) != record[1]:
                 raise BundleError('bundle-source-changed')
             path.symlink_to(record[1])
+            if sys.platform == 'darwin':
+                # Darwin applies the creator's umask to symlink permissions
+                # and requires read access for an owner-side readlink proof.
+                # Normalize only this newly-created link, never its target or
+                # an existing published tree. The private copy owns this name.
+                before = path.lstat()
+                if not stat.S_ISLNK(before.st_mode) or before.st_nlink != 1:
+                    raise BundleError('bundle-link-copy-changed')
+                os.chmod(path, 0o755, follow_symlinks=False)
+                after = path.lstat()
+                if (not stat.S_ISLNK(after.st_mode) or stat.S_IMODE(after.st_mode) != 0o755
+                        or (before.st_dev, before.st_ino, before.st_uid, before.st_gid, before.st_nlink) !=
+                           (after.st_dev, after.st_ino, after.st_uid, after.st_gid, after.st_nlink)
+                        or os.readlink(path) != record[1]):
+                    raise BundleError('bundle-link-copy-changed')
         else:
             with path.open('xb') as output:
                 actual = _file(source, relative, output)
