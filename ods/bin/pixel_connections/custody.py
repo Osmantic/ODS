@@ -4128,6 +4128,16 @@ def native_prepare_state(selection, identity):
                     parts = relative.split('/')
                     container = _native_directory_fd(gate, '/'.join(parts[:-1])) if len(parts) > 1 else os.dup(gate)
                     try:
+                        inherited_gid = 0
+                        if relative == 'private/oauth':
+                            parent_info = os.fstat(container)
+                            if (intent['children'].get('private') != {
+                                    'inode': [parent_info.st_dev, parent_info.st_ino], 'ready': True}
+                                    or (parent_info.st_uid, parent_info.st_gid, stat.S_IMODE(parent_info.st_mode))
+                                        != (uid, gid, 0o700)):
+                                raise CustodyError('native-source-descendant-changed')
+                            _native_no_acl(container)
+                            inherited_gid = gid
                         record = intent['children'].get(relative)
                         if record is None:
                             _native_selected(selection)
@@ -4139,7 +4149,7 @@ def native_prepare_state(selection, identity):
                             child = _native_directory_fd(container, parts[-1])
                             try:
                                 created = os.fstat(child)
-                                if (created.st_uid != 0 or created.st_gid != 0
+                                if (created.st_uid != 0 or created.st_gid not in (0, inherited_gid)
                                         or stat.S_IMODE(created.st_mode) != 0o700 or os.listdir(child)):
                                     raise CustodyError('native-source-descendant-unmanaged')
                                 _native_no_acl(child)
@@ -4156,10 +4166,24 @@ def native_prepare_state(selection, identity):
                                 raise CustodyError('native-source-descendant-changed')
                             _native_no_acl(child)
                             if not record['ready']:
-                                if (os.listdir(child) or (actual.st_uid, actual.st_gid) not in ((0, 0), (uid, gid))
+                                inherited = (inherited_gid != 0 and (actual.st_uid, actual.st_gid) == (0, inherited_gid)
+                                    and stat.S_IMODE(actual.st_mode) == 0o700)
+                                if (os.listdir(child) or not (inherited or (actual.st_uid, actual.st_gid) in ((0, 0), (uid, gid)))
                                         or stat.S_IMODE(actual.st_mode) not in (0o700, mode)):
                                     raise CustodyError('native-source-descendant-unmanaged')
                                 _native_selected(selection)
+                                if inherited:
+                                    # Darwin inherits the prepared broker parent's
+                                    # group. Normalize only this empty, journal-bound
+                                    # inode; an existing unbound name still refuses.
+                                    os.fchown(child, 0, 0)
+                                    os.fsync(child)
+                                    actual = os.fstat(child)
+                                    _native_no_acl(child)
+                                    if (record['inode'] != [actual.st_dev, actual.st_ino]
+                                            or (actual.st_uid, actual.st_gid, stat.S_IMODE(actual.st_mode)) != (0, 0, 0o700)
+                                            or os.listdir(child)):
+                                        raise CustodyError('native-source-descendant-changed')
                                 if (actual.st_uid, actual.st_gid) != (uid, gid):
                                     os.fchown(child, uid, gid)
                                 os.fchmod(child, mode)

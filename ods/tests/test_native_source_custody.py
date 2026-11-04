@@ -1103,3 +1103,126 @@ def test_already_published_gate_is_preserved_when_child_later_becomes_invalid(na
         source.native_prepare_state(native.selected,native.identity)
     assert native.acl.writes==1 and native.acl.acls[key]==before
     assert stat.S_IMODE((source.NATIVE_STATE/'private').stat().st_mode)==0o777
+
+
+@pytest.fixture
+def darwin_nested_directory(native, monkeypatch):
+    """Real mkdir/FDs; emulate Darwin's inherited parent GID explicitly."""
+    actual_mkdir = os.mkdir
+    created = []
+    def mkdir(path, mode=0o777, *, dir_fd=None):
+        result = actual_mkdir(path, mode, dir_fd=dir_fd)
+        if path == 'oauth' and dir_fd is not None:
+            parent = os.fstat(dir_fd)
+            child = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+            try:
+                info = native.real_fstat(child)
+                assert (parent.st_uid, parent.st_gid) == (native.identity['id'], native.identity['id'])
+                native.owners[(info.st_dev, info.st_ino)] = (0, parent.st_gid)
+                created.append([info.st_dev, info.st_ino])
+            finally:
+                os.close(child)
+        return result
+    monkeypatch.setattr(os, 'mkdir', mkdir)
+    return native, created
+
+
+def test_nested_private_directory_inherited_group_is_journaled_before_normalization(darwin_nested_directory, monkeypatch):
+    native, created = darwin_nested_directory
+    chown = os.fchown
+    observed = []
+    def checked(fd, uid, gid):
+        info = os.fstat(fd)
+        if [info.st_dev, info.st_ino] in created:
+            record = json.loads((native.metadata / 'source-custody-prepare.json').read_bytes())
+            assert record['children']['private/oauth'] == {'inode': [info.st_dev, info.st_ino], 'ready': False}
+            assert not os.listdir(fd)
+            observed.append((uid, gid))
+        return chown(fd, uid, gid)
+    monkeypatch.setattr(os, 'fchown', checked)
+    assert source.native_prepare_state(native.selected, native.identity)['phase'] == 'prepared-no-jobs'
+    assert len(created) == 1
+    assert observed == [(0, 0), (native.identity['id'], native.identity['id'])]
+    record = json.loads((native.metadata / 'source-custody-prepare.json').read_bytes())
+    assert record['children']['private/oauth'] == {'inode': created[0], 'ready': True}
+    before = list(native.changes)
+    source.native_prepare_state(native.selected, native.identity)
+    assert native.changes == before and len(created) == 1
+
+
+@pytest.mark.parametrize('point', ['before-normalize', 'after-normalize', 'journal-ack'])
+def test_nested_group_normalization_replays_only_the_recorded_inode(darwin_nested_directory, monkeypatch, point):
+    native, created = darwin_nested_directory
+    chown, save = os.fchown, source._native_save_at
+    failed = []
+    def changed(fd, uid, gid):
+        info = os.fstat(fd)
+        selected = [info.st_dev, info.st_ino] in created and (uid, gid) == (0, 0)
+        if selected and point == 'before-normalize' and not failed:
+            failed.append(True)
+            raise OSError('invented normalization interruption')
+        result = chown(fd, uid, gid)
+        if selected and point == 'after-normalize' and not failed:
+            failed.append(True)
+            raise OSError('invented normalization acknowledgement loss')
+        return result
+    def saved(selection, directory, name, value, **kwargs):
+        result = save(selection, directory, name, value, **kwargs)
+        if (point == 'journal-ack' and not failed and name == 'source-custody-prepare.json'
+                and value.get('children', {}).get('private/oauth', {}).get('ready') is False):
+            failed.append(True)
+            raise OSError('invented journal acknowledgement loss')
+        return result
+    monkeypatch.setattr(os, 'fchown', changed)
+    monkeypatch.setattr(source, '_native_save_at', saved)
+    with pytest.raises(OSError, match='invented'):
+        source.native_prepare_state(native.selected, native.identity)
+    assert failed and len(created) == 1 and native.acl.writes == 0
+    inode = created[0]
+    record = json.loads((native.metadata / 'source-custody-prepare.json').read_bytes())
+    assert record['children']['private/oauth'] == {'inode': inode, 'ready': False}
+    monkeypatch.setattr(os, 'fchown', chown)
+    monkeypatch.setattr(source, '_native_save_at', save)
+    assert source.native_prepare_state(native.selected, native.identity)['phase'] == 'prepared-no-jobs'
+    record = json.loads((native.metadata / 'source-custody-prepare.json').read_bytes())
+    assert record['children']['private/oauth'] == {'inode': inode, 'ready': True}
+    assert len(created) == 1
+
+
+@pytest.mark.parametrize('change', ['foreign-group', 'foreign-owner', 'mode', 'acl', 'nonempty', 'unbound', 'replacement'])
+def test_nested_inherited_group_does_not_adopt_or_repair_unknown_state(darwin_nested_directory, monkeypatch, change):
+    native, created = darwin_nested_directory
+    save = source._native_save_at
+    interrupted = []
+    def stop(selection, directory, name, value, **kwargs):
+        if (name == 'source-custody-prepare.json' and 'private/oauth' in value.get('children', {})
+                and not interrupted):
+            interrupted.append(True)
+            if change != 'unbound':
+                save(selection, directory, name, value, **kwargs)
+            raise OSError('invented pause after exclusive mkdir')
+        return save(selection, directory, name, value, **kwargs)
+    monkeypatch.setattr(source, '_native_save_at', stop)
+    with pytest.raises(OSError, match='invented'):
+        source.native_prepare_state(native.selected, native.identity)
+    monkeypatch.setattr(source, '_native_save_at', save)
+    path = source.NATIVE_STATE / 'private/oauth'
+    original = path.stat()
+    key = (original.st_dev, original.st_ino)
+    if change == 'foreign-group': native.owners[key] = (0, native.identity['id'] + 1)
+    elif change == 'foreign-owner': native.owners[key] = (native.f.bridge.owner.pw_uid, native.identity['id'])
+    elif change == 'mode': path.chmod(0o750)
+    elif change == 'acl': native.acl.acls[key] = {'entries': [native.acl.entry(native.f.bridge.owner.pw_uid)], 'flags': 0}
+    elif change == 'nonempty': (path / 'preserve.txt').write_bytes(b'invented preserved input')
+    elif change == 'replacement':
+        path.rename(path.with_name('retained-original'))
+        path.mkdir(mode=0o700)
+        replacement = path.stat()
+        native.owners[(replacement.st_dev, replacement.st_ino)] = (0, native.identity['id'])
+    changes = list(native.changes)
+    with pytest.raises(source.CustodyError):
+        source.native_prepare_state(native.selected, native.identity)
+    assert native.changes == changes and native.acl.writes == 0
+    assert path.is_dir()
+    if change == 'nonempty': assert (path / 'preserve.txt').read_bytes() == b'invented preserved input'
+    if change == 'replacement': assert path.with_name('retained-original').stat().st_ino == original.st_ino
