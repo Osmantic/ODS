@@ -12,8 +12,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "vendor/pixel"
 BUNDLE = ROOT / "vendor/pixel.bundle"
-REF = "80fd49e6d6f3d54185fe2415ac6b7e003c16a12a"
-SHA256 = "0e39c7fbeb48cc1c9746ea455408a33cef0a9eefe160e6cecbb1245c4a4bb6cb"
+REF = "bf6db06c5b432ec9e8a408d1cac785753693099c"
+SHA256 = "9e5bbd59f0934b615e23a6c2327b170045073fa59323c60228996a89625863d0"
 
 
 def command(*args):

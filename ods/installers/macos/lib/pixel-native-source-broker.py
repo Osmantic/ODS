@@ -24,6 +24,16 @@ SOURCE_INPUTS = ('deploy/source-broker/broker.py', 'scripts/configure.mjs', '.en
 # Pin/table synchronization and the actual configure defaults are tested below
 # the owner boundary. Unknown refs cannot acquire this new native capability.
 SOURCE_AUTHORITIES = {
+    "bf6db06c5b432ec9e8a408d1cac785753693099c": {
+        "bundleSha256": "9e5bbd59f0934b615e23a6c2327b170045073fa59323c60228996a89625863d0",
+        "tree": "350dcbc922aacd1f60ecdf0619b367eb22765e93",
+        "inputs": {
+            "deploy/source-broker/broker.py": "0b0c5a9727505e3b8af0196df2fc922eec42d0977c3ab48515dbee416687b948",
+            "scripts/configure.mjs": "c512eb6cdc0056c03e1d07ccfaf76030e7917a5819322ba8e24e8a7ade0d728d",
+            ".env.example": "fa1bf7a7e6e5863662466c5a9e77ca0fff1c38cced23d7127c31dd6a2397ac1c"
+        },
+        "templateSha256": "2f0c2700542d295272c70f47c52cef116101b01c7ce45a353eb0c1d93d1a39be"
+    },
     "80fd49e6d6f3d54185fe2415ac6b7e003c16a12a": {
         "bundleSha256": "0e39c7fbeb48cc1c9746ea455408a33cef0a9eefe160e6cecbb1245c4a4bb6cb",
         "tree": "03cb6f868cb44c7bc4b078bcb0e5c61bd0116ef0",

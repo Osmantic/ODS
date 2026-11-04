@@ -353,3 +353,5 @@ tests/test-cli-update-model-lifecycle.sh
 tests/test-summary-quick-commands.sh
 tests/test_dashboard_env_custody.py
 tests/test_cli_preset_name_validation.py
+tests/test-pixel-gateway-readiness.py
+tests/test-pixel-integrations-readiness.py
