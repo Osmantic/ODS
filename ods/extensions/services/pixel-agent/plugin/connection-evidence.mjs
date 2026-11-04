@@ -35,7 +35,11 @@ const optional = (value,valid) => value === null || valid(value);
 // These receipts prove only that this source lookup returned a well-formed
 // local snapshot. They never prove current OAuth validity or an account total.
 function countProof(value,source) {
-  if (!exact(value,[...COUNT_COMMON,...(source === 'gmail' ? GMAIL_COUNT : CALENDAR_COUNT)])
+  // Older reviewed Calendar sources report only the total unresolved count.
+  const hasAllDayCount = source === 'calendar' && Object.hasOwn(value,'unresolvedAllDayEventCount');
+  const keys = [...COUNT_COMMON,...(source === 'gmail' ? GMAIL_COUNT : CALENDAR_COUNT)];
+  if (hasAllDayCount) keys.push('unresolvedAllDayEventCount');
+  if (!exact(value,keys)
       || value.schemaVersion !== 1 || value.recordsReturned !== 0 || value.source !== source
       || value.readState !== 'ok' || !iso(value.generatedAt) || !optional(value.ageSeconds,integer)
       || !['fresh','stale','unknown'].includes(value.freshness)
@@ -53,6 +57,8 @@ function countProof(value,source) {
   return value.scope === 'configured-calendar-projection' && integer(value.observedMatchCount)
     && optional(value.completeMatchCount,integer) && optional(value.requestCoveredByWindow,v => typeof v === 'boolean')
     && typeof value.completeWithinWindow === 'boolean' && integer(value.unresolvedEventCount)
+    && (!hasAllDayCount || integer(value.unresolvedAllDayEventCount)
+      && value.unresolvedAllDayEventCount <= value.unresolvedEventCount)
     && ['absolute','rolling','civil-days'].includes(value.windowKind) && value.windowState === 'resolved'
     && iso(value.windowStart) && iso(value.windowEnd) && Date.parse(value.windowStart) < Date.parse(value.windowEnd)
     && optional(value.windowDays,v => integer(v) && v >= 1 && v <= 730)

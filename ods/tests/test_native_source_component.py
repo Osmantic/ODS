@@ -168,10 +168,10 @@ def test_unknown_source_ref_refuses_before_owner_git_or_root_component_validatio
 
 
 def test_current_pin_keeps_only_the_exact_reviewed_predecessors(package):
-    assert package[1] == '80fd49e6d6f3d54185fe2415ac6b7e003c16a12a'
+    assert package[1] == 'bf6db06c5b432ec9e8a408d1cac785753693099c'
     assert set(component.SOURCE_AUTHORITIES) == {
         'acc5550888fe034a9a42e90307c9f7a664726315', '224ed399e38273db0f9d4834ceab55d493a99cf3',
-        '8afb55abf50633616cd759146366588717534afc', '3fe50f1d75d13295bfbe964bfcd327a91df15814', '47706f6863f74ae65c83c925bd6af51395193363', '80fd49e6d6f3d54185fe2415ac6b7e003c16a12a'}
+        '8afb55abf50633616cd759146366588717534afc', '3fe50f1d75d13295bfbe964bfcd327a91df15814', '47706f6863f74ae65c83c925bd6af51395193363', '80fd49e6d6f3d54185fe2415ac6b7e003c16a12a', 'bf6db06c5b432ec9e8a408d1cac785753693099c'}
 
 
 def test_unknown_coherently_resealed_component_cannot_expand_the_closed_table(package, monkeypatch):

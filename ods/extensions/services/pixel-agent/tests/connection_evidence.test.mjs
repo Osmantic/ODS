@@ -67,6 +67,24 @@ test('a failed source lookup is repaired only by a strict same-source receipt',(
   assert.equal(e.unresolved(),false);
 });
 
+test('Calendar lookup evidence accepts reviewed count formats and rejects inconsistent all-day uncertainty',()=>{
+  const current=count('calendar');
+  assert.equal(current.unresolvedAllDayEventCount,0);
+  const {unresolvedAllDayEventCount,...legacy}=current;
+  const uncertain={...current,unresolvedEventCount:1,unresolvedAllDayEventCount:1,
+    completeWithinWindow:false,completeMatchCount:null};
+  for(const value of [current,legacy,uncertain]){
+    const e=createConnectionEvidence();observed(e,CALENDAR,value);assert.equal(e.unresolved(),false);
+  }
+  for(const value of [
+    ...[-1,1.5,'1',2,null,undefined].map(n=>({...uncertain,unresolvedAllDayEventCount:n})),
+    {...uncertain,completeWithinWindow:true,completeMatchCount:0},
+    {...current,extraField:true},
+  ]){
+    const e=createConnectionEvidence();observed(e,CALENDAR,value);assert.equal(e.unresolved(),true);
+  }
+});
+
 test('qualified dispatch requires the exact registered target and envelope source',()=>{
   for(const name of [STATUS,GMAIL,CALENDAR]) {
     const e=createConnectionEvidence(),source=name===STATUS?'pixel-ods':'pixel-source-broker';
@@ -153,14 +171,19 @@ test('actual Source factory count/list/read receipts settle only their source lo
     ['pixel_gmail_sent',{maxResults:1}],['pixel_gmail_search',{query:'fixture',maxResults:1}],
     ['pixel_gmail_thread',{threadId:'fixture-thread',maxResults:1}],
     [CALENDAR,{window:{kind:'rolling',days:7}}],
-    ['pixel_calendar_list',{timeMin:date(2),timeMax:date(3),maxResults:1}],
+    ['pixel_calendar_list',{window:{kind:'absolute',timeMin:date(.5),timeMax:date(1.5)},maxResults:1},1],
+    ['pixel_calendar_list',{window:{kind:'absolute',timeMin:date(2),timeMax:date(3)},maxResults:1},0],
     ['pixel_calendar_get',{eventId:'fixture-event'}],
   ];
-  for(const [name,args] of cases)for(const wrapped of [false,true]) {
+  for(const [name,args,expectedCount] of cases)for(const wrapped of [false,true]) {
     const result=await tools.get(name).execute('actual-source',args);
     assert.notEqual(result.isError,true,name);
     if(name===GMAIL)assert.equal(result.details.coverageState,'partial-index');
-    if(name==='pixel_calendar_list')assert.equal(result.details.count,0,'empty covered lookup is valid evidence');
+    if(name==='pixel_calendar_list'){
+      assert.equal(result.details.count,expectedCount);
+      assert.equal(result.details.completeWithinWindow,true);
+      assert.equal(result.details.completeMatchCount,expectedCount);
+    }
     const e=createConnectionEvidence(),b=binding(wrapped?'tool_call':name,`${name}-${wrapped}`,
       wrapped?{params:{id:`openclaw:pixel-source-broker:${name}`,args}}:{});
     e.prepare(b);e.observe(b,wrapped?wrap(name,result):result);

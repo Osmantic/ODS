@@ -35,7 +35,7 @@ const common = ["schemaVersion", "recordsReturned", "generatedAt", "ageSeconds",
   "limitations", "readState", "source", "scope", "filterSemantics"];
 const keys = { pixel_gmail_count: [...common, "indexedMatchCount", "mailboxTotal", "canAnswerMailboxTotal", "coverageState",
   "completeWithinConfiguredQueries", "absenceWithinCoveredProjection"], pixel_calendar_count: [...common,
-  "observedMatchCount", "completeMatchCount", "requestCoveredByWindow", "completeWithinWindow", "unresolvedEventCount",
+  "observedMatchCount", "completeMatchCount", "requestCoveredByWindow", "completeWithinWindow", "unresolvedEventCount", "unresolvedAllDayEventCount",
   "windowKind", "windowState", "windowStart", "windowEnd", "windowDays", "ownerTimeZone", "calendarTimeZone"] };
 function closed(name, response) {
   assert.deepEqual(Object.keys(response.details).sort(), [...keys[name]].sort());

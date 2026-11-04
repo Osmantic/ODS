@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`80fd49e6d6f3d54185fe2415ac6b7e003c16a12a`, and its SHA-256 is
-`0e39c7fbeb48cc1c9746ea455408a33cef0a9eefe160e6cecbb1245c4a4bb6cb`.
+`bf6db06c5b432ec9e8a408d1cac785753693099c`, and its SHA-256 is
+`9e5bbd59f0934b615e23a6c2327b170045073fa59323c60228996a89625863d0`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -35,13 +35,13 @@ coverage. Stored projections and source records are unchanged. See the
 [API contract](pixel/docs/calendar-read-api.md) and
 [scoped evidence](pixel/ODS-QUALIFICATION-4.3.46.md).
 
-Two independent initially empty bare repositories reproduced the same parentless
-Source46 commit and byte-identical 4,759,656-byte bundles. The tree is
-`03cb6f868cb44c7bc4b078bcb0e5c61bd0116ef0`, with 1,347 public blobs and 96
-executable Git entries. Each physical source byte and mode matches the bundle.
-Both builds first reproduced the exact earlier ODS Source45 synthetic commit.
-A private index was used; the composition merge index remained unchanged.
-Private history, audit inputs, workflow files and signing material are excluded.
+Two independent bare repositories produced identical 4,759,666-byte bundles for tree
+`350dcbc922aacd1f60ecdf0619b367eb22765e93`. The only change from the initial 4.3.46 package
+(`80fd49e6d6f3d54185fe2415ac6b7e003c16a12a`, bundle `0e39c7fbeb48cc1c9746ea455408a33cef0a9eefe160e6cecbb1245c4a4bb6cb`)
+is the registered count test's closed field list, which now includes the all-day
+uncertainty count returned by the existing implementation. The source retains 1,347
+public blobs and 96 executable entries. Prepared clients and native authority
+retain the initial 4.3.46 identity.
 
 The two independent 4.3.45 packages have different identities and API contracts:
 
