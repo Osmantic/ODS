@@ -3,7 +3,6 @@
 import json
 import os
 import pathlib
-import stat
 import subprocess
 import sys
 import tempfile
@@ -12,7 +11,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
-@unittest.skipUnless(os.name == "posix", "POSIX test execution required")
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux test execution required")
 class PixelInstallTransactionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="ods-pixel-tx-")
