@@ -246,10 +246,27 @@ def main(*, reprove_installer_access=False):
         os.unlink(address)
     class Server(socketserver.ThreadingUnixStreamServer):
         daemon_threads = True
+    trigger_stop = trigger_worker = None
+    native_executor = Path(__file__).resolve().parent / 'pixel_connections/native_executor.py'
+    if platform.system() == 'Darwin' and native_executor.is_file():
+        # Old complete deployments have no executor file or execution journal.
+        # The optional worker never provisions state or enables a default grant.
+        from pixel_macos_custody import protected_bytes
+        protected_bytes(native_executor, limit=1024 * 1024)
+        from pixel_connections.native_executor import trigger_loop
+        import threading
+        trigger_stop = threading.Event()
+        trigger_worker = threading.Thread(target=trigger_loop, args=(make_adapter, trigger_stop), daemon=True)
+        trigger_worker.start()
     with Server(address, Handler) as server:
         os.chown(address, 0, owner.pw_gid)
         os.chmod(address, 0o660)
-        server.serve_forever()
+        try:
+            server.serve_forever()
+        finally:
+            if trigger_stop is not None:
+                trigger_stop.set()
+                trigger_worker.join(timeout=5)
 
 
 if __name__ == "__main__":
