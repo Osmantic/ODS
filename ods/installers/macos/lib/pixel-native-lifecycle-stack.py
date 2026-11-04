@@ -1,7 +1,8 @@
 """Freeze an installed CLI operation's selected definitions and image identities.
 
-This is an admission transaction receipt, not a rollback engine. Compose builds
-missing images for start/update under the hold; restart retains no-build policy.
+This is an admission transaction receipt, not a rollback engine. Explicit updates
+rebuild services sourced solely from their Compose build context under the hold.
+Starts reuse available images by default. Restarts never build.
 An unconfirmed preparation needs explicit review before choosing fresh images.
 """
 import copy
@@ -154,9 +155,18 @@ def freeze(install_dir, directory, record, *, action, service, read_selection, r
         saved['pullComplete'] = True
         checkpoint(record)
     if action != 'restart':
-        build = [name for name in services if document['services'][name].get('build') and (
-            document['services'][name].get('pull_policy') == 'build' or image_id(docker_run,
-                document['services'][name].get('image') or record['project'] + '-' + name, missing=True) is None)]
+        build = []
+        for name in services:
+            definition = document['services'][name]
+            if not definition.get('build'):
+                continue
+            image = definition.get('image')
+            policy = definition.get('pull_policy')
+            reference = image or record['project'] + '-' + name
+            # A generated project tag can still point at the previous installation.
+            source_update = action == 'update' and not image and not policy
+            if source_update or policy == 'build' or image_id(docker_run, reference, missing=True) is None:
+                build.append(name)
         if build:
             saved['retrySameInputs'] = True
             checkpoint(record)
