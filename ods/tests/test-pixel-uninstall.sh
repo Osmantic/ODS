@@ -1166,6 +1166,29 @@ else
     fail "verified Operations Broker deployment could not be removed"
 fi
 
+# Portal integrations: unit, programs and the owner's integration settings go;
+# the owner's own vault stays.
+write_ops_fixture
+mkdir -p "$LIBEXEC_DIR/ods-pixel-integrations" "$HOME_DIR/.config/ods/pixel-integrations" "$HOME_DIR/Vault"
+printf '%s\n' '[Unit]' >"$SYSTEMD_DIR/pixel-integrations.service"
+printf '%s\n' '# fixture' >"$LIBEXEC_DIR/ods-pixel-integrations/integrations_service.py"
+printf '%s\n' '{}' >"$HOME_DIR/.config/ods/pixel-integrations/secrets.json"
+printf '%s\n' 'note' >"$HOME_DIR/Vault/Note.md"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    if [[ ! -e "$SYSTEMD_DIR/pixel-integrations.service" \
+        && ! -e "$LIBEXEC_DIR/ods-pixel-integrations" \
+        && ! -e "$HOME_DIR/.config/ods/pixel-integrations" \
+        && -f "$HOME_DIR/Vault/Note.md" ]] \
+        && grep -Fxq 'disable --now pixel-integrations.service' "$SYSTEMCTL_LOG"; then
+        pass "Portal integrations service, programs and settings are removed and the vault stays"
+    else
+        fail "Portal integrations cleanup left state or touched the vault"
+    fi
+else
+    fail "Portal integrations deployment could not be removed"
+fi
+rm -rf "$HOME_DIR/Vault"
+
 write_ops_fixture
 clean_custody_before="$(find "${OPS_STATE%/*}" -maxdepth 1 -type d -name '.pixel-ops-broker-custody-*' | wc -l)"
 if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" source-transition; then
