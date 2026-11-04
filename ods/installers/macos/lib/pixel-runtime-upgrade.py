@@ -17,6 +17,24 @@ JOURNAL_LIMIT = 32 * 1024 * 1024
 CORE_ROLES = ('gateway', 'access', 'relay')
 LEGACY_NATIVE_ROLES = ('operations', 'promoter', 'manager') + CORE_ROLES
 NATIVE_ROLES = ('integrations',) + LEGACY_NATIVE_ROLES
+# One closed code/metadata family. No broker data, credentials, environment,
+# definitions, logs or identity records are members of this rollback family.
+SOURCE_ADDITIONS = frozenset({
+    '/usr/local/libexec/ods-pixel-access/pixel_connections/' + name for name in (
+        '__init__.py', 'activity.py', 'approvals.py', 'catalog.py', 'converge.py',
+        'coordinator.py', 'custody.py', 'drafts.py', 'google_app.py', 'host_api.py', 'lifecycle.py',
+        'native_access.py', 'native_apps.py', 'native_contract.py', 'native_enrollment.py', 'native_host_api.py',
+        'native_mcp.py', 'native_public.py', 'native_executor.py', 'native_retirement.py', 'source_backend.py',
+        'oauth.py', 'planner.py', 'plugins.py', 'state.py', 'status.py')
+} | {
+    '/usr/local/libexec/ods-pixel-access/' + name for name in (
+        'connection_transaction.py', 'native_mcp_owner.py', 'native_mcp_oauth.mjs', 'pixel_connection_agent_status.py')
+} | {
+    '/private/etc/ods/pixel-provider-runtime-manifest.json',
+    '/private/etc/ods/pixel-provider-runtime.json',
+    '/private/var/lib/ods-pixel-access/source-runtime-installation.json',
+})
+SOURCE_PRIVATE_RECEIPT = '/private/var/lib/ods-pixel-access/source-runtime-installation.json'
 PHASES = {'prepared', 'replacing-files', 'active', 'rolling-back', 'restored', 'recovery-required',
           *(action + '-' + role for action in ('stopping', 'starting')
             for role in NATIVE_ROLES)}
@@ -183,7 +201,104 @@ INTEGRATION_ADDITIONS = frozenset({
     '/Library/LaunchDaemons/com.ods.pixel-native-integrations.plist'})
 
 
-def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths):
+def source_family_hash(records):
+    """Hash exact candidate images for the complete fixed Source family."""
+    selected = [item for item in records if item['path'] in SOURCE_ADDITIONS]
+    family = {item['path']: item for item in selected}
+    if set(family) != SOURCE_ADDITIONS or len(selected) != len(SOURCE_ADDITIONS):
+        raise UpgradeError('runtime-upgrade-source-family-incomplete')
+    tuples = []
+    for path, item in sorted(family.items()):
+        expected_mode = 0o600 if path == SOURCE_PRIVATE_RECEIPT else 0o644
+        if (type(item['after']) is not bytes or type(item['mode']) is not int or item['mode'] != expected_mode
+                or type(item['gid']) is not int or item['gid'] != 0):
+            raise UpgradeError('runtime-upgrade-source-family-invalid')
+        tuples.append([path, item['mode'], item['gid'], hashlib.sha256(item['after']).hexdigest()])
+    return hashlib.sha256(json.dumps(tuples, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
+
+
+def _source_addition(value, records, *, current_digest, candidate_digest):
+    """A serialized proof binding, never an independent filesystem admission.
+
+    The installer must separately re-run its fixed custody verifier before each
+    write/deletion. Codec acceptance cannot establish current quiescence.
+    """
+    try:
+        withdrawal = (type(value) is dict and type(value.get('proof')) is dict
+            and value['proof'].get('kind') == 'ods-native-source-installer-withdrawal-intent')
+        fields = {'schemaVersion', 'kind', 'contextSha256', 'familySha256', 'proof', 'absentPaths'}
+        if withdrawal and 'receipt' in value:
+            fields.add('receipt')
+        if (type(value) is not dict or set(value) != fields
+                or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+                or value['kind'] != 'ods-native-source-installer-addition'
+                or any(type(value[key]) is not str or not re.fullmatch('[a-f0-9]{64}', value[key])
+                       for key in ('contextSha256', 'familySha256'))
+                or value['familySha256'] != source_family_hash(records)):
+            raise ValueError()
+        absent = sorted(item['path'] for item in records
+                        if item['path'] in SOURCE_ADDITIONS and item['before'] is None)
+        if type(value['absentPaths']) is not list or value['absentPaths'] != absent:
+            raise ValueError()
+        proof = value['proof']
+        if withdrawal:
+            transaction = {'kind': 'native-installer-upgrade', 'transaction': value['contextSha256'],
+                'currentDigest': current_digest, 'candidateDigest': candidate_digest}
+            owner = proof.get('owner')
+            if type(owner) is not dict or set(owner) != {'uid', 'gid'}:
+                raise ValueError()
+            try:
+                from pixel_connections.custody import (CustodyError, native_installer_withdrawal_intent,
+                    native_installer_withdrawal_receipt)
+            except ImportError as error:
+                raise UpgradeError('runtime-upgrade-source-withdrawal-validator-unavailable') from error
+            try:
+                if native_installer_withdrawal_intent(proof, transaction=transaction,
+                        owner_uid=owner['uid'], owner_gid=owner['gid']) != proof:
+                    raise ValueError()
+                if 'receipt' in value and native_installer_withdrawal_receipt(value['receipt'], intent=proof,
+                        transaction=transaction, owner_uid=owner['uid'], owner_gid=owner['gid']) != value['receipt']:
+                    raise ValueError()
+            except CustodyError as error:
+                raise UpgradeError('runtime-upgrade-source-withdrawal-proof-invalid') from error
+            encoded = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+            if len(encoded) > 128 * 1024:
+                raise ValueError()
+            return json.loads(encoded)
+        fields = {'schemaVersion', 'kind', 'transaction', 'currentDigest', 'candidateDigest',
+            'ownerUid', 'ownerGid', 'oldRuntimeCustodySha256', 'runtimeRoot', 'sourceRoot',
+            'kit', 'metadata', 'identity', 'witness'}
+        if (type(proof) is not dict or set(proof) != fields
+                or type(proof['schemaVersion']) is not int or proof['schemaVersion'] != 1
+                or proof['kind'] != 'ods-native-source-installer-absence'
+                or proof['transaction'] != value['contextSha256']
+                or proof['currentDigest'] != current_digest or proof['candidateDigest'] != candidate_digest
+                or current_digest == candidate_digest
+                or any(type(proof[key]) is not str or not re.fullmatch('[a-f0-9]{64}', proof[key])
+                       for key in ('currentDigest', 'candidateDigest'))
+                or type(proof['ownerUid']) is not int or proof['ownerUid'] <= 0
+                or type(proof['ownerGid']) is not int or proof['ownerGid'] < 0
+                or type(proof['oldRuntimeCustodySha256']) is not str
+                or not re.fullmatch('[a-f0-9]{64}', proof['oldRuntimeCustodySha256'])
+                or any(type(proof[key]) is not dict for key in ('metadata', 'witness'))
+                or proof['kit'] is not None and type(proof['kit']) is not dict
+                or proof['identity'] is not None and type(proof['identity']) is not dict):
+            raise ValueError()
+        for key in ('runtimeRoot', 'sourceRoot'):
+            path = proof[key]
+            if (type(path) is not str or not path.startswith('/')
+                    or any(part in ('', '.', '..') for part in path.split('/')[1:])
+                    or any(ord(char) < 32 for char in path)):
+                raise ValueError()
+        encoded = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+        if len(encoded) > 128 * 1024:
+            raise ValueError()
+        return json.loads(encoded)
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        raise UpgradeError('runtime-upgrade-source-proof-invalid') from error
+
+
+def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths, source_addition=None):
     """Bounded private rollback image. Paths must come from the verified plan."""
     if (any(not isinstance(value, str) or not re.fullmatch('[a-f0-9]{64}', value)
             for value in (current_digest, candidate_digest)) or current_digest == candidate_digest):
@@ -204,8 +319,10 @@ def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths)
         record = {key: item[key] for key in ('path', 'mode', 'gid')}
         for key in ('before', 'after'):
             body = item[key]
-            if key == 'before' and body is None and path in INSPECTION_ADDITIONS | INTEGRATION_ADDITIONS:
-                if item['mode'] != 0o644 or item['gid'] != 0:
+            source_absent = source_addition is not None and path in SOURCE_ADDITIONS
+            if key == 'before' and body is None and (path in INSPECTION_ADDITIONS | INTEGRATION_ADDITIONS or source_absent):
+                expected_mode = 0o600 if source_absent and path == SOURCE_PRIVATE_RECEIPT else 0o644
+                if item['mode'] != expected_mode or item['gid'] != 0:
                     raise UpgradeError('runtime-upgrade-record-invalid')
                 record[key] = record[key + 'Sha256'] = None
                 continue
@@ -215,12 +332,16 @@ def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths)
             record[key + 'Sha256'] = hashlib.sha256(body).hexdigest()
         encoded.append(record)
     absent = {item['path'] for item in records if item['before'] is None}
-    version = 3 if absent & INTEGRATION_ADDITIONS else 2 if absent else 1
-    if absent and absent not in (INSPECTION_ADDITIONS, INTEGRATION_ADDITIONS,
+    legacy_absent = absent - SOURCE_ADDITIONS if source_addition is not None else absent
+    version = 4 if source_addition is not None else 3 if absent & INTEGRATION_ADDITIONS else 2 if absent else 1
+    if legacy_absent and legacy_absent not in (INSPECTION_ADDITIONS, INTEGRATION_ADDITIONS,
                                 INSPECTION_ADDITIONS | INTEGRATION_ADDITIONS):
         raise UpgradeError('runtime-upgrade-inspection-additions-incomplete')
     value = dict(schemaVersion=version, currentDigest=current_digest, candidateDigest=candidate_digest,
                  phase='prepared', files=encoded)
+    if source_addition is not None:
+        value['sourceAddition'] = _source_addition(source_addition, records,
+            current_digest=current_digest, candidate_digest=candidate_digest)
     if len(json.dumps(value).encode()) > JOURNAL_LIMIT:
         raise UpgradeError('runtime-upgrade-journal-too-large')
     return value
@@ -228,9 +349,12 @@ def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths)
 
 def decode_recovery(value, *, current_digest, candidate_digest, allowed_paths):
     try:
-        if (type(value) is not dict or set(value) != {
-                'schemaVersion', 'currentDigest', 'candidateDigest', 'phase', 'files'}
-                or type(value['schemaVersion']) is not int or value['schemaVersion'] not in (1, 2, 3)
+        source = type(value) is dict and value.get('schemaVersion') == 4
+        fields = {'schemaVersion', 'currentDigest', 'candidateDigest', 'phase', 'files'}
+        if source:
+            fields.add('sourceAddition')
+        if (type(value) is not dict or set(value) != fields
+                or type(value['schemaVersion']) is not int or value['schemaVersion'] not in (1, 2, 3, 4)
                 or value['currentDigest'] != current_digest or value['candidateDigest'] != candidate_digest
                 or value['phase'] not in PHASES or type(value['files']) is not list):
             raise ValueError()
@@ -240,7 +364,7 @@ def decode_recovery(value, *, current_digest, candidate_digest, allowed_paths):
                 raise ValueError()
             record = {key: item[key] for key in ('path', 'mode', 'gid')}
             for key in ('before', 'after'):
-                if key == 'before' and value['schemaVersion'] in (2, 3) and item[key] is None:
+                if key == 'before' and value['schemaVersion'] in (2, 3, 4) and item[key] is None:
                     if item[key + 'Sha256'] is not None:
                         raise ValueError()
                     record[key] = None
@@ -251,7 +375,8 @@ def decode_recovery(value, *, current_digest, candidate_digest, allowed_paths):
                 record[key] = body
             records.append(record)
         canonical = encode_recovery(records, current_digest=current_digest,
-            candidate_digest=candidate_digest, allowed_paths=allowed_paths)
+            candidate_digest=candidate_digest, allowed_paths=allowed_paths,
+            source_addition=value['sourceAddition'] if source else None)
         canonical['phase'] = value['phase']
         if canonical != value:
             raise ValueError()
@@ -296,6 +421,41 @@ class RecoveryJournal:
         atomic_json(self.path, updated)
         self.value = updated
 
+    def bind_source_withdrawal(self, receipt, *, current_digest, candidate_digest,
+                               allowed_paths, verify_withdrawal):
+        """CAS only prepared intent -> completed, independently checked receipt.
+
+        A lost write acknowledgement observes the exact same committed value.
+        No snapshot, target, context, family, nonce or prior intent is replaced.
+        """
+        from pixel_access_bridge import atomic_json, private_json
+        if (self.value.get('schemaVersion') != 4 or self.value.get('phase') != 'prepared'
+                or not callable(verify_withdrawal)
+                or self.value.get('sourceAddition', {}).get('proof', {}).get('kind') !=
+                   'ods-native-source-installer-withdrawal-intent'):
+            raise UpgradeError('runtime-upgrade-source-withdrawal-binding-required')
+        records = decode_recovery(self.value, current_digest=current_digest,
+            candidate_digest=candidate_digest, allowed_paths=allowed_paths)
+        addition = self.value['sourceAddition']
+        if 'receipt' in addition and addition['receipt'] != receipt:
+            raise UpgradeError('runtime-upgrade-source-withdrawal-receipt-changed')
+        proposed = dict(self.value, sourceAddition=dict(addition, receipt=receipt))
+        decode_recovery(proposed, current_digest=current_digest,
+            candidate_digest=candidate_digest, allowed_paths=allowed_paths)
+        current = private_json(self.path, 0, JOURNAL_LIMIT)
+        if current not in (self.value, proposed):
+            raise UpgradeError('runtime-upgrade-journal-changed')
+        verify_withdrawal(intent=addition['proof'], receipt=receipt)
+        if private_json(self.path, 0, JOURNAL_LIMIT) != current:
+            raise UpgradeError('runtime-upgrade-journal-changed')
+        if current != proposed:
+            atomic_json(self.path, proposed)
+        if private_json(self.path, 0, JOURNAL_LIMIT) != proposed:
+            raise UpgradeError('runtime-upgrade-journal-changed')
+        self.value = proposed
+        verify_withdrawal(intent=addition['proof'], receipt=receipt)
+        return records
+
     def finish(self, verify_live):
         """Archive rollback data before releasing the mutation guard, under lock."""
         from pixel_access_bridge import atomic_json, private_json
@@ -337,15 +497,47 @@ def prepared_upgrade(bridge, records, *, current_digest, candidate_digest, allow
         yield journal
 
 
-def replace_deployment_files(records, *, read, replace):
+def _source_mutation_guard(records, addition, verify):
+    source_records = any(item['path'] in SOURCE_ADDITIONS for item in records)
+    if addition is None:
+        if source_records:
+            raise UpgradeError('runtime-upgrade-source-proof-required')
+        return False
+    proof = addition.get('proof') if type(addition) is dict else None
+    if type(proof) is not dict:
+        raise UpgradeError('runtime-upgrade-source-proof-invalid')
+    withdrawal = proof.get('kind') == 'ods-native-source-installer-withdrawal-intent'
+    transaction = proof.get('transaction') if withdrawal else proof
+    if type(transaction) is not dict:
+        raise UpgradeError('runtime-upgrade-source-proof-invalid')
+    _source_addition(addition, records, current_digest=transaction.get('currentDigest'),
+                     candidate_digest=transaction.get('candidateDigest'))
+    if withdrawal and 'receipt' not in addition:
+        raise UpgradeError('runtime-upgrade-source-complete-withdrawal-required')
+    if not callable(verify):
+        raise UpgradeError('runtime-upgrade-source-fresh-proof-required')
+    return True
+
+
+def replace_deployment_files(records, *, read, replace, source_addition=None,
+                             verify_source=None, write_source_added=None):
     """Apply pre-journaled file snapshots; each replace rechecks expected bytes."""
     if not records or len({item['path'] for item in records}) != len(records):
         raise UpgradeError('runtime-upgrade-file-set-invalid')
+    source = _source_mutation_guard(records, source_addition, verify_source)
+    if source and any(item['path'] in SOURCE_ADDITIONS and item['before'] is None for item in records) and not callable(write_source_added):
+        raise UpgradeError('runtime-upgrade-source-writer-required')
     for item in records:
         if read(item['path']) != item['before']:
             raise UpgradeError('runtime-upgrade-file-drift')
     for item in records:
         if item['before'] != item['after']:
+            if source and item['path'] in SOURCE_ADDITIONS:
+                verify_source()
+                if item['before'] is None:
+                    write_source_added(item['path'], expected=None, replacement=item['after'],
+                                       mode=item['mode'], gid=item['gid'])
+                    continue
             replace(item['path'], expected=item['before'], replacement=item['after'],
                     mode=item['mode'], gid=item['gid'])
 
@@ -370,10 +562,14 @@ def recovery_upgrade(bridge, *, current_digest, candidate_digest, allowed_paths,
         yield journal, records
 
 
-def restore_deployment_files(records, *, read, replace):
+def restore_deployment_files(records, *, read, replace, source_addition=None,
+                             verify_source=None, remove_source_added=None):
     """Restore only known previous/candidate bytes, including partial writes."""
     if not records or len({item['path'] for item in records}) != len(records):
         raise UpgradeError('runtime-upgrade-file-set-invalid')
+    source = _source_mutation_guard(records, source_addition, verify_source)
+    if source and any(item['path'] in SOURCE_ADDITIONS and item['before'] is None for item in records) and not callable(remove_source_added):
+        raise UpgradeError('runtime-upgrade-source-remover-required')
     current = {}
     for item in records:
         value = read(item['path'])
@@ -382,6 +578,11 @@ def restore_deployment_files(records, *, read, replace):
         current[item['path']] = value
     for item in reversed(records):
         if current[item['path']] != item['before']:
+            if source and item['path'] in SOURCE_ADDITIONS:
+                verify_source()
+                if item['before'] is None:
+                    remove_source_added(item['path'], expected=item['after'], mode=item['mode'], gid=item['gid'])
+                    continue
             replace(item['path'], expected=item['after'], replacement=item['before'],
                     mode=item['mode'], gid=item['gid'])
 

@@ -154,11 +154,18 @@ def request_runtime_access(operation, request=None, *, config):
                                        path='/v1/access-mode', timeout=310 if operation == 'change' else 22)
 
 
+def _native_connections_declared():
+    # This release switch never substitutes for the Root controller's sealed
+    # runtime, request-local backend, state and generation checks.
+    from pixel_connections.catalog import supports_surface
+    return supports_surface('darwin')
+
+
 def request_runtime_connections(*, config):
     """Connected-apps status from the agent's root controller, read-only."""
     system = platform.system()
-    if system == 'Darwin' or not config.get('PIXEL_OPENWEBUI_KEY') and system != 'Linux':
-        # The Source Broker runs only under Linux or WSL systemd.
+    if ((system == 'Darwin' and not _native_connections_declared())
+            or not config.get('PIXEL_OPENWEBUI_KEY') and system not in ('Linux', 'Darwin')):
         from pixel_connections.status import unavailable
         return 200, unavailable('darwin' if system == 'Darwin' else system.lower())
     if not config.get('PIXEL_OPENWEBUI_KEY'):
@@ -193,7 +200,8 @@ def request_runtime_connection_action(operation, request, *, config):
     if not valid_connection_action(payload):
         return 400, {'error': 'invalid-request'}
     system = platform.system()
-    if system == 'Darwin' or not config.get('PIXEL_OPENWEBUI_KEY') and system != 'Linux':
+    if ((system == 'Darwin' and not _native_connections_declared())
+            or not config.get('PIXEL_OPENWEBUI_KEY') and system not in ('Linux', 'Darwin')):
         if operation == 'connection-app-status':
             from pixel_connections.native_contract import unavailable
             return 200, unavailable(system.lower())

@@ -218,7 +218,7 @@ for name in (
 ):
     sources[f"pixel_provider/{name}"] = install / "bin/pixel_provider" / name
 CONNECTION_MODULES = tuple(f"pixel_connections/{name}" for name in (
-    "__init__.py", "state.py", "status.py", "catalog.py", "oauth.py", "custody.py", "planner.py", "coordinator.py",
+    "__init__.py", "state.py", "status.py", "catalog.py", "oauth.py", "custody.py", "planner.py", "coordinator.py", "source_backend.py",
     "lifecycle.py", "approvals.py", "activity.py", "drafts.py", "plugins.py", "native_mcp.py", "native_apps.py",
     "native_enrollment.py", "native_contract.py", "native_public.py", "native_access.py", "google_app.py"))
 # The root-owned copy of Pixel's broker that a connect installs from. It mirrors this

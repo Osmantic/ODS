@@ -21,7 +21,7 @@ GOOGLE: dict[str, Any] = {
     "name": "Google",
     "summary": "Calendar and Gmail",
     "kinds": ["source", "actuator"],
-    "platforms": ["linux-systemd", "wsl-systemd"],
+    "platforms": ["linux-systemd", "wsl-systemd", "darwin"],
     "auth": {"type": "oauth2-pkce", "client": "owner-desktop-app", "redirects": ["loopback", "paste"]},
     "capabilities": [
         {
@@ -58,6 +58,11 @@ GOOGLE: dict[str, Any] = {
 }
 
 CONNECTORS = (GOOGLE,)
+
+
+def supports_surface(surface: str) -> bool:
+    """Release declaration only; native custody still proves each operation."""
+    return type(surface) is str and surface in GOOGLE['platforms']
 
 
 def connector(connector_id: str) -> dict[str, Any]:

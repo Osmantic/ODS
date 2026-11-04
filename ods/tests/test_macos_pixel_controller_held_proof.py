@@ -425,6 +425,58 @@ def test_real_adapter_and_hold_helper_resample_after_slow_checks_before_release(
         assert disk[0]['phase'] == 'released'
 
 
+@pytest.mark.parametrize('phase', ['held', 'releasing', 'released'])
+@pytest.mark.parametrize('source_refuses', [False, True])
+def test_repaired_controller_proves_source_only_while_freshly_held(monkeypatch, phase, source_refuses):
+    authority, value = fixture()
+    value.update(phase='releasing-edge', leaseRevision='2' * 64, proof=proof(value))
+    hold = repair._hold(authority['snapshots']['hold'])
+    hold['phase'] = phase
+    disk, events = [copy.deepcopy(hold)], []
+    plan = {'source_lifecycle': {'mode': 'withdrawal'}}
+    records, journal = [], SimpleNamespace(value={'schemaVersion': 4, 'phase': 'active'})
+    def rpc(selected, container, operation, binding):
+        assert selected is plan and container == hold['container'] and binding == hold['binding']
+        events.append(operation)
+        if operation == 'acquire':
+            return hold['status']
+        assert operation == 'release' and events[-2] == 'native-proof'
+        return {'capability': 'available', 'phase': 'idle', 'streams': 0, 'admission_blocked': False}
+    def write(_path, record):
+        events.append('journal:' + record['phase'])
+        disk[0] = copy.deepcopy(record)
+    monkeypatch.setitem(sys.modules, 'pixel_access_bridge', SimpleNamespace(
+        private_json=lambda *_a: disk[0], atomic_json=write))
+    finish = source('_finish_migration_hold', {'_edge_hold_journal': lambda _p: 'hold',
+        '_migration_edge_request': rpc, 'InstallError': ValueError})
+    def source_proof(selected, actual_records, actual_journal):
+        assert selected is plan and actual_records is records and actual_journal is journal
+        assert disk[0]['phase'] == 'held' and events[-1] == 'acquire'
+        events.append('source-proof')
+        if source_refuses:
+            raise ValueError('Source completion unconfirmed')
+    adapter = object.__new__(live.Adapter)
+    adapter.i = SimpleNamespace(_finish_migration_hold=finish, _migration_edge_request=rpc,
+        _verify_archived_source_rebind=source_proof, InstallError=ValueError)
+    adapter.plan, adapter.records, adapter.journal = plan, records, journal
+    adapter.pure, adapter.budget = pure, lambda: 1
+    adapter.verify = lambda _v: events.append('outer-verify')
+    adapter.edge = lambda _v: hold
+    adapter.child_sample = lambda *_a: events.append('native-proof') or sample(value, ready=True)
+    if source_refuses and phase == 'held':
+        with pytest.raises(ValueError, match='Source completion unconfirmed'):
+            adapter.release_edge(value)
+        assert disk[0]['phase'] == 'held'
+        assert events == ['outer-verify', 'acquire', 'source-proof']
+    else:
+        adapter.release_edge(value)
+        assert disk[0]['phase'] == 'released'
+        assert ('source-proof' in events) is (phase == 'held')
+        assert events.index('native-proof') + 1 == events.index('release')
+        if phase == 'held':
+            assert events.index('source-proof') < events.index('journal:releasing') < events.index('native-proof')
+
+
 @pytest.mark.parametrize('fault', [None, 'timeout', 'exit', 'large', 'duplicate', 'shape'])
 def test_real_adapter_child_transport_is_fixed_bounded_and_private(monkeypatch, fault):
     authority, value = fixture()

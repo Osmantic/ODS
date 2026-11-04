@@ -212,13 +212,24 @@ class AgentClientTests(unittest.TestCase):
                 self.assertNotIn('PRIVATE_SENTINEL', output.getvalue())
 
     def test_exact_cli_refuses_platform_or_arguments_before_custody_or_transport(self):
-        for platform, arguments in (('darwin', ['helper']), ('linux', ['helper', '--path', 'PRIVATE_SENTINEL'])):
+        for platform, arguments in (('win32', ['helper']), ('linux', ['helper', '--path', 'PRIVATE_SENTINEL'])):
             with self.subTest(platform=platform), patch.object(helper.sys, 'platform', platform), \
                     patch.object(helper.sys, 'argv', arguments), patch.object(helper, '_protected_program') as protect, \
                     patch('sys.stdout', new_callable=io.StringIO) as output:
                 self.assertEqual(helper.main(), 1)
                 protect.assert_not_called()
                 self.assertEqual(json.loads(output.getvalue()), {'error': 'connection-status-unavailable'})
+
+    def test_native_cli_uses_the_same_fixed_authenticated_read(self):
+        value = status._agent_empty(NOW)
+        with patch.object(helper.sys, 'argv', ['helper']), patch.object(helper.sys, 'platform', 'darwin'), \
+                patch.object(helper, '_protected_program') as protect, \
+                patch.object(client, 'request_access', return_value=(200, value)) as request, \
+                patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.assertEqual(helper.main(), 0)
+        protect.assert_called_once_with()
+        request.assert_called_once_with('connection-agent-status')
+        self.assertEqual(json.loads(output.getvalue()), value)
 
     @unittest.skipUnless(os.name == 'posix', 'POSIX program custody')
     def test_program_custody_keeps_type_mode_owner_and_fixed_path_checks(self):
@@ -272,6 +283,8 @@ class AgentServerTests(unittest.TestCase):
         tree = ast.parse(path.read_bytes())
         main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'main')
         handler = next(node for node in main.body if isinstance(node, ast.ClassDef) and node.name == 'Handler')
+        platform_guard = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+            and node.name == 'connections_platform_enabled')
         payload = status._agent_empty(NOW)
         for uid, request, expected in ((1000, {'operation': 'connection-agent-status'}, 200),
                                        (2000, {'operation': 'connection-agent-status'}, 403),
@@ -281,7 +294,7 @@ class AgentServerTests(unittest.TestCase):
                     'owner': SimpleNamespace(pw_uid=1000), 'control_request': control_request, 'decode_frame': decode_frame,
                     'make_adapter': lambda: object(), 'platform': SimpleNamespace(system=lambda: 'Linux', release=lambda: 'test'),
                     'AccessError': AccessError}
-                exec(compile(ast.Module(body=[handler], type_ignores=[]), str(path), 'exec'), namespace)
+                exec(compile(ast.Module(body=[platform_guard, handler], type_ignores=[]), str(path), 'exec'), namespace)
                 instance = namespace['Handler'].__new__(namespace['Handler'])
                 instance.connection = SimpleNamespace(settimeout=lambda _timeout: None)
                 instance.rfile, instance.wfile = io.BytesIO(json.dumps(request).encode() + b'\n'), io.BytesIO()

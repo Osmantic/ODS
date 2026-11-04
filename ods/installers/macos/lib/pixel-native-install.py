@@ -28,6 +28,10 @@ NATIVE_RESIDUE_PATHS = tuple(Path(value) for value in (
     '/private/var/lib/ods-pixel-integrations',
     '/private/var/lib/ods-pixel-integrations-auth',
     '/private/var/log/ods-pixel-integrations',
+    '/private/var/lib/pixel-source-broker',
+    '/private/var/log/pixel-source-broker',
+    '/private/etc/ods/pixel-provider-runtime.json',
+    '/private/etc/ods/pixel-provider-runtime-manifest.json',
     '/usr/local/libexec/ods-pixel-access',
     '/usr/local/libexec/ods-pixel-services',
     '/usr/local/libexec/ods-pixel-runtimes',
@@ -143,17 +147,28 @@ def controlling_terminal():
     return True
 
 
-def retained_identity_only(*, empty_home=False, prompt_for_sudo=False):
+def retained_identity_only(*, empty_home=False, prompt_for_sudo=False,
+                           source_owner=None, source_install_dir=None):
     """Ask the root-owned account helper to prove an identity-only reinstall."""
+    if ((source_owner is None) != (source_install_dir is None) or source_owner is not None and
+            (type(source_owner) is not str or not source_owner or len(source_owner) > 256
+             or source_owner.startswith('-') or any(ord(char) < 32 for char in source_owner))):
+        raise ValueError('native-identity-verification-unavailable')
     try:
         # The post-Docker re-check can outlive the sudo ticket from the
         # preflight. With a terminal, let sudo prompt again instead of failing.
         # Diagnostics are piped through tee by the installer; neither stdin
         # nor stderr needs to be a TTY for sudo to use /dev/tty.
         interactive = prompt_for_sudo and controlling_terminal()
+        source_options = []
+        if source_owner is not None:
+            if source_install_dir is None:
+                raise ValueError('native-identity-verification-unavailable')
+            source_options = ['--source-owner', source_owner, '--source-install-dir',
+                              str(Path(source_install_dir).resolve(strict=False))]
         result = subprocess.run(['/usr/bin/sudo', *([] if interactive else ['-n']), '/usr/bin/python3',
             str(HERE / 'pixel-native-ops-account.py'),
-            '--verify-empty-home-only' if empty_home else '--verify-identity-only'],
+            '--verify-empty-home-only' if empty_home else '--verify-identity-only', *source_options],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=None if interactive else subprocess.PIPE, timeout=60, check=False)
     except (OSError, subprocess.SubprocessError) as error:
@@ -171,7 +186,7 @@ def retained_identity_only(*, empty_home=False, prompt_for_sudo=False):
     return True
 
 
-def preflight(install_dir, *, prompt_for_sudo=False):
+def preflight(install_dir, *, prompt_for_sudo=False, source_owner=None):
     if sys.platform != 'darwin' or platform.machine() != 'arm64' or os.geteuid() == 0:
         raise ValueError('native-apple-silicon-owner-required')
     install_dir = Path(install_dir)
@@ -189,10 +204,19 @@ def preflight(install_dir, *, prompt_for_sudo=False):
     retained_identity = os.path.lexists('/private/var/lib/ods-pixel-access')
     if retained_home and not retained_identity:
         raise ValueError('existing-native-pixel-requires-migration-or-recovery')
+    source_options = ({'source_owner': source_owner, 'source_install_dir': install_dir}
+                      if source_owner is not None else {})
     if retained_identity and not retained_identity_only(
-            empty_home=retained_home, prompt_for_sudo=prompt_for_sudo):
+            empty_home=retained_home, prompt_for_sudo=prompt_for_sudo, **source_options):
         raise ValueError('retained-pixel-identity-rejected')
     return install_dir
+
+
+def _source_install_owner():
+    if sys.platform != 'darwin':
+        return None
+    import pwd
+    return pwd.getpwuid(os.getuid()).pw_name
 
 
 def node_tools():
@@ -257,7 +281,8 @@ def native_docker_binary(binary):
 
 def install(*, install_dir, ods_source, compose_files, ref=DEFAULT_REF, prompt_for_sudo=False):
     with installation_phase('installation-inputs'):
-        install_dir = preflight(install_dir, prompt_for_sudo=prompt_for_sudo).resolve(strict=True)
+        install_dir = preflight(install_dir, prompt_for_sudo=prompt_for_sudo,
+            source_owner=_source_install_owner()).resolve(strict=True)
         if not re.fullmatch('[a-f0-9]{40}', ref):
             raise ValueError('exact-pixel-source-ref-required')
         paths = [Path(path).resolve(strict=True) for path in compose_files]
@@ -338,7 +363,8 @@ def main():
     args = parser.parse_args()
     try:
         if args.preflight_only:
-            preflight(args.install_dir, prompt_for_sudo=args.prompt_for_sudo)
+            preflight(args.install_dir, prompt_for_sudo=args.prompt_for_sudo,
+                source_owner=_source_install_owner())
         else:
             if not args.ods_source:
                 raise ValueError('ods-source-required')

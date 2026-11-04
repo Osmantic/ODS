@@ -53,7 +53,7 @@ export function validateConnectionStatus(value) {
 }
 
 export function readConnectionStatus({execute = execFile, platform = process.platform, signal} = {}) {
-  if (platform !== 'linux') return Promise.reject(Error('Connection status unavailable'));
+  if (!['linux','darwin'].includes(platform)) return Promise.reject(Error('Connection status unavailable'));
   return new Promise((resolve,reject) => {
     execute('/usr/bin/python3',['-I',HELPER],{
       cwd:'/',env:{PATH:'/usr/bin:/bin'},encoding:'utf8',timeout:22000,maxBuffer:8192,signal,

@@ -316,9 +316,15 @@ def _result(path: Path, keys: set, kind: str) -> dict[str, Any] | None:
             raise CustodyError("source-broker-result-unsafe")
         raw = handle.read(MAX_RESULT_BYTES + 1)
     path.unlink()
+    return decode_oauth_result(raw, keys, kind)
+
+
+def decode_oauth_result(raw, keys, kind):
+    """Shared content validation; filesystem custody belongs to the backend."""
     try:
-        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique)
-    except (UnicodeError, ValueError):
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique,
+            parse_constant=lambda _name: (_ for _ in ()).throw(ValueError()))
+    except (UnicodeError, ValueError, RecursionError):
         raise CustodyError("source-broker-result-invalid") from None
     if (not isinstance(value, dict) or set(value) != keys or value.get("schemaVersion") != 1
             or value.get("kind") != kind):
@@ -337,6 +343,11 @@ def exchange(paths: Paths, run: Run, flow_id: str) -> dict[str, Any]:
     run(["systemctl", "start", f"pixel-source-exchange@{flow_id}.service"], 120)
     result = _result(paths.oauth / f"{flow_id}.result.json", EXCHANGE_KEYS, "pixel-source-oauth-result")
     discard_flow(paths, flow_id)
+    return exchange_result(result, flow_id)
+
+
+def exchange_result(result, flow_id):
+    """One shared interpretation of the broker's content-free exchange result."""
     if result is None:
         raise CustodyError("sign-in-exchange-unavailable")
     scopes, account = result["grantedScopes"], result["account"]
@@ -381,6 +392,12 @@ def connection_env(paths: Paths, *, gateway: dict[str, bool], calendar_id: str, 
     Every other key keeps the value Pixel's configure wrote into the kit template.
     """
     lines = parse_env(_kit_bytes(paths, "source-broker.env").decode("utf-8"))
+    return env_text(lines, connection_overrides(lines, gateway=gateway, calendar_id=calendar_id,
+        time_zone=time_zone, gmail_window_days=gmail_window_days))
+
+
+def connection_overrides(lines, *, gateway, calendar_id, time_zone, gmail_window_days):
+    """One shared capability/query decision for both fixed host backends."""
     values = dict(lines)
     window = f" newer_than:{gmail_window_days}d"
     overrides = {
@@ -397,7 +414,7 @@ def connection_env(paths: Paths, *, gateway: dict[str, bool], calendar_id: str, 
     # A kit from before Gmail drafts has no drafts flag; env_text refuses one that needs it.
     if gateway["emailDrafts"] or DRAFTS_FLAG in values:
         overrides[DRAFTS_FLAG] = "1" if gateway["emailDrafts"] else "0"
-    return env_text(lines, overrides)
+    return overrides
 
 
 def install_env(paths: Paths, text: str) -> None:
@@ -635,6 +652,7 @@ NATIVE_PROGRAM = Path('/usr/local/libexec/ods-pixel-access')
 NATIVE_RUNTIMES = Path('/usr/local/libexec/ods-pixel-runtimes')
 NATIVE_RUNTIME_DESCRIPTOR = Path('/private/etc/ods/pixel-provider-runtime.json')
 NATIVE_RUNTIME_MANIFEST = Path('/private/etc/ods/pixel-provider-runtime-manifest.json')
+NATIVE_CONNECTION_RECORD = Path('/private/etc/ods/portal-connections.json')
 NATIVE_STATE = Path('/private/var/lib/pixel-source-broker')
 NATIVE_ENV = NATIVE_STATE / 'source-broker.env'
 NATIVE_LEGACY_ENV = Path('/private/etc/pixel-source-broker.env')
@@ -798,6 +816,17 @@ def native_source_selection(bridge, deployment):
     return selected
 
 
+def _native_initial_boot_pending(value):
+    if value is None:
+        return False
+    if (type(value) is not dict or set(value) != {'schemaVersion', 'kind', 'bindingSha256', 'transactions'}
+            or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+            or value['kind'] != 'ods-native-source-initial-boot' or type(value['transactions']) is not list
+            or not 1 <= len(value['transactions']) <= 16 or type(value['transactions'][-1]) is not dict):
+        return True  # Unknown fixed metadata never waives the lifecycle barrier.
+    return value['transactions'][-1].get('phase') != 'committed'
+
+
 def _native_selected(selection, *, _publication=False):
     # A duck-typed guard/checksum is not a Root deployment capability.
     if type(selection) is not _NativeSourceSelection or selection.seal is not _NATIVE_SEAL:
@@ -812,6 +841,12 @@ def _native_selected(selection, *, _publication=False):
         with protected_directory(NATIVE_META) as directory:
             publication, _raw = _native_json_at(directory, 'source-publication.json')
             jobs, _jobs_raw = _native_json_at(directory, 'source-jobs-prepare.json')
+            initial, _initial_raw = _native_json_at(directory, 'source-initial-generation.json')
+            initial_boot, _boot_raw = _native_json_at(directory, 'source-initial-boot.json')
+        if initial is not None and (type(initial) is not dict or initial.get('phase') != 'committed'):
+            raise CustodyError('native-source-initial-generation-requires-lifecycle')
+        if _native_initial_boot_pending(initial_boot):
+            raise CustodyError('native-source-initial-boot-requires-lifecycle')
         # This data-only increment admits no ordinary env/account/kit writer
         # once a generation has been staged. Only explicit recovery may handle
         # its frozen inputs. A completed rollback restores the old v1 boundary.
@@ -1206,12 +1241,12 @@ def _native_pairs(pairs):
 
 
 def _native_json_at(directory, name, *, mode=0o600):
-    if name not in ('source-identity.json', 'source-custody-prepare.json', 'source-environment.json', 'source-logs-prepare.json', 'source-publication.json', 'source-jobs-prepare.json', 'source-jobs-active.json', 'source-execution.json'):
+    if name not in ('source-identity.json', 'source-custody-prepare.json', 'source-environment.json', 'source-logs-prepare.json', 'source-publication.json', 'source-jobs-prepare.json', 'source-jobs-active.json', 'source-execution.json', 'source-environment-generation.json', 'source-boot-quiesce.json', 'source-installer-rebind.json', 'source-sidefiles.json', 'source-initial-generation.json', 'source-initial-boot.json', 'source-installer-code-only.json', 'source-installer-history.json'):
         raise CustodyError('native-source-record-invalid')
-    if name in ('source-jobs-prepare.json', 'source-jobs-active.json', 'source-execution.json'):
+    if name in ('source-jobs-prepare.json', 'source-jobs-active.json', 'source-execution.json', 'source-environment-generation.json', 'source-boot-quiesce.json', 'source-installer-rebind.json', 'source-sidefiles.json', 'source-initial-generation.json', 'source-initial-boot.json', 'source-installer-code-only.json', 'source-installer-history.json'):
         try:
             raw, _inode = _native_root_file(directory, name, mode=mode,
-                limit=524288 if name == 'source-execution.json' else 131072 if name == 'source-jobs-active.json' else 65536)
+                limit=524288 if name in ('source-execution.json', 'source-boot-quiesce.json') else 131072 if name in ('source-jobs-active.json', 'source-installer-history.json') else 65536)
         except FileNotFoundError:
             return None, None
         try:
@@ -1245,8 +1280,8 @@ def _native_save_at(selection, directory, name, value, *, previous=None, _public
     if raw != previous:
         raise CustodyError('native-source-record-changed')
     body = (json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n').encode()
-    if len(body) > (524288 if name == 'source-execution.json' else 131072 if name == 'source-jobs-active.json' else
-            65536 if name in ('source-publication.json', 'source-jobs-prepare.json') else 16384):
+    if len(body) > (524288 if name in ('source-execution.json', 'source-boot-quiesce.json') else 131072 if name in ('source-jobs-active.json', 'source-installer-history.json') else
+            65536 if name in ('source-publication.json', 'source-jobs-prepare.json', 'source-environment-generation.json', 'source-installer-rebind.json', 'source-sidefiles.json', 'source-initial-generation.json', 'source-initial-boot.json', 'source-installer-code-only.json', 'source-installer-history.json') else 16384):
         raise CustodyError('native-source-record-invalid')
     temporary = '.source-' + uuid.uuid4().hex
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
@@ -1333,6 +1368,2472 @@ def native_prepare_identity(selection):
         if _native_uuid(lib, intent['id']) != uuid.UUID(intent['userGuid']).bytes:
             raise CustodyError('native-source-identity-uuid-conflict')
         return intent
+
+
+_INSTALLER_SOURCE_CODE = frozenset(('source-runtime-installation.json', 'source-runtime-publication.json',
+    'source-sidefiles.json', 'source-publication.json'))
+_INSTALLER_ABSENCE_KEYS = frozenset(('schemaVersion', 'kind', 'transaction', 'currentDigest', 'candidateDigest',
+    'ownerUid', 'ownerGid', 'oldRuntimeCustodySha256', 'runtimeRoot', 'sourceRoot', 'kit', 'metadata', 'identity', 'witness'))
+
+
+def _native_installer_directory_owner(name):
+    """Fresh Directory Service owner data; never a live runtime capability."""
+    if (type(name) is not str or not 0 < len(name) <= 256 or any(ord(char) < 32 for char in name)):
+        raise CustodyError('native-source-installer-owner-invalid')
+    try:
+        owner = pwd.getpwnam(name)
+    except KeyError:
+        raise CustodyError('native-source-installer-owner-unavailable') from None
+    if (owner.pw_name != name or type(owner.pw_uid) is not int or owner.pw_uid <= 0
+            or type(owner.pw_gid) is not int or owner.pw_gid < 0 or type(owner.pw_dir) is not str
+            or not Path(owner.pw_dir).is_absolute() or Path(owner.pw_dir).resolve() != Path(owner.pw_dir)):
+        raise CustodyError('native-source-installer-owner-invalid')
+    return owner
+
+
+def _native_installer_owner(bridge, *, context_owner=None):
+    """Request-local DS identity for stopped/mixed file proofs only.
+
+    This neither discovers a gateway nor sets owner/runtime fields on a bridge.
+    NativeSource selection still requires ordinary live discovery separately.
+    """
+    from pixel_access_bridge import LaunchdAccessBridge
+    _native_root()
+    if (type(bridge) is not LaunchdAccessBridge or Path(bridge.state) != NATIVE_META
+            or LaunchdAccessBridge._native_runtime_lease(bridge) is None):
+        raise CustodyError('native-source-installer-transaction-required')
+    LaunchdAccessBridge._native_source_deadline_ns(bridge)
+    owner = _native_installer_directory_owner(bridge.gateway_owner)
+    if context_owner is not None and (type(context_owner) is not dict
+            or set(context_owner) != {'name', 'uid', 'gid', 'home'}
+            or any(type(context_owner[key]) is not int for key in ('uid', 'gid'))
+            or context_owner != {'name': owner.pw_name, 'uid': owner.pw_uid, 'gid': owner.pw_gid, 'home': owner.pw_dir}):
+        raise CustodyError('native-source-installer-owner-changed')
+    return owner
+
+
+@dataclass(frozen=True)
+class _NativeRetainedSourceCensus:
+    """Standalone identity-only observation, never an installer bridge."""
+    uid: int
+    gid: int
+
+    def command(self, arguments, timeout=10):
+        if arguments not in (['/bin/launchctl', 'print', 'system'], ['/bin/ps', '-axo', 'pid=,uid=']):
+            raise CustodyError('native-source-retained-command-invalid')
+        result = subprocess.run(arguments, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=10, check=False, env={'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': NATIVE_HOME, 'LANG': 'C', 'LC_ALL': 'C'})
+        if result.returncode or len(result.stdout) > 1024 * 1024:
+            raise CustodyError('native-source-retained-census-unavailable')
+        return result.stdout
+
+
+def _native_installer_census_owner(bridge):
+    from pixel_access_bridge import LaunchdAccessBridge
+    if type(bridge) is LaunchdAccessBridge:
+        return _native_installer_directory_owner(bridge.gateway_owner)
+    if type(bridge) is _NativeRetainedSourceCensus:
+        owner = pwd.getpwuid(bridge.uid)
+        if owner.pw_uid != bridge.uid or owner.pw_gid != bridge.gid or bridge.uid <= 0:
+            raise CustodyError('native-source-retained-owner-invalid')
+        return owner
+    raise CustodyError('native-source-installer-census-required')
+
+
+def _native_installer_context(bridge, transaction, *, mode='absent'):
+    from pixel_access_bridge import LaunchdAccessBridge
+    from pixel_macos_custody import protected_directory
+    _native_root()
+    if (type(bridge) is not LaunchdAccessBridge or Path(bridge.state) != NATIVE_META
+            or LaunchdAccessBridge._native_runtime_lease(bridge) is None
+            or type(transaction) is not dict or set(transaction) != {'kind', 'transaction', 'currentDigest', 'candidateDigest'}
+            or transaction['kind'] != 'native-installer-upgrade'
+            or any(type(transaction[key]) is not str or not _NATIVE_SHA.fullmatch(transaction[key])
+                for key in ('transaction', 'currentDigest', 'candidateDigest'))
+            or transaction['currentDigest'] == transaction['candidateDigest']):
+        raise CustodyError('native-source-installer-transaction-required')
+    LaunchdAccessBridge._native_source_deadline_ns(bridge)
+    name = 'runtime-upgrade-context-' + transaction['candidateDigest'] + '.json'
+    with protected_directory(NATIVE_META) as metadata:
+        body, _inode = _native_root_file(metadata, name, limit=32 * 1024 * 1024)
+    if hashlib.sha256(body).hexdigest() != transaction['transaction']:
+        raise CustodyError('native-source-installer-context-changed')
+    try:
+        value = json.loads(body.decode(), object_pairs_hook=_native_pairs)
+        intent, owner = value['source_lifecycle'], value['owner']
+        if (type(value['schemaVersion']) is not int or value['schemaVersion'] != 2
+                or type(intent) is not dict or set(intent) != {'schemaVersion', 'kind', 'mode', 'nonce',
+                    'currentDigest', 'candidateDigest', 'ownerUid', 'ownerGid', 'familySha256'}
+                or type(intent['schemaVersion']) is not int or intent['schemaVersion'] != 1
+                or intent['kind'] != 'ods-native-source-installer-intent' or mode not in ('absent', 'withdrawal') or intent['mode'] != mode
+                or type(intent['nonce']) is not str or not FLOW_ID.fullmatch(intent['nonce'])
+                or type(intent['familySha256']) is not str or not _NATIVE_SHA.fullmatch(intent['familySha256'])
+                or (intent['currentDigest'], intent['candidateDigest']) != (transaction['currentDigest'], transaction['candidateDigest'])
+                or value['upgrade_qualification']['currentDigest'] != intent['currentDigest']
+                or value['upgrade_qualification']['candidateDigest'] != intent['candidateDigest']
+                or value['runtime_bundle']['digest'] != intent['candidateDigest']
+                or (owner['uid'], owner['gid']) != (intent['ownerUid'], intent['ownerGid'])):
+            raise ValueError()
+    except (KeyError, TypeError, ValueError, UnicodeError, RecursionError):
+        raise CustodyError('native-source-installer-context-invalid') from None
+    _native_installer_owner(bridge, context_owner=owner)
+    return value, body
+
+
+def _native_installer_image(item):
+    return (type(item) is dict and set(item) == {'inode', 'sha256'} and _native_inode(item['inode'])
+        and type(item['sha256']) is str and _NATIVE_SHA.fullmatch(item['sha256']) is not None)
+
+
+def native_installer_absence_receipt(value, *, transaction, owner_uid, owner_gid):
+    """Pure shape/binding validation. A receipt never replaces a fresh census."""
+    if (type(value) is not dict or set(value) != _INSTALLER_ABSENCE_KEYS
+            or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+            or value['kind'] != 'ods-native-source-installer-absence'
+            or (value['transaction'], value['currentDigest'], value['candidateDigest']) != (
+                transaction['transaction'], transaction['currentDigest'], transaction['candidateDigest'])
+            or (value['ownerUid'], value['ownerGid']) != (owner_uid, owner_gid)
+            or any(type(value[key]) is not int for key in ('ownerUid', 'ownerGid'))
+            or owner_uid <= 0 or owner_gid < 0
+            or type(value['oldRuntimeCustodySha256']) is not str or not _NATIVE_SHA.fullmatch(value['oldRuntimeCustodySha256'])
+            or value['runtimeRoot'] != str(NATIVE_RUNTIMES / transaction['currentDigest'] / 'runtime')
+            or type(value['sourceRoot']) is not str or not value['sourceRoot'].startswith('/')
+            or type(value['metadata']) is not dict or set(value['metadata']) - (_INSTALLER_SOURCE_CODE | {'source-identity.json'})
+            or any(not _native_installer_image(image) for image in value['metadata'].values())):
+        raise CustodyError('native-source-installer-absence-invalid')
+    identity, kit, witness = value['identity'], value['kit'], value['witness']
+    if identity == {'kind': 'absent'}:
+        if 'source-identity.json' in value['metadata']:
+            raise CustodyError('native-source-installer-absence-invalid')
+        uid = None
+    elif type(identity) is dict and set(identity) == {'kind', 'record'} and identity['kind'] == 'retained':
+        intent = _native_identity_intent(identity['record'])
+        if intent['id'] == owner_uid or 'source-identity.json' not in value['metadata']:
+            raise CustodyError('native-source-installer-absence-invalid')
+        uid = intent['id']
+    else:
+        raise CustodyError('native-source-installer-absence-invalid')
+    if kit is not None and (type(kit) is not dict or set(kit) != {'inode', 'files'} or not _native_inode(kit['inode'])
+            or type(kit['files']) is not dict
+            or set(kit['files']) not in ({'source-kit.json', 'broker.py', 'source-broker.env'},
+                {'source-kit.json', 'broker.py', 'source-broker.env', *NATIVE_PROFILES})
+            or any(not _native_installer_image(image) for image in kit['files'].values())):
+        raise CustodyError('native-source-installer-absence-invalid')
+    if (type(witness) is not dict or set(witness) != {'boot', 'loadedSourceJobs', 'brokerProcesses', 'brokerUid'}
+            or type(witness['boot']) is not str
+            or not re.fullmatch('[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}', witness['boot'])
+            or type(witness['loadedSourceJobs']) is not int or witness['loadedSourceJobs'] != 0
+            or type(witness['brokerProcesses']) is not int or witness['brokerProcesses'] != 0
+            or witness['brokerUid'] != uid):
+        raise CustodyError('native-source-installer-absence-invalid')
+    return value
+
+
+def _native_installer_transaction_value(value):
+    return (type(value) is dict and set(value) == {'kind', 'transaction', 'currentDigest', 'candidateDigest'}
+        and value['kind'] == 'native-installer-upgrade'
+        and all(type(value[key]) is str and _NATIVE_SHA.fullmatch(value[key])
+            for key in ('transaction', 'currentDigest', 'candidateDigest'))
+        and value['currentDigest'] != value['candidateDigest'])
+
+
+def _native_installer_gate_image(value, uid):
+    return (type(value) is dict and set(value) == {'inode', 'sha256', 'mode', 'gid'}
+        and _native_installer_image({key: value[key] for key in ('inode', 'sha256')})
+        and type(value['mode']) is int and value['mode'] == 0o640
+        and type(value['gid']) is int and value['gid'] == uid)
+
+
+def native_installer_withdrawal_intent(value, *, transaction, owner_uid, owner_gid):
+    return _native_withdrawal_intent(value, transaction=transaction, owner_uid=owner_uid, owner_gid=owner_gid, purpose='upgrade')
+
+
+def native_retirement_withdrawal_intent(value, *, transaction, owner_uid, owner_gid):
+    return _native_withdrawal_intent(value, transaction=transaction, owner_uid=owner_uid, owner_gid=owner_gid, purpose='retirement')
+
+
+def _native_retirement_transaction_value(value):
+    return (type(value) is dict and set(value) == {'kind', 'transaction', 'currentDigest'}
+        and value['kind'] == 'native-installer-retirement'
+        and all(type(value[key]) is str and _NATIVE_SHA.fullmatch(value[key]) for key in ('transaction', 'currentDigest')))
+
+
+def _native_withdrawal_intent(value, *, transaction, owner_uid, owner_gid, purpose):
+    """Pure frozen before-state contract, never a stop or custody capability."""
+    valid_transaction = (_native_retirement_transaction_value(transaction) if purpose == 'retirement'
+        else _native_installer_transaction_value(transaction) if purpose == 'upgrade' else False)
+    kind = 'ods-native-source-' + ('retirement' if purpose == 'retirement' else 'installer') + '-withdrawal-intent'
+    if (not valid_transaction or type(value) is not dict
+            or set(value) != {'schemaVersion', 'kind', 'transaction', 'binding', 'runtime', 'owner',
+                'generation', 'boot', 'environment', 'gate', 'metadata', 'token'}
+            or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+            or value['kind'] != kind or value['transaction'] != transaction
+            or type(value['owner']) is not dict or set(value['owner']) != {'uid', 'gid'}
+            or any(type(value['owner'][key]) is not int for key in ('uid', 'gid'))
+            or value['owner'] != {'uid': owner_uid, 'gid': owner_gid} or owner_uid <= 0 or owner_gid < 0
+            or type(value['generation']) is not str or not FLOW_ID.fullmatch(value['generation'])
+            or type(value['boot']) is not str or not re.fullmatch('[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}', value['boot'])):
+        raise CustodyError('native-source-installer-withdrawal-intent-invalid')
+    binding, runtime, environment = value['binding'], value['runtime'], value['environment']
+    fields = {'schemaVersion', 'kind', 'deploymentSha256', 'kitSha256', 'gate', 'ownerUid', 'brokerUid',
+        'brokerGuid', 'runtimeCustodySha256', 'bundleSha256', 'sourceRef'}
+    if (type(binding) is not dict or set(binding) != fields
+            or type(binding['schemaVersion']) is not int or binding['schemaVersion'] != 1
+            or binding['kind'] != 'ods-native-source-environment' or binding['ownerUid'] != owner_uid
+            or type(binding['ownerUid']) is not int or type(binding['brokerUid']) is not int
+            or binding['brokerUid'] in (0, owner_uid) or not 60000 <= binding['brokerUid'] < 65000
+            or not _native_inode(binding['gate'])
+            or any(type(binding[key]) is not str or not _NATIVE_SHA.fullmatch(binding[key])
+                for key in ('deploymentSha256', 'kitSha256', 'runtimeCustodySha256', 'bundleSha256'))
+            or type(binding['sourceRef']) is not str or not re.fullmatch('[a-f0-9]{40}', binding['sourceRef'])
+            or type(runtime) is not dict or set(runtime) != {'custodySha256', 'bundleSha256', 'sourceRef'}
+            or runtime != {'custodySha256': binding['runtimeCustodySha256'],
+                'bundleSha256': transaction['currentDigest'], 'sourceRef': binding['sourceRef']}
+            or binding['bundleSha256'] != transaction['currentDigest']
+            or type(environment) is not dict or set(environment) != {'inode', 'sha256', 'size'}
+            or not _native_installer_image({key: environment[key] for key in ('inode', 'sha256')})
+            or type(environment['size']) is not int or not 0 < environment['size'] <= MAX_RESULT_BYTES
+            or not _native_installer_gate_image(value['gate'], binding['brokerUid'])
+            or type(value['metadata']) is not dict or set(value['metadata']) != {
+                'identitySha256', 'prepareSha256', 'logsSha256', 'publicationSha256'}
+            or any(type(item) is not str or not _NATIVE_SHA.fullmatch(item) for item in value['metadata'].values())):
+        raise CustodyError('native-source-installer-withdrawal-intent-invalid')
+    try:
+        if str(uuid.UUID(binding['brokerGuid'])).upper() != binding['brokerGuid']:
+            raise ValueError()
+    except (ValueError, TypeError, AttributeError):
+        raise CustodyError('native-source-installer-withdrawal-intent-invalid') from None
+    token = value['token']
+    if token is not None and (type(token) is not list or len(token) != 9
+            or any(type(item) is not int for item in token) or not _native_inode(token[:2])
+            or token[2:5] != [binding['brokerUid'], binding['brokerUid'], 0o600]
+            or not 0 < token[5] <= MAX_RESULT_BYTES or token[6] != 1 or min(token[7:]) <= 0):
+        raise CustodyError('native-source-installer-withdrawal-intent-invalid')
+    return value
+
+
+def native_installer_withdrawal_receipt(value, *, intent, transaction, owner_uid, owner_gid):
+    return _native_withdrawal_receipt(value, intent=intent, transaction=transaction,
+        owner_uid=owner_uid, owner_gid=owner_gid, purpose='upgrade')
+
+
+def native_retirement_withdrawal_receipt(value, *, intent, transaction, owner_uid, owner_gid):
+    return _native_withdrawal_receipt(value, intent=intent, transaction=transaction,
+        owner_uid=owner_uid, owner_gid=owner_gid, purpose='retirement')
+
+
+def _native_withdrawal_receipt(value, *, intent, transaction, owner_uid, owner_gid, purpose):
+    """Pure complete-v1 receipt contract; live consumers must re-prove it."""
+    _native_withdrawal_intent(intent, transaction=transaction, owner_uid=owner_uid, owner_gid=owner_gid, purpose=purpose)
+    prefix = 'retirement' if purpose == 'retirement' else 'installer'
+    shared = {'transaction', 'binding', 'runtime', 'owner', 'generation', 'environment', 'metadata', 'token'}
+    if (type(value) is not dict or set(value) != shared | {'schemaVersion', 'kind', 'intentSha256',
+                'withdrawal', 'archive', 'descriptor', 'boot'}
+            or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+            or value['kind'] != 'ods-native-source-' + prefix + '-withdrawal'
+            or any(value[key] != intent[key] for key in shared)
+            or value['intentSha256'] != hashlib.sha256(_native_encoded(intent)).hexdigest()
+            or type(value['withdrawal']) is not str or not FLOW_ID.fullmatch(value['withdrawal'])
+            or type(value['boot']) is not str or not re.fullmatch('[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}', value['boot'])
+            or not _native_installer_gate_image(value['descriptor'], intent['binding']['brokerUid'])
+            or type(value['archive']) is not dict or set(value['archive']) != {'name', 'inode', 'receiptSha256'}
+            or value['archive']['name'] != '.source-' + prefix + '-withdrawal-' + value['withdrawal']
+            or not _native_inode(value['archive']['inode']) or type(value['archive']['receiptSha256']) is not str
+            or not _NATIVE_SHA.fullmatch(value['archive']['receiptSha256'])):
+        raise CustodyError('native-source-installer-withdrawal-receipt-invalid')
+    return value
+
+
+def native_retirement_inventory_receipt(value, *, owner_uid, owner_gid, runtime):
+    """Pure fixed Source inventory shape. Never admission or file authority."""
+    if type(value) is dict and value.get('kind') == 'ods-native-source-retirement-code-only':
+        from . import native_retirement
+        return native_retirement.validate_code_only_inventory(value, owner_uid=owner_uid, owner_gid=owner_gid, runtime=runtime)
+    fields = {'schemaVersion', 'kind', 'binding', 'ownerGuid', 'identity', 'generation', 'generationBoot', 'boot', 'gate',
+        'children', 'environment', 'kit', 'logs', 'metadata', 'definitions', 'jobs', 'token', 'portalRecord'}
+    with_history = type(value) is dict and set(value) == fields | {'history'}
+    if (type(runtime) is not dict or set(runtime) != {'deploymentSha256', 'custodySha256', 'bundleSha256', 'sourceRef'}
+            or any(type(runtime[key]) is not str or not _NATIVE_SHA.fullmatch(runtime[key])
+                for key in ('deploymentSha256', 'custodySha256', 'bundleSha256'))
+            or type(runtime['sourceRef']) is not str or not re.fullmatch('[a-f0-9]{40}', runtime['sourceRef'])
+            or type(value) is not dict or set(value) != fields and not with_history or type(value['schemaVersion']) is not int
+            or value['schemaVersion'] != 1 or value['kind'] != 'ods-native-source-retirement-inventory'
+            or type(owner_uid) is not int or owner_uid <= 0 or type(owner_gid) is not int or owner_gid < 0):
+        raise CustodyError('native-source-retirement-inventory-invalid')
+    identity = _native_identity_intent(value['identity'])
+    binding = value['binding']
+    if (type(binding) is not dict or set(binding) != {'schemaVersion', 'kind', 'deploymentSha256', 'kitSha256',
+                'gate', 'ownerUid', 'brokerUid', 'brokerGuid', 'runtimeCustodySha256', 'bundleSha256', 'sourceRef'}
+            or type(binding['schemaVersion']) is not int
+            or binding != {'schemaVersion': 1, 'kind': 'ods-native-source-environment',
+                'deploymentSha256': runtime['deploymentSha256'], 'kitSha256': binding.get('kitSha256'),
+                'gate': binding.get('gate'), 'ownerUid': owner_uid, 'brokerUid': identity['id'],
+                'brokerGuid': identity['userGuid'], 'runtimeCustodySha256': runtime['custodySha256'],
+                'bundleSha256': runtime['bundleSha256'], 'sourceRef': runtime['sourceRef']}
+            or identity['id'] == owner_uid or not _native_inode(binding['gate'])
+            or type(binding['kitSha256']) is not str or not _NATIVE_SHA.fullmatch(binding['kitSha256'])
+            or type(value['generation']) is not str or not FLOW_ID.fullmatch(value['generation'])
+            or any(type(value[key]) is not str or not re.fullmatch('[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}', value[key])
+                for key in ('boot', 'generationBoot'))
+            or value['portalRecord'] is not None and not _native_installer_image(value['portalRecord'])
+            or not _native_installer_gate_image(value['gate'], identity['id'])):
+        raise CustodyError('native-source-retirement-inventory-invalid')
+    try:
+        if str(uuid.UUID(value['ownerGuid'])).upper() != value['ownerGuid']:
+            raise ValueError()
+    except (ValueError, TypeError, AttributeError):
+        raise CustodyError('native-source-retirement-inventory-invalid') from None
+    environment, kit, logs = value['environment'], value['kit'], value['logs']
+    if (type(environment) is not dict or set(environment) != {'inode', 'sha256', 'size'}
+            or not _native_installer_image({key: environment[key] for key in ('inode', 'sha256')})
+            or type(environment['size']) is not int or not 0 < environment['size'] <= MAX_RESULT_BYTES
+            or type(value['children']) is not dict or set(value['children']) != {'private', 'private/oauth', 'projection', 'results', 'proposals'}
+            or any(not _native_inode(item) for item in value['children'].values())
+            or type(kit) is not dict or set(kit) != {'inode', 'files'} or not _native_inode(kit['inode'])
+            or type(kit['files']) is not dict or set(kit['files']) != {'source-kit.json', 'broker.py', 'source-broker.env', *NATIVE_PROFILES}
+            or any(not _native_installer_image(item) for item in kit['files'].values())
+            or kit['files']['source-kit.json']['sha256'] != binding['kitSha256']
+            or type(logs) is not dict or set(logs) != {'directory', 'files'} or not _native_inode(logs['directory'])
+            or type(logs['files']) is not dict or set(logs['files']) != set(_native_log_names())
+            or any(not _native_inode(item) for item in logs['files'].values())):
+        raise CustodyError('native-source-retirement-inventory-invalid')
+    metadata = value['metadata']
+    required = {'source-identity.json', 'source-custody-prepare.json', 'source-environment.json',
+        'source-logs-prepare.json', 'source-publication.json', 'source-jobs-prepare.json'}
+    optional = {'source-sidefiles.json', 'source-jobs-active.json', 'source-execution.json',
+        'source-environment-generation.json', 'source-installer-rebind.json', 'source-boot-quiesce.json',
+        'source-runtime-installation.json', 'source-runtime-publication.json', 'native-app-enrollment.json', 'source-initial-generation.json', 'source-initial-boot.json', 'source-installer-code-only.json', 'source-installer-history.json'}
+    if (type(metadata) is not dict or not required <= set(metadata) or set(metadata) - required - optional
+            or any(not _native_installer_image(item) for item in metadata.values())
+            or type(value['jobs']) is not dict or set(value['jobs']) != {'directory', 'sha256'}
+            or not _native_inode(value['jobs']['directory']) or type(value['jobs']['sha256']) is not str
+            or not _NATIVE_SHA.fullmatch(value['jobs']['sha256']) or type(value['definitions']) is not dict
+            or not 1 <= len(value['definitions']) <= 64):
+        raise CustodyError('native-source-retirement-inventory-invalid')
+    for label, item in value['definitions'].items():
+        if (type(item) is not dict or set(item) != {'role', 'identifier', 'active', 'inode', 'sha256'}
+                or type(item['active']) is not bool or not _native_installer_image({key: item[key] for key in ('inode', 'sha256')})):
+            raise CustodyError('native-source-retirement-inventory-invalid')
+        native_child_arguments(item['role'], item['identifier'])
+        if label != NATIVE_LABEL + item['role'] + ('.' + item['identifier'] if item['identifier'] is not None else ''):
+            raise CustodyError('native-source-retirement-inventory-invalid')
+    token = value['token']
+    if token is not None and (type(token) is not list or len(token) != 9 or any(type(item) is not int for item in token)
+            or not _native_inode(token[:2]) or token[2:5] != [identity['id'], identity['id'], 0o600]
+            or not 0 < token[5] <= MAX_RESULT_BYTES or token[6] != 1 or min(token[7:]) <= 0):
+        raise CustodyError('native-source-retirement-inventory-invalid')
+    if with_history:
+        from . import native_retirement
+        native_retirement.validate_history(value['history'], owner_uid=owner_uid, owner_gid=owner_gid, runtime=runtime)
+    return value
+
+
+def native_retirement_inventory(selection):
+    """Current stopped-generation inventory; archive cursors are separate."""
+    from pixel_macos_custody import protected_directory
+    from .native_executor import _publisher
+    doc = _native_selected(selection, _publication=True)
+    publisher = _publisher(selection)
+    _module, _doc, component, ref = publisher._material(selection)
+    with protected_directory(NATIVE_META) as metadata, protected_directory(NATIVE_DEFINITIONS) as units, protected_directory(NATIVE_KIT.parent) as kit_parent:
+        gate = os.open(NATIVE_STATE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            _manifest, kit_sha = native_verify_kit(selection, require_profiles=True, _publication=True)
+            identity, binding, expected = _native_environment_binding(selection, metadata, gate, kit_sha, _publication=True)
+            origin, generation_boot, tree, _definitions = publisher._environment_origin(selection, globals_module(), doc,
+                component, ref, metadata, gate, units, identity, binding, expected)
+            active, _raw = _native_json_at(metadata, 'source-jobs-active.json')
+            definitions = active['current']['definitions'] if active is not None else {
+                label: dict(item, active=False) for label, item in origin['definitions'].items()}
+            kit, _files = publisher._kit_image(globals_module(), kit_parent, NATIVE_KIT.name)
+            full_binding = dict(binding, runtimeCustodySha256=doc['runtimeCustodySha256'], bundleSha256=doc['bundleSha256'], sourceRef=ref)
+            runtime = {'deploymentSha256': selection.deployment.checksum, 'custodySha256': doc['runtimeCustodySha256'],
+                'bundleSha256': doc['bundleSha256'], 'sourceRef': ref}
+            images = {}
+            names = ('source-identity.json', 'source-custody-prepare.json', 'source-environment.json', 'source-logs-prepare.json',
+                'source-publication.json', 'source-jobs-prepare.json', 'source-sidefiles.json', 'source-jobs-active.json',
+                'source-execution.json', 'source-environment-generation.json', 'source-installer-rebind.json',
+                'source-boot-quiesce.json', 'source-runtime-installation.json', 'source-runtime-publication.json', 'native-app-enrollment.json', 'source-initial-generation.json', 'source-initial-boot.json', 'source-installer-code-only.json', 'source-installer-history.json')
+            for name in names:
+                if _native_at_inode(metadata, name) is not None:
+                    body, inode = _native_root_file(metadata, name, limit=524288)
+                    images[name] = {'inode': inode, 'sha256': hashlib.sha256(body).hexdigest()}
+            prepare, _raw = _native_json_at(metadata, 'source-custody-prepare.json')
+            logs, _raw = _native_json_at(metadata, 'source-logs-prepare.json')
+            _native_verify_prepared_logs(metadata, identity, binding)
+            witness = publisher._no_actors(selection, globals_module(), metadata, _generation=True)
+            with protected_directory(NATIVE_CONNECTION_RECORD.parent) as records:
+                try:
+                    body, inode = _native_root_file(records, NATIVE_CONNECTION_RECORD.name, mode=0o644)
+                except FileNotFoundError:
+                    portal_record = None
+                else:
+                    from . import state
+                    state.validate(json.loads(body, object_pairs_hook=_native_pairs))
+                    portal_record = {'inode': inode, 'sha256': hashlib.sha256(body).hexdigest()}
+            value = {'schemaVersion': 1, 'kind': 'ods-native-source-retirement-inventory',
+                'binding': full_binding, 'ownerGuid': prepare['ownerGuid'], 'identity': identity,
+                'generation': origin['generation'], 'generationBoot': generation_boot, 'boot': witness['boot'],
+                'gate': publisher._environment_image(globals_module(), gate, 'custody.json', mode=0o640, gid=identity['id'])[0],
+                'children': {name: item['inode'] for name, item in prepare['children'].items()},
+                'environment': _native_environment_snapshot(gate, NATIVE_ENV.name, identity['id']),
+                'kit': kit, 'logs': {'directory': logs['directory'], 'files': {name: image['inode'] for name, image in logs['files'].items()}},
+                'metadata': images, 'definitions': {label: {key: item[key] for key in ('role', 'identifier', 'active', 'inode', 'sha256')}
+                    for label, item in definitions.items()}, 'jobs': {'directory': origin['directory'], 'sha256': hashlib.sha256(_native_encoded(tree)).hexdigest()},
+                'token': publisher._installer_token_metadata(globals_module(), gate, identity['id']), 'portalRecord': portal_record}
+            native_retirement_inventory_receipt(value, owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid'], runtime=runtime)
+            _native_selected(selection, _publication=True)
+            return value
+        finally:
+            os.close(gate)
+
+
+def _native_retirement_authority(selection, transaction):
+    """Source-only authority from the actual immutable Core retirement witness."""
+    from pixel_macos_custody import protected_directory
+    from .native_executor import _publisher
+    doc = _native_selected(selection, _publication=True)
+    if not _native_retirement_transaction_value(transaction):
+        raise CustodyError('native-source-retirement-transaction-invalid')
+    _module, _doc, _component, ref = _publisher(selection)._material(selection)
+    runtime = {'deploymentSha256': selection.deployment.checksum, 'custodySha256': doc['runtimeCustodySha256'],
+        'bundleSha256': doc['bundleSha256'], 'sourceRef': ref}
+    with protected_directory(NATIVE_META) as metadata:
+        raw, inode = _native_root_file(metadata, 'retirement.json', limit=32 * 1024 * 1024)
+        try:
+            value = json.loads(raw, object_pairs_hook=_native_pairs)
+            source = value['source']
+            if (hashlib.sha256(raw).hexdigest() != transaction['transaction']
+                    or type(value) is not dict or set(value) != {'schema', 'kind', 'owner', 'boot', 'hashes', 'trees', 'sandboxes', 'source'}
+                    or type(value['schema']) is not int or value['schema'] != 3 or value['kind'] != 'ods-native-source-installer-retirement'
+                    or type(value['owner']) is not int or value['owner'] != doc['ownerUid']
+                    or str(uuid.UUID(value['boot'])).lower() != value['boot']
+                    or type(value['hashes']) is not dict or not 1 <= len(value['hashes']) <= 512
+                    or any(type(path) is not str or not path.startswith('/') or type(checksum) is not str
+                        or not _NATIVE_SHA.fullmatch(checksum) for path, checksum in value['hashes'].items())
+                    or type(value['trees']) is not dict or not value['trees'] or type(value['sandboxes']) is not list
+                    or type(source) is not dict or set(source) != {'schemaVersion', 'kind', 'nonce', 'owner', 'runtime', 'inventory'}
+                    or type(source['schemaVersion']) is not int or source['schemaVersion'] != 1
+                    or source['kind'] != 'ods-native-source-retirement-intent' or type(source['nonce']) is not str or not FLOW_ID.fullmatch(source['nonce'])
+                    or source['owner'] != {'uid': doc['ownerUid'], 'gid': doc['ownerGid'], 'name': selection.bridge.owner.pw_name, 'installDir': str(selection.bridge.install)}
+                    or source['runtime'] != runtime or transaction['currentDigest'] != runtime['bundleSha256']):
+                raise ValueError()
+            inventory = native_retirement_inventory_receipt(source['inventory'], owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid'], runtime=runtime)
+            if inventory['kind'] != 'ods-native-source-retirement-inventory':
+                raise CustodyError('native-source-retirement-private-generation-required')
+            if inventory['boot'].lower() != value['boot']:
+                raise ValueError()
+        except (KeyError, TypeError, ValueError, AttributeError, UnicodeError, RecursionError):
+            raise CustodyError('native-source-retirement-witness-invalid') from None
+        proof = {'schemaVersion': 1, 'kind': 'ods-native-source-retirement-withdrawal-intent',
+            'transaction': dict(transaction), 'binding': inventory['binding'],
+            'runtime': {'custodySha256': runtime['custodySha256'], 'bundleSha256': runtime['bundleSha256'], 'sourceRef': ref},
+            'owner': {'uid': doc['ownerUid'], 'gid': doc['ownerGid']}, 'generation': inventory['generation'],
+            'boot': inventory['generationBoot'], 'environment': inventory['environment'], 'gate': inventory['gate'],
+            'metadata': {key: inventory['metadata'][name]['sha256'] for key, name in (
+                ('identitySha256', 'source-identity.json'), ('prepareSha256', 'source-custody-prepare.json'),
+                ('logsSha256', 'source-logs-prepare.json'), ('publicationSha256', 'source-publication.json'))}, 'token': inventory['token']}
+        native_retirement_withdrawal_intent(proof, transaction=transaction, owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid'])
+        if _native_root_file(metadata, 'retirement.json', limit=32 * 1024 * 1024) != (raw, inode):
+            raise CustodyError('native-source-retirement-witness-changed')
+    return {'transaction': dict(transaction), 'intent': source, 'owner': source['owner'], 'phase': 'prepared',
+        'files': [], 'proof': proof, 'receipt': None}
+
+
+def native_retirement_withdrawal_request(selection, *, transaction):
+    authority = _native_retirement_authority(selection, transaction)
+    inventory = native_retirement_inventory(selection)
+    if 'history' in authority['intent']['inventory']:
+        from . import native_retirement
+        inventory = native_retirement.add_history(selection, inventory)
+    if inventory != authority['intent']['inventory']:
+        raise CustodyError('native-source-retirement-inventory-changed')
+    _native_retirement_inventory_state(selection, authority)
+    return authority
+
+
+def native_retirement_withdrawal_transaction(selection, *, transaction):
+    authority = _native_retirement_authority(selection, transaction)
+    _native_retirement_inventory_state(selection, authority)
+    return authority
+
+
+def native_retirement_archive_begin(*, transaction, archive_id):
+    _native_root()
+    from . import native_retirement
+    return native_retirement.archive_begin(transaction=transaction, archive_id=archive_id)
+
+
+def native_retirement_archive_step(*, transaction):
+    _native_root()
+    from . import native_retirement
+    return native_retirement.archive_step(transaction=transaction)
+
+
+def _native_retirement_inventory_state(selection, authority):
+    """Compare immutable witness images through this fixed withdrawal prefix."""
+    from pixel_macos_custody import protected_directory
+    from .native_executor import _publisher
+    publisher = _publisher(selection)
+    inventory, transaction = authority['intent']['inventory'], authority['transaction']
+    if 'history' in inventory:
+        from . import native_retirement
+        native_retirement.verify_history(selection, inventory)
+    with protected_directory(NATIVE_META) as metadata, protected_directory(NATIVE_KIT.parent) as parent:
+        publisher._kit_image(globals_module(), parent, NATIVE_KIT.name, expected=inventory['kit'])
+        record, _raw = _native_json_at(metadata, 'source-environment-generation.json')
+        if record is not None and (type(record) is not dict or type(record.get('installer', {})) is not dict):
+            raise CustodyError('native-source-retirement-origin-changed')
+        archive = None
+        try:
+            if record is not None and record.get('installer', {}).get('transaction') == transaction:
+                publisher._environment_generation_record(globals_module(), record, inventory['binding'])
+                if (record['previousGeneration'] != inventory['generation'] or record['old']['gate'] != inventory['gate']
+                        or record['old']['environment'] != inventory['environment']
+                        or record['old']['directory'] != inventory['jobs']['directory']
+                        or hashlib.sha256(_native_encoded(record['old']['jobs'])).hexdigest() != inventory['jobs']['sha256']
+                        or record['old']['definitions'] != {label + '.plist': {
+                            'inode': item['inode'], 'sha256': item['sha256'], 'mode': 0o644, 'gid': 0}
+                            for label, item in inventory['definitions'].items()}):
+                    raise CustodyError('native-source-retirement-origin-changed')
+                if record['archive'] is not None:
+                    name = '.source-retirement-withdrawal-' + record['generation']
+                    archive = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=metadata)
+                    info = os.fstat(archive)
+                    _native_no_acl(archive)
+                    if ([info.st_dev, info.st_ino] != record['archive'] or _native_at_inode(metadata, name) != record['archive']
+                            or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (0, 0, 0o700)):
+                        raise CustodyError('native-source-retirement-archive-changed')
+            else:
+                record = None
+            for name, image in inventory['metadata'].items():
+                directory, leaf = metadata, name
+                if name == 'source-environment-generation.json':
+                    try:
+                        body, inode = _native_root_file(metadata, name)
+                    except FileNotFoundError:
+                        body, inode = b'', None
+                    if {'inode': inode, 'sha256': hashlib.sha256(body).hexdigest()} != image:
+                        leaf = 'source-environment-generation-' + inventory['generation'] + '.json'
+                elif name in ('source-jobs-prepare.json', 'source-jobs-active.json', 'source-execution.json'):
+                    current = _native_at_inode(metadata, name)
+                    if current is None:
+                        if archive is None or record['old']['files'].get(name) != {**image, 'mode': 0o600, 'gid': 0}:
+                            raise CustodyError('native-source-retirement-metadata-changed')
+                        directory = archive
+                    elif current != image['inode']:
+                        raise CustodyError('native-source-retirement-metadata-changed')
+                body, inode = _native_root_file(directory, leaf, limit=524288)
+                if {'inode': inode, 'sha256': hashlib.sha256(body).hexdigest()} != image:
+                    raise CustodyError('native-source-retirement-metadata-changed')
+            if 'native-app-enrollment.json' not in inventory['metadata'] and _native_at_inode(metadata, 'native-app-enrollment.json') is not None:
+                raise CustodyError('native-source-retirement-enrollment-changed')
+            base = {key: item for key, item in inventory['binding'].items() if key not in ('runtimeCustodySha256', 'bundleSha256', 'sourceRef')}
+            _native_verify_prepared_logs(metadata, inventory['identity'], base)
+            with protected_directory(NATIVE_CONNECTION_RECORD.parent) as records:
+                image = inventory['portalRecord']
+                if image is None:
+                    if _native_at_inode(records, NATIVE_CONNECTION_RECORD.name) is not None:
+                        raise CustodyError('native-source-retirement-record-changed')
+                else:
+                    body, inode = _native_root_file(records, NATIVE_CONNECTION_RECORD.name, mode=0o644)
+                    if {'inode': inode, 'sha256': hashlib.sha256(body).hexdigest()} != image:
+                        raise CustodyError('native-source-retirement-record-changed')
+            publisher._no_actors(selection, globals_module(), metadata, _generation=True)
+        finally:
+            if archive is not None:
+                os.close(archive)
+
+
+def _native_installer_absence_state(bridge, *, qualified_runtime=None, _installer_publication=None, _installer_code_only=None):
+    """Fixed file-only Source absence/identity inventory; no file is removed."""
+    from pixel_macos_custody import protected_directory
+    owner = _native_installer_census_owner(bridge)
+    for path in (NATIVE_STATE, NATIVE_ENV, NATIVE_LEGACY_ENV, NATIVE_LOGS):
+        if os.path.lexists(path):
+            raise CustodyError('native-source-installer-private-state-present')
+    images, identity = {}, None
+    with protected_directory(NATIVE_META) as metadata:
+        names = {name for name in os.listdir(metadata) if name.startswith(('source-', '.source-', 'native-source-', '.native-source-'))}
+        extra = _native_installer_code_only_names(_installer_code_only)['metadata'] if _installer_code_only is not None else set()
+        if 'source-installer-history.json' in names:
+            retained = _native_installer_history_records(bridge)
+            extra |= {'source-installer-history.json', *(item['name'] for item in retained),
+                *(name for item in retained for name in item['metadata'])}
+        if 'source-installer-code-only.json' in names and 'source-installer-code-only.json' not in extra:
+            selected = native_source_selection(bridge, bridge.connection_deployment())
+            extra |= native_installer_code_only_history(selected)['metadata']
+        if names - (_INSTALLER_SOURCE_CODE | {'source-identity.json'} | extra):
+            raise CustodyError('native-source-installer-metadata-preserved')
+        for name in names - extra:
+            body, inode = _native_root_file(metadata, name, limit=131072)
+            images[name] = {'inode': inode, 'sha256': hashlib.sha256(body).hexdigest()}
+            try:
+                record = json.loads(body.decode(), object_pairs_hook=_native_pairs)
+            except (ValueError, UnicodeError, RecursionError):
+                raise CustodyError('native-source-installer-metadata-invalid') from None
+            if name == 'source-identity.json':
+                identity = _native_identity_intent(record)
+            elif (type(record) is not dict or type(record.get('schemaVersion')) is not int or record['schemaVersion'] != 1
+                    or (name == 'source-publication.json' and record != _installer_publication
+                        and (record.get('phase') != 'prepared-no-jobs' or record.get('bindings') != {}))
+                    or (name == 'source-runtime-publication.json' and record.get('phase') != 'published-no-jobs')
+                    or (name == 'source-runtime-installation.json' and record.get('kind') != 'ods-native-source-runtime-publication')
+                    or (name == 'source-sidefiles.json' and record.get('kind') != 'ods-native-connection-sidefiles')):
+                raise CustodyError('native-source-installer-metadata-invalid')
+    users, groups = _native_ds_record('Users'), _native_ds_record('Groups')
+    if identity is None:
+        if users is not None or groups is not None:
+            raise CustodyError('native-source-installer-identity-unbound')
+        for lookup in (pwd.getpwnam, grp.getgrnam):
+            try:
+                lookup(NATIVE_BROKER)
+            except KeyError:
+                continue
+            raise CustodyError('native-source-installer-identity-unbound')
+        identity_view, uid = {'kind': 'absent'}, None
+    else:
+        for kind, record in (('Users', users), ('Groups', groups)):
+            _native_identity_record(record, _native_identity_attributes(identity, kind), complete=True)
+        _native_identity_collisions(identity)
+        if identity['id'] in (0, owner.pw_uid):
+            raise CustodyError('native-source-installer-identity-conflict')
+        identity_view, uid = {'kind': 'retained', 'record': identity}, identity['id']
+    raw = bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10)
+    if not raw.startswith('system = {') or not raw.rstrip().endswith('}') or len(raw) > 1024 * 1024 or NATIVE_LABEL in raw:
+        raise CustodyError('native-source-installer-loaded-source-preserved')
+    processes = bridge.command(['/bin/ps', '-axo', 'pid=,uid='], timeout=10)
+    if not processes.strip() or len(processes) > 1024 * 1024:
+        raise CustodyError('native-source-installer-process-unavailable')
+    seen = set()
+    for line in processes.splitlines():
+        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+([0-9]+)\s*', line)
+        if match is None or int(match[1]) in seen or uid is not None and int(match[2]) == uid:
+            raise CustodyError('native-source-installer-process-preserved')
+        seen.add(int(match[1]))
+    kit = None
+    if os.path.lexists(NATIVE_KIT):
+        with protected_directory(NATIVE_KIT.parent) as parent:
+            kit_fd = os.open(NATIVE_KIT.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                info = os.fstat(kit_fd)
+                if (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (0, 0, 0o755):
+                    raise CustodyError('native-source-installer-kit-unsafe')
+                _native_no_acl(kit_fd)
+                files = {}
+                for name in os.listdir(kit_fd):
+                    if name not in {'source-kit.json', 'broker.py', 'source-broker.env', *NATIVE_PROFILES}:
+                        raise CustodyError('native-source-installer-kit-preserved')
+                    body, inode = _native_root_file(kit_fd, name, mode=0o755 if name == 'broker.py' else 0o644, limit=2 * 1024 * 1024)
+                    files[name] = {'inode': inode, 'sha256': hashlib.sha256(body).hexdigest()}
+                kit = {'inode': [info.st_dev, info.st_ino], 'files': files}
+            finally:
+                os.close(kit_fd)
+        if qualified_runtime is not None:
+            from .native_executor import _publisher
+            selection = native_source_selection(bridge, bridge.connection_deployment())
+            publisher = _publisher(selection)
+            _module, _doc, component, _ref = publisher._material(selection)
+            if _doc['sourceRoot'] != qualified_runtime['sourceRoot']:
+                raise CustodyError('native-source-installer-kit-unqualified')
+            if any(name != 'source-kit.json' and image['sha256'] != hashlib.sha256(component[name]).hexdigest()
+                    for name, image in kit['files'].items()):
+                raise CustodyError('native-source-installer-kit-unqualified')
+            native_verify_kit(selection)
+            if 'source-publication.json' in images:
+                # Code-only custody survives boot. The fresh census above is
+                # independent of the historical publication witness; it grants
+                # no state/account/job or current generation authority.
+                files = publisher._publication_files(component, _ref, selection.deployment.checksum)
+                with protected_directory(NATIVE_META) as metadata, protected_directory(NATIVE_KIT.parent) as parent:
+                    publication, _raw = _native_json_at(metadata, 'source-publication.json')
+                    publisher._publication_record(publication, selection.deployment.checksum, files)
+                    if publication['phase'] != 'prepared-no-jobs' or publication['bindings'] != {}:
+                        raise CustodyError('native-source-installer-code-publication-invalid')
+                    publisher._kit_image(globals_module(), parent, NATIVE_KIT.name, expected={
+                        'inode': publication['candidateInode'], 'files': {name: {
+                            'inode': publication['stagedFiles'][name]['inode'], 'sha256': hashlib.sha256(body).hexdigest()}
+                            for name, body in files.items()}})
+    if kit is None and 'source-publication.json' in images and _installer_publication is None and _installer_code_only is None:
+        raise CustodyError('native-source-installer-kit-missing')
+    witness = {'boot': _native_boot_uuid(), 'loadedSourceJobs': 0, 'brokerProcesses': 0, 'brokerUid': uid}
+    current_owner = _native_installer_census_owner(bridge)
+    if (current_owner.pw_name, current_owner.pw_uid, current_owner.pw_gid, current_owner.pw_dir) != (
+            owner.pw_name, owner.pw_uid, owner.pw_gid, owner.pw_dir):
+        raise CustodyError('native-source-installer-owner-changed')
+    return kit, images, identity_view, witness
+
+
+def _native_installer_code_only_names(record):
+    nonce = record['nonce']
+    return {'metadata': {'source-installer-code-only.json',
+            '.source-code-only-publication-before-' + nonce + '.json',
+            '.source-code-only-publication-next-' + nonce,
+            '.source-code-only-sidefiles-before-' + nonce + '.json',
+            '.source-code-only-sidefiles-next-' + nonce},
+        'kits': {record['candidate'], record['backup']}}
+
+
+def _native_installer_history_record(value):
+    """Pure bounded metadata-retention ledger, never generation authority."""
+    if (type(value) is not dict or set(value) != {'schemaVersion', 'kind', 'entries'}
+            or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+            or value['kind'] != 'ods-native-source-installer-history'
+            or type(value['entries']) is not list or not 1 <= len(value['entries']) <= 64):
+        raise CustodyError('native-source-installer-history-invalid')
+    seen, artifacts = set(), set()
+    for index, entry in enumerate(value['entries']):
+        if (type(entry) is not dict or set(entry) != {'transaction', 'runtime', 'owner', 'boot', 'phase', 'artifacts'}
+                or not _native_installer_transaction_value(entry['transaction']) or entry['transaction']['transaction'] in seen
+                or entry['phase'] not in ('pending', 'committed') or index != len(value['entries']) - 1 and entry['phase'] != 'committed'
+                or type(entry['boot']) is not str or not re.fullmatch('[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}', entry['boot'])
+                or type(entry['owner']) is not dict or set(entry['owner']) != {'uid', 'gid'}
+                or any(type(item) is not int for item in entry['owner'].values()) or entry['owner']['uid'] <= 0 or entry['owner']['gid'] < 0
+                or type(entry['runtime']) is not dict or set(entry['runtime']) != {'deploymentSha256', 'custodySha256', 'bundleSha256', 'sourceRef'}
+                or any(type(entry['runtime'][key]) is not str or not _NATIVE_SHA.fullmatch(entry['runtime'][key])
+                    for key in ('deploymentSha256', 'custodySha256', 'bundleSha256'))
+                or entry['runtime']['bundleSha256'] != entry['transaction']['currentDigest']
+                or type(entry['runtime']['sourceRef']) is not str or not re.fullmatch('[a-f0-9]{40}', entry['runtime']['sourceRef'])
+                or type(entry['artifacts']) is not dict or not entry['artifacts']
+                or set(entry['artifacts']) - {'source-installer-rebind.json', 'source-installer-code-only.json'}):
+            raise CustodyError('native-source-installer-history-invalid')
+        seen.add(entry['transaction']['transaction'])
+        for fixed, image in entry['artifacts'].items():
+            if (type(image) is not dict or set(image) != {'transaction', 'name', 'inode', 'sha256'}
+                    or not _native_installer_transaction_value(image['transaction'])
+                    or entry['runtime']['bundleSha256'] not in (image['transaction']['currentDigest'], image['transaction']['candidateDigest'])
+                    or image['name'] != fixed[:-5] + '-' + image['transaction']['transaction'] + '.json'
+                    or image['name'] in artifacts or not _native_installer_history_image(image)):
+                raise CustodyError('native-source-installer-history-invalid')
+            artifacts.add(image['name'])
+    return value
+
+
+def _native_installer_history_image(image):
+    return _native_installer_image({key: image[key] for key in ('inode', 'sha256')})
+
+
+def _native_installer_history_artifact(bridge, publisher, metadata, kits, fixed, image, runtime):
+    """Qualify one exact committed record and its retained before-images."""
+    current, retained = _native_at_inode(metadata, fixed), _native_at_inode(metadata, image['name'])
+    if current == image['inode']:
+        if retained is not None:
+            raise CustodyError('native-source-installer-history-conflict')
+        name = fixed
+    else:
+        if retained != image['inode']:
+            raise CustodyError('native-source-installer-history-missing')
+        name = image['name']
+    body, inode = _native_root_file(metadata, name, limit=65536)
+    if inode != image['inode'] or hashlib.sha256(body).hexdigest() != image['sha256']:
+        raise CustodyError('native-source-installer-history-changed')
+    value = json.loads(body, object_pairs_hook=_native_pairs)
+    transaction = image['transaction']
+    mode = 'withdrawal' if fixed == 'source-installer-rebind.json' else 'absent'
+    context, context_raw = _native_installer_context(bridge, transaction, mode=mode)
+    journal, records, journal_raw = _native_installer_journal(metadata, transaction, context, _history=True)
+    if (journal['phase'] not in ('active', 'restored') or value.get('phase') != 'committed'
+            or value.get('transaction') != transaction):
+        raise CustodyError('native-source-installer-history-uncommitted')
+    if fixed == 'source-installer-rebind.json':
+        publisher._installer_rebind_record(globals_module(), value)
+        receipt = journal['sourceAddition'].get('receipt')
+        if (receipt is None or value['receiptSha256'] != hashlib.sha256(_native_encoded(receipt)).hexdigest()
+                or value['intentSha256'] != receipt['intentSha256']
+                or value['binding']['deploymentSha256'] != runtime['deploymentSha256']
+                or value['binding']['kitSha256'] != value['kitSha256']):
+            raise CustodyError('native-source-installer-history-binding-changed')
+        # Rebind deliberately stores the BASE environment binding. Its actual
+        # target runtime is independently retained in the Core transaction;
+        # do not invent full-runtime fields on that base binding.
+        from pixel_provider.runtime_custody import digest, tree_manifest
+        files = {item['path']: item for item in records}
+        which = 'after' if journal['phase'] == 'active' else 'before'
+        descriptor = json.loads(files[str(NATIVE_RUNTIME_DESCRIPTOR)][which], object_pairs_hook=_native_pairs)
+        manifest_raw = files[str(NATIVE_RUNTIME_MANIFEST)][which]
+        manifest = json.loads(manifest_raw, object_pairs_hook=_native_pairs)
+        bundle_sha = transaction['candidateDigest'] if which == 'after' else transaction['currentDigest']
+        root = NATIVE_RUNTIMES / bundle_sha
+        if (runtime['bundleSha256'] != bundle_sha or digest([descriptor, manifest]) != runtime['custodySha256']
+                or descriptor['runtimeRoot'] != str(root / 'runtime') or descriptor['sourceRoot'] != str(root / 'ods-source')
+                or descriptor['manifest'] != str(NATIVE_RUNTIME_MANIFEST)
+                or descriptor['manifestSha256'] != hashlib.sha256(manifest_raw).hexdigest()
+                or tree_manifest(descriptor['sourceRoot']) != manifest['source']):
+            raise CustodyError('native-source-installer-history-binding-changed')
+        component = publisher.bundle_payloads(root, ref=runtime['sourceRef'], python=descriptor['hostPython'], protected=True)
+        payloads = publisher._publication_files(component, runtime['sourceRef'], runtime['deploymentSha256'])
+        published = value['publication']['after']
+        publisher._publication_record(published, runtime['deploymentSha256'], payloads)
+        if (published['sourceRef'] != runtime['sourceRef'] or published['phase'] != 'prepared-no-jobs'
+                or published['old'] is not None or published['bindings']
+                or hashlib.sha256(payloads['source-kit.json']).hexdigest() != value['kitSha256']):
+            raise CustodyError('native-source-installer-history-binding-changed')
+        pub_name = '.source-publication-before-' + value['nonce'] + '.json'
+        metadata_names = {pub_name}
+        for index, (_leaf, binding) in enumerate(sorted(value['bindings'].items())):
+            saved = '.source-binding-before-' + value['nonce'] + '-' + str(index)
+            if _native_root_file(metadata, saved, mode=binding['mode'], gid=binding['gid']) != (
+                    _native_encoded(binding['before']), binding['beforeInode']):
+                raise CustodyError('native-source-installer-history-before-changed')
+            if _native_at_inode(metadata, '.source-binding-' + value['nonce'] + '-' + str(index)) is not None:
+                raise CustodyError('native-source-installer-history-uncommitted')
+            metadata_names.add(saved)
+        parent = 'source-environment-generation-' + receipt['withdrawal'] + '.json'
+        old, located = _native_root_file(metadata, parent, limit=65536)
+        if located != value['withdrawalParent']['inode'] or hashlib.sha256(old).hexdigest() != value['withdrawalParent']['sha256']:
+            raise CustodyError('native-source-installer-history-before-changed')
+        metadata_names.add(parent)
+    else:
+        publisher._installer_code_only_record(globals_module(), value)
+        proof = journal['sourceAddition']['proof']
+        if (journal['phase'] != 'active' or value['proofSha256'] != hashlib.sha256(_native_encoded(proof)).hexdigest()
+                or value['oldKit'] != proof['kit'] or value['deploymentSha256'] != runtime['deploymentSha256']
+                or value['sourceRef'] != runtime['sourceRef']):
+            raise CustodyError('native-source-installer-history-binding-changed')
+        pub_name = '.source-code-only-publication-before-' + value['nonce'] + '.json'
+        side_name = '.source-code-only-sidefiles-before-' + value['nonce'] + '.json'
+        if _native_root_file(metadata, side_name) != (_native_encoded(value['sidefiles']['before']), value['sidefiles']['beforeInode']):
+            raise CustodyError('native-source-installer-history-before-changed')
+        metadata_names = {pub_name, side_name}
+    if _native_root_file(metadata, pub_name) != (_native_encoded(value['publication']['before']), value['publication']['beforeInode']):
+        raise CustodyError('native-source-installer-history-before-changed')
+    publisher._kit_image(globals_module(), kits, value['backup'], expected=value['oldKit'])
+    if _native_at_inode(kits, value['candidate']) is not None:
+        raise CustodyError('native-source-installer-history-uncommitted')
+    for label in ('publication', 'sidefiles') if fixed == 'source-installer-code-only.json' else ('publication',):
+        stem = '.source-code-only-' + label + '-next-' if fixed == 'source-installer-code-only.json' else '.source-rebind-publication-'
+        if _native_at_inode(metadata, stem + value['nonce']) is not None:
+            raise CustodyError('native-source-installer-history-uncommitted')
+    if (_native_root_file(metadata, name, limit=65536) != (body, inode)
+            or _native_installer_context(bridge, transaction, mode=mode)[1] != context_raw
+            or _native_root_file(metadata, _native_installer_journal_name(metadata, transaction, _history=True), limit=32 * 1024 * 1024)[0] != journal_raw):
+        raise CustodyError('native-source-installer-history-changed')
+    return {'name': name, 'fixed': fixed, 'document': value, 'metadata': metadata_names, 'kits': {value['backup']}}
+
+
+def _native_installer_history_records(bridge):
+    """File-only history across mixed installer images, never live authority."""
+    from pixel_macos_custody import protected_directory
+    owner = _native_installer_owner(bridge)
+    with protected_directory(NATIVE_META) as metadata, protected_directory(NATIVE_KIT.parent) as kits:
+        ledger, raw = _native_json_at(metadata, 'source-installer-history.json')
+        if ledger is None:
+            return []
+        _native_installer_history_record(ledger)
+        result = []
+        for entry in ledger['entries']:
+            if entry['owner'] != {'uid': owner.pw_uid, 'gid': owner.pw_gid}:
+                raise CustodyError('native-source-installer-history-owner-changed')
+            try:
+                context, _raw = _native_installer_context(bridge, entry['transaction'], mode='withdrawal')
+            except CustodyError:
+                context, _raw = _native_installer_context(bridge, entry['transaction'], mode='absent')
+            journal, records, _body = _native_installer_journal(metadata, entry['transaction'], context, _history=True)
+            if journal['phase'] not in ('prepared', 'replacing-files', 'active', 'restored', 'rolling-back',
+                    *(action + '-' + role for action in ('stopping', 'starting') for role in (
+                        'integrations', 'operations', 'promoter', 'manager', 'gateway', 'access', 'relay'))):
+                raise CustodyError('native-source-installer-history-transaction-unsettled')
+            original = journal['sourceAddition']['proof']
+            custody_sha = (original['runtime']['custodySha256'] if context['source_lifecycle']['mode'] == 'withdrawal'
+                else original['oldRuntimeCustodySha256'])
+            if custody_sha != entry['runtime']['custodySha256']:
+                raise CustodyError('native-source-installer-history-runtime-changed')
+            publisher = _native_installer_old_publisher({'transaction': entry['transaction'], 'files': records,
+                'proof': {'runtime': {'custodySha256': custody_sha}}})
+            for fixed, image in entry['artifacts'].items():
+                item = _native_installer_history_artifact(bridge, publisher, metadata, kits, fixed, image, entry['runtime'])
+                if entry['phase'] == 'committed' and item['name'] != image['name']:
+                    raise CustodyError('native-source-installer-history-uncommitted')
+                result.append(item)
+        if _native_json_at(metadata, 'source-installer-history.json')[1] != raw:
+            raise CustodyError('native-source-installer-history-changed')
+        return result
+
+
+def native_installer_history_records(selection):
+    """Actual current selection plus separately qualified retained data."""
+    from pixel_macos_custody import protected_directory
+    with protected_directory(NATIVE_META) as metadata:
+        if _native_at_inode(metadata, 'source-installer-history.json') is None:
+            return []  # Absence grants no names, file or runtime authority.
+    _native_selected(selection, _publication=True)
+    result = _native_installer_history_records(selection.bridge)
+    _native_selected(selection, _publication=True)
+    return result
+
+
+def native_installer_history(selection):
+    items = native_installer_history_records(selection)
+    if not items:
+        return {'metadata': set(), 'kits': set()}
+    return {'metadata': {'source-installer-history.json', *(item['name'] for item in items),
+            *(name for item in items for name in item['metadata'])},
+        'kits': {name for item in items for name in item['kits']}}
+
+
+def native_installer_history_plan(selection, *, transaction):
+    """Admit metadata rollover only before the actual installer replaces code."""
+    from pixel_macos_custody import protected_directory
+    from .native_executor import _publisher
+    publisher = _publisher(selection)
+    _module, doc, _component, ref = publisher._material(selection)
+    if not _native_installer_transaction_value(transaction) or doc['bundleSha256'] != transaction['currentDigest']:
+        raise CustodyError('native-source-installer-history-old-runtime-required')
+    try:
+        context, context_raw = _native_installer_context(selection.bridge, transaction, mode='withdrawal')
+    except CustodyError:
+        context, context_raw = _native_installer_context(selection.bridge, transaction, mode='absent')
+    runtime = {'deploymentSha256': selection.deployment.checksum, 'custodySha256': doc['runtimeCustodySha256'],
+        'bundleSha256': doc['bundleSha256'], 'sourceRef': ref}
+    owner = {'uid': doc['ownerUid'], 'gid': doc['ownerGid']}
+    with protected_directory(NATIVE_META) as metadata, protected_directory(NATIVE_KIT.parent) as kits:
+        journal, records, journal_raw = _native_installer_journal(metadata, transaction, context)
+        if journal['phase'] != 'prepared':
+            raise CustodyError('native-source-installer-history-before-code-required')
+        # A mixed or already-candidate Root image is not this old-runtime
+        # admission boundary. It cannot turn a prior completed record into an
+        # authorization for arbitrary file replacement.
+        for image in records:
+            if image['path'] not in native_installer_source_family():
+                continue
+            path = Path(image['path'])
+            with protected_directory(path.parent) as directory:
+                try:
+                    body, _inode = _native_root_file(directory, path.name, mode=image['mode'], gid=image['gid'], limit=8 * 1024 * 1024)
+                except FileNotFoundError:
+                    body = None
+                if body != image['before']:
+                    raise CustodyError('native-source-installer-history-before-code-required')
+        ledger, raw = _native_json_at(metadata, 'source-installer-history.json')
+        retained = _native_installer_history_records(selection.bridge) if ledger is not None else []
+        if ledger is not None:
+            _native_installer_history_record(ledger)
+        if context['source_lifecycle']['mode'] == 'withdrawal':
+            actual = publisher.installer_withdrawal_intent(selection, transaction=transaction)
+            if _native_encoded(actual) != _native_encoded(journal['sourceAddition']['proof']):
+                raise CustodyError('native-source-installer-history-origin-changed')
+            native_retirement_inventory(selection)  # Fresh stopped DS/env/token metadata and literal origin.
+        else:
+            actual = native_absent_for_installer(selection.bridge, transaction=transaction)
+            if _native_encoded(actual) != _native_encoded(journal['sourceAddition']['proof']):
+                raise CustodyError('native-source-installer-history-origin-changed')
+        witness = publisher._no_actors(selection, globals_module(), metadata, _generation=True)
+        entry = None
+        if ledger is not None and ledger['entries'][-1]['transaction'] == transaction:
+            entry = ledger['entries'][-1]
+            if entry['runtime'] != runtime or entry['owner'] != owner:
+                raise CustodyError('native-source-installer-history-origin-changed')
+        elif ledger is not None and ledger['entries'][-1]['phase'] != 'committed':
+            raise CustodyError('native-source-installer-history-pending')
+        artifacts = {} if entry is None else entry['artifacts']
+        if entry is None:
+            for fixed in ('source-installer-rebind.json', 'source-installer-code-only.json'):
+                if _native_at_inode(metadata, fixed) is None:
+                    continue
+                body, inode = _native_root_file(metadata, fixed, limit=65536)
+                value = json.loads(body, object_pairs_hook=_native_pairs)
+                old = value.get('transaction') if type(value) is dict else None
+                if not _native_installer_transaction_value(old) or old == transaction:
+                    raise CustodyError('native-source-installer-history-origin-changed')
+                image = {'transaction': old, 'name': fixed[:-5] + '-' + old['transaction'] + '.json',
+                    'inode': inode, 'sha256': hashlib.sha256(body).hexdigest()}
+                _native_installer_history_artifact(selection.bridge, publisher, metadata, kits, fixed, image, runtime)
+                artifacts[fixed] = image
+            if artifacts:
+                entry = {'transaction': dict(transaction), 'runtime': runtime, 'owner': owner,
+                    'boot': witness['boot'], 'phase': 'pending', 'artifacts': artifacts}
+                prospective = {'schemaVersion': 1, 'kind': 'ods-native-source-installer-history',
+                    'entries': ([] if ledger is None else ledger['entries']) + [entry]}
+                _native_installer_history_record(prospective)
+        # Every pending physical prefix is qualified from the same frozen
+        # original before-image. A retained record cannot become current again.
+        for fixed, image in artifacts.items():
+            _native_installer_history_artifact(selection.bridge, publisher, metadata, kits, fixed, image, runtime)
+        if (_native_json_at(metadata, 'source-installer-history.json')[1] != raw
+                or _native_root_file(metadata, 'runtime-upgrade.json', limit=32 * 1024 * 1024)[0] != journal_raw
+                or _native_installer_context(selection.bridge, transaction, mode=context['source_lifecycle']['mode'])[1] != context_raw
+                or publisher._no_actors(selection, globals_module(), metadata, _generation=True) != witness):
+            raise CustodyError('native-source-installer-history-changed')
+        if retained and ledger is None:
+            raise CustodyError('native-source-installer-history-changed')
+        return {'ledger': ledger, 'entry': entry, 'records': artifacts, 'witness': witness}
+
+
+def _native_installer_code_only_record(metadata, transaction, proof):
+    record, raw = _native_json_at(metadata, 'source-installer-code-only.json')
+    if record is None:
+        return None, None
+    fields = {'schemaVersion', 'kind', 'transaction', 'proofSha256', 'nonce', 'phase', 'deploymentSha256',
+        'sourceRef', 'kitSha256', 'kitParent', 'oldKit', 'candidate', 'backup', 'candidateInode',
+        'stagedFiles', 'publication', 'sidefiles', 'witness'}
+    if (type(record) is not dict or set(record) != fields or type(record['schemaVersion']) is not int
+            or record['schemaVersion'] != 1 or record['kind'] != 'ods-native-source-installer-code-only'
+            or record['transaction'] != transaction or record['proofSha256'] != hashlib.sha256(_native_encoded(proof)).hexdigest()
+            or type(record['nonce']) is not str or not FLOW_ID.fullmatch(record['nonce'])
+            or record['phase'] not in ('staging', 'kit', 'publication', 'sidefiles', 'committed')
+            or any(type(record[key]) is not str or not _NATIVE_SHA.fullmatch(record[key]) for key in ('deploymentSha256', 'kitSha256'))
+            or type(record['sourceRef']) is not str or not re.fullmatch('[a-f0-9]{40}', record['sourceRef'])
+            or not _native_inode(record['kitParent']) or record['oldKit'] != proof['kit']
+            or record['candidate'] != '.source-kit-' + record['nonce'] or record['backup'] != '.source-kit-before-' + record['nonce']
+            or record['candidateInode'] is not None and not _native_inode(record['candidateInode'])
+            or type(record['stagedFiles']) is not dict or set(record['stagedFiles']) != {'source-kit.json', 'broker.py', 'source-broker.env', *NATIVE_PROFILES}):
+        raise CustodyError('native-source-installer-code-only-record-invalid')
+    for image in record['stagedFiles'].values():
+        if (type(image) is not dict or set(image) != {'inode', 'ready'} or type(image['ready']) is not bool
+                or image['inode'] is not None and not _native_inode(image['inode']) or image['ready'] and image['inode'] is None):
+            raise CustodyError('native-source-installer-code-only-record-invalid')
+    for key, name in (('publication', 'source-publication.json'), ('sidefiles', 'source-sidefiles.json')):
+        image = record[key]
+        if (type(image) is not dict or set(image) != {'before', 'beforeInode', 'after', 'afterInode', 'ready'}
+                or type(image['before']) is not dict or not _native_inode(image['beforeInode'])
+                or proof['metadata'].get(name) != {'inode': image['beforeInode'], 'sha256': hashlib.sha256(_native_encoded(image['before'])).hexdigest()}
+                or image['after'] is not None and type(image['after']) is not dict
+                or key == 'sidefiles' and image['after'] is None
+                or image['afterInode'] is not None and not _native_inode(image['afterInode'])
+                or type(image['ready']) is not bool or image['ready'] and (image['afterInode'] is None or image['after'] is None)):
+            raise CustodyError('native-source-installer-code-only-record-invalid')
+    witness = record['witness']
+    uid = proof['identity'].get('record', {}).get('id')
+    if (type(witness) is not dict or set(witness) != {'kind', 'boot', 'loadedSourceJobs', 'brokerProcesses', 'brokerUid'}
+            or witness['kind'] != 'never-started-observed' or type(witness['boot']) is not str
+            or not re.fullmatch('[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}', witness['boot'])
+            or any(type(witness[key]) is not int or witness[key] != 0 for key in ('loadedSourceJobs', 'brokerProcesses'))
+            or type(witness['brokerUid']) is not type(uid) or witness['brokerUid'] != uid):
+        raise CustodyError('native-source-installer-code-only-record-invalid')
+    return record, raw
+
+
+def native_installer_code_only_kit_authority(selection, *, transaction, proof, _completed=False):
+    """Actual installer-purpose authority, never private Source admission."""
+    from pixel_macos_custody import protected_directory
+    from .native_executor import _publisher
+    doc = _native_selected(selection, _publication=True)
+    publisher = _publisher(selection)
+    _module, _doc, component, ref = publisher._material(selection)
+    context, context_raw = _native_installer_context(selection.bridge, transaction)
+    native_installer_absence_receipt(proof, transaction=transaction, owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid'])
+    if (proof['kit'] is None or not {'source-publication.json', 'source-sidefiles.json'} <= set(proof['metadata'])
+            or doc['bundleSha256'] != transaction['candidateDigest']):
+        raise CustodyError('native-source-installer-code-only-original-state-invalid')
+    with protected_directory(NATIVE_META) as metadata, protected_directory(NATIVE_KIT.parent) as kits:
+        journal, records, journal_raw = _native_installer_journal(metadata, transaction, context, _completed=_completed)
+        if journal['phase'] != 'active' or journal['sourceAddition']['proof'] != proof:
+            raise CustodyError('native-source-installer-code-only-target-not-active')
+        _native_installer_live_images(records)
+        for item in records:
+            if item['path'] in native_installer_source_family():
+                path = Path(item['path'])
+                with protected_directory(path.parent) as directory:
+                    if _native_root_file(directory, path.name, mode=item['mode'], gid=item['gid'], limit=8 * 1024 * 1024)[0] != item['after']:
+                        raise CustodyError('native-source-installer-code-only-file-image-changed')
+        record, record_raw = _native_installer_code_only_record(metadata, transaction, proof)
+        before = {}
+        for key, name in (('publication', 'source-publication.json'), ('sidefiles', 'source-sidefiles.json')):
+            body, inode = (_native_root_file(metadata, name) if record is None
+                else (_native_encoded(record[key]['before']), record[key]['beforeInode']))
+            if proof['metadata'].get(name) != {'inode': inode, 'sha256': hashlib.sha256(body).hexdigest()}:
+                raise CustodyError('native-source-installer-code-only-original-image-changed')
+            before[key] = {'before': body, 'inode': inode}
+        old_publication = json.loads(before['publication']['before'], object_pairs_hook=_native_pairs)
+        old_location = NATIVE_KIT.name
+        if record is not None and _native_at_inode(kits, old_location) != proof['kit']['inode']:
+            old_location = record['backup']
+        _old_kit, old_files = publisher._kit_image(globals_module(), kits, old_location, expected=proof['kit'])
+        old_manifest = json.loads(old_files['source-kit.json'], object_pairs_hook=_native_pairs)
+        if (type(old_manifest) is not dict or old_manifest.get('schemaVersion') != 2
+                or old_manifest.get('kind') != 'ods-native-source-kit'
+                or old_publication.get('phase') != 'prepared-no-jobs' or old_publication.get('old') is not None
+                or old_publication.get('bindings') != {} or old_manifest.get('sourceRef') != old_publication.get('sourceRef')
+                or old_manifest.get('deploymentSha256') != old_publication.get('deploymentSha256')):
+            raise CustodyError('native-source-installer-code-only-publication-invalid')
+        old_authority = {'transaction': transaction, 'files': records,
+            'proof': {'runtime': {'custodySha256': proof['oldRuntimeCustodySha256']}}}
+        old_publisher = _native_installer_old_publisher(old_authority)
+        descriptor = json.loads(next(item['before'] for item in records if item['path'] == str(NATIVE_RUNTIME_DESCRIPTOR)), object_pairs_hook=_native_pairs)
+        old_component = old_publisher.bundle_payloads(Path(proof['runtimeRoot']).parent,
+            ref=old_publication['sourceRef'], python=descriptor['hostPython'], protected=True)
+        old_publisher._publication_record(old_publication, old_publication['deploymentSha256'],
+            old_publisher._publication_files(old_component, old_publication['sourceRef'], old_publication['deploymentSha256']))
+        if (old_publication['candidateInode'] != proof['kit']['inode']
+                or any(old_publication['stagedFiles'][name] != {'inode': image['inode'], 'ready': True}
+                    for name, image in proof['kit']['files'].items())
+                or any(old_publication['new'][name] != image['sha256'] for name, image in proof['kit']['files'].items())
+                or old_publication['witness']['brokerUid'] is not None
+                    and old_publication['witness']['brokerUid'] != proof['identity'].get('record', {}).get('id')):
+            raise CustodyError('native-source-installer-code-only-publication-invalid')
+        state = _native_installer_absence_state(selection.bridge, _installer_code_only=record)
+        if state[2] != proof['identity'] or state[1].get('source-identity.json') != proof['metadata'].get('source-identity.json'):
+            raise CustodyError('native-source-installer-code-only-identity-changed')
+        if any(state[1].get(name) != image for name, image in proof['metadata'].items()
+                if name not in {'source-publication.json', 'source-sidefiles.json', 'source-runtime-installation.json'}):
+            raise CustodyError('native-source-installer-code-only-metadata-changed')
+        witness = dict(state[3], kind='never-started-observed')
+        if record is not None:
+            if record['witness'] != dict(witness, boot=record['witness']['boot']):
+                raise CustodyError('native-source-installer-code-only-identity-changed')
+            if record['witness']['boot'] != witness['boot']:
+                _native_installer_hold(metadata, transaction)
+            witness = record['witness']  # Historical observation never renewed.
+        old_runtime = {'deploymentSha256': old_publication['deploymentSha256'], 'custodySha256': proof['oldRuntimeCustodySha256'],
+            'bundleSha256': transaction['currentDigest'], 'sourceRef': old_publication['sourceRef']}
+        snapshot = context['runtime_bundle'].get('source_sidefiles_before')
+        if snapshot is None:
+            raise CustodyError('native-source-installer-code-only-sidefiles-snapshot-required')
+        native_installer_sidefiles_receipt(snapshot, owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid'], runtime=old_runtime)
+        sidefiles = json.loads(before['sidefiles']['before'], object_pairs_hook=_native_pairs)
+        after = _native_installer_sidefiles(doc, context, sidefiles, transaction, old_runtime=old_runtime,
+            before_image=proof['metadata']['source-sidefiles.json'])
+        before['sidefiles']['after'] = _native_encoded(after)
+        files = publisher._publication_files(component, ref, selection.deployment.checksum)
+        info = os.fstat(kits)
+        _native_no_acl(kits)
+        if (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (0, 0, 0o755):
+            raise CustodyError('native-source-installer-code-only-kit-parent-unsafe')
+        kit_parent = [info.st_dev, info.st_ino]
+        if record is not None and (record['deploymentSha256'] != selection.deployment.checksum or record['sourceRef'] != ref
+                or record['kitSha256'] != hashlib.sha256(files['source-kit.json']).hexdigest() or record['kitParent'] != kit_parent
+                or _native_encoded(record['sidefiles']['after']) != before['sidefiles']['after']):
+            raise CustodyError('native-source-installer-code-only-target-changed')
+        if (_native_json_at(metadata, 'source-installer-code-only.json')[1] != record_raw
+                or _native_root_file(metadata, _native_installer_journal_name(metadata, transaction, completed=_completed), limit=32 * 1024 * 1024)[0] != journal_raw
+                or _native_installer_context(selection.bridge, transaction)[1] != context_raw):
+            raise CustodyError('native-source-installer-code-only-authority-changed')
+        return {'authority': {'transaction': dict(transaction), 'proof': proof}, 'record': record,
+            'oldKit': proof['kit'], 'kitParent': kit_parent, 'targetKit': files,
+            'publication': before['publication'], 'sidefiles': before['sidefiles'], 'witness': witness,
+            'history': native_installer_history(selection)}
+
+
+def _native_installer_code_only_prefix(publisher, metadata, kits, plan, record):
+    files = plan['targetKit']
+    known = {NATIVE_KIT.name, record['candidate'], record['backup'], *plan['history']['kits']}
+    if any(name.startswith('.source-kit-') and name not in known for name in os.listdir(kits)):
+        raise CustodyError('native-source-installer-code-only-unknown-prefix')
+    live, backup = _native_at_inode(kits, NATIVE_KIT.name), _native_at_inode(kits, record['backup'])
+    staged = _native_at_inode(kits, record['candidate'])
+    if live == record['oldKit']['inode']:
+        if backup is not None or record['phase'] not in ('staging', 'kit'):
+            raise CustodyError('native-source-installer-code-only-prefix-changed')
+        target, target_name = staged, record['candidate']
+    else:
+        if backup != record['oldKit']['inode'] or record['phase'] == 'staging':
+            raise CustodyError('native-source-installer-code-only-prefix-changed')
+        if live is not None and staged is not None:
+            raise CustodyError('native-source-installer-code-only-prefix-changed')
+        target, target_name = (live, NATIVE_KIT.name) if live is not None else (staged, record['candidate'])
+    if target is None:
+        if record['candidateInode'] is not None:
+            raise CustodyError('native-source-installer-code-only-prefix-missing')
+    else:
+        if target != record['candidateInode']:
+            raise CustodyError('native-source-installer-code-only-prefix-changed')
+        directory = os.open(target_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=kits)
+        try:
+            info = os.fstat(directory)
+            _native_no_acl(directory)
+            if ((info.st_uid, info.st_gid) != (0, 0) or stat.S_IMODE(info.st_mode) not in (0o700, 0o755)
+                    or set(os.listdir(directory)) - set(files)):
+                raise CustodyError('native-source-installer-code-only-prefix-changed')
+            for name, body in files.items():
+                image = record['stagedFiles'][name]
+                publisher._generation_prefix(globals_module(), directory, name, body, image, mode=0o755 if name == 'broker.py' else 0o644)
+                if image['inode'] is not None and _native_at_inode(directory, name) != image['inode']:
+                    raise CustodyError('native-source-installer-code-only-prefix-missing')
+            if target_name == NATIVE_KIT.name and (stat.S_IMODE(info.st_mode) != 0o755
+                    or set(os.listdir(directory)) != set(files) or any(not image['ready'] for image in record['stagedFiles'].values())):
+                raise CustodyError('native-source-installer-code-only-kit-unconfirmed')
+        finally:
+            os.close(directory)
+    if record['phase'] in ('publication', 'sidefiles', 'committed') and live != record['candidateInode']:
+        raise CustodyError('native-source-installer-code-only-kit-unconfirmed')
+    publication = {'schemaVersion': 1, 'kind': 'ods-native-source-publication', 'deploymentSha256': record['deploymentSha256'],
+        'sourceRef': record['sourceRef'], 'nonce': record['nonce'], 'phase': 'prepared-no-jobs', 'old': None,
+        'new': {name: hashlib.sha256(body).hexdigest() for name, body in files.items()},
+        'candidate': record['candidate'], 'backup': record['backup'], 'candidateInode': record['candidateInode'],
+        'stagedFiles': record['stagedFiles'], 'bindings': {}, 'witness': record['witness']}
+    if (record['publication']['after'] is not None and _native_encoded(record['publication']['after']) != _native_encoded(publication)
+            or record['phase'] != 'staging' and record['publication']['after'] is None):
+        raise CustodyError('native-source-installer-code-only-publication-changed')
+    phases = ('staging', 'kit', 'publication', 'sidefiles', 'committed')
+    for key, leaf in (('publication', 'source-publication.json'), ('sidefiles', 'source-sidefiles.json')):
+        image = record[key]
+        current = _native_at_inode(metadata, leaf)
+        temporary = '.source-code-only-' + key + '-next-' + record['nonce']
+        retained = '.source-code-only-' + key + '-before-' + record['nonce'] + '.json'
+        boundary = phases.index(key)
+        phase = phases.index(record['phase'])
+        after = _native_encoded(publication) if key == 'publication' else plan['sidefiles']['after']
+        if current == image['beforeInode']:
+            if (_native_root_file(metadata, leaf) != (plan[key]['before'], image['beforeInode'])
+                    or _native_at_inode(metadata, retained) is not None or phase > boundary):
+                raise CustodyError('native-source-installer-code-only-before-changed')
+        else:
+            if (phase < boundary or _native_root_file(metadata, retained) != (plan[key]['before'], image['beforeInode'])
+                    or current is not None and (not image['ready'] or current != image['afterInode']
+                        or _native_root_file(metadata, leaf) != (after, current))):
+                raise CustodyError('native-source-installer-code-only-before-changed')
+        if phase > boundary and current != image['afterInode']:
+            raise CustodyError('native-source-installer-code-only-after-missing')
+        publisher._generation_prefix(globals_module(), metadata, temporary, after,
+            {'inode': image['afterInode'], 'ready': image['ready']})
+        staged = _native_at_inode(metadata, temporary)
+        if (current == image['afterInode'] and image['afterInode'] is not None and staged is not None
+                or current != image['afterInode'] and image['afterInode'] is not None and staged != image['afterInode']):
+            raise CustodyError('native-source-installer-code-only-prefix-missing')
+
+
+def native_installer_code_only_kit_plan(selection, *, transaction, proof, _completed=False):
+    from pixel_macos_custody import protected_directory
+    from .native_executor import _publisher
+    plan = native_installer_code_only_kit_authority(selection, transaction=transaction, proof=proof, _completed=_completed)
+    publisher = _publisher(selection)
+    with protected_directory(NATIVE_META) as metadata, protected_directory(NATIVE_KIT.parent) as kits:
+        record, raw = _native_installer_code_only_record(metadata, transaction, proof)
+        if record is None:
+            if any(name.startswith('.source-kit-') and name not in plan['history']['kits'] for name in os.listdir(kits)):
+                raise CustodyError('native-source-installer-code-only-unknown-prefix')
+        else:
+            _native_installer_code_only_prefix(publisher, metadata, kits, plan, record)
+        if _native_json_at(metadata, 'source-installer-code-only.json')[1] != raw:
+            raise CustodyError('native-source-installer-code-only-record-changed')
+        return plan
+
+
+def native_verify_completed_installer_code_only_kit(selection, proof, *, transaction):
+    plan = native_installer_code_only_kit_plan(selection, transaction=transaction, proof=proof, _completed=True)
+    if plan['record'] is None or plan['record']['phase'] != 'committed':
+        raise CustodyError('native-source-installer-code-only-unconfirmed')
+    return {'status': 'prepared-no-jobs', 'transaction': dict(transaction),
+        'kitSha256': hashlib.sha256(plan['targetKit']['source-kit.json']).hexdigest()}
+
+
+def native_installer_code_only_history(selection):
+    """Names from completed immutable installer history, never live authority."""
+    from pixel_macos_custody import protected_directory
+    from .native_executor import _publisher
+    with protected_directory(NATIVE_META) as metadata:
+        if _native_at_inode(metadata, 'source-installer-code-only.json') is None:
+            return native_installer_history(selection)
+    publisher = _publisher(selection)
+    _module, doc, component, ref = publisher._material(selection)
+    with protected_directory(NATIVE_META) as metadata, protected_directory(NATIVE_KIT.parent) as kits:
+        record, raw = _native_json_at(metadata, 'source-installer-code-only.json')
+        if record is None:
+            return native_installer_history(selection)
+        if type(record) is not dict or not _native_installer_transaction_value(record.get('transaction')):
+            raise CustodyError('native-source-installer-code-only-history-invalid')
+        transaction = record['transaction']
+        context, context_raw = _native_installer_context(selection.bridge, transaction)
+        journal, records, journal_raw = _native_installer_journal(metadata, transaction, context, _history=True)
+        proof = journal['sourceAddition']['proof']
+        native_installer_absence_receipt(proof, transaction=transaction, owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid'])
+        if proof['kit'] is None or journal['phase'] != 'active' or doc['bundleSha256'] != transaction['candidateDigest']:
+            raise CustodyError('native-source-installer-code-only-history-invalid')
+        record, _raw = _native_installer_code_only_record(metadata, transaction, proof)
+        files = publisher._publication_files(component, ref, selection.deployment.checksum)
+        if (record['phase'] != 'committed' or record['deploymentSha256'] != selection.deployment.checksum
+                or record['sourceRef'] != ref or record['kitSha256'] != hashlib.sha256(files['source-kit.json']).hexdigest()
+                or _native_at_inode(kits, '.') != record['kitParent']):
+            raise CustodyError('native-source-installer-code-only-history-invalid')
+        expected_pub = {'schemaVersion': 1, 'kind': 'ods-native-source-publication', 'deploymentSha256': record['deploymentSha256'],
+            'sourceRef': ref, 'nonce': record['nonce'], 'phase': 'prepared-no-jobs', 'old': None,
+            'new': {name: hashlib.sha256(body).hexdigest() for name, body in files.items()},
+            'candidate': record['candidate'], 'backup': record['backup'], 'candidateInode': record['candidateInode'],
+            'stagedFiles': record['stagedFiles'], 'bindings': {}, 'witness': record['witness']}
+        publisher._publication_record(expected_pub, selection.deployment.checksum, files)
+        if _native_encoded(record['publication']['after']) != _native_encoded(expected_pub):
+            raise CustodyError('native-source-installer-code-only-history-invalid')
+        for key in ('publication', 'sidefiles'):
+            image = record[key]
+            if (not image['ready'] or _native_root_file(metadata, '.source-code-only-' + key + '-before-' + record['nonce'] + '.json') != (
+                    _native_encoded(image['before']), image['beforeInode'])
+                    or _native_at_inode(metadata, '.source-code-only-' + key + '-next-' + record['nonce']) is not None):
+                raise CustodyError('native-source-installer-code-only-history-changed')
+        publisher._kit_image(globals_module(), kits, record['backup'], expected=proof['kit'])
+        if _native_at_inode(kits, record['candidate']) is not None:
+            raise CustodyError('native-source-installer-code-only-history-changed')
+        publisher._kit_image(globals_module(), kits, NATIVE_KIT.name, expected={
+            'inode': record['candidateInode'], 'files': {name: {'inode': record['stagedFiles'][name]['inode'],
+                'sha256': hashlib.sha256(body).hexdigest()} for name, body in files.items()}})
+        old_pub = record['publication']['before']
+        old_runtime = {'deploymentSha256': old_pub['deploymentSha256'], 'custodySha256': proof['oldRuntimeCustodySha256'],
+            'bundleSha256': transaction['currentDigest'], 'sourceRef': old_pub['sourceRef']}
+        old_publisher = _native_installer_old_publisher({'transaction': transaction, 'files': records,
+            'proof': {'runtime': {'custodySha256': proof['oldRuntimeCustodySha256']}}})
+        descriptor = json.loads(next(item['before'] for item in records if item['path'] == str(NATIVE_RUNTIME_DESCRIPTOR)), object_pairs_hook=_native_pairs)
+        old_component = old_publisher.bundle_payloads(Path(proof['runtimeRoot']).parent,
+            ref=old_pub['sourceRef'], python=descriptor['hostPython'], protected=True)
+        old_publisher._publication_record(old_pub, old_pub['deploymentSha256'],
+            old_publisher._publication_files(old_component, old_pub['sourceRef'], old_pub['deploymentSha256']))
+        if (old_pub['phase'] != 'prepared-no-jobs' or old_pub['old'] is not None or old_pub['bindings']
+                or old_pub['candidateInode'] != proof['kit']['inode']
+                or any(old_pub['stagedFiles'][name] != {'inode': image['inode'], 'ready': True}
+                    or old_pub['new'][name] != image['sha256'] for name, image in proof['kit']['files'].items())):
+            raise CustodyError('native-source-installer-code-only-history-invalid')
+        snapshot = context['runtime_bundle'].get('source_sidefiles_before')
+        native_installer_sidefiles_receipt(snapshot, owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid'], runtime=old_runtime)
+        before = record['sidefiles']['before']
+        fields = {'schemaVersion', 'kind', 'ownerUid', 'ownerGid', 'configPath', 'bundleSha256', 'files', 'parent', 'children'}
+        expected_sidefiles = dict(before, configPath=doc['configPath'], bundleSha256=doc['bundleSha256'],
+            files={name: image['sha256'] for name, image in snapshot['files'].items()}, parent=snapshot['parent'],
+            children={name: {'inode': image['inode'], 'ready': True} for name, image in snapshot['files'].items()})
+        if (set(before) != fields or before.get('kind') != 'ods-native-connection-sidefiles'
+                or type(before.get('schemaVersion')) is not int or before['schemaVersion'] != 1
+                or (before['ownerUid'], before['ownerGid']) != (doc['ownerUid'], doc['ownerGid'])
+                or snapshot['bootstrap'] != proof['metadata']['source-sidefiles.json']
+                or _native_encoded(record['sidefiles']['after']) != _native_encoded(expected_sidefiles)
+                or _native_root_file(metadata, 'source-sidefiles.json') != (_native_encoded(expected_sidefiles), record['sidefiles']['afterInode'])):
+            raise CustodyError('native-source-installer-code-only-history-sidefiles-changed')
+        initial_images = publisher.initial_boot_images(selection)
+        initial = (initial_images['parent'] if initial_images is not None
+            else _native_json_at(metadata, 'source-initial-generation.json')[0])
+        if initial is None:
+            if _native_root_file(metadata, 'source-publication.json') != (_native_encoded(expected_pub), record['publication']['afterInode']):
+                raise CustodyError('native-source-installer-code-only-history-publication-changed')
+        else:
+            publisher._initial_generation_record(globals_module(), initial)
+            if initial['before'] != {'document': expected_pub, 'inode': record['publication']['afterInode']}:
+                raise CustodyError('native-source-installer-code-only-history-publication-changed')
+            name = ('source-publication.json' if _native_at_inode(metadata, 'source-publication.json') == record['publication']['afterInode']
+                else '.source-initial-publication-' + initial['nonce'] + '.json')
+            if _native_root_file(metadata, name) != (_native_encoded(expected_pub), record['publication']['afterInode']):
+                raise CustodyError('native-source-installer-code-only-history-publication-changed')
+        if (_native_json_at(metadata, 'source-installer-code-only.json')[1] != raw
+                or _native_root_file(metadata, _native_installer_journal_name(metadata, transaction, _history=True), limit=32 * 1024 * 1024)[0] != journal_raw
+                or _native_installer_context(selection.bridge, transaction)[1] != context_raw):
+            raise CustodyError('native-source-installer-code-only-history-changed')
+        history = native_installer_history(selection)
+        return {'metadata': {'source-installer-code-only.json', *history['metadata'],
+                '.source-code-only-publication-before-' + record['nonce'] + '.json',
+                '.source-code-only-sidefiles-before-' + record['nonce'] + '.json'}, 'kits': {record['backup'], *history['kits']}}
+
+
+def native_code_only_status_absence(selection):
+    """Read-only post-upgrade preconnection proof, including after boot."""
+    from pixel_macos_custody import protected_directory
+    native_installer_code_only_history(selection)
+    with protected_directory(NATIVE_META) as metadata:
+        record, raw = _native_json_at(metadata, 'source-installer-code-only.json')
+        if record is None or record['phase'] != 'committed':
+            raise CustodyError('native-source-installer-code-only-unconfirmed')
+        first = _native_installer_absence_state(selection.bridge, _installer_code_only=record)
+        if (_native_installer_absence_state(selection.bridge, _installer_code_only=record) != first
+                or _native_json_at(metadata, 'source-installer-code-only.json')[1] != raw):
+            raise CustodyError('native-source-installer-code-only-status-changed')
+    return first
+
+
+def native_installer_absent_kit_authority(selection, *, transaction, proof, _completed=False):
+    """Actual first-kit purpose; creates no identity, private state or actor."""
+    from pixel_macos_custody import protected_directory
+    from .native_executor import _publisher
+    doc = _native_selected(selection, _publication=True)
+    publisher = _publisher(selection)
+    _module, _doc, component, ref = publisher._material(selection)
+    context, context_raw = _native_installer_context(selection.bridge, transaction)
+    native_installer_absence_receipt(proof, transaction=transaction, owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid'])
+    if (proof['kit'] is not None or 'source-publication.json' in proof['metadata']
+            or doc['bundleSha256'] != transaction['candidateDigest']):
+        raise CustodyError('native-source-installer-first-kit-original-state-invalid')
+    with protected_directory(NATIVE_META) as metadata:
+        journal, records, raw = _native_installer_journal(metadata, transaction, context, _completed=_completed)
+        if journal['phase'] != 'active' or journal['sourceAddition']['proof'] != proof:
+            raise CustodyError('native-source-installer-first-kit-target-not-active')
+        _native_installer_live_images(records)
+        for item in records:
+            if item['path'] in native_installer_source_family():
+                path = Path(item['path'])
+                with protected_directory(path.parent) as directory:
+                    if _native_root_file(directory, path.name, mode=item['mode'], gid=item['gid'], limit=8 * 1024 * 1024)[0] != item['after']:
+                        raise CustodyError('native-source-installer-first-kit-file-image-changed')
+        files = publisher._publication_files(component, ref, selection.deployment.checksum)
+        publication, publication_raw = _native_json_at(metadata, 'source-publication.json')
+        if publication is not None:
+            publisher._publication_record(publication, selection.deployment.checksum, files)
+            if publication['old'] is not None or publication['bindings'] != {}:
+                raise CustodyError('native-source-installer-first-kit-publication-invalid')
+        state = _native_installer_absence_state(selection.bridge, _installer_publication=publication)
+        if state[2] != proof['identity']:
+            raise CustodyError('native-source-installer-first-kit-identity-changed')
+        if proof['identity']['kind'] == 'retained' and state[1].get('source-identity.json') != proof['metadata'].get('source-identity.json'):
+            raise CustodyError('native-source-installer-first-kit-identity-changed')
+        if publication is not None:
+            fresh = dict(state[3], kind='never-started-observed')
+            if publication['witness'] != dict(fresh, boot=publication['witness']['boot']):
+                raise CustodyError('native-source-installer-first-kit-identity-changed')
+            if publication['witness']['boot'] != fresh['boot']:
+                _native_installer_hold(metadata, transaction)
+        # Existing fixed owner-sidefile journal is independently re-proved from
+        # this candidate's explicit, frozen producer bytes. No file is written.
+        sidefile_raw, sidefile_inode = _native_root_file(metadata, 'source-sidefiles.json')
+        sidefiles = json.loads(sidefile_raw, object_pairs_hook=_native_pairs)
+        target = context['runtime_bundle'].get('connection_sidefiles')
+        if (type(sidefiles) is not dict or set(sidefiles) != {'schemaVersion', 'kind', 'ownerUid', 'ownerGid', 'configPath',
+                    'bundleSha256', 'files', 'parent', 'children'}
+                or type(sidefiles['schemaVersion']) is not int or sidefiles['schemaVersion'] != 1
+                or sidefiles['kind'] != 'ods-native-connection-sidefiles'
+                or (sidefiles['ownerUid'], sidefiles['ownerGid'], sidefiles['configPath'], sidefiles['bundleSha256']) != (
+                    doc['ownerUid'], doc['ownerGid'], doc['configPath'], doc['bundleSha256'])
+                or type(target) is not dict or set(target) != {'gateway.env', 'onboarding.json'}
+                or type(sidefiles['files']) is not dict or set(sidefiles['files']) != set(target)
+                or type(sidefiles['children']) is not dict or set(sidefiles['children']) != set(target)):
+            raise CustodyError('native-source-installer-first-kit-sidefiles-invalid')
+        directory = os.open(Path(doc['configPath']).parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(directory)
+            _native_no_acl(directory)
+            if (sidefiles['parent'] != [info.st_dev, info.st_ino]
+                    or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (doc['ownerUid'], doc['ownerGid'], 0o700)):
+                raise CustodyError('native-source-installer-first-kit-sidefiles-changed')
+            for name, text in target.items():
+                image, body = _native_installer_owner_file(directory, name, doc['ownerUid'], doc['ownerGid'])
+                if (type(text) is not str or body != text.encode('utf-8') or sidefiles['files'][name] != image['sha256']
+                        or sidefiles['children'][name] != {'inode': image['inode'], 'ready': True}):
+                    raise CustodyError('native-source-installer-first-kit-sidefiles-changed')
+        finally:
+            os.close(directory)
+        if (_native_json_at(metadata, 'source-publication.json')[1] != publication_raw
+                or _native_root_file(metadata, 'source-sidefiles.json') != (sidefile_raw, sidefile_inode)
+                or _native_root_file(metadata, _native_installer_journal_name(metadata, transaction, completed=_completed), limit=32 * 1024 * 1024)[0] != raw
+                or _native_installer_context(selection.bridge, transaction)[1] != context_raw):
+            raise CustodyError('native-source-installer-first-kit-authority-changed')
+        return {'transaction': dict(transaction), 'proof': proof, 'publication': publication,
+            'files': files, 'kit': state[0], 'witness': state[3]}
+
+
+def native_installer_absent_kit_plan(selection, *, transaction, proof, _completed=False):
+    from pixel_macos_custody import protected_directory
+    from .native_executor import _publisher
+    authority = native_installer_absent_kit_authority(selection, transaction=transaction, proof=proof, _completed=_completed)
+    publisher = _publisher(selection)
+    record, files = authority['publication'], authority['files']
+    with protected_directory(NATIVE_KIT.parent) as parent:
+        known = {NATIVE_KIT.name}
+        if record is not None:
+            known.add(record['candidate'])
+        if any(name.startswith('.source-kit-') and name not in known for name in os.listdir(parent)):
+            raise CustodyError('native-source-installer-first-kit-unknown-prefix')
+        if record is None:
+            if _native_at_inode(parent, NATIVE_KIT.name) is not None:
+                raise CustodyError('native-source-installer-first-kit-unbound')
+            return authority
+        live, staged = _native_at_inode(parent, NATIVE_KIT.name), _native_at_inode(parent, record['candidate'])
+        if live is not None and staged is not None or live is None and staged is None and record['candidateInode'] is not None:
+            raise CustodyError('native-source-installer-first-kit-prefix-changed')
+        location = NATIVE_KIT.name if live is not None else record['candidate']
+        inode = live if live is not None else staged
+        if inode is not None:
+            if inode != record['candidateInode']:
+                raise CustodyError('native-source-installer-first-kit-prefix-changed')
+            directory = os.open(location, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            try:
+                info = os.fstat(directory)
+                _native_no_acl(directory)
+                if ((info.st_uid, info.st_gid) != (0, 0) or stat.S_IMODE(info.st_mode) not in (0o700, 0o755)
+                        or set(os.listdir(directory)) - set(files)):
+                    raise CustodyError('native-source-installer-first-kit-prefix-changed')
+                for name, body in files.items():
+                    item = record['stagedFiles'][name]
+                    publisher._generation_prefix(globals_module(), directory, name, body, item,
+                        mode=0o755 if name == 'broker.py' else 0o644)
+                    if item['inode'] is not None and _native_at_inode(directory, name) != item['inode']:
+                        raise CustodyError('native-source-installer-first-kit-prefix-changed')
+                if live is not None and (record['phase'] not in ('publishing-kit', 'kit-promoted', 'binding', 'prepared-no-jobs')
+                        or stat.S_IMODE(info.st_mode) != 0o755 or set(os.listdir(directory)) != set(files)
+                        or any(not item['ready'] for item in record['stagedFiles'].values())):
+                    raise CustodyError('native-source-installer-first-kit-unconfirmed')
+            finally:
+                os.close(directory)
+        return authority
+
+
+def native_verify_completed_installer_absent_kit(selection, proof, *, transaction):
+    authority = native_installer_absent_kit_plan(selection, transaction=transaction, proof=proof, _completed=True)
+    if authority['publication'] is None or authority['publication']['phase'] != 'prepared-no-jobs':
+        raise CustodyError('native-source-installer-first-kit-unconfirmed')
+    return {'status': 'prepared-no-jobs', 'transaction': dict(transaction),
+        'kitSha256': hashlib.sha256(authority['files']['source-kit.json']).hexdigest()}
+
+
+def _native_installer_runtime(bridge, current_digest, state):
+    from pixel_access_bridge import gateway_runtime_environment
+    from pixel_macos_custody import protected_bytes
+    from pixel_provider.runtime_custody import RuntimeCustody, tree_manifest
+    descriptor = os.path.lexists(NATIVE_RUNTIME_DESCRIPTOR)
+    manifest = os.path.lexists(NATIVE_RUNTIME_MANIFEST)
+    root = NATIVE_RUNTIMES / current_digest
+    if descriptor != manifest:
+        raise CustodyError('native-source-installer-partial-runtime-preserved')
+    if descriptor:
+        runtime, checksum = RuntimeCustody(bridge).inspect()
+        if Path(runtime['runtimeRoot']) != root / 'runtime':
+            raise CustodyError('native-source-installer-old-runtime-changed')
+        return runtime, checksum
+    # This is a distinct legacy contract, not an error fallback. Any Source
+    # identity, code kit, metadata or private state makes it inapplicable.
+    if state[:3] != (None, {}, {'kind': 'absent'}):
+        raise CustodyError('native-source-installer-legacy-state-preserved')
+    body = protected_bytes(root / 'bundle.json', limit=32 * 1024 * 1024)
+    try:
+        bundle = json.loads(body.decode(), object_pairs_hook=_native_pairs)
+        if (hashlib.sha256(body).hexdigest() != current_digest or _native_encoded(bundle) != body
+                or type(bundle) is not dict or set(bundle) != {'schemaVersion', 'openclawVersion', 'plugins', 'entries'}
+                or type(bundle['schemaVersion']) is not int or bundle['schemaVersion'] != 1
+                or type(bundle['entries']) is not dict or type(bundle['plugins']) is not list
+                or bundle['plugins'] != ['plugins/' + str(i) for i in range(len(bundle['plugins']))]
+                or any(name in ('ods-source', 'ods-source.json', 'native-source')
+                    or name.startswith(('ods-source/', 'native-source/')) for name in bundle['entries'])):
+            raise ValueError()
+        actual = tree_manifest(root)
+        actual.pop('bundle.json', None)
+        if (actual != bundle['entries'] or actual.get('node', [])[:2] != ['file', 0o755]
+                or actual.get('runtime/openclaw.mjs', [None])[0] != 'file'
+                or any(actual.get(path) != ['directory', 0o755] for path in bundle['plugins'])
+                or any(row[0] == 'link' and (row[1].startswith('/') or any(ord(char) < 32 for char in row[1]))
+                    for row in actual.values())):
+            raise ValueError()
+        package = json.loads(protected_bytes(root / 'runtime/package.json', limit=1048576).decode(), object_pairs_hook=_native_pairs)
+        if package.get('name') != 'openclaw' or package.get('version') != bundle['openclawVersion']:
+            raise ValueError()
+        launcher = NATIVE_PROGRAM / 'openclaw-gateway-launcher'
+        expected = ('#!/bin/sh\nexec /usr/bin/env -u NODE_OPTIONS -u NODE_PATH '
+            + str(root / 'node') + ' ' + str(root / 'runtime/openclaw.mjs') + ' "$@"\n').encode()
+        if Path(bridge.binary) != launcher or protected_bytes(launcher, limit=16384) != expected:
+            raise ValueError()
+        plist_body, document = bridge._launchd_document()
+        environment = gateway_runtime_environment(document)
+        args = document['ProgramArguments'][2:]
+        while args and '=' in args[0] and args[0].partition('=')[0].isidentifier():
+            args = args[1:]
+        if (args[:6] != ['/usr/bin/sandbox-exec', '-f', '/etc/ods/pixel-gateway.sb', str(launcher), 'gateway', 'run']
+                or environment.get('HOME') != str(bridge.home)):
+            raise ValueError()
+    except (KeyError, TypeError, ValueError, UnicodeError, RecursionError):
+        raise CustodyError('native-source-installer-legacy-runtime-unqualified') from None
+    qualified = {'kind': 'ods-native-source-legacy-runtime-custody', 'bundleSha256': current_digest,
+        'gatewayPlistSha256': hashlib.sha256(plist_body).hexdigest(), 'launcherSha256': hashlib.sha256(expected).hexdigest(),
+        'ownerUid': bridge.owner.pw_uid, 'ownerGid': bridge.owner.pw_gid, 'runtimeRoot': str(root / 'runtime')}
+    return {'runtimeRoot': str(root / 'runtime'), 'sourceRoot': str(root)}, hashlib.sha256(_native_encoded(qualified)).hexdigest()
+
+
+def native_inspect_installer_absence(bridge, *, current_digest):
+    """Read-only preflight; no context, journal, Source state or actor is created."""
+    from pixel_access_bridge import LaunchdAccessBridge
+    _native_root()
+    if (type(bridge) is not LaunchdAccessBridge or Path(bridge.state) != NATIVE_META
+            or LaunchdAccessBridge._native_runtime_lease(bridge) is None
+            or type(current_digest) is not str or not _NATIVE_SHA.fullmatch(current_digest)):
+        raise CustodyError('native-source-installer-capability-required')
+    LaunchdAccessBridge._native_source_deadline_ns(bridge)
+    bridge.verify_gateway_installation_binding()
+    state = _native_installer_absence_state(bridge)
+    runtime, checksum = _native_installer_runtime(bridge, current_digest, state)
+    first = _native_installer_absence_state(bridge, qualified_runtime=runtime)
+    if state != first or _native_installer_absence_state(bridge) != first:
+        raise CustodyError('native-source-installer-absence-changed')
+    return {'runtimeRoot': runtime['runtimeRoot'], 'sourceRoot': runtime['sourceRoot'],
+        'oldRuntimeCustodySha256': checksum, 'state': first}
+
+
+def native_absent_for_installer(bridge, *, transaction):
+    """Initial absence proof from the actual old protected runtime and context."""
+    context, context_raw = _native_installer_context(bridge, transaction)
+    inspected = native_inspect_installer_absence(bridge, current_digest=transaction['currentDigest'])
+    if _native_installer_context(bridge, transaction)[1] != context_raw:
+        raise CustodyError('native-source-installer-context-changed')
+    first = inspected['state']
+    kit, metadata, identity, witness = first
+    value = {'schemaVersion': 1, 'kind': 'ods-native-source-installer-absence',
+        'transaction': transaction['transaction'], 'currentDigest': transaction['currentDigest'],
+        'candidateDigest': transaction['candidateDigest'], 'ownerUid': context['owner']['uid'],
+        'ownerGid': context['owner']['gid'], 'oldRuntimeCustodySha256': inspected['oldRuntimeCustodySha256'],
+        'runtimeRoot': inspected['runtimeRoot'], 'sourceRoot': inspected['sourceRoot'],
+        'kit': kit, 'metadata': metadata, 'identity': identity, 'witness': witness}
+    return native_installer_absence_receipt(value, transaction=transaction,
+        owner_uid=context['owner']['uid'], owner_gid=context['owner']['gid'])
+
+
+def native_verify_installer_absence(bridge, proof, *, transaction):
+    """Fresh absence under the exact protected mixed-image installer journal.
+
+    The installer codec separately proves its complete fixed file family. This
+    hook does not reselect a mixed runtime or turn it into the old runtime.
+    """
+    from pixel_macos_custody import protected_directory
+    context, context_raw = _native_installer_context(bridge, transaction)
+    native_installer_absence_receipt(proof, transaction=transaction,
+        owner_uid=context['owner']['uid'], owner_gid=context['owner']['gid'])
+    with protected_directory(NATIVE_META) as metadata:
+        journal, records, raw = _native_installer_journal(metadata, transaction, context)
+        if journal['sourceAddition']['proof'] != proof:
+            raise CustodyError('native-source-installer-journal-changed')
+        _native_installer_live_images(records)
+        first = _native_installer_absence_state(bridge)
+        if first[2] != proof['identity']:
+            raise CustodyError('native-source-installer-identity-changed')
+        if first[0] != proof['kit']:
+            raise CustodyError('native-source-installer-kit-changed')
+        if (_native_installer_absence_state(bridge) != first
+                or _native_root_file(metadata, 'runtime-upgrade.json', limit=32 * 1024 * 1024)[0] != raw
+                or _native_installer_context(bridge, transaction)[1] != context_raw):
+            raise CustodyError('native-source-installer-absence-changed')
+    return proof
+
+
+def native_retained_identity_only(*, owner_uid, owner_gid):
+    """Verify only the retained Source identity family for an installer.
+
+    This read-only bootstrap needs no provider runtime/Source execution
+    capability. Ops/other families must independently validate their own files.
+    It never creates/adopts an account or restores archived Source data.
+    """
+    _native_root()
+    if (type(owner_uid) is not int or owner_uid <= 0 or type(owner_gid) is not int or owner_gid < 0
+            or pwd.getpwuid(owner_uid).pw_gid != owner_gid):
+        raise CustodyError('native-source-retained-owner-invalid')
+    census = _NativeRetainedSourceCensus(owner_uid, owner_gid)
+    first = _native_installer_absence_state(census)
+    kit, metadata, identity, witness = first
+    if kit is not None or set(metadata) != {'source-identity.json'} or identity.get('kind') != 'retained':
+        raise CustodyError('native-source-retained-family-required')
+    if _native_installer_absence_state(census) != first:
+        raise CustodyError('native-source-retained-identity-changed')
+    return {'schemaVersion': 1, 'kind': 'ods-native-source-retained-identity',
+        'record': identity['record'], 'image': metadata['source-identity.json'], 'witness': witness}
+
+
+def native_installer_source_family():
+    """The fixed code-only Source family shared with the installer codec."""
+    names = ('__init__.py', 'activity.py', 'approvals.py', 'catalog.py', 'converge.py',
+        'coordinator.py', 'custody.py', 'drafts.py', 'google_app.py', 'host_api.py', 'lifecycle.py',
+        'native_access.py', 'native_apps.py', 'native_contract.py', 'native_enrollment.py', 'native_host_api.py',
+        'native_mcp.py', 'native_public.py', 'native_executor.py', 'source_backend.py', 'native_retirement.py',
+        'oauth.py', 'planner.py', 'plugins.py', 'state.py', 'status.py')
+    return frozenset({str(NATIVE_PROGRAM / 'pixel_connections' / name) for name in names}
+        | {str(NATIVE_PROGRAM / name) for name in ('connection_transaction.py', 'native_mcp_owner.py', 'native_mcp_oauth.mjs', 'pixel_connection_agent_status.py')}
+        | {str(NATIVE_RUNTIME_DESCRIPTOR), str(NATIVE_RUNTIME_MANIFEST), str(NATIVE_META / 'source-runtime-installation.json')})
+
+
+def _native_installer_legacy_additions():
+    inspection = frozenset('/usr/local/libexec/ods-pixel-services/helpers/' + name for name in (
+        'preview_inspection.py', 'preview_inspection_protocol.py', 'workspace_preview.py', 'unix_peer.py', 'preview-inspection.json'))
+    integration = frozenset({'/usr/local/libexec/ods-pixel-services/integrations/' + name for name in (
+        'integrations_common.py', 'integrations_mcp.py', 'integrations_notes.py', 'integrations_service.py',
+        'unix_peer.py', 'integrations_app_service.py', 'integrations_apps.py', 'integrations_ntfy.py', 'integrations_recovery.py')}
+        | {'/Library/LaunchDaemons/com.ods.pixel-native-integrations.plist'})
+    return inspection, integration
+
+
+def _native_installer_journal_name(metadata, transaction, *, completed=False, _history=False):
+    if _history:
+        # Only the fixed data-history reader selects this route. It grants no
+        # installer mutation or admission proof after the edge was released.
+        archived = 'runtime-upgrade-' + transaction['candidateDigest'] + '.completed.json'
+        return archived if _native_at_inode(metadata, archived) is not None else 'runtime-upgrade.json'
+    if not completed:
+        return 'runtime-upgrade.json'
+    if _native_at_inode(metadata, 'runtime-upgrade.json') is not None:
+        raise CustodyError('native-source-installer-completed-live-conflict')
+    _native_installer_hold(metadata, transaction)
+    return 'runtime-upgrade-' + transaction['candidateDigest'] + '.completed.json'
+
+
+def _native_installer_hold(metadata, transaction):
+    """Protected hold receipt, separate from the caller's live SDK reacquire.
+
+    The installer holds its Root lock and independently acquires/resumes the
+    exact controller edge before calling these producers. This file is a
+    necessary fixed custody binding; it cannot attest live controller state.
+    """
+    edge_raw, _inode = _native_root_file(metadata, 'runtime-upgrade-edge-' + transaction['candidateDigest'] + '.json')
+    try:
+        edge = json.loads(edge_raw, object_pairs_hook=_native_pairs)
+        if (type(edge) is not dict or set(edge) != {'schemaVersion', 'container', 'binding', 'phase', 'status'}
+                or type(edge['schemaVersion']) is not int or edge['schemaVersion'] != 1 or edge['phase'] != 'held'
+                or type(edge['container']) is not str or not _NATIVE_SHA.fullmatch(edge['container'])
+                or type(edge['binding']) is not dict or set(edge['binding']) != {'token', 'revision'}
+                or any(type(value) is not str or not _NATIVE_SHA.fullmatch(value) for value in edge['binding'].values())
+                or type(edge['status']) is not dict or edge['status'].get('capability') != 'available'
+                or edge['status'].get('phase') != 'held' or edge['status'].get('streams') != 0
+                or edge['status'].get('admission_blocked') is not True
+                or edge['status'].get('revision') != edge['binding']['revision']):
+            raise ValueError()
+    except (KeyError, TypeError, ValueError, UnicodeError, RecursionError):
+        raise CustodyError('native-source-installer-completed-hold-required') from None
+    return edge
+
+
+def _native_installer_journal(metadata, transaction, context, *, _completed=False, _history=False):
+    """Decode actual protected Source images without importing installer code.
+
+    The complete unrelated Core/service rollback contract remains installer
+    owned. A Source producer can act only on this complete fixed Source family.
+    """
+    import base64
+    name = _native_installer_journal_name(metadata, transaction, completed=_completed, _history=_history)
+    raw, _inode = _native_root_file(metadata, name, limit=32 * 1024 * 1024)
+    try:
+        value = json.loads(raw.decode(), object_pairs_hook=_native_pairs)
+        if (type(value) is not dict or set(value) != {'schemaVersion', 'currentDigest', 'candidateDigest', 'phase', 'files', 'sourceAddition'}
+                or type(value['schemaVersion']) is not int or value['schemaVersion'] != 4
+                or (value['currentDigest'], value['candidateDigest']) != (transaction['currentDigest'], transaction['candidateDigest'])
+                or type(value['phase']) is not str or value['phase'] not in {'prepared', 'replacing-files', 'active',
+                    'rolling-back', 'restored', 'recovery-required',
+                    *(action + '-' + role for action in ('stopping', 'starting') for role in (
+                        'integrations', 'operations', 'promoter', 'manager', 'gateway', 'access', 'relay'))}
+                or _completed and value['phase'] not in ('active', 'restored')
+                or type(value['files']) is not list or not 1 <= len(value['files']) <= 128):
+            raise ValueError()
+        records = []
+        for item in value['files']:
+            if (type(item) is not dict or set(item) != {'path', 'mode', 'gid', 'before', 'after', 'beforeSha256', 'afterSha256'}
+                    or type(item['path']) is not str or not item['path'].startswith('/')
+                    or any(part in ('', '.', '..') for part in item['path'].split('/')[1:])
+                    or any(ord(char) < 32 for char in item['path'])
+                    or type(item['mode']) is not int or item['mode'] not in (0o600, 0o640, 0o644, 0o755)
+                    or type(item['gid']) is not int or item['gid'] < 0):
+                raise ValueError()
+            row = {key: item[key] for key in ('path', 'mode', 'gid')}
+            for key in ('before', 'after'):
+                if key == 'before' and item[key] is None and item[key + 'Sha256'] is None:
+                    row[key] = None
+                    continue
+                body = base64.b64decode(item[key], validate=True)
+                if (base64.b64encode(body).decode('ascii') != item[key]
+                        or hashlib.sha256(body).hexdigest() != item[key + 'Sha256']):
+                    raise ValueError()
+                row[key] = body
+            records.append(row)
+        if len({item['path'] for item in records}) != len(records):
+            raise ValueError()
+        family = native_installer_source_family()
+        source = {item['path']: item for item in records if item['path'] in family}
+        if set(source) != family:
+            raise ValueError()
+        tuples = []
+        for path, item in sorted(source.items()):
+            mode = 0o600 if path == str(NATIVE_META / 'source-runtime-installation.json') else 0o644
+            if item['mode'] != mode or item['gid'] != 0:
+                raise ValueError()
+            tuples.append([path, mode, 0, hashlib.sha256(item['after']).hexdigest()])
+        family_sha = hashlib.sha256(json.dumps(tuples, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
+        inspection, integration = _native_installer_legacy_additions()
+        legacy_absent = {item['path'] for item in records if item['before'] is None and item['path'] not in family}
+        if (legacy_absent and legacy_absent not in (inspection, integration, inspection | integration)
+                or any(item['path'] in legacy_absent and (item['mode'], item['gid']) != (0o644, 0) for item in records)):
+            raise ValueError()
+        addition = value['sourceAddition']
+        fields = {'schemaVersion', 'kind', 'contextSha256', 'familySha256', 'proof', 'absentPaths'}
+        if context['source_lifecycle']['mode'] == 'withdrawal' and type(addition) is dict and 'receipt' in addition:
+            fields.add('receipt')
+        if (type(addition) is not dict or set(addition) != fields
+                or type(addition['schemaVersion']) is not int or addition['schemaVersion'] != 1
+                or addition['kind'] != 'ods-native-source-installer-addition'
+                or addition['contextSha256'] != transaction['transaction']
+                or addition['familySha256'] != family_sha or family_sha != context['source_lifecycle']['familySha256']
+                or addition['absentPaths'] != sorted(path for path, item in source.items() if item['before'] is None)):
+            raise ValueError()
+        owner = context['owner']
+        if context['source_lifecycle']['mode'] == 'withdrawal':
+            native_installer_withdrawal_intent(addition['proof'], transaction=transaction, owner_uid=owner['uid'], owner_gid=owner['gid'])
+            if 'receipt' in addition:
+                native_installer_withdrawal_receipt(addition['receipt'], intent=addition['proof'], transaction=transaction,
+                    owner_uid=owner['uid'], owner_gid=owner['gid'])
+        else:
+            native_installer_absence_receipt(addition['proof'], transaction=transaction, owner_uid=owner['uid'], owner_gid=owner['gid'])
+    except (KeyError, TypeError, ValueError, UnicodeError, RecursionError):
+        raise CustodyError('native-source-installer-journal-invalid') from None
+    return value, records, raw
+
+
+def native_installer_withdrawal_request(selection, *, transaction):
+    """Read-only protected context before Journal4; no mutation authority."""
+    _native_selected(selection, _publication=True)
+    context, raw = _native_installer_context(selection.bridge, transaction, mode='withdrawal')
+    from pixel_macos_custody import protected_directory
+    with protected_directory(NATIVE_META) as metadata:
+        existing = None
+        if _native_at_inode(metadata, 'runtime-upgrade.json') is not None:
+            existing = native_installer_withdrawal_transaction(selection, transaction=transaction)
+        if _native_installer_context(selection.bridge, transaction, mode='withdrawal')[1] != raw:
+            raise CustodyError('native-source-installer-context-changed')
+    return {'transaction': dict(transaction), 'intent': context['source_lifecycle'], 'owner': context['owner'],
+        'candidateFiles': None, 'journal': existing}
+
+
+def native_installer_withdrawal_transaction(selection, *, transaction):
+    """Actual frozen Source Journal4 capability, no arbitrary module callback."""
+    _native_selected(selection, _publication=True)
+    context, context_raw = _native_installer_context(selection.bridge, transaction, mode='withdrawal')
+    from pixel_macos_custody import protected_directory
+    with protected_directory(NATIVE_META) as metadata:
+        value, records, raw = _native_installer_journal(metadata, transaction, context)
+        if (_native_root_file(metadata, 'runtime-upgrade.json', limit=32 * 1024 * 1024)[0] != raw
+                or _native_installer_context(selection.bridge, transaction, mode='withdrawal')[1] != context_raw):
+            raise CustodyError('native-source-installer-authority-changed')
+    return {'transaction': dict(transaction), 'intent': context['source_lifecycle'], 'owner': context['owner'],
+        'phase': value['phase'], 'files': records, 'proof': value['sourceAddition']['proof'],
+        'receipt': value['sourceAddition'].get('receipt')}
+
+
+def _native_installer_live_images(records):
+    from pixel_macos_custody import protected_bytes
+    for item in records:
+        try:
+            current = protected_bytes(Path(item['path']), limit=8 * 1024 * 1024)
+        except FileNotFoundError:
+            current = None
+        if current not in (item['before'], item['after']):
+            raise CustodyError('native-source-installer-file-image-changed')
+
+
+def _native_installer_old_publisher(authority):
+    """Qualify immutable old Source independently of mixed live host files."""
+    import importlib.util
+    from pixel_provider.runtime_custody import digest, tree_manifest
+    from pixel_macos_custody import protected_bytes
+    records = {item['path']: item for item in authority['files']}
+    try:
+        descriptor = json.loads(records[str(NATIVE_RUNTIME_DESCRIPTOR)]['before'], object_pairs_hook=_native_pairs)
+        manifest_raw = records[str(NATIVE_RUNTIME_MANIFEST)]['before']
+        manifest = json.loads(manifest_raw, object_pairs_hook=_native_pairs)
+        if (type(descriptor) is not dict or set(descriptor) != {'schemaVersion', 'runtimeRoot', 'sourceRoot',
+                    'node', 'launcher', 'hostPython', 'manifest', 'manifestSha256', 'policy'}
+                or descriptor['schemaVersion'] != 1 or type(descriptor['schemaVersion']) is not int
+                or descriptor['manifest'] != str(NATIVE_RUNTIME_MANIFEST)
+                or descriptor['manifestSha256'] != hashlib.sha256(manifest_raw).hexdigest()
+                or digest([descriptor, manifest]) != authority['proof']['runtime']['custodySha256']
+                or descriptor['runtimeRoot'] != str(NATIVE_RUNTIMES / authority['transaction']['currentDigest'] / 'runtime')
+                or type(manifest) is not dict or set(manifest) != {'runtime', 'source', 'node', 'launcher', 'hostPython'}
+                or tree_manifest(descriptor['sourceRoot']) != manifest['source']):
+            raise ValueError()
+        path = Path(descriptor['sourceRoot']) / 'installers/macos/lib/pixel-native-source-broker.py'
+        protected_bytes(path, limit=2 * 1024 * 1024)
+    except (KeyError, TypeError, ValueError, UnicodeError, RecursionError):
+        raise CustodyError('native-source-installer-old-runtime-unqualified') from None
+    spec = importlib.util.spec_from_file_location('qualified_native_source_installer_old_publisher', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _native_installer_rebind_record(metadata, transaction, receipt):
+    record, raw = _native_json_at(metadata, 'source-installer-rebind.json')
+    if record is None:
+        return None
+    fields = {'schemaVersion', 'kind', 'transaction', 'intentSha256', 'receiptSha256', 'nonce', 'phase',
+        'oldBinding', 'binding', 'gate', 'children', 'environment', 'token', 'ownerGuid', 'kitSha256',
+        'kitParent', 'oldKit', 'candidate', 'backup', 'candidateInode', 'stagedFiles', 'bindings',
+        'publication', 'generation', 'witness', 'withdrawalParent'}
+    if (type(record) is not dict or set(record) != fields or type(record['schemaVersion']) is not int
+            or record['schemaVersion'] != 1 or record['kind'] != 'ods-native-source-installer-rebind'
+            or record['transaction'] != transaction or record['intentSha256'] != receipt['intentSha256']
+            or record['receiptSha256'] != hashlib.sha256(_native_encoded(receipt)).hexdigest()
+            or type(record['nonce']) is not str or not FLOW_ID.fullmatch(record['nonce'])
+            or record['phase'] not in ('staging', 'publishing-kit', 'binding', 'publication', 'generation', 'committed')
+            or record['candidate'] != '.source-kit-' + record['nonce'] or record['backup'] != '.source-kit-before-' + record['nonce']
+            or type(record['generation']) is not str or not FLOW_ID.fullmatch(record['generation'])
+            or record['candidateInode'] is not None and not _native_inode(record['candidateInode'])
+            or type(record['stagedFiles']) is not dict or set(record['stagedFiles']) != {
+                'source-kit.json', 'broker.py', 'source-broker.env', *NATIVE_PROFILES}
+            or type(record['bindings']) is not dict or set(record['bindings']) != {
+                'source-custody-prepare.json', 'source-environment.json', 'source-logs-prepare.json', 'custody.json', 'source-sidefiles.json'}
+            or type(record['publication']) is not dict or set(record['publication']) != {
+                'before', 'beforeInode', 'after', 'afterInode', 'ready'}
+            or type(record['withdrawalParent']) is not dict or set(record['withdrawalParent']) != {'inode', 'sha256', 'retained'}
+            or not _native_installer_image({key: record['withdrawalParent'][key] for key in ('inode', 'sha256')})
+            or type(record['withdrawalParent']['retained']) is not bool):
+        raise CustodyError('native-source-installer-rebind-record-invalid')
+    for value in record['stagedFiles'].values():
+        if (type(value) is not dict or set(value) != {'inode', 'ready'} or type(value['ready']) is not bool
+                or value['inode'] is not None and not _native_inode(value['inode'])
+                or value['ready'] and value['inode'] is None):
+            raise CustodyError('native-source-installer-rebind-record-invalid')
+    for name, value in record['bindings'].items():
+        if (type(value) is not dict or set(value) != {'before', 'beforeInode', 'after', 'afterInode', 'ready', 'mode', 'gid'}
+                or type(value['before']) is not dict or type(value['after']) is not dict
+                or not _native_inode(value['beforeInode']) or value['afterInode'] is not None and not _native_inode(value['afterInode'])
+                or type(value['ready']) is not bool or value['ready'] and value['afterInode'] is None
+                or type(value['mode']) is not int or value['mode'] != (0o640 if name == 'custody.json' else 0o600)
+                or type(value['gid']) is not int or value['gid'] != (receipt['binding']['brokerUid'] if name == 'custody.json' else 0)):
+            raise CustodyError('native-source-installer-rebind-record-invalid')
+    value = record['publication']
+    if (type(value['before']) is not dict or value['after'] is not None and type(value['after']) is not dict
+            or not _native_inode(value['beforeInode']) or value['afterInode'] is not None and not _native_inode(value['afterInode'])
+            or type(value['ready']) is not bool or value['ready'] and (value['afterInode'] is None or value['after'] is None)):
+        raise CustodyError('native-source-installer-rebind-record-invalid')
+    return record, raw
+
+
+def _native_installer_withdrawal_state(bridge, receipt, *, transaction, _rebind=None, _completed=False):
+    """Actual complete-v1 state; independent of a mixed live RuntimeCustody."""
+    from pixel_macos_custody import protected_directory
+    context, context_raw = _native_installer_context(bridge, transaction, mode='withdrawal')
+    owner = _native_installer_owner(bridge, context_owner=context['owner'])
+    with protected_directory(NATIVE_META) as metadata:
+        journal, records, raw = _native_installer_journal(metadata, transaction, context, _completed=_completed)
+        intent = journal['sourceAddition']['proof']
+        native_installer_withdrawal_receipt(receipt, intent=intent, transaction=transaction,
+            owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+        if journal['sourceAddition'].get('receipt', receipt) != receipt:
+            raise CustodyError('native-source-installer-receipt-changed')
+        authority = {'transaction': dict(transaction), 'intent': context['source_lifecycle'], 'owner': context['owner'],
+            'phase': journal['phase'], 'files': records, 'proof': intent, 'receipt': journal['sourceAddition'].get('receipt')}
+        _native_installer_live_images(records)
+        publisher = _native_installer_old_publisher(authority)
+        parent_name = 'source-environment-generation.json'
+        if _rebind is not None:
+            retained = 'source-environment-generation-' + receipt['withdrawal'] + '.json'
+            if _native_at_inode(metadata, parent_name) != _rebind['withdrawalParent']['inode']:
+                parent_name = retained
+        record_raw, parent_inode = _native_root_file(metadata, parent_name)
+        record = json.loads(record_raw, object_pairs_hook=_native_pairs)
+        if _rebind is not None and {'inode': parent_inode, 'sha256': hashlib.sha256(record_raw).hexdigest()} != {
+                key: _rebind['withdrawalParent'][key] for key in ('inode', 'sha256')}:
+            raise CustodyError('native-source-installer-rebind-parent-changed')
+        publisher._environment_generation_record(globals_module(), record, receipt['binding'])
+        if (record['phase'] != 'withdrawn' or record['generation'] != receipt['withdrawal']
+                or record['previousGeneration'] != receipt['generation'] or record['archive'] != receipt['archive']['inode']
+                or record['installer']['transaction'] != transaction or record['installer']['intent'] != intent
+                or record['installer']['boot'] != receipt['boot']):
+            raise CustodyError('native-source-installer-withdrawal-unconfirmed')
+        publisher._environment_retained(globals_module(), metadata, record)
+        archive = os.open(receipt['archive']['name'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=metadata)
+        try:
+            audit_raw, audit_inode = _native_root_file(archive, 'withdrawal-receipt.json')
+            audit = {'schemaVersion': 1, 'kind': 'ods-native-source-installer-withdrawal-archive',
+                'transaction': transaction, 'intentSha256': receipt['intentSha256'], 'binding': receipt['binding'],
+                'old': record['old'], 'descriptor': receipt['descriptor'], 'withdrawal': receipt['withdrawal'], 'boot': receipt['boot']}
+            if (audit_raw != _native_encoded(audit) or hashlib.sha256(audit_raw).hexdigest() != receipt['archive']['receiptSha256']
+                    or audit_inode != record['installer']['receipt']['inode'] or not record['installer']['receipt']['ready']):
+                raise CustodyError('native-source-installer-withdrawal-archive-changed')
+        finally:
+            os.close(archive)
+        for key, name in (('identitySha256', 'source-identity.json'), ('prepareSha256', 'source-custody-prepare.json'),
+                ('logsSha256', 'source-logs-prepare.json'), ('publicationSha256', 'source-publication.json')):
+            body = (_native_root_file(metadata, name)[0] if _rebind is None or name == 'source-identity.json'
+                else _native_encoded((_rebind['publication'] if name == 'source-publication.json' else _rebind['bindings'][name])['before']))
+            if hashlib.sha256(body).hexdigest() != receipt['metadata'][key]:
+                raise CustodyError('native-source-installer-withdrawal-metadata-changed')
+        identity, _body = _native_json_at(metadata, 'source-identity.json')
+        identity = _native_identity_intent(identity)
+        if (identity['id'], identity['userGuid']) != (receipt['binding']['brokerUid'], receipt['binding']['brokerGuid']):
+            raise CustodyError('native-source-installer-withdrawal-identity-changed')
+        for kind in ('Groups', 'Users'):
+            _native_identity_record(_native_ds_record(kind), _native_identity_attributes(identity, kind), complete=True)
+        _native_identity_collisions(identity)
+        if _native_uuid(_native_acl_library(), identity['id']) != uuid.UUID(identity['userGuid']).bytes:
+            raise CustodyError('native-source-installer-withdrawal-identity-changed')
+        gate = os.open(NATIVE_STATE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            if list(native_verify_gate(gate, owner.pw_uid, identity['id'])) != receipt['binding']['gate']:
+                raise CustodyError('native-source-installer-withdrawal-gate-changed')
+            descriptor_raw, inode = (_native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id']) if _rebind is None
+                else (_native_encoded(_rebind['bindings']['custody.json']['before']), _rebind['bindings']['custody.json']['beforeInode']))
+            if (inode != receipt['descriptor']['inode'] or hashlib.sha256(descriptor_raw).hexdigest() != receipt['descriptor']['sha256']
+                    or _native_environment_snapshot(gate, NATIVE_ENV.name, identity['id']) != receipt['environment']
+                    or publisher._installer_token_metadata(globals_module(), gate, identity['id']) != receipt['token']):
+                raise CustodyError('native-source-installer-withdrawal-data-changed')
+        finally:
+            os.close(gate)
+        with protected_directory(NATIVE_DEFINITIONS) as definitions:
+            if _rebind is None or _rebind['phase'] not in ('generation', 'committed'):
+                if (any(name.startswith(NATIVE_LABEL) for name in os.listdir(definitions))
+                    or any(_native_at_inode(metadata, name) is not None for name in (
+                        'native-source-jobs', 'source-jobs-prepare.json', 'source-jobs-active.json', 'source-execution.json'))):
+                    raise CustodyError('native-source-installer-withdrawal-jobs-present')
+        witness = publisher._no_actors(type('InstallerObservation', (), {'bridge': bridge})(), globals_module(), metadata, _generation=True)
+        journal_name = _native_installer_journal_name(metadata, transaction, completed=_completed)
+        if (_native_root_file(metadata, journal_name, limit=32 * 1024 * 1024)[0] != raw
+                or _native_installer_context(bridge, transaction, mode='withdrawal')[1] != context_raw):
+            raise CustodyError('native-source-installer-authority-changed')
+        return authority, publisher, identity, witness
+
+
+def globals_module():
+    # A fixed module identity, never a caller-selected implementation.
+    return sys.modules[__name__]
+
+
+def native_verify_installer_withdrawal(bridge, receipt, *, transaction):
+    _native_installer_withdrawal_state(bridge, receipt, transaction=transaction)
+    return receipt
+
+
+def _native_installer_rebind_prefix(selection, publisher, metadata, kit_parent, plan, record):
+    """Re-derive the protected transaction and qualify every retained prefix."""
+    for key in ('oldBinding', 'binding', 'gate', 'children', 'environment', 'token', 'ownerGuid',
+            'kitSha256', 'kitParent', 'oldKit'):
+        if record[key] != plan[key]:
+            raise CustodyError('native-source-installer-rebind-derivation-changed')
+    if record['witness'] != plan['witness']:
+        raise CustodyError('native-source-installer-rebind-boot-changed')
+    for name, image in record['bindings'].items():
+        expected = plan['images'][name]
+        if (image['beforeInode'] != expected['inode'] or _native_encoded(image['before']) != expected['before']
+                or _native_encoded(image['after']) != expected['after']
+                or (image['mode'], image['gid']) != (expected['mode'], expected['gid'])):
+            raise CustodyError('native-source-installer-rebind-derivation-changed')
+    if (_native_encoded(record['publication']['before']) != plan['publication']['before']
+            or record['publication']['beforeInode'] != plan['publication']['inode']):
+        raise CustodyError('native-source-installer-rebind-publication-changed')
+    # Exactly one old kit survives, under its live name or fixed transaction backup.
+    live = _native_at_inode(kit_parent, NATIVE_KIT.name)
+    backup = _native_at_inode(kit_parent, record['backup'])
+    if backup is not None and backup != record['oldKit']['inode']:
+        raise CustodyError('native-source-installer-rebind-old-kit-changed')
+    if (live == record['oldKit']['inode']) == (backup == record['oldKit']['inode']):
+        raise CustodyError('native-source-installer-rebind-old-kit-changed')
+    target_name = record['candidate'] if _native_at_inode(kit_parent, record['candidate']) is not None else NATIVE_KIT.name
+    target_inode = _native_at_inode(kit_parent, target_name)
+    if target_inode == record['oldKit']['inode']:
+        target_inode = None
+    if target_inode is not None:
+        if record['candidateInode'] != target_inode:
+            raise CustodyError('native-source-installer-rebind-kit-changed')
+        candidate = os.open(target_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=kit_parent)
+        try:
+            info = os.fstat(candidate)
+            _native_no_acl(candidate)
+            if ((info.st_uid, info.st_gid) != (0, 0) or stat.S_IMODE(info.st_mode) not in (0o700, 0o755)
+                    or set(os.listdir(candidate)) - set(plan['targetKit'])):
+                raise CustodyError('native-source-installer-rebind-kit-changed')
+            for name, body in plan['targetKit'].items():
+                publisher._generation_prefix(globals_module(), candidate, name, body, record['stagedFiles'][name],
+                    mode=0o755 if name == 'broker.py' else 0o644)
+            if target_name == NATIVE_KIT.name and (stat.S_IMODE(info.st_mode) != 0o755
+                    or set(os.listdir(candidate)) != set(plan['targetKit'])
+                    or any(not item['ready'] for item in record['stagedFiles'].values())):
+                raise CustodyError('native-source-installer-rebind-kit-unconfirmed')
+        finally:
+            os.close(candidate)
+    elif record['candidateInode'] is not None:
+        raise CustodyError('native-source-installer-rebind-kit-missing')
+    child_present = _native_at_inode(metadata, 'source-jobs-prepare.json') is not None
+    gate = os.open(NATIVE_STATE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for index, (name, image) in enumerate(sorted(record['bindings'].items())):
+            directory = gate if name == 'custody.json' else metadata
+            staged = '.source-binding-' + record['nonce'] + '-' + str(index)
+            retained = '.source-binding-before-' + record['nonce'] + '-' + str(index)
+            if name == 'custody.json' and child_present and record['phase'] in ('generation', 'committed'):
+                current = 'child'
+            else:
+                current = publisher._binding_current(globals_module(), directory, name, image)
+            if current != 'before':
+                if _native_root_file(metadata, retained, mode=image['mode'], gid=image['gid']) != (
+                        plan['images'][name]['before'], image['beforeInode']):
+                    raise CustodyError('native-source-installer-rebind-backup-changed')
+                if not image['ready']:
+                    raise CustodyError('native-source-installer-rebind-binding-unconfirmed')
+            elif _native_at_inode(metadata, retained) is not None:
+                raise CustodyError('native-source-installer-rebind-backup-conflict')
+            publisher._generation_prefix(globals_module(), metadata, staged, plan['images'][name]['after'],
+                {'inode': image['afterInode'], 'ready': image['ready']}, mode=image['mode'], gid=image['gid'])
+            if current == 'before' and image['afterInode'] is not None and _native_at_inode(metadata, staged) is None:
+                raise CustodyError('native-source-installer-rebind-binding-missing')
+            if current is None and _native_at_inode(metadata, staged) != image['afterInode']:
+                raise CustodyError('native-source-installer-rebind-binding-missing')
+        value = record['publication']
+        expected = {'schemaVersion': 1, 'kind': 'ods-native-source-publication',
+            'deploymentSha256': selection.deployment.checksum,
+            'sourceRef': json.loads(plan['targetKit']['source-kit.json'])['sourceRef'],
+            'nonce': record['nonce'], 'phase': 'prepared-no-jobs', 'old': None,
+            'new': {name: hashlib.sha256(body).hexdigest() for name, body in plan['targetKit'].items()},
+            'candidate': record['candidate'], 'backup': record['backup'], 'candidateInode': record['candidateInode'],
+            'stagedFiles': record['stagedFiles'], 'bindings': {}, 'witness': record['witness']}
+        if value['after'] is not None and value['after'] != expected:
+            raise CustodyError('native-source-installer-rebind-publication-changed')
+        path = 'source-publication.json'
+        present = _native_at_inode(metadata, path)
+        old_name = '.source-publication-before-' + record['nonce'] + '.json'
+        if present != value['beforeInode']:
+            if _native_root_file(metadata, old_name) != (plan['publication']['before'], value['beforeInode']):
+                raise CustodyError('native-source-installer-rebind-publication-backup-changed')
+            if present is not None and (not value['ready'] or value['after'] is None
+                    or _native_root_file(metadata, path) != (_native_encoded(expected), value['afterInode'])):
+                raise CustodyError('native-source-installer-rebind-publication-changed')
+        elif _native_root_file(metadata, path) != (plan['publication']['before'], value['beforeInode']):
+            raise CustodyError('native-source-installer-rebind-publication-changed')
+        if value['after'] is not None:
+            publisher._generation_prefix(globals_module(), metadata, '.source-rebind-publication-' + record['nonce'],
+                _native_encoded(expected), {'inode': value['afterInode'], 'ready': value['ready']})
+        if child_present:
+            if record['phase'] not in ('generation', 'committed'):
+                raise CustodyError('native-source-installer-rebind-child-unexpected')
+            # This fixed producer reader must qualify its original child prefix;
+            # no caller-provided child record or callback grants authority.
+            verifier = getattr(publisher, 'verify_installer_rebind_child', None)
+            if verifier is None:
+                raise CustodyError('native-source-installer-rebind-child-verifier-unavailable')
+            verifier(selection)
+    finally:
+        os.close(gate)
+
+
+def native_installer_sidefiles_receipt(value, *, owner_uid, owner_gid, runtime):
+    fields = {'schemaVersion', 'kind', 'owner', 'runtime', 'config', 'parent', 'files',
+        'record', 'enrollment', 'proof', 'bootstrap'}
+    if (type(value) is not dict or set(value) != fields or type(value['schemaVersion']) is not int
+            or value['schemaVersion'] != 1 or value['kind'] != 'ods-native-source-installer-sidefiles'
+            or type(value['owner']) is not dict or set(value['owner']) != {'uid', 'gid'}
+            or value['owner'] != {'uid': owner_uid, 'gid': owner_gid}
+            or any(type(item) is not int for item in value['owner'].values())
+            or owner_uid <= 0 or owner_gid < 0 or value['runtime'] != runtime
+            or type(runtime) is not dict or set(runtime) != {'deploymentSha256', 'custodySha256', 'bundleSha256', 'sourceRef'}
+            or any(type(runtime[key]) is not str or not _NATIVE_SHA.fullmatch(runtime[key])
+                for key in ('deploymentSha256', 'custodySha256', 'bundleSha256'))
+            or type(runtime['sourceRef']) is not str or not re.fullmatch('[a-f0-9]{40}', runtime['sourceRef'])
+            or type(value['config']) is not dict or set(value['config']) != {'path', 'inode', 'sha256', 'size'}
+            or type(value['config']['path']) is not str or not Path(value['config']['path']).is_absolute()
+            or not _native_installer_image({key: value['config'][key] for key in ('inode', 'sha256')})
+            or type(value['config']['size']) is not int or not 0 < value['config']['size'] <= 8 * 1024 * 1024
+            or not _native_inode(value['parent']) or type(value['files']) is not dict
+            or set(value['files']) != {'gateway.env', 'onboarding.json'}
+            or not _native_installer_image(value['bootstrap'])
+            or any(value[key] is not None and not _native_installer_image(value[key]) for key in ('record', 'enrollment'))):
+        raise CustodyError('native-source-installer-sidefiles-snapshot-invalid')
+    for image in value['files'].values():
+        if (type(image) is not dict or set(image) != {'inode', 'sha256', 'size'}
+                or not _native_installer_image({key: image[key] for key in ('inode', 'sha256')})
+                or type(image['size']) is not int or not 0 < image['size'] <= 131072):
+            raise CustodyError('native-source-installer-sidefiles-snapshot-invalid')
+    proof = value['proof']
+    if (type(proof) is not dict or set(proof) != {'revision', 'configSha256', 'configuredMode', 'effectiveMode'}
+            or any(type(proof[key]) is not str or not _NATIVE_SHA.fullmatch(proof[key]) for key in ('revision', 'configSha256'))
+            or proof['configSha256'] != value['config']['sha256']
+            or proof['configuredMode'] not in ('sandboxed', 'full-access') or proof['effectiveMode'] != proof['configuredMode']):
+        raise CustodyError('native-source-installer-sidefiles-snapshot-invalid')
+    return value
+
+
+def _native_installer_owner_file(directory, name, uid, gid, *, limit=131072):
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    with os.fdopen(fd, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        _native_no_acl(stream.fileno())
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or (before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode)) != (uid, gid, 0o600)
+                or not 0 < before.st_size <= limit):
+            raise CustodyError('native-source-installer-owner-file-unsafe')
+        body = stream.read(limit + 1)
+        after = os.fstat(stream.fileno())
+        inode = [before.st_dev, before.st_ino]
+        if (len(body) != before.st_size or (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_size, after.st_mtime_ns, after.st_ctime_ns) or _native_at_inode(directory, name) != inode):
+            raise CustodyError('native-source-installer-owner-file-changed')
+        return {'inode': inode, 'sha256': hashlib.sha256(body).hexdigest(), 'size': len(body)}, body
+
+
+def native_installer_sidefiles_snapshot(selection):
+    """Freeze currently admitted owner images; never infer new owner choices."""
+    from pixel_macos_custody import protected_directory
+    from .native_executor import _publisher
+    from . import coordinator, state, native_enrollment
+    from .native_mcp import _verified_runtime
+    doc = _native_selected(selection, _publication=True)
+    _module, _doc, _component, ref = _publisher(selection)._material(selection)
+    runtime = {'deploymentSha256': selection.deployment.checksum, 'custodySha256': doc['runtimeCustodySha256'],
+        'bundleSha256': doc['bundleSha256'], 'sourceRef': ref}
+    record_path = NATIVE_CONNECTION_RECORD
+    with protected_directory(record_path.parent) as directory:
+        try:
+            record_raw, record_inode = _native_root_file(directory, record_path.name, mode=0o644)
+        except FileNotFoundError:
+            record_raw = record_inode = None
+        record = state.validate(json.loads(record_raw, object_pairs_hook=_native_pairs)) if record_raw is not None else None
+    with protected_directory(NATIVE_META) as metadata:
+        bootstrap_raw, bootstrap_inode = _native_root_file(metadata, 'source-sidefiles.json')
+        try:
+            enrollment_raw, enrollment_inode = _native_root_file(metadata, native_enrollment.JOURNAL, limit=262144)
+        except FileNotFoundError:
+            enrollment_raw = enrollment_inode = None
+        if enrollment_raw is not None:
+            enrollment = native_enrollment.validate_journal(json.loads(enrollment_raw, object_pairs_hook=_native_pairs))
+            if enrollment['phase'] not in native_enrollment.TERMINAL:
+                raise CustodyError('native-source-installer-enrollment-pending')
+        if any(_native_at_inode(metadata, name) is not None for name in ('transition.json', 'policy-activation.json')):
+            raise CustodyError('native-source-installer-transition-pending')
+    config_path = Path(doc['configPath'])
+    directory = os.open(config_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parent = os.fstat(directory)
+        _native_no_acl(directory)
+        if (parent.st_uid, parent.st_gid, stat.S_IMODE(parent.st_mode)) != (doc['ownerUid'], doc['ownerGid'], 0o700):
+            raise CustodyError('native-source-installer-sidefiles-parent-changed')
+        config, _config_body = _native_installer_owner_file(directory, config_path.name, doc['ownerUid'], doc['ownerGid'], limit=8 * 1024 * 1024)
+        pairs = {name: _native_installer_owner_file(directory, name, doc['ownerUid'], doc['ownerGid'])
+            for name in ('gateway.env', 'onboarding.json')}
+        files = {name: image for name, (image, _body) in pairs.items()}
+        bodies = {name: body.decode('utf-8') for name, (_image, body) in pairs.items()}
+        owner = selection.bridge.worker('connection-owner-status')
+        held = False
+        if os.path.lexists(NATIVE_STATE):
+            from .source_backend import NativeSource, _SEAL
+            held = NativeSource(selection.bridge, _SEAL).holds_sign_in()
+        target = coordinator.gateway_target(record, custody_held=held)
+        answers = state.connection_answers(record, google_custody=held)
+        observed = selection.bridge.inspect()
+        revision = _verified_runtime(selection.bridge, {'configSha256': config['sha256']}, snapshot=observed)
+        if (owner['pending'] or owner['configSha256'] != config['sha256'] or owner['envSha256'] != files['gateway.env']['sha256']
+                or owner['answers'] != answers or not coordinator._live_matches(owner, target)):
+            raise CustodyError('native-source-installer-sidefiles-not-admitted')
+        # Match the owner worker's projected answers to the actual whole file.
+        contract = json.loads(bodies['onboarding.json'], object_pairs_hook=_native_pairs)
+        if type(contract) is not dict or {key: contract.get(key) for key in state.ANSWER_KEYS} != answers:
+            raise CustodyError('native-source-installer-sidefiles-not-admitted')
+        for name in pairs:
+            if _native_installer_owner_file(directory, name, doc['ownerUid'], doc['ownerGid'])[0] != files[name]:
+                raise CustodyError('native-source-installer-sidefiles-changed')
+        if _native_installer_owner_file(directory, config_path.name, doc['ownerUid'], doc['ownerGid'], limit=8 * 1024 * 1024)[0] != config:
+            raise CustodyError('native-source-installer-sidefiles-changed')
+        snapshot = {'schemaVersion': 1, 'kind': 'ods-native-source-installer-sidefiles',
+            'owner': {'uid': doc['ownerUid'], 'gid': doc['ownerGid']}, 'runtime': runtime,
+            'config': dict(config, path=str(config_path)), 'parent': [parent.st_dev, parent.st_ino], 'files': files,
+            'record': None if record_raw is None else {'inode': record_inode, 'sha256': hashlib.sha256(record_raw).hexdigest()},
+            'enrollment': None if enrollment_raw is None else {'inode': enrollment_inode, 'sha256': hashlib.sha256(enrollment_raw).hexdigest()},
+            'proof': {'revision': revision, 'configSha256': config['sha256'],
+                'configuredMode': observed['configured_mode'], 'effectiveMode': observed['effective_mode']},
+            'bootstrap': {'inode': bootstrap_inode, 'sha256': hashlib.sha256(bootstrap_raw).hexdigest()}}
+    finally:
+        os.close(directory)
+    with protected_directory(record_path.parent) as directory, protected_directory(NATIVE_META) as metadata:
+        if (record_raw is None and _native_at_inode(directory, record_path.name) is not None
+                or record_raw is not None and _native_root_file(directory, record_path.name, mode=0o644) != (record_raw, record_inode)
+                or _native_root_file(metadata, 'source-sidefiles.json') != (bootstrap_raw, bootstrap_inode)
+                or enrollment_raw is None and _native_at_inode(metadata, native_enrollment.JOURNAL) is not None
+                or enrollment_raw is not None and _native_root_file(metadata, native_enrollment.JOURNAL, limit=262144) != (enrollment_raw, enrollment_inode)
+                or _verified_runtime(selection.bridge, {'configSha256': config['sha256']}) != revision
+                or selection.bridge.worker('connection-owner-status') != owner):
+            raise CustodyError('native-source-installer-sidefiles-changed')
+    _native_selected(selection, _publication=True)
+    return {'snapshot': native_installer_sidefiles_receipt(snapshot, owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid'], runtime=runtime),
+        'sidefiles': bodies}
+
+
+def _native_installer_sidefiles(doc, context, before, transaction, *, old_runtime, before_image):
+    """Rebind the Root receipt only; owner files remain byte/inode identical."""
+    fields = {'schemaVersion', 'kind', 'ownerUid', 'ownerGid', 'configPath', 'bundleSha256', 'files', 'parent', 'children'}
+    selected = context['runtime_bundle']
+    supplied = selected.get('connection_sidefiles')
+    names = {'gateway.env', 'onboarding.json'}
+    if (type(before) is not dict or set(before) != fields or type(before['schemaVersion']) is not int
+            or before['schemaVersion'] != 1 or before['kind'] != 'ods-native-connection-sidefiles'
+            or (before['ownerUid'], before['ownerGid']) != (doc['ownerUid'], doc['ownerGid'])
+            or type(before['ownerUid']) is not int or type(before['ownerGid']) is not int
+            or before['bundleSha256'] != transaction['currentDigest']
+            or type(before['configPath']) is not str or Path(before['configPath']).parent != Path(doc['configPath']).parent
+            or type(supplied) is not dict or set(supplied) != names
+            or type(before['files']) is not dict or set(before['files']) != names
+            or not _native_inode(before['parent']) or type(before['children']) is not dict or set(before['children']) != names):
+        raise CustodyError('native-source-installer-sidefiles-unqualified')
+    if doc['bundleSha256'] == transaction['candidateDigest']:
+        if selected.get('config_path') != doc['configPath']:
+            raise CustodyError('native-source-installer-sidefiles-target-changed')
+    snapshot = selected.get('source_sidefiles_before')
+    hashes, children = before['files'], before['children']
+    if snapshot is not None:
+        from pixel_macos_custody import protected_directory
+        native_installer_sidefiles_receipt(snapshot, owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid'], runtime=old_runtime)
+        if (snapshot['bootstrap'] != before_image or snapshot['parent'] != before['parent']
+                or Path(snapshot['config']['path']).parent != Path(doc['configPath']).parent):
+            raise CustodyError('native-source-installer-sidefiles-origin-changed')
+        with protected_directory(NATIVE_CONNECTION_RECORD.parent) as record_directory, protected_directory(NATIVE_META) as metadata:
+            for directory, name, image, mode in (
+                    (record_directory, NATIVE_CONNECTION_RECORD.name, snapshot['record'], 0o644),
+                    (metadata, 'native-app-enrollment.json', snapshot['enrollment'], 0o600)):
+                if image is None:
+                    if _native_at_inode(directory, name) is not None:
+                        raise CustodyError('native-source-installer-sidefiles-authority-changed')
+                else:
+                    raw, inode = _native_root_file(directory, name, mode=mode, limit=262144)
+                    if {'inode': inode, 'sha256': hashlib.sha256(raw).hexdigest()} != image:
+                        raise CustodyError('native-source-installer-sidefiles-authority-changed')
+        hashes = {name: image['sha256'] for name, image in snapshot['files'].items()}
+        children = {name: {'inode': image['inode'], 'ready': True} for name, image in snapshot['files'].items()}
+    directory = os.open(Path(doc['configPath']).parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parent = os.fstat(directory)
+        _native_no_acl(directory)
+        if ([parent.st_dev, parent.st_ino] != before['parent']
+                or (parent.st_uid, parent.st_gid, stat.S_IMODE(parent.st_mode)) != (doc['ownerUid'], doc['ownerGid'], 0o700)):
+            raise CustodyError('native-source-installer-sidefiles-parent-changed')
+        for name in sorted(names):
+            if type(supplied[name]) is not str:
+                raise CustodyError('native-source-installer-sidefiles-target-changed')
+            target = supplied[name].encode('utf-8')
+            child = children[name]
+            if (not 0 < len(target) <= 131072 or hashlib.sha256(target).hexdigest() != hashes[name]
+                    or type(child) is not dict or set(child) != {'inode', 'ready'} or child['ready'] is not True
+                    or not _native_inode(child['inode'])):
+                raise CustodyError('native-source-installer-sidefiles-target-changed')
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                _native_no_acl(stream.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                        or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (doc['ownerUid'], doc['ownerGid'], 0o600)
+                        or not 0 < info.st_size <= 131072):
+                    raise CustodyError('native-source-installer-sidefiles-unsafe')
+                body = stream.read(131073)
+                after = os.fstat(stream.fileno())
+                inode = [info.st_dev, info.st_ino]
+                if ((info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                        or _native_at_inode(directory, name) != inode):
+                    raise CustodyError('native-source-installer-sidefiles-changed')
+            if body != target or inode != child['inode']:
+                raise CustodyError('native-source-installer-sidefiles-changed')
+    finally:
+        os.close(directory)
+    return dict(before, configPath=doc['configPath'], bundleSha256=doc['bundleSha256'], files=hashes, children=children)
+
+
+def native_installer_rebind_plan(selection, *, transaction, receipt, _completed=False):
+    """Read-only initial old-to-target derivation. The publisher owns CAS."""
+    doc = _native_selected(selection, _publication=True)
+    from pixel_macos_custody import protected_directory
+    from .native_executor import _publisher
+    with protected_directory(NATIVE_META) as metadata:
+        frozen = _native_installer_rebind_record(metadata, transaction, receipt)
+    rebind, rebind_raw = frozen if frozen is not None else (None, None)
+    if _completed and (rebind is None or rebind['phase'] != 'committed'):
+        raise CustodyError('native-source-installer-rebind-uncommitted')
+    authority, old_publisher, identity, witness = _native_installer_withdrawal_state(selection.bridge, receipt,
+        transaction=transaction, _rebind=rebind, _completed=_completed)
+    target_digest = transaction['currentDigest'] if authority['phase'] == 'restored' else transaction['candidateDigest']
+    if (authority['receipt'] != receipt or authority['phase'] not in ('replacing-files', 'active', 'restored')
+            or doc['bundleSha256'] != target_digest):
+        raise CustodyError('native-source-installer-target-not-installed')
+    publisher = _publisher(selection)
+    _module, target, component, ref = publisher._material(selection)
+    files = publisher._publication_files(component, ref, selection.deployment.checksum)
+    kit_sha = hashlib.sha256(files['source-kit.json']).hexdigest()
+    owner_guid = str(uuid.UUID(bytes=_native_uuid(_native_acl_library(), doc['ownerUid']))).upper()
+    context, _context_raw = _native_installer_context(selection.bridge, transaction, mode='withdrawal')
+    old_binding = {key: value for key, value in receipt['binding'].items()
+        if key not in ('runtimeCustodySha256', 'bundleSha256', 'sourceRef')}
+    binding = dict(old_binding, deploymentSha256=selection.deployment.checksum, kitSha256=kit_sha)
+    with protected_directory(NATIVE_META) as metadata, protected_directory(NATIVE_KIT.parent) as kit_parent:
+        old_name = NATIVE_KIT.name
+        if rebind is not None and _native_at_inode(kit_parent, old_name) != rebind['oldKit']['inode']:
+            old_name = rebind['backup']
+        old_kit, old_files = old_publisher._kit_image(globals_module(), kit_parent, old_name,
+            expected=rebind['oldKit'] if rebind is not None else None)
+        if (hashlib.sha256(old_files['source-kit.json']).hexdigest() != old_binding['kitSha256']
+                or json.loads(old_files['source-kit.json'])['deploymentSha256'] != old_binding['deploymentSha256']):
+            raise CustodyError('native-source-installer-old-kit-changed')
+        old_publication, pub_inode = (_native_root_file(metadata, 'source-publication.json') if rebind is None
+            else (_native_encoded(rebind['publication']['before']), rebind['publication']['beforeInode']))
+        old_publisher._publication_record(json.loads(old_publication, object_pairs_hook=_native_pairs),
+            old_binding['deploymentSha256'], old_files)
+        pub = json.loads(old_publication, object_pairs_hook=_native_pairs)
+        if (pub['phase'] != 'prepared-no-jobs' or pub['candidateInode'] != old_kit['inode']
+                or pub['sourceRef'] != receipt['runtime']['sourceRef']
+                or any(not item['ready'] or old_kit['files'][name]['inode'] != item['inode']
+                    for name, item in pub['stagedFiles'].items())):
+            raise CustodyError('native-source-installer-old-kit-changed')
+        images = {}
+        prepare = (_native_json_at(metadata, 'source-custody-prepare.json')[0] if rebind is None
+            else rebind['bindings']['source-custody-prepare.json']['before'])
+        old_prepare = _native_prepare_binding(doc, identity, owner_guid, old_binding['kitSha256'], old_binding['deploymentSha256'])
+        _native_validate_prepare_intent(prepare, old_prepare)
+        if prepare['gate'] != old_binding['gate']:
+            raise CustodyError('native-source-installer-preparation-changed')
+        new_prepare = dict(prepare, **_native_prepare_binding(doc, identity, owner_guid, kit_sha, selection.deployment.checksum))
+        environment = (_native_json_at(metadata, 'source-environment.json')[0] if rebind is None
+            else rebind['bindings']['source-environment.json']['before'])
+        _native_environment_record(environment, old_binding)
+        if environment['current'] != receipt['environment'] or environment['pending'] is not None:
+            raise CustodyError('native-source-installer-environment-unsettled')
+        logs = (_native_json_at(metadata, 'source-logs-prepare.json')[0] if rebind is None
+            else rebind['bindings']['source-logs-prepare.json']['before'])
+        _native_log_record(logs, {**old_binding, 'kind': 'ods-native-source-log-prepare', 'path': str(NATIVE_LOGS)})
+        directory = os.open(NATIVE_LOGS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            if native_verify_log_directory(directory, identity['id']) != logs['directory']:
+                raise CustodyError('native-source-installer-logs-changed')
+            _native_log_files(directory, logs, identity)
+        finally:
+            os.close(directory)
+        new_logs = {**logs, **binding, 'kind': 'ods-native-source-log-prepare', 'path': str(NATIVE_LOGS)}
+        for name, after in (('source-custody-prepare.json', new_prepare),
+                ('source-environment.json', dict(environment, **binding)), ('source-logs-prepare.json', new_logs)):
+            before, inode = (_native_root_file(metadata, name) if rebind is None
+                else (_native_encoded(rebind['bindings'][name]['before']), rebind['bindings'][name]['beforeInode']))
+            images[name] = {'before': before, 'inode': inode, 'after': _native_encoded(after), 'mode': 0o600, 'gid': 0}
+        sidefiles_raw, sidefiles_inode = (_native_root_file(metadata, 'source-sidefiles.json') if rebind is None else
+            (_native_encoded(rebind['bindings']['source-sidefiles.json']['before']), rebind['bindings']['source-sidefiles.json']['beforeInode']))
+        sidefiles = json.loads(sidefiles_raw, object_pairs_hook=_native_pairs)
+        images['source-sidefiles.json'] = {'before': sidefiles_raw, 'inode': sidefiles_inode,
+            'after': _native_encoded(_native_installer_sidefiles(doc, context, sidefiles, transaction,
+                old_runtime={'deploymentSha256': receipt['binding']['deploymentSha256'], **receipt['runtime']},
+                before_image={'inode': sidefiles_inode, 'sha256': hashlib.sha256(sidefiles_raw).hexdigest()})), 'mode': 0o600, 'gid': 0}
+        gate = os.open(NATIVE_STATE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            names = set(os.listdir(gate))
+            allowed = {'private', 'projection', 'results', 'proposals', 'custody.json', NATIVE_ENV.name}
+            if (names - allowed or names != allowed and not (rebind is not None
+                    and rebind['bindings']['custody.json']['ready'] and names == allowed - {'custody.json'})):
+                raise CustodyError('native-source-installer-state-unmanaged')
+            for relative, uid, gid, mode in _native_layout(doc, identity):
+                child = _native_directory_fd(gate, relative)
+                try:
+                    actual, expected = os.fstat(child), prepare['children'].get(relative)
+                    if (expected != {'inode': [actual.st_dev, actual.st_ino], 'ready': True}
+                            or (actual.st_uid, actual.st_gid, stat.S_IMODE(actual.st_mode)) != (uid, gid, mode)):
+                        raise CustodyError('native-source-installer-child-changed')
+                    _native_no_acl(child)
+                    if relative != 'private/oauth':
+                        _native_verify_data_tree(child, owners={uid}, group=gid, private=relative == 'private', remaining=[MAX_RETIRED_ACTION_FILES])
+                finally:
+                    os.close(child)
+            fd = os.open(NATIVE_ENV.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=gate)
+            try:
+                native_verify_env_fd(fd, identity['id'])
+                env_body = os.read(fd, MAX_RESULT_BYTES + 1)
+            finally:
+                os.close(fd)
+            _native_environment_data(env_body.decode('utf-8'), parse_env(files['source-broker.env'].decode('utf-8')))
+            before, inode = (_native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id']) if rebind is None
+                else (_native_encoded(rebind['bindings']['custody.json']['before']), rebind['bindings']['custody.json']['beforeInode']))
+            images['custody.json'] = {'before': before, 'inode': inode,
+                'after': _native_encoded(_native_descriptor(target, identity, owner_guid, kit_sha)), 'mode': 0o640, 'gid': identity['id']}
+        finally:
+            os.close(gate)
+        parent_info = os.fstat(kit_parent)
+        _native_no_acl(kit_parent)
+        if (parent_info.st_uid, parent_info.st_gid, stat.S_IMODE(parent_info.st_mode)) != (0, 0, 0o755):
+            raise CustodyError('native-source-installer-kit-parent-unsafe')
+        plan = {'authority': authority, 'intent': authority['proof'], 'receipt': receipt, 'identity': identity,
+            'ownerGuid': owner_guid, 'oldBinding': old_binding, 'binding': binding, 'kitSha256': kit_sha,
+            'environment': dict(receipt['environment']), 'token': receipt['token'], 'gate': prepare['gate'],
+            'children': prepare['children'], 'images': images, 'publication': {'before': old_publication, 'inode': pub_inode},
+            'oldKit': old_kit, 'targetKit': files, 'kitParent': [parent_info.st_dev, parent_info.st_ino],
+            'witness': witness, 'generation': rebind['generation'] if rebind is not None else None}
+        if rebind is not None:
+            _native_installer_rebind_prefix(selection, publisher, metadata, kit_parent, plan, rebind)
+            if _native_json_at(metadata, 'source-installer-rebind.json')[1] != rebind_raw:
+                raise CustodyError('native-source-installer-rebind-record-changed')
+        # Repeat the receipt proof after every physical read above.
+        _native_installer_withdrawal_state(selection.bridge, receipt, transaction=transaction, _rebind=rebind, _completed=_completed)
+        return plan
+
+
+def native_rebind_withdrawn_generation(selection, receipt, *, transaction):
+    from .native_executor import _publisher
+    return _publisher(selection).rebind_installer_generation(selection, transaction=transaction, receipt=receipt)
+
+
+def native_verify_installer_rebind_generation(selection, receipt, *, transaction):
+    from .native_executor import _publisher
+    return _publisher(selection).verify_installer_rebind_generation(selection, transaction=transaction, receipt=receipt)
+
+
+def native_verify_completed_installer_rebind(selection, receipt, *, transaction):
+    """Read-only proof while the installer freshly holds original admission."""
+    plan = native_installer_rebind_plan(selection, transaction=transaction, receipt=receipt, _completed=True)
+    return {'status': 'inactive', 'generation': plan['generation'],
+        'environment': dict(plan['environment'])}
 
 
 
@@ -1686,8 +4187,8 @@ def _native_environment_paths():
         'PIXEL_ACTION_RESULT_DIR': str(NATIVE_STATE / 'results')}
 
 
-def _native_environment_template(selection):
-    manifest, checksum = native_verify_kit(selection)
+def _native_environment_template(selection, *, _publication=False):
+    manifest, checksum = native_verify_kit(selection, _publication=_publication)
     from pixel_macos_custody import protected_directory
     with protected_directory(NATIVE_KIT) as directory:
         fd = os.open('source-broker.env', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
@@ -1711,11 +4212,11 @@ def _native_environment_template(selection):
             or any(not key.startswith('PIXEL_') and (key, value) != ('PYTHONDONTWRITEBYTECODE', '1')
                    for key, value in lines)):
         raise CustodyError('native-source-environment-template-invalid')
-    _native_selected(selection)
+    _native_selected(selection, _publication=_publication)
     return lines, checksum
 
 
-def native_environment_text(selection, overrides=None, *, preauth=False):
+def native_environment_text(selection, overrides=None, *, preauth=False, _publication=False):
     """Render only the admitted template; no shell/loader or request paths.
 
     The Root connection transaction computes these existing capability/query
@@ -1723,7 +4224,7 @@ def native_environment_text(selection, overrides=None, *, preauth=False):
     """
     if type(preauth) is not bool or overrides is not None and type(overrides) is not dict:
         raise CustodyError('native-source-environment-invalid')
-    lines, _checksum = _native_environment_template(selection)
+    lines, _checksum = _native_environment_template(selection, _publication=_publication)
     supplied = {} if overrides is None else dict(overrides)
     mutable = {*PREAUTH_FLAGS, 'PIXEL_SOURCE_CALENDAR_ID', 'PIXEL_SOURCE_TIME_ZONE',
                'PIXEL_SOURCE_GMAIL_QUERY', 'PIXEL_SOURCE_GMAIL_SENT_QUERY'}
@@ -1737,7 +4238,13 @@ def native_environment_text(selection, overrides=None, *, preauth=False):
     return env_text(lines, supplied)
 
 
-def _native_environment_bytes(selection, text):
+def _native_environment_bytes(selection, text, *, _publication=False):
+    template, checksum = _native_environment_template(selection, _publication=_publication)
+    return _native_environment_data(text, template), checksum
+
+
+def _native_environment_data(text, template):
+    """Pure fixed-field check shared with a qualified installer target kit."""
     if type(text) is not str or '\0' in text:
         raise CustodyError('native-source-environment-invalid')
     try:
@@ -1747,7 +4254,6 @@ def _native_environment_bytes(selection, text):
         raise CustodyError('native-source-environment-invalid') from None
     if not 0 < len(data) <= MAX_RESULT_BYTES:
         raise CustodyError('native-source-environment-invalid')
-    template, checksum = _native_environment_template(selection)
     values, base = dict(lines), dict(template)
     mutable = {*PREAUTH_FLAGS, 'PIXEL_SOURCE_CALENDAR_ID', 'PIXEL_SOURCE_TIME_ZONE',
                'PIXEL_SOURCE_GMAIL_QUERY', 'PIXEL_SOURCE_GMAIL_SENT_QUERY'}
@@ -1756,7 +4262,7 @@ def _native_environment_bytes(selection, text):
             or any(values[key] != value for key, value in base.items() if key not in mutable and key not in fixed)
             or any(values[key] not in ('0', '1') for key in PREAUTH_FLAGS if key in values)):
         raise CustodyError('native-source-environment-invalid')
-    return data, checksum
+    return data
 
 
 def _native_environment_snapshot(directory, name, broker_uid):

@@ -41,7 +41,8 @@ REPORTED_REJECTIONS = frozenset((
     'operations-identity-lock-custody-invalid', 'operations-identity-not-only-protected-state',
     'operations-identity-process-active', 'operations-identity-receipt-custody-invalid',
     'operations-identity-record-missing', 'operations-identity-service-loaded-or-ambiguous',
-    'operations-identity-unexpected-membership'))
+    'operations-identity-unexpected-membership', 'operations-source-owner-invalid',
+    'operations-source-identity-invalid', 'operations-source-identity-changed'))
 
 
 def dscl(*arguments):
@@ -173,7 +174,60 @@ def provision():
             os.close(lock)
 
 
-def verify_identity_only():
+def _source_owner_identity(source_owner, install_dir, *, present):
+    """Independently qualify the selected owner/install and optional Source UUID.
+
+    This is a read-only identity-only reinstall check. It cannot accept Source
+    runtime/data residue or import archived credentials into a fresh install.
+    """
+    if (type(source_owner) is not str or not source_owner or len(source_owner) > 256
+            or type(install_dir) not in (str, type(Path()))):
+        raise ValueError('operations-source-owner-invalid')
+    try:
+        owner = pwd.getpwnam(source_owner)
+    except KeyError as error:
+        raise ValueError('operations-source-owner-invalid') from error
+    path = Path(install_dir)
+    if (owner.pw_uid <= 0 or owner.pw_gid < 0 or not path.is_absolute()
+            or path in (Path('/'), Path(owner.pw_dir)) or path.resolve(strict=False) != path):
+        raise ValueError('operations-source-owner-invalid')
+    ancestor = path
+    while not os.path.lexists(ancestor):
+        ancestor = ancestor.parent
+    info = ancestor.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != owner.pw_uid
+            or stat.S_IMODE(info.st_mode) & 0o022):
+        raise ValueError('operations-source-owner-invalid')
+    anchor = (str(ancestor), info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'bin'))
+    from pixel_connections import custody as sources
+    if sources.NATIVE_META != ROOT:
+        raise ValueError('operations-source-identity-invalid')
+    try:
+        if present:
+            proof = sources.native_retained_identity_only(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+        else:
+            if any(sources._native_ds_record(kind) is not None for kind in ('Groups', 'Users')):
+                raise ValueError('operations-source-identity-invalid')
+            for lookup in (pwd.getpwnam, grp.getgrnam):
+                try:
+                    lookup(sources.NATIVE_BROKER)
+                except KeyError:
+                    continue
+                raise ValueError('operations-source-identity-invalid')
+            if any(os.path.lexists(value) for value in (sources.NATIVE_STATE, sources.NATIVE_ENV,
+                    sources.NATIVE_LEGACY_ENV, sources.NATIVE_LOGS, sources.NATIVE_KIT)):
+                raise ValueError('operations-source-identity-invalid')
+            proof = None
+    except sources.CustodyError as error:
+        raise ValueError('operations-source-identity-invalid') from error
+    current = ancestor.lstat()
+    if (str(ancestor), current.st_dev, current.st_ino, current.st_uid, current.st_gid, current.st_mode) != anchor:
+        raise ValueError('operations-source-identity-changed')
+    return proof, anchor
+
+
+def verify_identity_only(*, source_owner=None, source_install_dir=None):
     """Read-only proof that a retained service account is the *only* Pixel state.
 
     This permits a deliberately cleaned test host to reinstall without adopting
@@ -181,10 +235,19 @@ def verify_identity_only():
     """
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise ValueError('macos-root-required')
+    if (source_owner is None) != (source_install_dir is None):
+        raise ValueError('operations-source-owner-invalid')
     with custody.protected_directory(ROOT) as directory:
+        names = set(os.listdir(directory))
+        expected = {'ops-identity.json', 'ops-identity.lock'}
+        retained_source = source_owner is not None and 'source-identity.json' in names
+        if retained_source:
+            expected.add('source-identity.json')
         if (stat.S_IMODE(os.fstat(directory).st_mode) != 0o700
-                or set(os.listdir(directory)) != {'ops-identity.json', 'ops-identity.lock'}):
+                or names != expected):
             raise ValueError('operations-identity-not-only-protected-state')
+        source_proof = (_source_owner_identity(source_owner, source_install_dir, present=retained_source)
+                        if source_owner is not None else None)
         lock = os.open('ops-identity.lock', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
         try:
             custody._verify_fd(lock, directory=False)
@@ -223,14 +286,20 @@ def verify_identity_only():
                     capture_output=True, timeout=15, check=False)
                 if job.returncode != 113:
                     raise ValueError('operations-identity-service-loaded-or-ambiguous')
+            if (set(os.listdir(directory)) != expected
+                    or source_proof is not None and _source_owner_identity(source_owner,
+                        source_install_dir, present=retained_source) != source_proof):
+                raise ValueError('operations-source-identity-changed')
             return {'name': NAME, 'uid': intent['id'], 'gid': intent['id']}
         finally:
             os.close(lock)
 
 
-def verify_empty_home_only():
+def verify_empty_home_only(*, source_owner=None, source_install_dir=None):
     """Prove the sole retained Operations home has no prior workload state."""
-    identity = verify_identity_only()
+    options = ({'source_owner': source_owner, 'source_install_dir': source_install_dir}
+               if source_owner is not None or source_install_dir is not None else {})
+    identity = verify_identity_only(**options)
     fd = os.open(HOME, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         info = os.fstat(fd)
@@ -247,12 +316,19 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--verify-identity-only', action='store_true')
     parser.add_argument('--verify-empty-home-only', action='store_true')
+    parser.add_argument('--source-owner')
+    parser.add_argument('--source-install-dir')
     args = parser.parse_args(argv)
     if args.verify_identity_only and args.verify_empty_home_only:
         parser.error('select one verification mode')
+    if (args.source_owner is None) != (args.source_install_dir is None) or (args.source_owner is not None
+            and not (args.verify_identity_only or args.verify_empty_home_only)):
+        parser.error('Source owner/install require one identity-only verification mode')
     if args.verify_empty_home_only or args.verify_identity_only:
         try:
-            result = verify_empty_home_only() if args.verify_empty_home_only else verify_identity_only()
+            options = ({'source_owner': args.source_owner, 'source_install_dir': args.source_install_dir}
+                       if args.source_owner is not None else {})
+            result = verify_empty_home_only(**options) if args.verify_empty_home_only else verify_identity_only(**options)
         except (ValueError, OSError, subprocess.SubprocessError) as error:
             # Distinguish an executed proof rejecting state from sudo failing to
             # run the proof. Do not expose private receipt contents in diagnostics.

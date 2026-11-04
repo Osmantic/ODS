@@ -15,6 +15,7 @@ import re
 import stat
 import threading
 import time
+import uuid
 
 from pixel_access_bridge import AccessError, LaunchdAccessBridge, remaining
 from pixel_macos_custody import protected_bytes, protected_directory, verify_loaded_launchd_definition
@@ -581,6 +582,450 @@ def verify_stopped(selection, role, identifier, nonce):
         _fail('execution-stop-proof-unavailable')
     _stopped(selection, value, doc, public, label, job)
     return copy.deepcopy(job)
+
+
+def boot_quiesce_record(value, *, broker_uid=None, host_python=None):
+    """Pure observation codec; old process rows never grant control authority."""
+    uuid_pattern = r'[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}'
+    if (type(value) is not dict or set(value) != {'schemaVersion', 'kind', 'id', 'boot', 'snapshot', 'jobs', 'phase'}
+            or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+            or value['kind'] != 'ods-native-source-boot-quiesce' or type(value['id']) is not str
+            or not c.FLOW_ID.fullmatch(value['id']) or type(value['boot']) is not str
+            or not re.fullmatch(uuid_pattern, value['boot']) or value['phase'] not in ('quiescing', 'stopped')):
+        _fail('boot-record-invalid')
+    snapshot = value['snapshot']
+    if (type(snapshot) is not dict or set(snapshot) != {'deploymentSha256', 'generation', 'previousBoot', 'withdrawn',
+                'gate', 'gateSha256', 'environment', 'definitions'}
+            or any(type(snapshot[key]) is not str or not c._NATIVE_SHA.fullmatch(snapshot[key])
+                for key in ('deploymentSha256', 'gateSha256'))
+            or type(snapshot['generation']) is not str or not c.FLOW_ID.fullmatch(snapshot['generation'])
+            or type(snapshot['previousBoot']) is not str or not re.fullmatch(uuid_pattern, snapshot['previousBoot'])
+            or type(snapshot['withdrawn']) is not bool
+            or snapshot['gate'] is not None and not c._native_inode(snapshot['gate'])
+            or type(snapshot['environment']) is not dict or set(snapshot['environment']) != {'inode', 'sha256', 'size'}
+            or not c._native_inode(snapshot['environment']['inode'])
+            or type(snapshot['environment']['sha256']) is not str or not c._NATIVE_SHA.fullmatch(snapshot['environment']['sha256'])
+            or type(snapshot['environment']['size']) is not int or not 0 < snapshot['environment']['size'] <= c.MAX_RESULT_BYTES
+            or type(snapshot['definitions']) is not dict or len(snapshot['definitions']) > 64
+            or type(value['jobs']) is not dict or set(value['jobs']) != set(snapshot['definitions'])):
+        _fail('boot-record-invalid')
+    for label, image in snapshot['definitions'].items():
+        if (type(label) is not str or not label.startswith(c.NATIVE_LABEL)
+                or type(image) is not dict or set(image) != {'inode', 'sha256'} or not c._native_inode(image['inode'])
+                or type(image['sha256']) is not str or not c._NATIVE_SHA.fullmatch(image['sha256'])):
+            _fail('boot-record-invalid')
+        role, separator, identifier = label[len(c.NATIVE_LABEL):].partition('.')
+        if label != _label(role, identifier if separator else None):
+            _fail('boot-record-invalid')
+        row = value['jobs'][label]
+        if (type(row) is not dict or set(row) != {'phase', 'identity', 'tree', 'uncertain'}
+                or row['phase'] not in ('pending', 'intent', 'absent') or type(row['uncertain']) is not bool
+                or value['phase'] == 'stopped' and row['phase'] != 'absent'):
+            _fail('boot-record-invalid')
+        _tree(row['tree'])
+        identity = row['identity']
+        if identity is not None and (type(identity) is not list or len(identity) != 10
+                or any(type(item) is not int for item in identity[:9]) or not 0 < identity[0] <= 2147483647
+                or identity[1] <= 0 or not 0 <= identity[2] < 1000000
+                or any(item <= 0 for item in identity[3:9]) or len(set(identity[3:9])) != 1
+                or type(identity[-1]) is not str or not identity[-1].startswith('/')
+                or broker_uid is not None and identity[3:9] != [broker_uid] * 6
+                or host_python is not None and identity[-1] != host_python):
+            _fail('boot-record-invalid')
+    return value
+
+
+def initial_quiesce_names(selection):
+    """Qualify only initial-generation boot observations for namespace custody.
+
+    This reader never calls the static initial view or a no-actor proof. That
+    keeps its use inside the static view independent of process control.
+    """
+    publisher = _publisher(selection)
+    _module, doc, _component, source_ref = publisher._material(selection)
+    images = publisher.initial_boot_images(selection)
+    original = None
+    if images is None:
+        # This names-only proof remains useful for the final verifier after
+        # the parent commits. It cannot make that historical parent eligible
+        # for quiescence: initial_quiesce_snapshot still returns None early.
+        with protected_directory(c.NATIVE_META) as metadata:
+            parent, parent_raw = c._native_json_at(metadata, 'source-initial-generation.json')
+            child, child_raw = c._native_json_at(metadata, 'source-jobs-prepare.json')
+        if parent is None or parent.get('phase') != 'committed' or child is None or child.get('generation') != parent.get('generation'):
+            return set()
+        original = (parent_raw, child_raw)
+        displaced_boot = child['witness']['boot']
+    else:
+        parent, child = images['parent'], images['child']
+        displaced_boot = images['displacedBoot']
+    publisher._initial_generation_record(c, parent)
+    full = parent['binding']
+    with protected_directory(c.NATIVE_META) as metadata:
+        if original is not None:
+            _manifest, kit_sha = c.native_verify_kit(selection, require_profiles=True, _publication=True)
+            gate = os.open(c.NATIVE_STATE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                _identity, base, expected = c._native_environment_binding(selection, metadata, gate, kit_sha, _publication=True)
+            finally:
+                os.close(gate)
+            if full != dict(base, runtimeCustodySha256=doc['runtimeCustodySha256'], bundleSha256=doc['bundleSha256'], sourceRef=source_ref):
+                _fail('initial-boot-history-unbound')
+            publication = c._native_encoded(dict(parent['before']['document'], witness=parent['witness']))
+            c._native_job_record(child, dict(base, publicationSha256=publisher.sha(publication)), expected)
+        boot, boot_raw = c._native_json_at(metadata, 'source-initial-boot.json')
+        boots = {parent['witness']['boot'], displaced_boot}
+        if boot is not None:
+            boots.update(item[key] for item in boot['transactions'] for key in ('beforeBoot', 'boot'))
+        names = {name for name in os.listdir(metadata) if name == 'source-boot-quiesce.json'
+            or re.fullmatch(r'\.source-boot-quiesce-[a-f0-9]{32}\.json', name)}
+        if len(names) > 64:
+            _fail('initial-boot-history-limit')
+        allowed_gates = [(parent['gate']['inode'], parent['gate']['sha256'])]
+        if child is not None:
+            allowed_gates.extend([(None, publisher.sha(b'')),
+                (child['gate']['inode'], publisher.sha(c._native_job_projection(child)))])
+        for name in names:
+            body, _inode = c._native_root_file(metadata, name, limit=524288)
+            value = json.loads(body, object_pairs_hook=c._native_pairs)
+            boot_quiesce_record(value, broker_uid=full['brokerUid'], host_python=doc['hostPythonPath'])
+            snapshot = value['snapshot']
+            if (name != 'source-boot-quiesce.json' and name != '.source-boot-quiesce-' + value['id'] + '.json'
+                    or snapshot['deploymentSha256'] != full['deploymentSha256']
+                    or snapshot['generation'] != parent['generation'] or not snapshot['withdrawn']
+                    or snapshot['environment'] != parent['environment'] or snapshot['previousBoot'] not in boots
+                    or (snapshot['gate'], snapshot['gateSha256']) not in allowed_gates):
+                _fail('initial-boot-history-unbound')
+            for label, image in snapshot['definitions'].items():
+                item = None if child is None else child['definitions'].get(label)
+                if (label not in {c.NATIVE_LABEL + role for role in ('sync', 'direct')} or item is None
+                        or image != {key: item[key] for key in ('inode', 'sha256')}):
+                    _fail('initial-boot-history-unbound')
+        if (c._native_json_at(metadata, 'source-initial-boot.json')[1] != boot_raw or publisher.initial_boot_images(selection) != images
+                or original is not None and original != (c._native_json_at(metadata, 'source-initial-generation.json')[1],
+                    c._native_json_at(metadata, 'source-jobs-prepare.json')[1])):
+            _fail('initial-boot-history-changed')
+        return names
+
+
+def initial_quiesce_snapshot(selection):
+    """Static initial-prefix custody only, never current-boot actor absence."""
+    publisher = _publisher(selection)
+    with protected_directory(c.NATIVE_META) as metadata:
+        initial, _raw = c._native_json_at(metadata, 'source-initial-generation.json')
+        boot, _raw = c._native_json_at(metadata, 'source-initial-boot.json')
+    if initial is None and boot is None:
+        return None
+    if (type(initial) is dict and initial.get('phase') == 'committed'
+            and not c._native_initial_boot_pending(boot)):
+        return None  # Historical initial evidence never controls later work.
+    locator = getattr(publisher, 'initial_boot_images', None)
+    static = getattr(publisher, '_initial_generation_static_view', None)
+    if locator is None or static is None:
+        _fail('initial-static-reader-unavailable')
+    images = locator(selection)
+    if images is None:
+        return None
+    parent, child = images['parent'], images['child']
+    publisher._initial_generation_record(c, parent)
+    _module, doc, full, identity, expected, environment, _anchors, witness, before, _before_inode = static(selection)
+    if c._native_encoded(parent['binding']) != c._native_encoded(full) or c._native_encoded(parent['witness']) != c._native_encoded(witness):
+        _fail('initial-static-binding-changed')
+    binding = {key: value for key, value in full.items() if key not in ('runtimeCustodySha256', 'bundleSha256', 'sourceRef')}
+    result = {'phase': 'initial', 'generation': parent['generation'], 'boot': images['displacedBoot'], 'definitions': {}}
+    with protected_directory(c.NATIVE_META) as metadata, protected_directory(c.NATIVE_DEFINITIONS) as units:
+        gate = os.open(c.NATIVE_STATE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        jobs = None
+        try:
+            if any(c._native_at_inode(metadata, name) is not None for name in ('source-jobs-active.json', 'source-execution.json')):
+                _fail('initial-admission-preserved')
+            fd = os.open(c.NATIVE_ENV.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=gate)
+            try:
+                c.native_verify_env_fd(fd, identity['id'])
+                body = os.read(fd, c.MAX_RESULT_BYTES + 1)
+            finally:
+                os.close(fd)
+            values = dict(c.parse_env(body.decode('utf-8')))
+            if (len(body) != environment['size'] or publisher.sha(body) != environment['sha256']
+                    or any(values.get(flag) != '0' for flag in c.PREAUTH_FLAGS)):
+                _fail('initial-grants-preserved')
+            for name in ('private', 'private/oauth', 'projection', 'proposals', 'results'):
+                directory = c._native_directory_fd(gate, name)
+                try:
+                    if set(os.listdir(directory)) != ({'oauth'} if name == 'private' else set()):
+                        _fail('initial-data-preserved')
+                finally:
+                    os.close(directory)
+            c._native_verify_prepared_logs(metadata, identity, binding)
+            logs = os.open(c.NATIVE_LOGS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                if any(os.stat(name, dir_fd=logs, follow_symlinks=False).st_size for name in c._native_log_names()):
+                    _fail('initial-log-history-preserved')
+            finally:
+                os.close(logs)
+            public_names = {name for name in os.listdir(units) if name.startswith(c.NATIVE_LABEL)}
+            if child is None:
+                if (public_names or c._native_at_inode(metadata, 'native-source-jobs') is not None
+                        or c._native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id']) != (expected, parent['gate']['inode'])):
+                    _fail('initial-prefix-changed')
+            else:
+                publication = c._native_encoded(dict(before, witness=parent['witness']))
+                if c._native_root_file(metadata, 'source-publication.json') != (publication, parent['after']['inode']):
+                    _fail('initial-publication-changed')
+                c._native_job_record(child, dict(binding, publicationSha256=publisher.sha(publication)), expected)
+                if (child['generation'] != parent['generation'] or child['environment'] != environment
+                        or child['before']['inode'] != parent['gate']['inode']
+                        or child['phase'] not in ('staging', 'publishing', 'manifest-ready', 'moving-gate', 'committed-inactive')
+                        or len(child['definitions']) != 2
+                        or sorted((item['role'], item['identifier']) for item in child['definitions'].values()) != [('direct', None), ('sync', None)]
+                        or child['witness'] != dict(parent['witness'], boot=images['displacedBoot'])):
+                    _fail('initial-child-changed')
+                files = {}
+                for label, item in child['definitions'].items():
+                    path, body, _mode = c.native_disabled_definition(item['role'], identity=identity,
+                        python=doc['hostPythonPath'], identifier=item['identifier'])
+                    if label != path.stem or item['sha256'] != publisher.sha(body):
+                        _fail('initial-definition-changed')
+                    files[label + '.plist'] = (label, body, item)
+                if public_names - set(files):
+                    _fail('initial-definition-changed')
+                if child['directory'] is None:
+                    if (c._native_at_inode(metadata, 'native-source-jobs') is not None or child['phase'] != 'staging'
+                            or public_names or c._native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id']) != (expected, child['before']['inode'])):
+                        _fail('initial-prefix-changed')
+                else:
+                    jobs = c._native_job_directory(metadata, child)
+                    if set(os.listdir(jobs)) - {'manifest.json', '.gate-next', '.gate-before', *files}:
+                        _fail('initial-prefix-changed')
+                    for name, (label, body, item) in files.items():
+                        staged, public = c._native_at_inode(jobs, name), c._native_at_inode(units, name)
+                        if staged is not None and public is not None or item['inode'] is not None and staged is None and public is None:
+                            _fail('initial-prefix-changed')
+                        publisher._generation_prefix(c, jobs, name, body, item, mode=0o644)
+                        if public is not None:
+                            if not item['ready'] or c._native_root_file(units, name, mode=0o644) != (body, item['inode']):
+                                _fail('initial-definition-changed')
+                            result['definitions'][label] = {key: item[key] for key in ('role', 'identifier', 'inode', 'sha256')}
+                            result['definitions'][label]['active'] = False
+                        if child['phase'] in ('manifest-ready', 'moving-gate', 'committed-inactive') and public != item['inode']:
+                            _fail('initial-definition-missing')
+                    manifest = c._native_encoded(c._native_job_manifest(child))
+                    publisher._generation_prefix(c, jobs, 'manifest.json', manifest, child['manifest'])
+                    if child['manifest']['inode'] is not None and c._native_at_inode(jobs, 'manifest.json') != child['manifest']['inode']:
+                        _fail('initial-manifest-changed')
+                    projection = c._native_job_projection(child)
+                    publisher._generation_prefix(c, jobs, '.gate-next', projection, child['gate'], mode=0o640, gid=identity['id'])
+                    previous, current = c._native_at_inode(jobs, '.gate-before'), c._native_at_inode(gate, 'custody.json')
+                    if previous is not None and c._native_root_file(jobs, '.gate-before', mode=0o640, gid=identity['id']) != (expected, child['before']['inode']):
+                        _fail('initial-gate-changed')
+                    if current == child['before']['inode']:
+                        if previous is not None or c._native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id']) != (expected, current):
+                            _fail('initial-gate-changed')
+                    elif current is None:
+                        if child['phase'] != 'moving-gate' or previous != child['before']['inode']:
+                            _fail('initial-gate-changed')
+                    elif (child['phase'] not in ('moving-gate', 'committed-inactive') or not child['gate']['ready']
+                            or current != child['gate']['inode'] or previous != child['before']['inode']
+                            or c._native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id']) != (projection, current)
+                            or c._native_at_inode(jobs, '.gate-next') is not None):
+                        _fail('initial-gate-changed')
+            if locator(selection) != images:
+                _fail('initial-images-changed')
+            return result
+        finally:
+            if jobs is not None:
+                os.close(jobs)
+            os.close(gate)
+
+
+def _boot_origin(selection):
+    """Static old-generation custody, never invocation or stop authority."""
+    doc = _selected(selection)
+    publisher = _publisher(selection)
+    pending = (publisher.environment_quiesce_snapshot(selection)
+        if os.path.lexists(c.NATIVE_META / 'source-environment-generation.json') else None)
+    if pending is None and any(os.path.lexists(c.NATIVE_META / name) for name in ('source-initial-generation.json', 'source-initial-boot.json')):
+        pending = initial_quiesce_snapshot(selection)
+    _module, _doc, _component, source_ref = publisher._material(selection)
+    _kit, kit_sha = c.native_verify_kit(selection, require_profiles=True, _publication=True)
+    with protected_directory(c.NATIVE_META) as metadata, protected_directory(c.NATIVE_DEFINITIONS) as definitions:
+        gate = os.open(c.NATIVE_STATE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        jobs = None
+        try:
+            identity, base, expected = c._native_environment_binding(selection, metadata, gate, kit_sha, _publication=True)
+            try:
+                body, inode = c._native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id'], limit=16384)
+            except FileNotFoundError:
+                if pending is None:
+                    raise
+                body, inode = b'', None
+            public = c._native_public_json(body) if body else json.loads(expected)
+            origin = None
+            if pending is not None:
+                rows = pending['definitions']
+                generation, previous_boot = pending['generation'], pending['boot']
+                # The publisher independently qualifies live/archive bindings.
+                # This header supplies only the already-bound broker identity
+                # for fresh process inspection, never dispatch authority.
+                public = json.loads(expected)
+            else:
+                publication, _inode = c._native_root_file(metadata, 'source-publication.json')
+                binding = dict(base, publicationSha256=publisher.sha(publication))
+                origin, _raw = c._native_json_at(metadata, 'source-jobs-prepare.json')
+                c._native_job_record(origin, binding, expected)
+                generation, previous_boot = origin['generation'], origin['witness']['boot']
+            if pending is None and public.get('schemaVersion') == 2:
+                c._native_validate_inactive_generation(selection, metadata, gate, identity, base, expected, body, inode)
+                rows = {label: dict(item, active=False) for label, item in origin['definitions'].items()}
+            elif pending is None:
+                c._native_broker_projection(public)
+                active, _raw = c._native_json_at(metadata, 'source-jobs-active.json')
+                publisher._active_record(c, active, origin, dict(binding,
+                    runtimeCustodySha256=doc['runtimeCustodySha256'], bundleSha256=doc['bundleSha256'], sourceRef=source_ref), expected)
+                if (active['phase'] != 'committed' or active['current']['gate']['inode'] != inode
+                        or c._native_encoded(active['current']['gate']['document']) != body):
+                    _fail('boot-generation-unsettled')
+                jobs = c._native_job_directory(metadata, origin)
+                manifest, manifest_inode = c._native_root_file(jobs, 'manifest.json')
+                if (manifest_inode != active['current']['manifest']['inode']
+                        or manifest != c._native_encoded(active['current']['manifest']['document'])):
+                    _fail('boot-generation-changed')
+                rows = active['current']['definitions']
+            environment, _raw = c._native_json_at(metadata, 'source-environment.json')
+            c._native_environment_record(environment, base)
+            actual_env = c._native_environment_snapshot(gate, c.NATIVE_ENV.name, identity['id'])
+            if pending is None and (environment['pending'] is not None or environment['current'] != actual_env
+                    or origin['environment'] != actual_env):
+                _fail('boot-environment-changed')
+            c._native_verify_prepared_logs(metadata, identity, base)
+            rendered, images = {}, {}
+            for label, item in rows.items():
+                path, fixed, _mode = c.native_disabled_definition(item['role'], identity=identity,
+                    python=doc['hostPythonPath'], identifier=item['identifier'])
+                document = plistlib.loads(fixed)
+                document['Disabled'] = not item['active']
+                fixed = plistlib.dumps(document, sort_keys=True)
+                current, located = c._native_root_file(definitions, label + '.plist', mode=0o644, limit=16384)
+                if current != fixed or located != item['inode'] or publisher.sha(current) != item['sha256']:
+                    _fail('boot-definition-changed')
+                rendered[label] = (c.NATIVE_DEFINITIONS / path.name, document)
+                images[label] = {'inode': located, 'sha256': publisher.sha(current)}
+            if set(name for name in os.listdir(definitions) if name.startswith(c.NATIVE_LABEL)) != {
+                    label + '.plist' for label in rows}:
+                _fail('boot-unmanaged-definition')
+            snapshot = {'deploymentSha256': selection.deployment.checksum, 'generation': generation,
+                'previousBoot': previous_boot, 'withdrawn': pending is not None, 'gate': inode, 'gateSha256': publisher.sha(body),
+                'environment': actual_env, 'definitions': images}
+            return snapshot, doc, public, rendered
+        finally:
+            if jobs is not None:
+                os.close(jobs)
+            os.close(gate)
+
+
+def quiesce_previous_boot(selection):
+    """Stop only verified old-generation labels using fresh current-boot data.
+
+    No old execution-journal PID is read. Public invocation authority remains
+    invalid after boot, and no Source admission or generation is minted here.
+    Caller holds the existing bounded Root lock.
+    """
+    LaunchdAccessBridge._native_source_deadline_ns(selection.bridge)
+    snapshot, doc, public, definitions = _boot_origin(selection)
+    boot = c._native_boot_uuid()
+    if snapshot['previousBoot'] == boot and not snapshot['withdrawn']:
+        _fail('boot-quiesce-not-required')
+    executor = object.__new__(NativeSourceExecutor)
+    executor.selection, executor.bridge = selection, selection.bridge
+    name = 'source-boot-quiesce.json'
+    with protected_directory(c.NATIVE_META) as metadata:
+        value, raw = c._native_json_at(metadata, name)
+        if value is not None and type(value) is not dict:
+            _fail('boot-record-invalid')
+        if value is not None and (value.get('boot') != boot or value.get('snapshot') != snapshot):
+            # A previous boot's journal is preserved as private evidence. It
+            # grants no process exemption, cached PID proof or replay authority.
+            boot_quiesce_record(value, broker_uid=public['broker']['id'], host_python=doc['hostPythonPath'])
+            archived = '.source-boot-quiesce-' + value['id'] + '.json'
+            if c._native_at_inode(metadata, archived) is not None or c._native_json_at(metadata, name)[1] != raw:
+                _fail('boot-record-changed')
+            os.rename(name, archived, src_dir_fd=metadata, dst_dir_fd=metadata)
+            os.fsync(metadata)
+            value = raw = None
+        if value is None:
+            value = {'schemaVersion': 1, 'kind': 'ods-native-source-boot-quiesce', 'id': uuid.uuid4().hex,
+                'boot': boot, 'snapshot': snapshot, 'phase': 'quiescing', 'jobs': {label: {
+                    'phase': 'pending', 'identity': None, 'tree': [], 'uncertain': False} for label in definitions}}
+
+        def guard():
+            if (c._native_boot_uuid() != boot or _boot_origin(selection)[0] != snapshot
+                    or c._native_json_at(metadata, name)[1] != raw):
+                _fail('boot-input-changed')
+            boot_quiesce_record(value, broker_uid=public['broker']['id'], host_python=doc['hostPythonPath'])
+            if (type(value) is not dict or set(value) != {'schemaVersion', 'kind', 'id', 'boot', 'snapshot', 'jobs', 'phase'}
+                    or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+                    or value['kind'] != 'ods-native-source-boot-quiesce' or value['boot'] != boot
+                    or value['snapshot'] != snapshot or not c.FLOW_ID.fullmatch(value['id'])
+                    or value['phase'] not in ('quiescing', 'stopped') or set(value['jobs']) != set(definitions)):
+                _fail('boot-record-invalid')
+            for row in value['jobs'].values():
+                if (type(row) is not dict or set(row) != {'phase', 'identity', 'tree', 'uncertain'}
+                        or row['phase'] not in ('pending', 'intent', 'absent') or type(row['uncertain']) is not bool):
+                    _fail('boot-record-invalid')
+                _tree(row['tree'])
+                identity = row['identity']
+                if identity is not None and (type(identity) is not list or len(identity) != 10
+                        or any(type(item) is not int for item in identity[:9])
+                        or identity[3:9] != [public['broker']['id']] * 6 or identity[-1] != doc['hostPythonPath']):
+                    _fail('boot-record-invalid')
+
+        def save():
+            nonlocal raw
+            guard()
+            raw = c._native_save_at(selection, metadata, name, value, previous=raw, _publication=True)
+
+        guard()
+        if raw is None:
+            save()
+        for label, (path, document) in sorted(definitions.items()):
+            row = value['jobs'][label]
+            guard()
+            loaded = executor._loaded(label, document, path)
+            if loaded is not None:
+                executor._capture(row, loaded, doc, public)
+                row['phase'] = 'intent'
+                save()  # Fresh identities and intent precede fixed-label stop.
+                if executor._loaded(label, document, path) != loaded:
+                    _fail('boot-process-changed')
+                if loaded['pid'] is not None and list(process_identity(loaded['pid'], uid=public['broker']['id'],
+                        gid=public['broker']['id'], executable=doc['hostPythonPath'])) != row['identity']:
+                    _fail('boot-process-changed')
+                guard()
+                try:
+                    selection.bridge.command(['/bin/launchctl', 'bootout', 'system/' + label], timeout=remaining(10))
+                except AccessError:
+                    pass  # Observe absence; never restart to resolve a reply.
+            deadline = time.monotonic() + remaining(10)
+            while True:
+                if executor._loaded(label, document, path) is None:
+                    try:
+                        _absent_tree(row['tree'])
+                        break
+                    except ProcessIdentityError:
+                        raise
+                    except c.CustodyError:
+                        pass
+                if time.monotonic() >= deadline:
+                    _fail('boot-stop-unconfirmed')
+                time.sleep(min(.05, remaining(.05)))
+            row['phase'] = 'absent'
+            save()
+        guard()
+        publisher = _publisher(selection)
+        publisher._no_actors(selection, c, metadata, _generation=True)
+        value['phase'] = 'stopped'
+        save()
+        return {'status': 'stopped', 'boot': boot, 'previousBoot': snapshot['previousBoot']}
 
 
 def trigger_loop(make_bridge, stop):

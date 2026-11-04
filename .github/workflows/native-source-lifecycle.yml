@@ -5,9 +5,13 @@ on:
     paths:
       - 'ods/bin/**'
       - 'ods/installers/macos/lib/**'
+      - 'ods/installers/lib/pixel-host-install.sh'
+      - 'ods/lib/pixel-uninstall.sh'
       - 'ods/extensions/services/pixel-agent/host/access_mode_server.py'
       - 'ods/tests/test_native_source_*.py'
       - 'ods/tests/test_connection_deployment_paths.py'
+      - 'ods/tests/test_pixel_installed_connections_package.py'
+      - 'ods/tests/test_native_installer_support.py'
       - 'ods/vendor/pixel.bundle'
       - 'ods/vendor/pixel/**'
       - '.github/workflows/native-source-lifecycle.yml'
@@ -21,6 +25,189 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native-path:
+    name: Linux mechanics / ${{ matrix.packet }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - packet: request-local-backend
+            files: ods/tests/test_native_source_backend.py
+          - packet: normal-initial-prepare
+            files: ods/tests/test_native_source_initial_backend.py
+          - packet: initial-generation-faults
+            files: ods/tests/test_native_source_initial_generation.py
+            filter: initial_lost_reply
+          - packet: initial-generation-refusals
+            files: ods/tests/test_native_source_initial_generation.py
+            filter: initial_unqualified
+          - packet: initial-boot-positive
+            files: ods/tests/test_native_source_initial_boot.py
+            filter: keeps_publication
+          - packet: initial-boot-refusals
+            files: ods/tests/test_native_source_initial_boot.py
+            filter: unqualified_state or second_reboot
+          - packet: initial-boot-parent-faults
+            files: ods/tests/test_native_source_initial_boot.py
+            filter: lost_reply and (parent-before or parent-after)
+          - packet: initial-boot-child-faults
+            files: ods/tests/test_native_source_initial_boot.py
+            filter: lost_reply and (child-before or child-after or terminal)
+          - packet: boot-quiescence
+            files: ods/tests/test_native_source_boot_quiesce.py
+          - packet: environment-generation-positive
+            files: ods/tests/test_native_source_environment_generation.py
+            filter: real_child_stopped or same_environment_explicit or same_bundle_reboot or pending_inactive_child_reboot
+          - packet: environment-generation-admissions
+            files: ods/tests/test_native_source_environment_generation.py
+            filter: unrelated_expected_generation or abandoned
+          - packet: environment-generation-faults
+            files: ods/tests/test_native_source_environment_generation.py
+            filter: test_lost_ack
+          - packet: environment-generation-refusals
+            files: ods/tests/test_native_source_environment_generation.py
+            filter: unknown_images or no_actor_unknown or generation_hint or environment_template or pending_child_boot_refuses
+          - packet: environment-history
+            files: ods/tests/test_native_source_environment_history.py
+          - packet: admitted-current-sidefiles
+            files: ods/tests/test_native_source_sidefiles_snapshot.py
+          - packet: installer-custody
+            files: ods/tests/test_native_source_installer_custody.py
+          - packet: installer-withdrawal
+            files: ods/tests/test_native_source_installer_withdrawal.py
+          - packet: installer-first-kit
+            files: ods/tests/test_native_source_installer_first_kit.py
+          - packet: installer-code-only-positive
+            files: ods/tests/test_native_source_installer_code_only.py
+            filter: actual_installer_target or upgrade_then_actual_first_prepare
+          - packet: installer-code-only-refusals
+            files: ods/tests/test_native_source_installer_code_only.py
+            filter: unknown_authority
+          - packet: installer-code-only-boot
+            files: ods/tests/test_native_source_installer_code_only.py
+            filter: interrupted_prefix_reboot
+          - packet: installer-code-only-kit-faults
+            files: ods/tests/test_native_source_installer_code_only.py
+            filter: lost_reply and (old-kit or new-kit)
+          - packet: installer-code-only-metadata-faults
+            files: ods/tests/test_native_source_installer_code_only.py
+            filter: lost_reply and (publication or sidefiles or terminal)
+          - packet: installer-rebind-positive
+            files: ods/tests/test_native_source_installer_rebind.py
+            filter: restored_runtime_rebind or actual_new_bundle or admitted_connected_owner_images
+          - packet: installer-rebind-refusals
+            files: ods/tests/test_native_source_installer_rebind.py
+            filter: unknown_target_boundary
+          - packet: installer-rebind-kit-faults
+            files: ods/tests/test_native_source_installer_rebind.py
+            filter: rebind_lost_reply and (old-kit or new-kit)
+          - packet: installer-rebind-binding-faults
+            files: ods/tests/test_native_source_installer_rebind.py
+            filter: rebind_lost_reply and (binding-old or binding-new)
+          - packet: installer-rebind-terminal-faults
+            files: ods/tests/test_native_source_installer_rebind.py
+            filter: rebind_lost_reply and (publication or parent or child or committed)
+          - packet: retirement-withdrawal
+            files: ods/tests/test_native_source_retirement_withdrawal.py
+          - packet: retirement-history
+            files: ods/tests/test_native_source_retirement_history.py
+            filter: not actual_installer_rebind
+          - packet: retirement-rebind-history
+            files: ods/tests/test_native_source_retirement_history.py
+            filter: actual_installer_rebind
+          - packet: retirement-archive-positive
+            files: ods/tests/test_native_source_retirement_archive.py
+            filter: preserves_all_inodes
+          - packet: retirement-archive-faults
+            files: ods/tests/test_native_source_retirement_archive.py
+            filter: lost_ack
+          - packet: retirement-archive-refusals
+            files: ods/tests/test_native_source_retirement_archive.py
+            filter: changed_archive_authority
+          - packet: retirement-core-archive
+            files: ods/tests/test_native_source_retirement_archive.py
+            filter: actual_core or public_retire
+          - packet: retirement-legacy
+            files: ods/tests/test_native_source_retirement_legacy.py
+          - packet: retirement-initial-history
+            files: ods/tests/test_native_source_retirement_initial_history.py
+          - packet: retirement-cli
+            files: ods/tests/test_native_source_retirement_cli.py
+          - packet: public-routing
+            files: ods/tests/test_native_source_public_routing.py
+          - packet: installer-callers
+            files: ods/tests/test_native_source_installer_lifecycle.py ods/tests/test_native_source_installer_recovery.py ods/tests/test_native_source_installer_prepared_boundary.py ods/tests/test_native_source_retained_identities.py ods/tests/test_native_source_retirement_boundary.py
+          - packet: installer-planning
+            files: ods/tests/test_native_source_installer_plan.py
+          - packet: installer-bootstrap
+            files: ods/tests/test_native_source_installer_bootstrap.py
+          - packet: installer-history-positive
+            files: ods/tests/test_native_source_installer_history.py
+            filter: second_prepared_installer or second_connected_installer
+          - packet: installer-history-joined-updates
+            files: ods/tests/test_native_source_installer_history.py
+            filter: two_actual_bundle_updates
+          - packet: installer-history-faults
+            files: ods/tests/test_native_source_installer_history.py
+            filter: lost_ack
+          - packet: installer-history-refusals
+            files: ods/tests/test_native_source_installer_history.py
+            filter: unknown_origin
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'pytest>=8,<9'
+      - name: Exercise confined files and native protocol recovery
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          PACKET_FILES: ${{ matrix.files }}
+          PACKET_FILTER: ${{ matrix.filter }}
+        run: python -m pytest -q -p no:cacheprovider $PACKET_FILES -k "$PACKET_FILTER"
+
+  native-root-files:
+    name: Linux Root files / ${{ matrix.packet }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - packet: public-status
+            files: ods/tests/test_native_source_public_status.py ods/tests/test_native_source_peer_status.py
+          - packet: retained-history-inventory
+            files: ods/tests/test_native_source_environment_history_inventory.py
+          - packet: emitted-linux-connections-package
+            files: ods/tests/test_pixel_installed_connections_package.py
+          - packet: protected-installer-support
+            files: ods/tests/test_native_installer_support.py
+            basetemp: /root/ods-native-source-ci-support/tmp
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'pytest>=8,<9'
+      - name: Exercise actual Root ownership in confined temporary files
+        env:
+          PACKET_FILES: ${{ matrix.files }}
+          PACKET_BASETEMP: ${{ matrix.basetemp }}
+        run: |
+          python_bin="$(command -v python)"
+          sudo -n env PYTHONDONTWRITEBYTECODE=1 "$python_bin" -c 'import os; assert os.geteuid() == 0'
+          if [ -n "$PACKET_BASETEMP" ]; then
+            sudo -n env PYTHONDONTWRITEBYTECODE=1 "$python_bin" -m pytest -q -p no:cacheprovider $PACKET_FILES --basetemp="$PACKET_BASETEMP"
+          else
+            sudo -n env PYTHONDONTWRITEBYTECODE=1 "$python_bin" -m pytest -q -p no:cacheprovider $PACKET_FILES
+          fi
+
   executor:
     name: Linux mechanics / fixed executor and explicit triggers
     runs-on: ubuntu-latest
