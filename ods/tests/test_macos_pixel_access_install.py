@@ -926,6 +926,161 @@ def test_upgrade_stop_requires_process_tree_proof_even_when_job_absent(monkeypat
         installer._stop_upgrade_service(service)
 
 
+@pytest.mark.parametrize('fault', [None, 'partial', 'candidate-partial', 'mode', 'gid', 'owner',
+    'prior-capability', 'prior-manifest-drift', 'prior-custody', 'unexpected-program'])
+def test_legacy_schedule_upgrade_requires_complete_family_and_approved_previous_absence(monkeypatch, fault):
+    import hashlib
+    import pixel_macos_custody as custody
+    family = installer._upgrade.SCHEDULE_ADDITIONS
+    rows = [(Path(path), b'candidate code', dict(mode=0o644, uid=0, gid=0)) for path in sorted(family)]
+    entries = {}
+    if fault == 'prior-capability':
+        entries['ods-source/bin/pixel_schedules.py'] = ['file', 0o644, 3, 'a' * 64]
+    body = json.dumps({'entries': entries}, sort_keys=True).encode()
+    digest = hashlib.sha256(body).hexdigest()
+    if fault == 'partial': existing = {rows[0][0]}
+    else: existing = set()
+    if fault == 'candidate-partial': rows.pop()
+    if fault in ('mode', 'gid', 'owner'):
+        rows[0][2][{'mode': 'mode', 'gid': 'gid', 'owner': 'uid'}[fault]] = 1
+    if fault == 'unexpected-program':
+        rows.append((Path('/usr/local/libexec/ods-pixel-access/unknown.py'), b'new', dict(mode=0o644)))
+    plan = {'upgrade_qualification': {'currentDigest': digest},
+            'access_settings': {'gateway_policy': {'profiles': {}}}}
+    monkeypatch.setattr(installer, '_deployment_files', lambda *_: rows)
+    monkeypatch.setattr(installer, '_upgrade_policy_mode', lambda _: 'sandboxed')
+    monkeypatch.setattr(installer.os.path, 'lexists', lambda path: Path(path) in existing)
+    monkeypatch.setattr(installer, '_preflight_directory', lambda _: None)
+    monkeypatch.setattr(installer, '_check_existing', lambda *_a, **_kw: None)
+    reads = []
+    def read(path, **_kw):
+        reads.append(path)
+        if path == installer._bundle.INSTALL_ROOT / digest / installer._bundle.MANIFEST:
+            if fault == 'prior-custody': raise custody.CustodyError('unsafe previous bundle')
+            return body + (b' ' if fault == 'prior-manifest-drift' else b'')
+        pytest.fail('no existing schedule code or owner state should be read')
+    monkeypatch.setattr(custody, 'protected_bytes', read)
+    if fault:
+        with pytest.raises(ValueError): installer._upgrade_file_snapshots(plan, ROOT)
+    else:
+        records, additions = installer._upgrade_file_snapshots(plan, ROOT)
+        assert not additions
+        assert {r['path'] for r in records} == family
+        assert all(r['before'] is None and r['after'] == b'candidate code' for r in records)
+        assert len(reads) == 1
+
+
+@pytest.mark.parametrize('count', range(4))
+def test_recovery_schedule_contract_accepts_legacy_omission_or_complete_family_only(count):
+    required, optional = installer._recovery_file_contract()
+    schedules = set(sorted(installer._upgrade.SCHEDULE_ADDITIONS)[:count])
+    assert not set(required) & installer._upgrade.SCHEDULE_ADDITIONS
+    assert all(optional[path] == (0o644, 0) for path in installer._upgrade.SCHEDULE_ADDITIONS)
+    if count in (1, 2):
+        with pytest.raises(installer.InstallError, match='schedule-recovery-file-family-incomplete'):
+            installer._require_complete_schedule_file_family(set(required) | schedules)
+    else:
+        installer._require_complete_schedule_file_family(set(required) | schedules)
+
+
+@pytest.mark.parametrize('source', [False, True])
+@pytest.mark.parametrize('manifest', ['unpublished', 'legacy', 'schedules', 'drift'])
+def test_recovery_cannot_omit_all_schedule_images_from_current_candidate(tmp_path, monkeypatch, source, manifest):
+    import pixel_macos_custody as custody
+    entries = {'ods-source/bin/pixel_schedules.py': ['file', 0o644, 3, 'a' * 64]} if manifest == 'schedules' else {}
+    body = json.dumps({'entries': entries}).encode()
+    digest = hashlib.sha256(body).hexdigest()
+    monkeypatch.setattr(installer._bundle, 'INSTALL_ROOT', tmp_path)
+    if manifest != 'unpublished':
+        root = tmp_path / digest
+        root.mkdir()
+        (root / installer._bundle.MANIFEST).write_bytes(body + (b' ' if manifest == 'drift' else b''))
+    monkeypatch.setattr(custody, 'protected_bytes', lambda path, **_kw: path.read_bytes())
+    plan = {'runtime_bundle': {'digest': digest}}
+    if source: plan['source_lifecycle'] = {'mode': 'absent'}
+    if source or manifest in ('schedules', 'drift'):
+        with pytest.raises(installer.InstallError): installer._verify_schedule_recovery(plan, [])
+    else:
+        installer._verify_schedule_recovery(plan, [])
+    installer._verify_schedule_recovery(plan, [{'path': path} for path in installer._upgrade.SCHEDULE_ADDITIONS])
+
+
+@pytest.mark.parametrize('fail_after', [1, 2, 3, 4])
+def test_legacy_schedule_snapshot_journal_and_partial_cas_restore_real_files(tmp_path, monkeypatch, fail_after):
+    import pixel_macos_custody as custody
+    root = tmp_path / 'code'
+    root.mkdir()
+    programs = [root / Path(path).name for path in sorted(installer._upgrade.SCHEDULE_ADDITIONS)]
+    family = frozenset(map(str, programs))
+    monkeypatch.setattr(installer._upgrade, 'SCHEDULE_ADDITIONS', family)
+    monkeypatch.setattr(custody, 'SCHEDULE_ADDITIONS', family)
+    existing = root / 'access_mode_worker.py'
+    existing.write_bytes(b'previous worker')
+    private = tmp_path / 'private-owner-state.json'
+    private.write_bytes(b'private test state must survive')
+    private_before = private.stat().st_ino, private.read_bytes()
+    body = json.dumps({'entries': {}}, sort_keys=True).encode()
+    digest = hashlib.sha256(body).hexdigest()
+    bundles = tmp_path / 'bundles'
+    (bundles / digest).mkdir(parents=True)
+    (bundles / digest / installer._bundle.MANIFEST).write_bytes(body)
+    monkeypatch.setattr(installer._bundle, 'INSTALL_ROOT', bundles)
+    monkeypatch.setattr(installer._launchd, 'ACCESS_STATE', tmp_path / 'state')
+    @contextmanager
+    def directory(path):
+        assert Path(path) in {root, bundles / digest}
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try: yield fd
+        finally: os.close(fd)
+    def verify(fd, *, directory):
+        info = os.fstat(fd)
+        assert stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+        assert not info.st_mode & 0o022
+        fields = {key: getattr(info, key) for key in dir(info) if key.startswith('st_')}
+        return SimpleNamespace(**dict(fields, st_uid=0, st_gid=0))
+    # Only the Root identity boundary is simulated; production FD/CAS I/O runs.
+    monkeypatch.setattr(custody, 'protected_directory', directory)
+    monkeypatch.setattr(custody, '_verify_fd', verify)
+    monkeypatch.setattr(custody.os, 'fchown', lambda *_a: None)
+    monkeypatch.setattr(installer, '_preflight_directory', lambda path: None)
+    def check(path, expected, **attrs):
+        assert path.read_bytes() == expected and path.stat().st_nlink == 1
+        assert stat.S_IMODE(path.stat().st_mode) == attrs['mode']
+    monkeypatch.setattr(installer, '_check_existing', check)
+    rows = [(path, b'candidate schedule', dict(mode=0o644, uid=0, gid=0)) for path in programs]
+    rows.append((existing, b'candidate worker', dict(mode=0o644, uid=0, gid=0)))
+    monkeypatch.setattr(installer, '_deployment_files', lambda *_a: rows)
+    monkeypatch.setattr(installer, '_upgrade_policy_mode', lambda _p: 'sandboxed')
+    plan = {'upgrade_qualification': {'currentDigest': digest},
+            'access_settings': {'gateway_policy': {'profiles': {}}}}
+    records, additions = installer._upgrade_file_snapshots(plan, ROOT)
+    assert not additions and all(r['before'] is None for r in records[:3])
+    options = dict(current_digest=digest, candidate_digest='b' * 64, allowed_paths={r['path'] for r in records})
+    value = installer._upgrade.encode_recovery(records, **options)
+    assert value['schemaVersion'] == 5
+    journal = tmp_path / 'journal.json'
+    installer._upgrade.RecoveryJournal.create(journal, value)
+    decoded = installer._upgrade.decode_recovery(json.loads(journal.read_bytes()), **options)
+    published = []
+    def replace(path, **kwargs):
+        custody.replace_protected_inspection_bytes(path, **kwargs)
+        published.append(path)
+        if len(published) == fail_after: raise OSError('lost publication acknowledgement')
+    with pytest.raises(OSError):
+        installer._upgrade.replace_deployment_files(decoded, read=custody.protected_inspection_bytes, replace=replace)
+    installer._upgrade.restore_deployment_files(decoded, read=custody.protected_inspection_bytes,
+        replace=custody.replace_protected_inspection_bytes)
+    assert all(not path.exists() for path in programs)
+    assert existing.read_bytes() == b'previous worker'
+    assert (private.stat().st_ino, private.read_bytes()) == private_before
+    assert json.loads(journal.read_bytes()) == value
+    installer._upgrade.replace_deployment_files(decoded, read=custody.protected_inspection_bytes,
+        replace=custody.replace_protected_inspection_bytes)
+    assert all(path.read_bytes() == b'candidate schedule' for path in programs)
+    assert existing.read_bytes() == b'candidate worker'
+    assert (private.stat().st_ino, private.read_bytes()) == private_before
+
+
 @pytest.mark.parametrize('missing', [None, 'policy', 'program', 'key'])
 def test_upgrade_snapshots_only_allow_new_policy_files(tmp_path, monkeypatch, missing):
     import pixel_macos_custody as custody
@@ -3074,7 +3229,8 @@ def test_candidate_cleanup_rejects_incomplete_plan(plan):
 
 
 @pytest.mark.parametrize('fault', [None, 'missing', 'mode', 'binding', 'runtime'])
-def test_retirement_plan_rechecks_deployment_contract_before_live_use(monkeypatch, fault):
+def test_retirement_plan_rechecks_deployment_contract_before_live_use(tmp_path, monkeypatch, fault):
+    monkeypatch.setattr(installer._bundle, 'INSTALL_ROOT', tmp_path)
     a, b = 'a' * 64, 'b' * 64
     required, _ = installer._recovery_file_contract()
     records = [dict(path=path, mode=mode, gid=gid, before=b'old', after=b'new')
@@ -3086,7 +3242,7 @@ def test_retirement_plan_rechecks_deployment_contract_before_live_use(monkeypatc
     value['phase'] = 'restored'
     snapshots = {'runtime-upgrade-' + b + '.completed.json': json.dumps(value).encode(),
                  'runtime-upgrade-context-' + b + '.json': b'{}'}
-    plan = {'fixture': True}
+    plan = {'fixture': True, 'runtime_bundle': {'digest': 'b' * 64}}
     decode = Mock(return_value=plan)
     bindings = Mock(side_effect=installer.InstallError('binding') if fault == 'binding' else None)
     runtime = Mock(side_effect=installer.InstallError('runtime') if fault == 'runtime' else None)
@@ -3196,7 +3352,8 @@ def test_recovery_file_contract_matches_real_deployment(bundled_deployment):
 
 
 @pytest.mark.parametrize('fault', [None, 'missing', 'mode', 'gid', 'context', 'runtime', 'digest'])
-def test_load_upgrade_recovery_enforces_independent_contract(monkeypatch, fault):
+def test_load_upgrade_recovery_enforces_independent_contract(tmp_path, monkeypatch, fault):
+    monkeypatch.setattr(installer._bundle, 'INSTALL_ROOT', tmp_path)
     import pixel_access_bridge as bridge
     required, optional = installer._recovery_file_contract()
     records = [dict(path=path, mode=mode, gid=gid, before=b'old', after=b'new')
@@ -3207,7 +3364,7 @@ def test_load_upgrade_recovery_enforces_independent_contract(monkeypatch, fault)
         records[0][fault] = 1
     value = {'schemaVersion': 1, 'files': records}
     monkeypatch.setattr(bridge, 'private_json', Mock(return_value=value))
-    journal, plan = SimpleNamespace(value=value), {'fixture': True}
+    journal, plan = SimpleNamespace(value=value), {'fixture': True, 'runtime_bundle': {'digest': 'b' * 64}}
     loader = Mock(return_value=(journal, records))
     monkeypatch.setattr(installer._upgrade.RecoveryJournal, 'load', loader)
     context = Mock(return_value=plan, side_effect=installer.InstallError('context') if fault == 'context' else None)
@@ -3234,13 +3391,14 @@ def test_load_upgrade_recovery_enforces_independent_contract(monkeypatch, fault)
 @pytest.mark.parametrize('managed', [False, 'current', 'legacy', 'upgrade', 'partial'])
 @pytest.mark.parametrize('with_profiles', [False, True])
 @pytest.mark.parametrize('completed_phase', [None, 'active', 'restored', 'prepared'])
-def test_load_upgrade_recovery_uses_real_journal_decoder(monkeypatch, with_profiles, completed_phase, managed):
+def test_load_upgrade_recovery_uses_real_journal_decoder(tmp_path, monkeypatch, with_profiles, completed_phase, managed):
+    monkeypatch.setattr(installer._bundle, 'INSTALL_ROOT', tmp_path)
     import pixel_access_bridge as bridge
     required, optional = installer._recovery_file_contract()
     contract = {**required, **(optional if with_profiles else {})}
     records = [dict(path=path, mode=mode, gid=gid, before=b'old', after=b'new')
                for path, (mode, gid) in contract.items()]
-    context = {'fixture': True}
+    context = {'fixture': True, 'runtime_bundle': {'digest': 'b' * 64}}
     if managed:
         context.update(owner=SimpleNamespace(pw_name='owner', pw_uid=501, pw_gid=20),
             native_services={'expected_digest': 'b' * 64}, migration_qualification={'approved': True})

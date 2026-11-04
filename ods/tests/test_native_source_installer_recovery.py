@@ -118,11 +118,15 @@ def test_complete_withdrawal_cannot_change_frozen_runtime_token_or_archive_autho
         upgrade.encode_recovery(records, source_addition=dict(addition, receipt=receipt), **selection(records))
 
 
+@pytest.mark.parametrize('schedules', [False, True])
 @pytest.mark.parametrize('fault', [None, 'lost-ack', 'changed-journal', 'new-token', 'changed-target'])
-def test_prepared_withdrawal_binding_uses_real_private_journal_cas_and_observes_lost_ack(tmp_path, monkeypatch, fault):
+def test_prepared_withdrawal_binding_uses_real_private_journal_cas_and_observes_lost_ack(tmp_path, monkeypatch, schedules, fault):
     import pixel_access_bridge as bridge
     records = source_images()
     addition, receipt = withdrawal_authority(records)
+    if schedules:
+        records += [dict(path=path, before=None, after=b'schedule code', mode=0o644, gid=0)
+                    for path in sorted(upgrade.SCHEDULE_ADDITIONS)]
     value = upgrade.encode_recovery(records, source_addition=addition, **selection(records))
     path = tmp_path / 'runtime-upgrade.json'
     journal = upgrade.RecoveryJournal.create(path, value)
@@ -184,8 +188,9 @@ def test_context_v2_preserves_intent_and_refuses_changed_or_signature_only_autho
             owner_name=plan['owner'].pw_name) == plan
 
 
+@pytest.mark.parametrize('schedules', [False, True])
 @pytest.mark.parametrize('fault', [None, 'caller-hash', 'context-byte-change', 'journal-owner', 'journal-family', 'lost-context-ack'])
-def test_publisher_transaction_reader_reopens_actual_context_and_journal_fds(tmp_path, monkeypatch, fault):
+def test_publisher_transaction_reader_reopens_actual_context_and_journal_fds(tmp_path, monkeypatch, schedules, fault):
     """Actual files/CAS; bundle qualification is the explicit isolated dependency."""
     import pixel_access_bridge as bridge
     import pixel_macos_custody as custody
@@ -198,6 +203,9 @@ def test_publisher_transaction_reader_reopens_actual_context_and_journal_fds(tmp
     context.chmod(0o600)
     digest = hashlib.sha256(raw).hexdigest()
     authority = binding(records)
+    if schedules:
+        records += [dict(path=path, before=None, after=b'schedule code', mode=0o644, gid=0)
+                    for path in sorted(upgrade.SCHEDULE_ADDITIONS)]
     authority['contextSha256'] = authority['proof']['transaction'] = digest
     if fault == 'journal-owner': authority['proof']['ownerUid'] = 502
     if fault == 'journal-family': plan['source_lifecycle']['familySha256'] = 'e' * 64
@@ -299,6 +307,40 @@ def test_previous_recovery_schemas_still_roundtrip_without_source_authority(vers
     value = upgrade.encode_recovery(records, **selection(records))
     assert value['schemaVersion'] == version
     assert upgrade.decode_recovery(value, **selection(records)) == records
+
+
+@pytest.mark.parametrize('fault', [None, 'partial', 'existing-member', 'foreign', 'mode', 'gid',
+    'downgrade', 'source-proof', 'source-family'])
+def test_independent_source_reader_accepts_only_closed_schedule_schema_five(monkeypatch, fault):
+    from pixel_connections import custody
+    records = source_images()
+    addition, _receipt = withdrawal_authority(records)
+    records += [dict(path=path, before=None, after=b'schedule code', mode=0o644, gid=0)
+                for path in sorted(upgrade.SCHEDULE_ADDITIONS)]
+    value = upgrade.encode_recovery(records, source_addition=addition, **selection(records))
+    assert value['schemaVersion'] == 5
+    assert custody._native_installer_schedule_additions() == upgrade.SCHEDULE_ADDITIONS
+    schedule = [item for item in value['files'] if item['path'] in upgrade.SCHEDULE_ADDITIONS]
+    if fault == 'partial': value['files'].remove(schedule[0])
+    elif fault == 'existing-member':
+        schedule[0]['before'], schedule[0]['beforeSha256'] = schedule[0]['after'], schedule[0]['afterSha256']
+    elif fault == 'foreign': schedule[0]['path'] = '/usr/local/libexec/ods-pixel-access/foreign.py'
+    elif fault == 'mode': schedule[0]['mode'] = 0o600
+    elif fault == 'gid': schedule[0]['gid'] = 20
+    elif fault == 'downgrade': value['schemaVersion'] = 4
+    elif fault == 'source-proof': value['sourceAddition']['proof']['transaction']['candidateDigest'] = 'e' * 64
+    elif fault == 'source-family': value['sourceAddition']['familySha256'] = 'e' * 64
+    raw = json.dumps(value).encode()
+    monkeypatch.setattr(custody, '_native_root_file', lambda *_a, **_kw: (raw, (1, 2)))
+    context = dict(source_lifecycle=dict(mode='withdrawal', familySha256=upgrade.source_family_hash(records)),
+                   owner=dict(uid=501, gid=20))
+    transaction = dict(kind='native-installer-upgrade', transaction='c' * 64,
+                       currentDigest=CURRENT, candidateDigest=CANDIDATE)
+    if fault:
+        with pytest.raises(custody.CustodyError): custody._native_installer_journal(123, transaction, context)
+    else:
+        decoded, images, body = custody._native_installer_journal(123, transaction, context)
+        assert decoded == value and images == records and body == raw
 
 
 def owned_images(tmp_path):

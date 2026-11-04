@@ -3024,6 +3024,11 @@ def _native_installer_legacy_additions():
     return inspection, integration
 
 
+def _native_installer_schedule_additions():
+    return frozenset('/usr/local/libexec/ods-pixel-access/' + name for name in (
+        'pixel_schedules.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs'))
+
+
 def _native_installer_journal_name(metadata, transaction, *, completed=False, _history=False):
     if _history:
         # Only the fixed data-history reader selects this route. It grants no
@@ -3075,7 +3080,7 @@ def _native_installer_journal(metadata, transaction, context, *, _completed=Fals
     try:
         value = json.loads(raw.decode(), object_pairs_hook=_native_pairs)
         if (type(value) is not dict or set(value) != {'schemaVersion', 'currentDigest', 'candidateDigest', 'phase', 'files', 'sourceAddition'}
-                or type(value['schemaVersion']) is not int or value['schemaVersion'] != 4
+                or type(value['schemaVersion']) is not int or value['schemaVersion'] not in (4, 5)
                 or (value['currentDigest'], value['candidateDigest']) != (transaction['currentDigest'], transaction['candidateDigest'])
                 or type(value['phase']) is not str or value['phase'] not in {'prepared', 'replacing-files', 'active',
                     'rolling-back', 'restored', 'recovery-required',
@@ -3119,6 +3124,14 @@ def _native_installer_journal(metadata, transaction, context, *, _completed=Fals
         family_sha = hashlib.sha256(json.dumps(tuples, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
         inspection, integration = _native_installer_legacy_additions()
         legacy_absent = {item['path'] for item in records if item['before'] is None and item['path'] not in family}
+        schedules = _native_installer_schedule_additions()
+        schedule_absent = legacy_absent & schedules
+        if (value['schemaVersion'] == 5 and schedule_absent != schedules
+                or value['schemaVersion'] == 4 and schedule_absent):
+            raise ValueError()
+        if any(item['path'] in schedule_absent and (item['mode'], item['gid']) != (0o644, 0) for item in records):
+            raise ValueError()
+        legacy_absent -= schedules
         if (legacy_absent and legacy_absent not in (inspection, integration, inspection | integration)
                 or any(item['path'] in legacy_absent and (item['mode'], item['gid']) != (0o644, 0) for item in records)):
             raise ValueError()

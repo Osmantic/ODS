@@ -1255,8 +1255,36 @@ def _upgrade_policy_mode(plan):
     return _policy.policy_state(settings.get('gateway_policy'))['activeMode']
 
 
+def _schedule_upgrade_additions(plan, files):
+    """Only a complete new family absent from the approved previous bundle.
+
+    A missing file from a schedule-capable deployment is drift, not permission
+    to repair it. Existing files still undergo the ordinary custody checks.
+    """
+    family = _upgrade.SCHEDULE_ADDITIONS
+    selected = {str(path): attributes for path, _body, attributes in files if str(path) in family}
+    absent = {path for path in selected if not os.path.lexists(path)}
+    if not absent:
+        return frozenset()
+    if (set(selected) != family or absent != family
+            or any(value != dict(mode=0o644, uid=0, gid=0) for value in selected.values())):
+        raise InstallError('runtime-upgrade-schedule-additions-incomplete')
+    from pixel_macos_custody import protected_bytes
+    digest = plan['upgrade_qualification']['currentDigest']
+    if type(digest) is not str or not re.fullmatch('[a-f0-9]{64}', digest):
+        raise InstallError('runtime-upgrade-schedule-source-invalid')
+    body = protected_bytes(_bundle.INSTALL_ROOT / digest / _bundle.MANIFEST, limit=_bundle.MAX_MANIFEST)
+    if hashlib.sha256(body).hexdigest() != digest:
+        raise InstallError('runtime-upgrade-schedule-source-changed')
+    manifest = json.loads(body)
+    if (type(manifest) is not dict or type(manifest.get('entries')) is not dict
+            or any('ods-source/bin/' + Path(path).name in manifest['entries'] for path in family)):
+        raise InstallError('runtime-upgrade-schedule-source-not-legacy')
+    return family
+
+
 def _upgrade_file_snapshots(plan, source):
-    """Capture existing root files; only new immutable policy files may be added."""
+    """Capture existing root files and explicitly qualified complete additions."""
     sys.path.insert(0, str(HERE.parents[2] / 'bin'))
     from pixel_macos_custody import protected_bytes
     if not plan.get('upgrade_qualification'):
@@ -1266,6 +1294,7 @@ def _upgrade_file_snapshots(plan, source):
     policy_paths = {_destination(record['path'])
                     for record in plan['access_settings']['gateway_policy']['profiles'].values()}
     files = _deployment_files(source, plan)
+    schedule_additions = _schedule_upgrade_additions(plan, files)
     source_intent = plan.get('source_lifecycle')
     if source_intent is not None:
         qualification = plan['upgrade_qualification']
@@ -1289,7 +1318,8 @@ def _upgrade_file_snapshots(plan, source):
             continue
         _preflight_directory(path.parent)
         if not os.path.lexists(path):
-            if source_intent is not None and str(path) in _upgrade.SOURCE_ADDITIONS:
+            if (str(path) in schedule_additions
+                    or source_intent is not None and str(path) in _upgrade.SOURCE_ADDITIONS):
                 existing.append(dict(path=str(path), before=None, after=after,
                     mode=attributes['mode'], gid=attributes.get('gid', 0)))
                 continue
@@ -2349,7 +2379,7 @@ def _source_upgrade_file_options(plan, records, journal, bridge):
     qualification = plan['upgrade_qualification']
     transaction = dict(kind='native-installer-upgrade', transaction=addition['contextSha256'],
         currentDigest=qualification['currentDigest'], candidateDigest=qualification['candidateDigest'])
-    if (journal.value.get('schemaVersion') != 4
+    if (journal.value.get('schemaVersion') not in (4, 5)
             or addition['familySha256'] != intent['familySha256']
             or _upgrade.source_family_hash(records) != intent['familySha256']):
         raise InstallError('native-source-installer-family-changed')
@@ -2688,7 +2718,7 @@ def _complete_prepared_source_withdrawal(plan, records, journal, bridge, transac
     from pixel_connections import custody
     from pixel_connections.source_backend import for_bridge
     from pixel_connections.native_executor import _publisher
-    if (journal.value.get('schemaVersion') != 4 or journal.value.get('phase') != 'prepared'
+    if (journal.value.get('schemaVersion') not in (4, 5) or journal.value.get('phase') != 'prepared'
             or plan.get('source_lifecycle', {}).get('mode') != 'withdrawal'):
         raise InstallError('native-source-installer-prepared-withdrawal-required')
     backend = for_bridge(bridge, linux_paths=custody.Paths(), linux_run=custody.system_run)
@@ -3209,6 +3239,7 @@ def _retirement_plan(snapshots, *, current_digest, candidate_digest, owner_name)
         raise InstallError('runtime-upgrade-recovery-file-contract-invalid')
     selected = {item['path'] for item in files}
     _require_complete_source_file_family(selected)
+    _require_complete_schedule_file_family(selected)
     if str(_launchd.ACCESS_STATE / 'service-installation.json') in selected:
         native_contract = _managed_service_contract(selected)
         required.update(native_contract)
@@ -3224,17 +3255,17 @@ def _retirement_plan(snapshots, *, current_digest, candidate_digest, owner_name)
         current_digest=current_digest, candidate_digest=candidate_digest, owner_name=owner_name)
     _verify_recovery_bindings(plan, records)
     _verify_recovery_runtime(plan)
+    _verify_schedule_recovery(plan, records)
     return plan, records
 
 
 def _verify_retirement_live(plan, records):
     """Check the restored deployment without relying on removed journal files."""
-    from pixel_macos_custody import protected_inspection_bytes as protected_bytes
     if any(os.path.lexists(_launchd.ACCESS_STATE / name) for name in
            ('transition.json', 'policy-activation.json', 'runtime-upgrade.json')):
         raise InstallError('runtime-upgrade-pending-recovery')
     for item in records:
-        if protected_bytes(item['path'], limit=8 * 1024 * 1024) != item['before']:
+        if _source_snapshot_read(item['path'], limit=8 * 1024 * 1024) != item['before']:
             raise InstallError('runtime-upgrade-rollback-file-drift')
     previous, _ = _upgrade_services(plan, records)
     identities = {role: _upgrade_service_identity(service) for role, service in previous.items()}
@@ -3266,7 +3297,8 @@ def _archive_verified_retirement(bridge, snapshots, *, current_digest, candidate
 
 def _recovery_file_contract():
     """Fixed native deployment destinations, independent of journal contents."""
-    paths = [ACCESS_PROGRAM_ROOT / name for name in HOST_FILES]
+    paths = [ACCESS_PROGRAM_ROOT / name for name in HOST_FILES
+             if str(ACCESS_PROGRAM_ROOT / name) not in _upgrade.SCHEDULE_ADDITIONS]
     paths += [ACCESS_PROGRAM_ROOT / 'pixel_settings' / name for name in SETTINGS_FILES]
     paths += [ACCESS_PROGRAM_ROOT / 'pixel_provider' / name for name in PROVIDER_FILES]
     paths += [ACCESS_PROGRAM_ROOT / name for name in ('access_mode_http.mjs', 'access_mode_relay.mjs')]
@@ -3285,7 +3317,37 @@ def _recovery_file_contract():
     for path in ([ACCESS_PROGRAM_ROOT / 'pixel_connections' / name for name in CONNECTION_FILES]
                  + [ACCESS_PROGRAM_ROOT / name for name in SOURCE_HOST_FILES]):
         optional[str(_destination(path))] = (0o644, 0)
+    optional.update({path: (0o644, 0) for path in _upgrade.SCHEDULE_ADDITIONS})
     return required, optional
+
+
+def _require_complete_schedule_file_family(selected):
+    family = set(selected) & _upgrade.SCHEDULE_ADDITIONS
+    if family and family != _upgrade.SCHEDULE_ADDITIONS:
+        raise InstallError('native-schedule-recovery-file-family-incomplete')
+
+
+def _verify_schedule_recovery(plan, records):
+    """Old journals may omit the family; current deployment journals may not."""
+    if _upgrade.SCHEDULE_ADDITIONS.issubset({item['path'] for item in records}):
+        return
+    if plan.get('source_lifecycle') is not None:
+        # The complete Source capsule declares all three schedule helpers,
+        # including if candidate publication has not reached its final path.
+        raise InstallError('native-schedule-recovery-file-family-incomplete')
+    digest = plan['runtime_bundle']['digest']
+    candidate = _bundle.INSTALL_ROOT / digest
+    if not os.path.lexists(candidate):
+        return  # A pre-Source journal may precede candidate publication.
+    from pixel_macos_custody import protected_bytes
+    body = protected_bytes(candidate / _bundle.MANIFEST, limit=_bundle.MAX_MANIFEST)
+    if hashlib.sha256(body).hexdigest() != digest:
+        raise InstallError('runtime-upgrade-schedule-source-changed')
+    manifest = json.loads(body)
+    if (type(manifest) is not dict or type(manifest.get('entries')) is not dict
+            or any('ods-source/bin/' + Path(path).name in manifest['entries']
+                   for path in _upgrade.SCHEDULE_ADDITIONS)):
+        raise InstallError('native-schedule-recovery-file-family-incomplete')
 
 
 def _require_complete_source_file_family(selected):
@@ -3320,6 +3382,7 @@ def _load_upgrade_recovery_base(*, current_digest, candidate_digest, owner_name,
         raise InstallError('runtime-upgrade-recovery-file-contract-invalid')
     selected = {item['path'] for item in files}
     _require_complete_source_file_family(selected)
+    _require_complete_schedule_file_family(selected)
     if str(_launchd.ACCESS_STATE / 'service-installation.json') in selected:
         native_contract = _managed_service_contract(selected)
         required.update(native_contract)
@@ -3337,7 +3400,7 @@ def _load_upgrade_recovery_base(*, current_digest, candidate_digest, owner_name,
     plan = _load_recovery_context(
         _launchd.ACCESS_STATE / ('runtime-upgrade-context-' + candidate_digest + '.json'),
         current_digest=current_digest, candidate_digest=candidate_digest, owner_name=owner_name)
-    if journal.value['schemaVersion'] == 4:
+    if journal.value['schemaVersion'] in (4, 5) and 'sourceAddition' in journal.value:
         from pixel_connections.custody import (native_installer_absence_receipt,
             native_installer_withdrawal_intent, native_installer_withdrawal_receipt)
         from pixel_macos_custody import protected_bytes
@@ -3370,6 +3433,7 @@ def _load_upgrade_recovery_base(*, current_digest, candidate_digest, owner_name,
             or managed.get('selection') != plan.get('native_services')):
         raise InstallError('native-service-recovery-selection-changed')
     _verify_recovery_runtime(plan)
+    _verify_schedule_recovery(plan, records)
     return plan, journal, records
 
 
@@ -3455,7 +3519,7 @@ def verify_source_installer_transaction(transaction):
                     else {'uid': addition.get('proof', {}).get('ownerUid'), 'gid': addition.get('proof', {}).get('ownerGid')})
     if (value.get('schemaVersion') != 2 or intent is None
             or _recovery_context(plan) != value
-            or journal.value.get('schemaVersion') != 4
+            or journal.value.get('schemaVersion') not in (4, 5)
             or journal.value['sourceAddition']['contextSha256'] != transaction['transaction']
             or journal.value['sourceAddition']['familySha256'] != intent['familySha256']
             or _upgrade.source_family_hash(records) != intent['familySha256']
