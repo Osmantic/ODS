@@ -269,10 +269,10 @@ forbids stop/start, publication and restoration calls during this unstarted
 recovery. The composed installer/runtime/recovery tests passed 1,661 cases
 with one platform skip on this Mac. The new absence-reader cases also passed
 with the Linux metadata driver, including the actual withdrawal path; these
-remain simulated ownership evidence on Linux. Physical recovery remains
-pending; the retained journal must be qualified and completed before a fresh
-ordinary update. Do not delete it or
-reuse the failed preparation as if activation had succeeded.
+remain simulated ownership evidence on Linux. At this checkpoint, physical
+recovery was still pending. A retained journal must be qualified and completed
+before a fresh ordinary update; deleting it or reusing the failed preparation
+as if activation succeeded is not a recovery method.
 
 The actual recovery from `a074bc6c1289e2a32e9eeabeb897608f77caf61c`
 then stopped with `native-runtime-recovery-failed`, before the preservation gate
@@ -292,9 +292,90 @@ Mac; lint and Python 3.9 syntax checks passed.
 Generic migration and recovery failures now include only a fixed exception
 category and a trusted source-relative file/line. Exception messages, arguments,
 local variables, private filenames and subprocess output are not emitted.
-Physical recovery still needs to complete before any candidate journey is
-accepted; the latest refusal left the old containers healthy and the controller
-explicitly pending recovery.
+The corrected recovery from `7ae1a035cd56e3544ff282e0873b979ca8a7c887`
+subsequently completed with status `restored` on this Mac. An independent owner
+gate confirmed all ten baseline comparisons, including full hashes and inodes
+of both model weights, the selected configuration and controller readiness.
+Only then did the same command start a fresh ordinary update.
+
+That update published its candidate runtime but stopped at
+`native-connection-sidefile-unsafe`, before the integration service appeared.
+Darwin inherited the owner directory's group for a Root-created `gateway.env`;
+the producer required either Root:wheel or owner:staff and refused Root:staff
+before recording the inode. Automatic rollback restored the old deployment.
+The normal owner startup proof succeeded, and the independent baseline gate
+again passed all ten comparisons with a ready controller and no pending work.
+The independent post-rollback inspection also found all 20 original history
+files unchanged, all seven baseline session entries retained, and the original
+Portal attempt plus ten stored response chunks preserved in the active store.
+
+A read-only protected inspection confirmed the exact failed context and schema
+5 restored archive, with 114 validated image records. The sidefile receipt
+matches that context; both child inodes remain unbound and neither is ready.
+The retained `gateway.env` is empty, Root:staff, mode 0600 and singly linked;
+`onboarding.json` is absent. This does not authorize adoption of an existing
+unbound file. Its inode and the original receipt must be preserved through an
+explicit qualified recovery before another update. No token or receipt was
+removed, and no candidate user journey is counted as passed.
+
+A causal review found the same group assumption in the first Source preparation:
+`private/oauth` is created below a directory already owned by the dedicated
+broker. An isolated real-descriptor test with explicit Darwin group inheritance
+reproduced `native-source-descendant-unmanaged`. The prospective correction
+requires the exact prepared parent and child inode, journals the empty child
+before normalizing its inherited group, and retains refusal of unknown existing
+directories. This is Linux driver evidence; the first real Google connection
+still needs to exercise the complete Darwin identity and preparation path.
+
+The `7ae1a035c` CI joined-update case also exceeded its unchanged 180-second
+finish bound. A separate controlled baseline/patch pair exercised a narrow
+compiled-code cache for two protected helper loaders. Every use still repeats
+custody, current-byte and manifest checks, and executes with fresh module state.
+The first finish changed from 147.74 to 126.00 seconds; the baseline second
+finish refused at 180.00084 seconds, while the patch completed it in 153.28
+seconds and passed the complete case. Whole-case totals are not comparable
+because the failed baseline did not reach the later assertions. This local
+measurement does not establish a CI or physical Mac pass. A subsequent joined
+case with a retained sidefile archive failed in its first finish at 180.0019
+seconds. Its capsule used 79 records with current public code after-images and
+synthetic legacy before-images, rather than the physical attempt's 114 records.
+That failure remains recorded separately. A bounded diagnostic trace located
+19 of its first 20 broker compilations in the nested Source verifier: the bundle
+verifier had not passed its already validated operation to that helper loader.
+The correction passes the same operation, rechecks its bundle-root binding,
+reads the protected helper bytes again and reuses only the compiled code. Fresh
+module globals, source provenance, payload, custody and receipt checks remain.
+Ten new real-descriptor driver cases and the existing 49 cache cases passed.
+The next joined run first exposed a test reader whose signature omitted the
+production reader's size limit; that harness error occurred before either finish
+operation. The corrected fixture retains bounded reads and explicit size/type
+refusals. The valid rerun still refused its first finish at 180.0020 seconds.
+Broker compilations fell from 403 to 135 and their measured cost from 88.02 to
+27.34 seconds, but this is still a failed case. Its final stack was in the
+test driver's content-hashing replacement for `protected_tree_metadata`; the
+production function checks descriptor custody and link topology without hashing
+file contents at that boundary. The corrected test driver runs that production
+descriptor traversal in an isolated module, models only the disposable Root
+ownership and fixed external ancestors, and retains the separate runtime and
+bundle hash proofs. The focused Linux packet passed 37 cases; follow-up cases
+also prove that the metadata gate cannot invoke the content manifest, accepts
+valid internal relative links, and still refuses content drift in a warm lease.
+The shared deployment fixture's separate Darwin descriptor incompatibility was
+reproduced on the pre-correction tree and is not a physical product result.
+No production deadline or validation was relaxed. The corrected-driver run
+still refused at 180.0405 seconds, after publication returned and during final
+code-only kit verification; the second update had not started. Its cold
+publisher material path still compiled both helpers repeatedly. A further
+correction is limited to reusing the existing operation only when the freshly
+qualified selection and operation identify the same bundle root. Historical
+or different-root verification keeps its cold path. Eight focused cases and
+the existing public-publisher lifecycle case passed, including a fresh first
+read, current metadata/ACL checks, a new cold operation and preserved state.
+The complete joined case then passed in 245.50 seconds: its two finish
+operations took 65.63 and 79.22 seconds, both within the unchanged 180-second
+bound, followed by successful first preparation and retained archive checks.
+This is one local 1-CPU Linux driver result with the 79-record capsule described
+above, not a physical Mac or CI result. The prior failures remain recorded.
 
 Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
 notifications and reboot acceptance remain pending. The Mac has not been

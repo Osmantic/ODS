@@ -155,11 +155,16 @@ scheduler additions, integration file-custody handling and recognition of the
 reviewed old controller guard. After those corrections, the third update
 created a recovery journal but stopped before publishing the candidate runtime:
 the Source live-image verifier did not handle the protected reader's wrapped
-missing-file error. The controller now requires qualified recovery. The old
-configuration/model bytes and inodes and all eleven running containers remain
-intact. The prepared recovery's absent integration role also has a targeted
-correction. Neither the installed Portal baseline, prepared client images nor
-these regression tests establish candidate acceptance. See the
+missing-file error. Prepared recovery also needed exact absent-role and old
+binding corrections. Recovery on `7ae1a035c` completed and passed the independent
+preservation gate. The next ordinary update then refused a Root-created
+connection sidefile whose group Darwin inherited from the owner directory.
+Automatic rollback and normal owner startup proof restored availability; all
+ten configuration/model comparisons passed, including full weight hashes and
+inodes. Protected inspection confirmed the exact restored transaction and
+retained empty, unbound sidefile. Its preservation recovery remains pending.
+Neither the installed Portal baseline, prepared client images nor regression
+tests establish candidate acceptance. See the
 [Mac qualification scope](pixel/native-integrations-macos-qualification.md).
 Production Google sign-in also depends on the project's official OAuth/domain
 verification; local account tests do not establish complete public onboarding.

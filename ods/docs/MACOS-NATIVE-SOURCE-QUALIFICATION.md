@@ -53,6 +53,32 @@ New Source jobs are not activated by retirement or an installer rebind.
 Keep private receipts, cursors, archives, and existing data after a refusal.
 Deleting a pending record or editing a private receipt is not a recovery method.
 
+## Failed first-sidefile preservation
+
+The explicit `archive-sidefiles` installer operation covers one narrow legacy
+failure: a restored schema 5 update, with no prior Source kit, identity or private
+state, left an empty Root-owned `gateway.env` with the owner directory's inherited
+group before recording its inode. The caller must select the exact receipt and
+file device/inode pairs observed in the failed attempt. `onboarding.json` must
+remain absent. Filled, linked, ACL-bearing, replaced or unrelated files are
+refused; this operation never completes or adopts the unbound file.
+
+The original controller lock, current restored deployment and fresh Source
+absence checks precede preservation. The original file and sidefile receipt
+move by exclusive rename without changing their bytes, ownership or inodes.
+Private copies of the frozen context and restored journal keep the archive
+verifiable after normal runtime-attempt retirement. A complete immutable manifest
+precedes the moves; only a terminal Root ledger entry makes the exact archive
+visible to later absence, first-connection and retirement inventories. Unlisted
+names remain refusals and no historical record grants Source execution authority.
+
+After a sealed manifest exists, an interrupted move can resume only with the
+same captured inodes. Interruption while preparing the capsule, before a complete
+manifest exists, preserves the partial capsule and both originals and refuses
+automatic retry. This narrower boundary must not be reported as recovery from
+every interruption. The mutator handles the first selected archive or replay of
+that same archive; it does not prune or merge unrelated preservation histories.
+
 ## Bounds
 
 | Boundary | Limit |
@@ -64,6 +90,7 @@ Deleting a pending record or editing a private receipt is not a recovery method.
 | Recorded Core process tree | 4,096 birth-identity rows per service |
 | Installer history ledger | 64 explicit entries |
 | Pending-initial boot history | 16 explicit transactions |
+| Failed-sidefile preservation history reader | 16 explicit archives |
 | Read-only OS census output | 1 MiB per command, bounded command deadline |
 
 Exceeding a bound preserves the records and refuses the operation. No filename
