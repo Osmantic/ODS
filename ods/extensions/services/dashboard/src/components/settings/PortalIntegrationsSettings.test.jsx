@@ -77,9 +77,14 @@ function fakeService(initial = view(), { watches = WATCHES } = {}) {
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
+// The page opens on the hub; each integration is a view opened from its tile.
+const escape = text => text.replace(/[.*+?^$()|[\]\\{}]/g, '\\$&')
+const openTile = async title => fireEvent.click(await screen.findByRole('button', { name: new RegExp('^' + escape(title) + ',') }))
+const backToHub = () => fireEvent.click(screen.getByRole('button', { name: 'All integrations' }))
+
 it('saves only what changed and never sends an empty password', async () => {
   const { posts } = fakeService()
-  await screen.findByText('Notifications (ntfy)')
+  await openTile('ntfy')
   expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
   fireEvent.click(screen.getByLabelText('Send notifications through ntfy'))
   fireEvent.change(screen.getByLabelText('User (optional)'), { target: { value: 'portal' } })
@@ -88,7 +93,7 @@ it('saves only what changed and never sends an empty password', async () => {
   await screen.findByText('Saved.')
   expect(posts).toEqual([['save', { expectedRevision: 0, secrets: { ntfyPassword: 'pw' }, settings: {
     notifications: { enabled: true, url: 'http://127.0.0.1:8097', topic: 'portal', username: 'portal', notifyApprovals: true,
-      approvalLink: `${window.location.origin}/settings?section=portal-integrations`, scheduledTasks: 'all' },
+      approvalLink: `${window.location.origin}/settings?section=portal-integrations&view=approvals`, scheduledTasks: 'all' },
     notes: { enabled: false, vaultPath: '', write: 'ask' }, mcp: { servers: [] }, apps: APPS } }]])
   expect(screen.getByLabelText('Password or access token')).toHaveValue('')
   expect(screen.getByLabelText('Password or access token')).toHaveAttribute('placeholder', 'Saved. Type to replace.')
@@ -96,6 +101,7 @@ it('saves only what changed and never sends an empty password', async () => {
 
 it('shows a server’s tools and their effect before it can be turned on', async () => {
   const { posts } = fakeService()
+  await openTile('Home Assistant & MCP')
   fireEvent.click(await screen.findByRole('button', { name: 'Add Home Assistant' }))
   const card = screen.getByRole('listitem', { name: 'MCP server Home Assistant' })
   expect(within(card).getByLabelText('Let Portal use this server')).toBeDisabled()
@@ -120,10 +126,18 @@ it('approves a waiting action and shows the service’s refusal sentences', asyn
   const approval = { id: 'a1', kind: 'mcp', summary: 'Home Assistant: HassTurnOn {"name":"Kitchen"}', createdAt: 1, expiresAt: 2 }
   const activity = [{ at: 1, action: 'notes-search', target: 'deposit', outcome: '1 notes' }]
   const { posts } = fakeService(view({ approvals: [approval], settings: settings(3), activity }))
-  expect(await screen.findByText(/Searched notes: deposit \(1 notes\)/)).toBeInTheDocument()
+  // The hub says first that something waits; Review opens it.
+  expect(await screen.findByRole('note')).toHaveTextContent('Portal is waiting for your approval.')
+  fireEvent.click(screen.getByRole('button', { name: 'Review' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
   await screen.findByText('Nothing is waiting.')
   expect(posts).toEqual([['decide', { approvalId: 'a1', decision: 'approve' }]])
+  backToHub()
+  expect(screen.queryByRole('note')).toBeNull()
+  await openTile('Activity')
+  expect(screen.getByText(/Searched notes: deposit \(1 notes\)/)).toBeVisible()
+  backToHub()
+  await openTile('Obsidian')
 
   vi.stubGlobal('fetch', vi.fn(async (url, options) => options.method === 'POST'
     ? response({ detail: 'The vault folder must be an existing folder, given as a full path.', code: 'invalid-settings' }, 400)
@@ -145,7 +159,7 @@ it('keeps saved tools only while the address is unchanged and makes unique ids',
 
 it('keeps Save and Discard in reach while changes are unsaved, and warns before leaving', async () => {
   const { posts } = fakeService()
-  await screen.findByText('Notes (Obsidian vault)')
+  await openTile('Obsidian')
   expect(screen.queryByRole('region', { name: 'Unsaved changes' })).toBeNull()
   const leaving = vi.spyOn(window, 'addEventListener')
   fireEvent.change(screen.getByLabelText('Adding to notes'), { target: { value: 'allow' } })
@@ -168,6 +182,7 @@ it('sets up a local server with secret variables, shows its status and restarts 
     tools: [{ ...TOOLS[0], name: 'echo', new: false }, { ...TOOLS[1], name: 'shout', policy: 'off', new: true }] }
   const processes = { echo: { running: false, lastError: 'Error: API_KEY is not valid' } }
   const { posts } = fakeService(view({ settings: settings(2, [saved]), processes }))
+  await openTile('Home Assistant & MCP')
   const card = await screen.findByRole('listitem', { name: 'MCP server Echo' })
   expect(within(card).getByRole('note')).toHaveTextContent('runs on this computer with your permissions')
   expect(within(card).getByLabelText('Last error output')).toHaveTextContent('API_KEY is not valid')
@@ -196,10 +211,15 @@ it('restarts a running local server and clears the activity list', async () => {
     envNames: [], hasEnv: {}, hasToken: false, discoveredAt: 1, tools: [] }
   const activity = [{ at: 1, action: 'mcp-restart', target: 'Echo', outcome: 'stopped; starts on next use' }]
   const { posts } = fakeService(view({ settings: settings(2, [saved]), processes: { echo: { running: true, lastError: '' } }, activity }))
-  expect(await screen.findByText(/Restarted an MCP server: Echo/)).toBeInTheDocument()
-  expect(screen.getByText(/Running\. It stops after 10 minutes/)).toBeInTheDocument()
+  await openTile('Activity')
+  expect(screen.getByText(/Restarted an MCP server: Echo/)).toBeVisible()
+  backToHub()
+  await openTile('Home Assistant & MCP')
+  expect(screen.getByText(/Running\. It stops after 10 minutes/)).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'Restart' }))
   await screen.findByText('Echo was stopped. It starts again when it is next used.')
+  backToHub()
+  await openTile('Activity')
   fireEvent.click(screen.getByRole('button', { name: 'Clear activity' }))
   await screen.findByText('No activity yet.')
   expect(posts).toEqual([['restart', { serverId: 'echo' }], ['clear-activity', {}]])
@@ -215,6 +235,7 @@ it('gives a new server the id of its name, with its secrets, and keeps saved ids
   const saved = { id: 'home', name: 'Home', kind: 'http', preset: '', enabled: false, url: 'http://a/api/mcp', command: '', workingFolder: '',
     envNames: [], hasEnv: {}, hasToken: true, discoveredAt: null, tools: [] }
   const { posts } = fakeService(view({ settings: settings(1, [saved]) }))
+  await openTile('Home Assistant & MCP')
   fireEvent.click(await screen.findByRole('button', { name: 'Add MCP server' }))
   fireEvent.change(screen.getByRole('listitem', { name: 'MCP server MCP server' }).querySelector('input'), { target: { value: 'Files' } })
   const card = screen.getByRole('listitem', { name: 'MCP server Files' })
@@ -233,6 +254,7 @@ it('gives a new server the id of its name, with its secrets, and keeps saved ids
 
 it('connects an app with a secret that is never shown back, then tests it', async () => {
   const { posts } = fakeService()
+  await openTile('FreshRSS')
   const card = await screen.findByRole('listitem', { name: 'News' })
   fireEvent.click(within(card).getByLabelText('Let Portal read my news feeds'))
   fireEvent.change(within(card).getByLabelText('FreshRSS user'), { target: { value: 'owner' } })
@@ -245,20 +267,27 @@ it('connects an app with a secret that is never shown back, then tests it', asyn
   expect(posts[1][1]).toEqual({ app: 'news' })
   // The answer also shows in the card, next to the button that asked.
   expect(within(card).getByRole('status')).toHaveTextContent('FreshRSS answered: 2 feeds.')
-  expect(within(screen.getByRole('listitem', { name: 'Photos' })).queryByRole('status')).toBeNull()
+  // The news view shows only News.
+  expect(screen.queryByRole('listitem', { name: 'Photos' })).toBeNull()
   expect(within(card).getByLabelText('API password')).toHaveValue('')
   expect(within(card).getByLabelText('API password')).toHaveAttribute('placeholder', 'Saved. Type to replace.')
 })
 
 it('keeps the digest in the owner\'s time zone and asks before watching pages by default', async () => {
   const { posts } = fakeService()
+  await openTile('FreshRSS')
   const news = await screen.findByRole('listitem', { name: 'News' })
   expect(within(news).getByLabelText(/Digest time/)).toBeDisabled()
   fireEvent.click(within(news).getByLabelText('Send me a daily news digest'))
   fireEvent.change(within(news).getByLabelText(/Digest time/), { target: { value: '06:45' } })
+  // Edits in one view stay while the owner goes to others.
+  backToHub()
+  await openTile('changedetection.io')
   const watch = screen.getByRole('listitem', { name: 'Watched pages' })
   expect(within(watch).getByLabelText('Adding and removing watched pages')).toHaveValue('ask')
   expect(within(watch).getByRole('button', { name: 'Test changedetection.io' })).toBeDisabled()
+  backToHub()
+  await openTile('ntfy')
   fireEvent.change(screen.getByLabelText('Notify me when a scheduled task'), { target: { value: 'failures' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
   await screen.findByText('Saved.')
@@ -270,6 +299,7 @@ it('keeps the digest in the owner\'s time zone and asks before watching pages by
 
 it('shows a refused app key as an error in that app\'s card', async () => {
   fakeService()
+  await openTile('Paperless-ngx')
   const card = await screen.findByRole('listitem', { name: 'Documents' })
   fireEvent.change(within(card).getByLabelText('API token'), { target: { value: 'wrong' } })
   fireEvent.click(within(card).getByRole('button', { name: 'Test Paperless-ngx' }))
@@ -293,6 +323,7 @@ const withApps = (patch, keys, notificationsOn = false) => {
 
 it('tests an app before it is turned on, and leaves it off', async () => {
   const { posts } = fakeService()
+  await openTile('FreshRSS')
   const card = await screen.findByRole('listitem', { name: 'News' })
   fireEvent.change(within(card).getByLabelText('API password'), { target: { value: 'secret' } })
   fireEvent.click(within(card).getByRole('button', { name: 'Test FreshRSS' }))
@@ -304,6 +335,7 @@ it('tests an app before it is turned on, and leaves it off', async () => {
 
 it('lists the watched pages with their price limits once watching is saved', async () => {
   const { posts } = fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }))
+  await openTile('changedetection.io')
   const card = await screen.findByRole('listitem', { name: 'Watched pages' })
   const list = await within(card).findByLabelText('Watched pages list')
   expect(await within(list).findByRole('link', { name: 'Kettle' })).toHaveAttribute('href', 'https://shop.example/kettle')
@@ -317,6 +349,7 @@ it('lists the watched pages with their price limits once watching is saved', asy
 
 it('keeps unsaved edits while the watched pages load', async () => {
   fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }))
+  await openTile('changedetection.io')
   const card = await screen.findByRole('listitem', { name: 'Watched pages' })
   fireEvent.change(within(card).getByLabelText('Adding and removing watched pages'), { target: { value: 'allow' } })
   fireEvent.click(within(card).getByRole('button', { name: 'Refresh' }))
@@ -331,6 +364,7 @@ it('links only to web addresses in the watched pages list', async () => {
     { id: 'w2', title: 'Shop', url: 'HTTPS://shop.example/', lastChanged: 0, below: null, lastPrice: null },
   ] }
   fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }), { watches })
+  await openTile('changedetection.io')
   const list = await screen.findByLabelText('Watched pages list')
   expect(await within(list).findByRole('link', { name: 'Shop' })).toHaveAttribute('href', 'HTTPS://shop.example/')
   expect(within(list).queryByRole('link', { name: 'Odd' })).toBeNull()
@@ -339,6 +373,7 @@ it('links only to web addresses in the watched pages list', async () => {
 
 it('shows why a save failed in the bar where Save was pressed', async () => {
   fakeService()
+  await openTile('Immich')
   const card = await screen.findByRole('listitem', { name: 'Photos' })
   vi.stubGlobal('fetch', vi.fn(async (url, options) => options.method === 'POST'
     ? response({ detail: 'Give the Immich key, or turn it off.', code: 'invalid-settings' }, 400)
@@ -354,6 +389,7 @@ it('shows why a save failed in the bar where Save was pressed', async () => {
 
 it('says the digest waits until News is turned on', async () => {
   fakeService()
+  await openTile('FreshRSS')
   const news = await screen.findByRole('listitem', { name: 'News' })
   fireEvent.click(within(news).getByLabelText('Send me a daily news digest'))
   expect(within(news).getByText(/The digest starts once you turn on/)).toBeInTheDocument()
@@ -363,23 +399,27 @@ it('says the digest waits until News is turned on', async () => {
 
 it('says when no page is watched yet', async () => {
   fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }), { watches: { total: 0, watches: [] } })
+  await openTile('changedetection.io')
   expect(await screen.findByText(/No pages are watched yet/)).toBeInTheDocument()
 })
 
 it('says how many watched pages are not shown', async () => {
   fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }), { watches: { ...WATCHES, total: 140 } })
+  await openTile('changedetection.io')
   expect(await screen.findByText('Showing 2 of 140. See them all in changedetection.io.')).toBeInTheDocument()
 })
 
 it('shows why the watched pages could not be read', async () => {
   fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, { watch: true }),
     { watches: new Error('changedetection.io at http://127.0.0.1:11039 could not be reached.') })
+  await openTile('changedetection.io')
   const card = await screen.findByRole('listitem', { name: 'Watched pages' })
   expect(await within(card).findByRole('alert')).toHaveTextContent('could not be reached')
 })
 
 it('asks for a saved key before listing watched pages', async () => {
   const { posts } = fakeService(withApps({ watch: { ...APPS.watch, enabled: true } }, {}))
+  await openTile('changedetection.io')
   const card = await screen.findByRole('listitem', { name: 'Watched pages' })
   expect(within(card).getByText(/Turn this on with its API key and save/)).toBeInTheDocument()
   expect(posts.some(([action]) => action === 'watch-list')).toBe(false)
@@ -388,6 +428,7 @@ it('asks for a saved key before listing watched pages', async () => {
 it('sends a digest now only with news and notifications on', async () => {
   const news = { ...APPS.news, enabled: true, username: 'owner' }
   const { posts } = fakeService(withApps({ news }, { news: true }, true))
+  await openTile('FreshRSS')
   const card = await screen.findByRole('listitem', { name: 'News' })
   fireEvent.click(within(card).getByRole('button', { name: 'Send a digest now' }))
   expect(await within(card).findByRole('status')).toHaveTextContent('Digest sent with 2 stories.')
@@ -401,9 +442,10 @@ it('sends a digest now only with news and notifications on', async () => {
 
 it('explains why a digest cannot be sent while notifications are off', async () => {
   fakeService(withApps({ news: { ...APPS.news, enabled: true, username: 'owner' } }, { news: true }, false))
+  await openTile('FreshRSS')
   const card = await screen.findByRole('listitem', { name: 'News' })
   expect(within(card).getByRole('button', { name: 'Send a digest now' })).toBeDisabled()
-  expect(within(card).getByText(/Turn on notifications through ntfy above/)).toBeInTheDocument()
+  expect(within(card).getByText(/Turn on notifications in the ntfy integration/)).toBeInTheDocument()
 })
 
 it('drafts and saves every app field, and sends only typed app secrets', () => {
@@ -415,7 +457,7 @@ it('never puts back a change saved in another window, even after the page refres
   try {
     const start = settings(1)
     const { posts, saveElsewhere, saved } = fakeService(view({ settings: { ...start, notes: { ...start.notes, write: 'allow' } } }))
-    await screen.findByText('Notes (Obsidian vault)')
+    await openTile('ntfy')
     // A edits the ntfy user; B turns adding to notes off and saves.
     fireEvent.change(screen.getByLabelText('User (optional)'), { target: { value: 'a-user' } })
     saveElsewhere(current => ({ ...current, notes: { ...current.notes, write: 'off' } }))
@@ -432,6 +474,8 @@ it('never puts back a change saved in another window, even after the page refres
     fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
     expect(await screen.findByText(/Your unsaved changes are kept/)).toBeInTheDocument()
     expect(screen.getByLabelText('User (optional)')).toHaveValue('a-user')
+    backToHub()
+    await openTile('Obsidian')
     expect(screen.getByLabelText('Adding to notes')).toHaveValue('off')
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     await screen.findByText('Saved.')
@@ -446,7 +490,7 @@ it('a refresh without unsaved edits simply shows the newer settings', async () =
   vi.useFakeTimers({ shouldAdvanceTime: true })
   try {
     const { saveElsewhere } = fakeService()
-    await screen.findByText('Notes (Obsidian vault)')
+    await openTile('Obsidian')
     saveElsewhere(current => ({ ...current, notes: { ...current.notes, write: 'off' } }))
     await vi.advanceTimersByTimeAsync(15000)
     await waitFor(() => expect(screen.getByLabelText('Adding to notes')).toHaveValue('off'))

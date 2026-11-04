@@ -95,19 +95,23 @@ function AppCard({ id, app, saved, secret, busy, result, revision, notifications
       {id === 'news' && <button className={buttonStyle} disabled={busy || !hasKey || !app.enabled || !notifications}
         onClick={onSendDigest}>Send a digest now</button>}
     </div>
-    {id === 'news' && !notifications && <p className="text-xs text-theme-text-muted">Turn on notifications through ntfy above to get the digest on your phone.</p>}
+    {id === 'news' && !notifications && <p className="text-xs text-theme-text-muted">Turn on notifications in the ntfy integration to get the digest on your phone.</p>}
     {result && <p role={result.ok ? 'status' : 'alert'} className={`text-sm break-words ${result.ok ? 'text-theme-text-muted' : 'text-red-400'}`}>{result.message}</p>}
   </li>
 }
 
-export default function PortalAppsSettings({ apps, saved, typed, busy, result, revision, notifications, onChange, onSecret, onTest, onSendDigest, onLoadWatches }) {
-  return <section className="rounded-xl border border-theme-border bg-theme-card p-5 space-y-4" aria-labelledby="integrations-apps">
-    <div>
-      <h3 id="integrations-apps" className="font-semibold">Your apps</h3>
-      <p className="text-sm text-theme-text-muted">Apps running on this computer, such as the ones in the ODS extension catalog. The addresses below are where the catalog installs them.</p>
-    </div>
+// ids: the apps to show; the integrations hub opens one app at a time.
+export default function PortalAppsSettings({ ids = Object.keys(APPS), apps, saved, typed, busy, result, revision, notifications, onChange, onSecret, onTest, onSendDigest, onLoadWatches }) {
+  const single = ids.length === 1
+  return <section className="rounded-xl border border-theme-border bg-theme-card p-5 space-y-4" {...(single ? { 'aria-label': APPS[ids[0]].title } : { 'aria-labelledby': 'integrations-apps' })}>
+    {single
+      ? <p className="text-sm text-theme-text-muted">An app running on this computer, such as one from the ODS extension catalog. The address below is where the catalog installs it.</p>
+      : <div>
+        <h3 id="integrations-apps" className="font-semibold">Your apps</h3>
+        <p className="text-sm text-theme-text-muted">Apps running on this computer, such as the ones in the ODS extension catalog. The addresses below are where the catalog installs them.</p>
+      </div>}
     <ul className="space-y-3">
-      {Object.keys(APPS).map(id => <AppCard key={id} id={id} app={apps[id]} saved={saved[id]} secret={typed[id] || ''} busy={busy}
+      {ids.map(id => <AppCard key={id} id={id} app={apps[id]} saved={saved[id]} secret={typed[id] || ''} busy={busy}
         result={result?.app === id ? result : null} revision={revision} notifications={notifications}
         onChange={patch => onChange(id, patch)} onSecret={value => onSecret(id, value)} onTest={() => onTest(id)}
         onSendDigest={onSendDigest} onLoadWatches={onLoadWatches} />)}

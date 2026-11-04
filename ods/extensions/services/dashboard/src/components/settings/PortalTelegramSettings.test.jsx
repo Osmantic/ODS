@@ -44,7 +44,11 @@ function fakeService(telegram = TELEGRAM) {
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-const card = async () => within((await screen.findByRole('heading', { name: 'Telegram' })).closest('section'))
+// Telegram opens from its tile in the integrations hub.
+const card = async () => {
+  fireEvent.click(await screen.findByRole('button', { name: /^Telegram,/ }))
+  return within((await screen.findByRole('heading', { name: 'Telegram' })).closest('section'))
+}
 
 it('saves Telegram with the token only when typed, then tests the bot', async () => {
   const posts = fakeService()

@@ -47,7 +47,11 @@ function fakeService(memory) {
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-const card = async () => within((await screen.findByRole('heading', { name: 'Memory' })).closest('section'))
+// Memory opens from its tile in the integrations hub.
+const card = async () => {
+  fireEvent.click(await screen.findByRole('button', { name: /^Memory,/ }))
+  return within((await screen.findByRole('heading', { name: 'Memory' })).closest('section'))
+}
 
 it('lists what Portal remembers and changes it at once, outside the page Save', async () => {
   const posts = fakeService({ enabled: true, askFirst: true, items: [fact('a', 'The owner is vegetarian.'), fact('b', 'The owner\'s sister is Ana.')], pending: [] })
@@ -120,6 +124,7 @@ it('forgets everything only after a confirmation that can be cancelled', async (
 it('an older service without memory shows no memory card', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => response({ settings: SETTINGS, approvals: [], activity: [] })))
   render(createElement(PortalIntegrationsSettings))
-  await screen.findByText('Notifications (ntfy)')
+  await screen.findByRole('button', { name: /^ntfy,/ })
   expect(screen.queryByRole('heading', { name: 'Memory' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /^Memory,/ })).not.toBeInTheDocument()
 })
