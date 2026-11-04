@@ -560,7 +560,8 @@ else
         echo 'function docker { $global:LASTEXITCODE = 1 }'
         echo '$script:_EnableVisited = @()'
         for fn in Get-ExtensionServiceDir Get-ExtensionCategory Get-ExtensionDependencies \
-                  Get-DisabledDependencies Get-EnabledDependents Invoke-Enable Invoke-Disable \
+                  Get-DisabledDependencies Get-EnabledDependents Invoke-Enable \
+                  Get-ODSExtensionStopTargets Invoke-Disable \
                   Get-ServiceIdArgument Test-ForceArgument; do
             extract_fn "$fn"
             echo ""
@@ -569,7 +570,7 @@ else
 
     # Sanity: every function we asked for made it into the harness.
     for fn in Get-ExtensionDependencies Get-DisabledDependencies Get-EnabledDependents \
-              Invoke-Enable Invoke-Disable; do
+              Invoke-Enable Get-ODSExtensionStopTargets Invoke-Disable; do
         grep -q "function $fn" "$HARNESS" || fail "extraction failed for $fn"
     done
     pass "Extracted enable/disable functions from ods.ps1"
