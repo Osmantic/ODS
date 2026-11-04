@@ -77,6 +77,19 @@ def _signature(info):
             info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
+def _stat_current(path, descriptor, owners):
+    try:
+        current = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        raise _JournalReplaced("connection journal replaced while reading") from None
+    except OSError as error:
+        raise LifecycleError("connection journal cannot be opened safely") from error
+    if not os.path.samestat(current, descriptor):
+        raise _JournalReplaced("connection journal replaced while reading")
+    _private_metadata(current, owners)
+    return current
+
+
 def _private_snapshot(path: Path, owners: tuple) -> Any:
     try:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
@@ -93,15 +106,11 @@ def _private_snapshot(path: Path, owners: tuple) -> Any:
             raise LifecycleError("unsafe connection journal")
         after = os.fstat(handle.fileno())
         _private_metadata(after, owners)
-        try:
-            current = os.stat(path, follow_symlinks=False)
-        except FileNotFoundError:
-            raise _JournalReplaced("connection journal replaced while reading") from None
-        except OSError as error:
-            raise LifecycleError("connection journal cannot be opened safely") from error
-        if (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino):
-            raise _JournalReplaced("connection journal replaced while reading")
+        current = _stat_current(path, after, owners)
         if _signature(info) != _signature(after) or _signature(after) != _signature(current):
+            # The kernel can collect metadata on the displaced inode after
+            # looking up the path. Only a proven replacement permits a retry.
+            _stat_current(path, after, owners)
             raise LifecycleError("connection journal changed while reading")
     try:
         return json.loads(raw.decode("utf-8"))

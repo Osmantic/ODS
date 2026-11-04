@@ -180,3 +180,6 @@ a4b35b934c2f627d844dfa6a6b7dbd26ea2fbc9b:ods/extensions/services/dashboard/src/l
 7b4ca0992cefbed6d5aeefdf6c111629a75ae1c3:ods/recovery/bootstrap_current/compatibility.json:generic-api-key:12
 7b4ca0992cefbed6d5aeefdf6c111629a75ae1c3:ods/recovery/bootstrap_current/compatibility.json:generic-api-key:13
 7b4ca0992cefbed6d5aeefdf6c111629a75ae1c3:ods/recovery/bootstrap_current/compatibility.json:generic-api-key:14
+
+# Public parametrized test labels for retained Source versions in this historical hunk.
+14f5b3d444be3d32b530a74da1df5df81a0e2564:ods/tests/pixel_inference/test_client.py:generic-api-key:111

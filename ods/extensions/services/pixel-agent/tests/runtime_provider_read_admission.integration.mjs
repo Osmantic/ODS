@@ -23,6 +23,8 @@ const root=fs.mkdtempSync(path.join(os.tmpdir(),'ods-provider-admission-'));fs.c
 process.env.OPENCLAW_STATE_DIR=path.join(root,'state');process.env.OPENCLAW_CONFIG_PATH=path.join(root,'config.json');
 test.after(()=>fs.rmSync(root,{recursive:true,force:true}));
 const source=fileURLToPath(new URL('../../../../vendor/pixel/plugin/',import.meta.url));
+assert.equal(JSON.parse(fs.readFileSync(path.join(source,'openclaw.plugin.json'))).version,'4.3.46',
+ 'admission must qualify the actual Source46 factories, not only a versioned registry fixture');
 const aliases={typebox:pathToFileURL(path.join(box,'build/index.mjs')).href,'typebox/value':pathToFileURL(path.join(box,'build/value/index.mjs')).href,
  'openclaw/plugin-sdk/plugin-entry':pathToFileURL(path.join(pkg,'dist/plugin-sdk/plugin-entry.js')).href};
 const loader=registerHooks({
@@ -66,25 +68,25 @@ function liveAndCached(version){
  return {first,second};
 }
 test('actual live factory, cached descriptor and wrapper metadata bind exact manifest version',()=>{
- for(const version of ['4.3.44','4.3.45','4.3.46']){
+ for(const version of ['4.3.44','4.3.45','4.3.46','4.3.47']){
   const {first,second}=liveAndCached(version);
   for(const tools of [first,second])for(const tool of tools){assert.equal(getMeta(tool).pluginId,'pixel-source-broker');assert.equal(getMeta(tool).pluginVersion,version);
    const wrapped={...tool};copyMeta(tool,wrapped);assert.deepEqual(getMeta(wrapped),getMeta(tool));}
-  assert.equal(offer(first).filter(t=>names.includes(t.name)).length,version==='4.3.45'?9:0);
-  assert.equal(offer(second).filter(t=>names.includes(t.name)).length,version==='4.3.45'?9:0);
+  assert.equal(offer(first).filter(t=>names.includes(t.name)).length,version==='4.3.46'?9:0);
+  assert.equal(offer(second).filter(t=>names.includes(t.name)).length,version==='4.3.46'?9:0);
  }
 });
 test('missing or unknown version and wrong provenance keep the whole family deferred',()=>{
  const tools=factories.map(fn=>fn({agentId:'pixel'}));
- for(const version of [undefined,'unknown','4.3.44','4.3.46']){
+ for(const version of [undefined,'unknown','4.3.44','4.3.45','4.3.47']){
   for(const t of tools)setMeta(t,{pluginId:'pixel-source-broker',...(version?{pluginVersion:version}:{})});
   assert.equal(offer(tools).filter(t=>names.includes(t.name)).length,0);
  }
- for(const t of tools)setMeta(t,{pluginId:'another-plugin',pluginVersion:'4.3.45'});
+ for(const t of tools)setMeta(t,{pluginId:'another-plugin',pluginVersion:'4.3.46'});
  assert.equal(offer(tools).filter(t=>names.includes(t.name)).length,0);
 });
-test('Source45 direct family retains original post-policy objects and exact schemas within8192bytes',()=>{
- const tools=factories.map(fn=>fn({agentId:'pixel'}));for(const t of tools)setMeta(t,{pluginId:'pixel-source-broker',pluginVersion:'4.3.45'});
+test('Source46 direct family retains original post-policy objects and exact schemas within8192bytes',()=>{
+ const tools=factories.map(fn=>fn({agentId:'pixel'}));for(const t of tools)setMeta(t,{pluginId:'pixel-source-broker',pluginVersion:'4.3.46'});
  const offered=offer(tools);for(const t of tools)assert.ok(offered.includes(t));
  assert.equal(offered.filter(t=>names.includes(t.name)).length,9);assert.ok(!offered.some(t=>t.name==='specialist'));
  const bytes=Buffer.byteLength(JSON.stringify(tools.map(t=>({type:'function',function:{name:t.name,description:t.description,parameters:t.parameters}}))));assert.ok(bytes<=8192);
@@ -95,9 +97,9 @@ test('Source45 direct family retains original post-policy objects and exact sche
  }
  console.log(JSON.stringify({sourceReadSchemaBytes:bytes}));
 });
-test('oversize and unserializable Source45 family atomically preserve deferred fallback',()=>{
+test('oversize and unserializable Source46 family atomically preserve deferred fallback',()=>{
  for(const extra of [{description:'x'.repeat(8192)},{parameters:(()=>{const s={};s.self=s;return s;})()}]){
-  const tools=factories.map(fn=>fn({agentId:'pixel'}));tools[0]={...tools[0],...extra};for(const t of tools)setMeta(t,{pluginId:'pixel-source-broker',pluginVersion:'4.3.45'});
+  const tools=factories.map(fn=>fn({agentId:'pixel'}));tools[0]={...tools[0],...extra};for(const t of tools)setMeta(t,{pluginId:'pixel-source-broker',pluginVersion:'4.3.46'});
   assert.equal(offer(tools).filter(t=>names.includes(t.name)).length,0);
  }
 });

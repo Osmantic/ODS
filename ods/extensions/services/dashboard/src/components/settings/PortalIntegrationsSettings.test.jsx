@@ -88,7 +88,8 @@ function fakeService(initial = view(), { watches = WATCHES, approvalDetails = {}
   })
   vi.stubGlobal('fetch', fetchMock)
   const rendered = render(createElement(PortalIntegrationsSettings))
-  return { posts, fetchMock, unmount: rendered.unmount, failNext: (action, message) => failures.set(action, message) }
+  const saveElsewhere = change => { current = { ...current, settings: change({ ...current.settings, revision: current.settings.revision + 1 }) } }
+  return { posts, fetchMock, saveElsewhere, unmount: rendered.unmount, failNext: (action, message) => failures.set(action, message) }
 }
 
 afterEach(() => { for (const router of routers.splice(0)) router.dispose(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
@@ -368,7 +369,7 @@ it('ignores a poll that finishes after Save and allows only one poll in flight',
   expect(posts[1][1].expectedRevision).toBe(1)
 })
 
-it('preserves edits and newly typed secrets while a background read returns newer settings', async () => {
+it('keeps unrelated edits and clears a password when a background read changes the account', async () => {
   const intervals = vi.spyOn(globalThis, 'setInterval')
   const { fetchMock } = fakeService()
   await screen.findByText('Notes (Obsidian vault)')
@@ -382,7 +383,8 @@ it('preserves edits and newly typed secrets while a background read returns newe
   const received = settings(3); received.notifications.username = 'Changed in another window'
   await act(async () => { read.resolve(response(view({ settings: received }))); await pending })
   expect(screen.getByLabelText('Adding to notes')).toHaveValue('allow')
-  expect(screen.getByLabelText('Password or access token')).toHaveValue('new-unsaved-password')
+  expect(screen.getByLabelText('Password or access token')).toHaveValue('')
+  expect(screen.getByText(/Re-enter any cleared credential/)).toBeInTheDocument()
   expect(screen.getByLabelText('User (optional)')).toHaveValue('Changed in another window')
   expect(screen.getByRole('region', { name: 'Unsaved changes' })).toBeInTheDocument()
 })
@@ -805,4 +807,30 @@ it('reconciles a stale revision refusal and never retries it automatically', asy
   expect(within(screen.getByRole('listitem', { name: 'News' })).getByRole('alert')).toHaveTextContent('These settings changed')
   expect(within(recovery).getByRole('button', { name: 'Retry digest' })).toBeDisabled()
   expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/retry-digest'))).toHaveLength(1)
+})
+
+it('drops a typed credential if its address changed in another window and keeps unrelated edits', async () => {
+  const server = { id: 'old', name: 'Old', kind: 'http', preset: '', url: 'https://old.example/mcp',
+    command: '', workingFolder: '', envNames: [], enabled: false, tools: [] }
+  const { posts, saveElsewhere } = fakeService(view({ settings: settings(1, [server]) }))
+  await screen.findByText('Notes (Obsidian vault)')
+  fireEvent.change(screen.getByLabelText('Password or access token'), { target: { value: 'for-old-host' } })
+  fireEvent.change(screen.getByLabelText('Vault folder (full path)'), { target: { value: '/qa/notes' } })
+  saveElsewhere(current => ({ ...current, notifications: { ...current.notifications, url: 'https://new.example' }, mcp: { servers: [] } }))
+  fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+  await waitFor(() => expect(screen.getByLabelText('ntfy address')).toHaveValue('https://new.example'))
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+  await screen.findByText('Saved.')
+  expect(posts.at(-1)[1]).toMatchObject({ expectedRevision: 2, settings: { notes: { vaultPath: '/qa/notes' }, mcp: { servers: [] } } })
+  expect(posts.at(-1)[1].secrets).toEqual({})
+})
+
+it('forgets a removed server token when a new server reuses the name', async () => {
+  fakeService()
+  const add = await screen.findByRole('button', { name: 'Add Home Assistant' })
+  fireEvent.click(add)
+  fireEvent.change(screen.getByLabelText('Long-lived access token'), { target: { value: 'for-removed-server' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Remove Home Assistant' }))
+  fireEvent.click(add)
+  expect(screen.getByLabelText('Long-lived access token')).toHaveValue('')
 })

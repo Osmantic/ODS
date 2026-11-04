@@ -23,7 +23,7 @@ def test_bundled_pixel_pin_tracks_parent_installer():
     phase = (root/'installers/phases/06-directories.sh').read_text()
     integration = (root/'installers/lib/pixel-integration.sh').read_text()
     verifier = (root/'scripts/verify-pixel-bundle.py').read_text()
-    bundled_ref = '3fe50f1d75d13295bfbe964bfcd327a91df15814'
+    bundled_ref = '80fd49e6d6f3d54185fe2415ac6b7e003c16a12a'
     assert f"ODS_PIXEL_BUNDLED_REF='{bundled_ref}'" in integration
     assert 'PIXEL_SOURCE_REF "$ODS_PIXEL_BUNDLED_REF"' in phase
     assert f'PIXEL_SOURCE_REF={bundled_ref}' in (root/'.env.example').read_text()
@@ -106,6 +106,8 @@ def test_archive_rejects_missing_or_changed_bundle_without_git(tmp_path,monkeypa
     'acc5550888fe034a9a42e90307c9f7a664726315',
     '224ed399e38273db0f9d4834ceab55d493a99cf3',
     '8afb55abf50633616cd759146366588717534afc',
+    '3fe50f1d75d13295bfbe964bfcd327a91df15814',
+    '47706f6863f74ae65c83c925bd6af51395193363',
     mod.PIXEL_COMMIT,
 ), ids=(
     'legacy',
@@ -117,6 +119,8 @@ def test_archive_rejects_missing_or_changed_bundle_without_git(tmp_path,monkeypa
     'prior-v42',
     'prior-v43',
     'prior-v44',
+    'prior-v45-typed',
+    'prior-v45-upstream',
     'current',
 ))
 def client_dir(tmp_path,request):

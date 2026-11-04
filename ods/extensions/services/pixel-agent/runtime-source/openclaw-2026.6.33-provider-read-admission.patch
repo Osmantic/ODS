@@ -10,7 +10,7 @@
 +	if (params.agentId === "pixel" && config.mode === "tools" && Number.isInteger(contextTokens) && contextTokens >= 65536) {
 +		const family = params.tools.filter((tool) => providerReadNames.has(tool.name) && uniqueNames.has(tool.name)
 +			&& getPluginToolMeta(tool)?.pluginId === "pixel-source-broker"
-+			&& getPluginToolMeta(tool)?.pluginVersion === "4.3.45");
++			&& getPluginToolMeta(tool)?.pluginVersion === "4.3.46");
 +		try {
 +			// A family cap is a bounded schema offer, not a total context-token proof.
 +			// Keep the complete original family deferred when its JSON cannot fit.

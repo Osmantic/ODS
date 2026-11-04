@@ -3652,7 +3652,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     home.mkdir()
     (install_dir / ".env").write_text(
         "PIXEL_SOURCE_URL=bundled\n"
-        "PIXEL_SOURCE_REF=3fe50f1d75d13295bfbe964bfcd327a91df15814\n"
+        "PIXEL_SOURCE_REF=80fd49e6d6f3d54185fe2415ac6b7e003c16a12a\n"
         f"{gateway_setting}",
         encoding="utf-8",
     )
@@ -3746,7 +3746,7 @@ def test_managed_pixel_reconcile_accepts_bundled_source(
     home = tmp_path / "owner-home"
     install_dir.mkdir()
     home.mkdir()
-    source_ref = "3fe50f1d75d13295bfbe964bfcd327a91df15814"
+    source_ref = "80fd49e6d6f3d54185fe2415ac6b7e003c16a12a"
     source_setting = "PIXEL_SOURCE_URL=bundled\n" if explicit_source else ""
     (install_dir / ".env").write_text(
         f"{source_setting}PIXEL_SOURCE_REF={source_ref}\n",
@@ -3840,6 +3840,8 @@ def test_managed_pixel_reconcile_rejects_remote_source(tmp_path, monkeypatch):
     "acc5550888fe034a9a42e90307c9f7a664726315",
     "224ed399e38273db0f9d4834ceab55d493a99cf3",
     "8afb55abf50633616cd759146366588717534afc",
+    "3fe50f1d75d13295bfbe964bfcd327a91df15814",
+    "47706f6863f74ae65c83c925bd6af51395193363",
 ])
 def test_managed_pixel_reconcile_rejects_old_ref_without_local_checkout(
     tmp_path, monkeypatch, source_ref,

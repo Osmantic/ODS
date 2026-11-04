@@ -178,14 +178,17 @@ settings are unchanged. The 8K/32K paths retain their prior behavior.
 against a canned loopback provider. It verifies the full 8192 owner output after
 compaction; it does not qualify summary quality or model tokenization accuracy.
 
-## Source 4.3.45 read surface and small-context limit
+## Source 4.3.46 read surface and small-context limit
 
 The managed provider-read overlay admits the nine original, policy-filtered
-Source reads only at 64K or larger, with exact native plugin version `4.3.45`
+Source reads only at 64K or larger, with exact native plugin version `4.3.46`
 and a complete-family 8192-byte schema cap. Older, missing and future versions
 retain deferred discovery. The existing 8K four-read surface and 32K surface
 are unchanged; native tool metadata preserves the loaded manifest version
 through live factories, cached descriptors and wrappers.
+The two reviewed Source 4.3.45 histories have different Calendar APIs, so neither
+is admitted by this version gate. Their prior SDK repair bytes and private
+backup/receipt migration remain supported; Source must first upgrade to 4.3.46.
 
 A deterministic connected-Source45 8K fixture retained its full qualified lean
 system, four read schemas and three discovery controls. Configured output stayed

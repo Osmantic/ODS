@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`3fe50f1d75d13295bfbe964bfcd327a91df15814`, and its SHA-256 is
-`5e867c52522b14445d4ccc85974ed80a9f1237fa2c2a759359f8c978e00fa273`.
+`80fd49e6d6f3d54185fe2415ac6b7e003c16a12a`, and its SHA-256 is
+`0e39c7fbeb48cc1c9746ea455408a33cef0a9eefe160e6cecbb1245c4a4bb6cb`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -22,7 +22,59 @@ The repository owner authorized this source publication and the ODS-only
 Pixel grant. Third-party packages are not included in the Git bundle and
 retain their own notices and licenses.
 
-## ODS-maintained 4.3.45 Calendar read candidate
+## ODS-maintained 4.3.46 combined Calendar candidate
+
+This combines the typed shared list/count API with the upstream all-day list
+repair. Its genuine functional checkpoint is
+`b8cb7c444699092dd027eadaa0b34f30a5e6b442`. Native calls retain typed windows,
+strict validation before source reads and the grammar-compatible ASCII date
+schema. All-day bounds use the provider calendar timezone; possible matches
+remain advisory and never become a confirmed count or certify a busy/empty
+slot. Unavailable windows keep unknown totals and uncertainty-adjusted returned
+coverage. Stored projections and source records are unchanged. See the
+[API contract](pixel/docs/calendar-read-api.md) and
+[scoped evidence](pixel/ODS-QUALIFICATION-4.3.46.md).
+
+Two independent initially empty bare repositories reproduced the same parentless
+Source46 commit and byte-identical 4,759,656-byte bundles. The tree is
+`03cb6f868cb44c7bc4b078bcb0e5c61bd0116ef0`, with 1,347 public blobs and 96
+executable Git entries. Each physical source byte and mode matches the bundle.
+Both builds first reproduced the exact earlier ODS Source45 synthetic commit.
+A private index was used; the composition merge index remained unchanged.
+Private history, audit inputs, workflow files and signing material are excluded.
+
+The two independent 4.3.45 packages have different identities and API contracts:
+
+- ODS typed-read candidate: ref `3fe50f1d75d13295bfbe964bfcd327a91df15814`,
+  bundle `5e867c52522b14445d4ccc85974ed80a9f1237fa2c2a759359f8c978e00fa273`;
+  original [evidence](pixel/ODS-QUALIFICATION-4.3.45.md) remains byte-identical.
+- Upstream all-day repair: ref `47706f6863f74ae65c83c925bd6af51395193363`,
+  bundle `8c9b197a9763c26054dc0f7d920abe11b24f6a1bfbda03abc156aa031a3a8a7c`;
+  its original evidence is retained byte-identical in the
+  [origin-qualified archive](pixel/ODS-QUALIFICATION-4.3.45-upstream-47706f68.md).
+
+Both compatibility rows and exact native authority entries remain distinct.
+Prepared clients retain both exact45 receipt identities and all older identities;
+no old release or receipt is rewritten. The separate SDK family gate requires
+exact Source46, so either ambiguous45 package defers safely.
+
+Actual locked-TypeBox Source tests passed 51 cases with no skips. The real
+normalized core/Coffee/nine-Source 32-tool surface compiled with the pinned
+llama.cpp JSON and Qwen grammar; all 36 integration controls passed, including
+the predecessor digit-escape failure, deny filtering and the existing8K cap.
+Four genuine46 native admission cases passed against the separately migrated
+26-repair SDK, with both45 variants deferred and the fixed9/8192-byte/64K gates
+unchanged. These are offline factory/grammar/contract checks, not an installed
+46 model run, a macOS physical test or an upstream promotion.
+
+The earlier exact ODS Source45 separately passed a normal Windows update,
+independent installed-state checks and one actual Portal Qwen3.5 9B Calendar
+journey after duplicated WSL mounts were cleaned up. Its correctly resolved
+owner day, fresh complete projection and content-free count are retained as
+evidence for that identity only. It neither qualifies46 nor proves mount
+amplification prevented. Physical macOS qualification remains separate.
+
+## Retained ODS-maintained 4.3.45 Calendar read candidate
 
 List and count now share deterministic typed windows, timezone-aware event
 bounds, freshness and complete-coverage handling. Native list arguments must

@@ -47,6 +47,7 @@ function timeLabel(bound, exclusiveEnd) {
 // Keep raw source timestamps and coverage unchanged for verification.
 export function calendarEvent(record) {
   const event = {...record};
+  delete event.timeWindowUnverified;
   delete event.startLabel;
   delete event.endLabel;
   const start = timeLabel(event.start, false);
@@ -120,11 +121,19 @@ export function calendarListParameters(params) {
 }
 
 export function listCalendar(data, params, limit, sync, now = Date.now(), staleAfterMs = 180000, ownerTimeZone) {
-  const {reply, matches} = selectCalendar(data, calendarListParameters(params), sync, now, staleAfterMs, ownerTimeZone);
-  const events = matches.slice(0, limit).map(calendarEvent);
+  const {reply, candidates} = selectCalendar(data, calendarListParameters(params), sync, now, staleAfterMs, ownerTimeZone);
+  const events = candidates.slice(0, limit).map(({record, unverified}) => {
+    const event = calendarEvent(record);
+    if (unverified) event.timeWindowUnverified = true;
+    return event;
+  });
+  const coverage = data?.coverage ?? null;
+  const uncertain = reply.windowState !== "resolved" || reply.unresolvedEventCount > 0
+    || reply.freshness !== "fresh" || reply.syncState !== "ok";
   return {...reply, recordsReturned: events.length, stale: reply.freshness !== "fresh",
-    totalMatches: reply.observedMatchCount, count: events.length, hasMore: matches.length > events.length, events,
-    coverage: data?.coverage ?? null};
+    totalMatches: reply.observedMatchCount === null ? null : candidates.length,
+    count: events.length, hasMore: candidates.length > events.length, events,
+    coverage: uncertain && coverage?.completeWithinWindow ? {...coverage, completeWithinWindow: false} : coverage};
 }
 
 export function canonicalTimeZone(value) {
@@ -230,10 +239,19 @@ function strictEventBounds(record, zone, resolver) {
   return Number.isFinite(from) && Number.isFinite(to) && (allDay ? to > from : to >= from) ? [from, to] : null;
 }
 
+function possibleAllDayOverlap(record, from, to) {
+  const start = civilDate(record.start?.date), end = civilDate(record.end?.date);
+  // A date's civil midnight is within a day of that date at 00:00 UTC.
+  // Valid but distant date-only records cannot affect this request. Missing
+  // or malformed bounds cannot establish that exclusion and stay uncertain.
+  return !start || !end || end <= start
+    || overlapsBounds(start.getTime() - 86_400_000, end.getTime() + 86_400_000, from, to);
+}
+
 function selectCalendar(data, params, sync, now, staleAfterMs, ownerTimeZone) {
   if (data?.enabled !== true || data.coverage?.available === false || !Array.isArray(data.records)
       || data.recordCount !== undefined && (!Number.isSafeInteger(data.recordCount) || data.recordCount !== data.records.length)) {
-    return {reply: unavailableCount("calendar", params?.window?.kind), matches: []};
+    return {reply: unavailableCount("calendar", params?.window?.kind), matches: [], candidates: []};
   }
   const metadata = countMetadata(data, sync, now, staleAfterMs), resolver = civilResolver();
   const window = resolveCountWindow(params?.window, now, ownerTimeZone, resolver);
@@ -242,14 +260,14 @@ function selectCalendar(data, params, sync, now, staleAfterMs, ownerTimeZone) {
   const reply = { ...metadata, source: "calendar", scope: "configured-calendar-projection", filterSemantics: "sanitized-projected-fields",
     queryApplied: typeof params?.query === "string" && Boolean(params.query.trim()),
     observedMatchCount: null, completeMatchCount: null, requestCoveredByWindow: null,
-    completeWithinWindow: false, unresolvedEventCount: 0,
+    completeWithinWindow: false, unresolvedEventCount: 0, unresolvedAllDayEventCount: 0,
     ...Object.fromEntries(["windowKind", "windowState", "windowStart", "windowEnd", "windowDays", "ownerTimeZone"].map(key => [key, window[key]])),
     calendarTimeZone: zone };
   if (!zone) reply.limitations.push(coverage?.calendarTimeZoneState === "inconsistent"
     ? "calendar-time-zone-inconsistent" : "calendar-time-zone-unavailable");
-  if (window.windowState !== "resolved") { reply.limitations.push(window.reason); return {reply, matches: []}; }
+  if (window.windowState !== "resolved") { reply.limitations.push(window.reason); return {reply, matches: [], candidates: []}; }
   const query = String(params.query ?? "").toLowerCase();
-  const matches = [];
+  const matches = [], candidates = [];
   const ids = new Set();
   for (const record of data.records) {
     if (!record || typeof record !== "object" || Array.isArray(record)
@@ -260,8 +278,20 @@ function selectCalendar(data, params, sync, now, staleAfterMs, ownerTimeZone) {
     ids.add(record.id);
     if (!matchesQuery(record, query)) continue;
     const bounds = strictEventBounds(record, zone, resolver);
-    if (!bounds) { reply.unresolvedEventCount += 1; continue; }
-    if (overlapsBounds(...bounds, window.from, window.to)) matches.push(record);
+    if (!bounds) {
+      const allDay = record.start?.date !== undefined || record.end?.date !== undefined;
+      if (allDay && !possibleAllDayOverlap(record, window.from, window.to)) continue;
+      reply.unresolvedEventCount += 1;
+      if (allDay) {
+        reply.unresolvedAllDayEventCount += 1;
+        candidates.push({record, unverified: true});
+      }
+      continue;
+    }
+    if (overlapsBounds(...bounds, window.from, window.to)) {
+      matches.push(record);
+      candidates.push({record, unverified: false});
+    }
   }
   reply.observedMatchCount = matches.length;
   reply.requestCoveredByWindow = calendarWindowCovers(coverage, window.windowStart, window.windowEnd);
@@ -276,7 +306,7 @@ function selectCalendar(data, params, sync, now, staleAfterMs, ownerTimeZone) {
     && metadata.freshness === "fresh" && metadata.syncState === "ok" && reply.requestCoveredByWindow === true;
   if (reply.completeWithinWindow) reply.completeMatchCount = matches.length;
   reply.limitations = [...new Set(reply.limitations)];
-  return {reply, matches};
+  return {reply, matches, candidates};
 }
 
 export function countCalendar(data, params, sync, now, staleAfterMs, ownerTimeZone) {

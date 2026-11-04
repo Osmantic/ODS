@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { countEmail } from "../plugin/email-query.js";
-import { countCalendar, resolveCountWindow } from "../plugin/calendar-query.js";
+import { countCalendar, listCalendar, resolveCountWindow } from "../plugin/calendar-query.js";
 
 const NOW = Date.parse("2026-03-08T06:00:00Z"), TTL = 180000;
 const at = (offset) => new Date(NOW + offset).toISOString();
@@ -184,5 +184,68 @@ test("unknown kind and invalid absolute bounds never invent an absolute resolved
     const result = count(calendar(), { window: { kind: "absolute", timeMin, timeMax: at(1000) } });
     assert.equal(result.windowState, "unavailable"); assert.equal(result.observedMatchCount, null);
     assert.doesNotMatch(JSON.stringify(result), /PRIVATE-/);
+  }
+});
+
+test("possible all-day matches remain readable but never enter the confirmed count", () => {
+  const records = [event({date:"2026-03-08"},{date:"2026-03-09"},"possible"),
+    {...event({dateTime:at(1000)},{dateTime:at(2000)},"confirmed"),timeWindowUnverified:true}];
+  const data = calendar(records), original = JSON.stringify(data);
+  data.coverage.calendarTimeZoneState = "unknown";
+  const result = listCalendar(data, rolling, 1, sync, NOW, TTL, "America/New_York");
+  const counted = count(data);
+  assert.equal(result.count,1);
+  assert.equal(result.totalMatches,2);
+  assert.equal(result.hasMore,true);
+  assert.equal(result.events[0].timeWindowUnverified,true);
+  assert.equal(result.observedMatchCount,1);
+  assert.equal(result.completeMatchCount,null);
+  assert.equal(result.unresolvedAllDayEventCount,1);
+  assert.equal(result.coverage.completeWithinWindow,false);
+  assert.equal(counted.observedMatchCount,1);
+  assert.equal(counted.completeMatchCount,null);
+  assert.equal(counted.recordsReturned,0);
+  assert.doesNotMatch(JSON.stringify(counted),/PRIVATE-|events|possible|confirmed|title|location/);
+  const full = listCalendar(data, rolling, 10, sync, NOW, TTL, "America/New_York");
+  assert.equal(Object.hasOwn(full.events[1],"timeWindowUnverified"),false);
+  assert.equal(data.coverage.completeWithinWindow,true);
+  data.coverage.calendarTimeZoneState = "consistent";
+  assert.equal(JSON.stringify(data),original,"derived flags and coverage do not mutate the projection");
+});
+
+test("distant valid all-day dates do not create uncertainty but malformed bounds do", () => {
+  const params = {window:{kind:"absolute",timeMin:at(0),timeMax:at(3600000)}};
+  for (const [bounds, expected] of [
+    [[{date:"2026-03-15"},{date:"2026-03-16"}],0],
+    [[{date:"2026-02-30"},{date:"2026-03-16"}],1],
+    [[{date:"2026-03-08"},{}],1],
+    [[{date:"2026-03-09"},{date:"2026-03-08"}],1],
+  ]) {
+    const data=calendar([event(...bounds)]);
+    delete data.coverage.calendarTimeZone;
+    const result=listCalendar(data,params,10,sync,NOW,TTL,"UTC");
+    assert.equal(result.unresolvedAllDayEventCount,expected);
+    assert.equal(result.events.length,expected);
+    assert.equal(result.observedMatchCount,0);
+    assert.equal(result.completeMatchCount,null);
+    assert.equal(result.coverage.completeWithinWindow,expected===0);
+    assert.equal(count(data,params).unresolvedAllDayEventCount,expected);
+  }
+});
+
+test("Calendar list and count share strict boundaries and fresh source qualification", () => {
+  const params={window:{kind:"absolute",timeMin:at(0),timeMax:at(2000)}};
+  const data=calendar([event({dateTime:at(-2000)},{dateTime:at(0)},"ending"),
+    event({dateTime:at(-1000)},{dateTime:at(1000)},"ongoing"),
+    event({dateTime:at(2000)},{dateTime:at(3000)},"starting")]);
+  for (const [status, now] of [[sync,NOW],[null,NOW],[sync,NOW+TTL+1]]) {
+    const list=listCalendar(data,params,10,status,now,TTL,"UTC");
+    const counted=count(data,params,status,now,"UTC");
+    assert.deepEqual(list.events.map(({id})=>id),["ongoing"]);
+    assert.equal(list.observedMatchCount,counted.observedMatchCount);
+    assert.equal(list.completeMatchCount,counted.completeMatchCount);
+    assert.equal(list.completeWithinWindow,counted.completeWithinWindow);
+    assert.equal(list.coverage.completeWithinWindow,status===sync && now===NOW);
+    assert.equal(data.coverage.completeWithinWindow,true);
   }
 });
