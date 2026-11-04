@@ -274,6 +274,28 @@ pending; the retained journal must be qualified and completed before a fresh
 ordinary update. Do not delete it or
 reuse the failed preparation as if activation had succeeded.
 
+The actual recovery from `a074bc6c1289e2a32e9eeabeb897608f77caf61c`
+then stopped with `native-runtime-recovery-failed`, before the preservation gate
+or another update. Its preceding read-only Root inspection confirmed schema 5,
+phase `prepared`, 68 unchanged existing images and 46 unchanged absences, with
+no edge hold or published candidate runtime. The prepared Source path had
+constructed its discovery bridge from the candidate binding while the old
+protected plist was still active. A regression using the actual binding
+verifier reproduces `gateway-installation-changed`. Recovery now selects only
+the already-authorized before-image and requires exact equality with current
+protected settings. It retains the original lock and outer deadline; the
+separate old bridge's bounded lease cannot extend that deadline. Changed owner,
+configuration or definition still refuses recovery. The composed recovery,
+binding and diagnostic suite passed 1,680 tests with one platform skip on this
+Mac; lint and Python 3.9 syntax checks passed.
+
+Generic migration and recovery failures now include only a fixed exception
+category and a trusted source-relative file/line. Exception messages, arguments,
+local variables, private filenames and subprocess output are not emitted.
+Physical recovery still needs to complete before any candidate journey is
+accepted; the latest refusal left the old containers healthy and the controller
+explicitly pending recovery.
+
 Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
 notifications and reboot acceptance remain pending. The Mac has not been
 restarted for this qualification. With explicit owner approval, a separate local
