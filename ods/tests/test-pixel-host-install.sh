@@ -1249,6 +1249,7 @@ _ods_pixel_installed_gateway_port() {
 }
 if (
     restart_state="$restart_probe/state"
+    timeout() { shift 2; "$@"; }  # Preserve fixture shell functions instead of real systemctl.
     systemctl() {
         case "$*" in
             *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
@@ -1287,6 +1288,7 @@ fi
 
 if (
     retry_state="$restart_probe/retry-state"
+    timeout() { shift 2; "$@"; }
     retry_calls="$restart_probe/retry-calls"
     : > "$retry_calls"
     systemctl() {
@@ -1330,6 +1332,7 @@ fi
 
 if (
     persistent_state="$restart_probe/persistent-state"
+    timeout() { shift 2; "$@"; }
     persistent_calls="$restart_probe/persistent-calls"
     : > "$persistent_calls"
     systemctl() {
@@ -3369,6 +3372,7 @@ eval "$original_run_as_owner"
 # its fallback can only terminate the same-owner PID of the exact hardened
 # Restart=always unit, then waits for systemd to replace it before verification.
 gateway_mock_root="$TEST_ROOT/gateway-restart-mock"
+timeout() { shift 2; "$@"; }  # Readiness observations stay on the synthetic unit below.
 mkdir -p "$gateway_mock_root"
 printf '0\n' > "$gateway_mock_root/mainpid-calls"
 original_installed_gateway_port="$(declare -f _ods_pixel_installed_gateway_port)"
@@ -3454,7 +3458,7 @@ else
     pass "mismatched Pixel gateway unit owner rejected"
 fi
 check test ! -s "$gateway_mock_root/kills"
-unset -f systemctl id awk kill curl jq sleep ods_sudo_available
+unset -f systemctl id awk kill curl jq sleep ods_sudo_available timeout
 eval "$original_installed_gateway_port"
 eval "$original_run_as_owner"
 
@@ -3771,7 +3775,10 @@ assert "runtime_token_file=\"/run/ods-pixel/openclaw.json\"" in text
 assert "PIXEL_GATEWAY_TOKEN_FILE=$runtime_token_file" in text
 assert "PIXEL_GATEWAY_PORT=$gateway_port" in text
 assert "(( preview_port != gateway_port )) || return 1" in text
-assert "_ods_pixel_gateway_health \"$gateway_port\"" in text
+assert "_ods_pixel_wait_restarted_gateway \"$previous_pid\" \"$gateway_port\"" in text
+assert "_ods_pixel_gateway_health \"$port\" \"$deadline\"" in text
+restart = text[text.index("_ods_pixel_restart_gateway_and_verify() {"):text.index("_ods_pixel_wait_access_reconcile() {")]
+assert restart.index("_ods_pixel_wait_restarted_gateway") < restart.index("_ods_pixel_verify_current_runtime")
 assert "\"http://${host}:${port}/health\"" in text
 assert "_ods_pixel_wait_gateway 60 \"$pixel_gateway_port\"" in text
 assert installer.index("_ods_pixel_existing_gateway_port_matches") < installer.index("_ods_pixel_prepare_attempt_log")
@@ -4095,6 +4102,7 @@ fi
 
 check python3 "$ROOT/tests/test_pixel_access_program_modes.py"
 check python3 "$ROOT/tests/test-pixel-integrations-readiness.py"
+check python3 "$ROOT/tests/test-pixel-gateway-readiness.py"
 
 # Portal integrations: the owner socket must stay out of the gateway sandbox, and
 # the unit is rendered for the owner and started.

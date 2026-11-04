@@ -2527,7 +2527,7 @@ _ods_pixel_finish_release_transition() {
 }
 
 _ods_pixel_restart_gateway_and_verify() {
-    local owner="$1" home="$2" pixel_root="$3" attempt ready=false previous_pid current_pid gateway_port
+    local owner="$1" home="$2" pixel_root="$3" previous_pid current_pid gateway_port
     local transaction_id="${4:-}"
     [[ -z "$transaction_id" || "$transaction_id" =~ ^[a-f0-9]{64}$ ]] || return 1
     # Background model promotion does not inherit Phase 06's gateway-port
@@ -2563,26 +2563,7 @@ _ods_pixel_restart_gateway_and_verify() {
         [[ "$current_pid" == "$previous_pid" ]] || return 1
         kill -TERM "$previous_pid" || return 1
     fi
-    current_pid=""
-    for attempt in {1..60}; do
-        current_pid="$(systemctl show openclaw-gateway.service -p MainPID --value 2>/dev/null || true)"
-        if [[ "$current_pid" =~ ^[1-9][0-9]*$ \
-            && ( ! "$previous_pid" =~ ^[1-9][0-9]*$ || "$current_pid" != "$previous_pid" ) ]] \
-            && systemctl is-active --quiet openclaw-gateway.service; then
-            break
-        fi
-        sleep 1
-    done
-    [[ "$current_pid" =~ ^[1-9][0-9]*$ \
-        && ( ! "$previous_pid" =~ ^[1-9][0-9]*$ || "$current_pid" != "$previous_pid" ) ]] || return 1
-    for attempt in {1..60}; do
-        if _ods_pixel_gateway_health "$gateway_port"; then
-            ready=true
-            break
-        fi
-        (( attempt < 60 )) && sleep 2
-    done
-    [[ "$ready" == true ]] || return 1
+    _ods_pixel_wait_restarted_gateway "$previous_pid" "$gateway_port" || return 1
     # A fresh install can finish the gateway HTTP listener while OpenClaw's
     # separate CLI process is still settling its newly-created plugin registry
     # under first-boot memory and I/O pressure. The gateway itself already
@@ -3727,16 +3708,75 @@ _ods_pixel_source_checkout() {
     printf '%s\n' "$source_root"
 }
 
+_ods_pixel_gateway_deadline() {
+    python3 -I - "$@" <<'PY'
+import math, sys, time
+if len(sys.argv) not in (3, 4):
+    raise SystemExit(1)
+try:
+    value = float(sys.argv[2])
+    cap = float(sys.argv[3]) if len(sys.argv) == 4 else 300.0
+except ValueError:
+    raise SystemExit(1) from None
+if not math.isfinite(value) or not math.isfinite(cap) or not 0 < cap <= 300:
+    raise SystemExit(1)
+if sys.argv[1] == 'start' and 0 < value <= 300:
+    print(time.monotonic() + value)
+elif sys.argv[1] == 'remaining':
+    remaining = min(cap, value - time.monotonic())
+    # A rounded zero disables coreutils timeout rather than expiring it.
+    if remaining <= .001:
+        raise SystemExit(1)
+    print(f'{remaining:.6f}')
+else:
+    raise SystemExit(1)
+PY
+}
+
+_ods_pixel_wait_restarted_gateway() {
+    local previous_pid="$1" port="$2" budget="${3:-300}" deadline remaining current_pid stage=process
+    deadline="$(_ods_pixel_gateway_deadline start "$budget")" || return 1
+    while remaining="$(_ods_pixel_gateway_deadline remaining "$deadline" 5)"; do
+        stage=process
+        current_pid="$(timeout --kill-after=1 "$remaining" \
+            systemctl show openclaw-gateway.service -p MainPID --value 2>/dev/null || true)"
+        if [[ "$current_pid" =~ ^[1-9][0-9]*$ \
+            && ( ! "$previous_pid" =~ ^[1-9][0-9]*$ || "$current_pid" != "$previous_pid" ) ]]; then
+            remaining="$(_ods_pixel_gateway_deadline remaining "$deadline" 5)" || break
+            if timeout --kill-after=1 "$remaining" systemctl is-active --quiet openclaw-gateway.service; then
+                stage=endpoint
+                if _ods_pixel_gateway_health "$port" "$deadline"; then
+                    _ods_pixel_gateway_deadline remaining "$deadline" >/dev/null || break
+                    return 0
+                fi
+            fi
+        fi
+        remaining="$(_ods_pixel_gateway_deadline remaining "$deadline" 2)" || break
+        sleep "$remaining"
+    done
+    printf 'error: Pixel gateway readiness exceeded its bounded startup deadline (waiting for %s).\n' "$stage" >&2
+    return 1
+}
+
 _ods_pixel_gateway_health() {
     # Read-only discovery: prefer direct IPv6 loopback; retain IPv4-only hosts.
     # Split the existing five-second probe budget across the two candidates.
-    local port="${1:-18789}" host body
+    local port="${1:-18789}" deadline="${2:-}" host body max_time=2.5
+    local -a health_check=(jq -e '.ok == true and .status == "live"')
     [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] && (( port <= 65535 )) || return 1
     for host in '[::1]' '127.0.0.1'; do
-        if body="$(curl --noproxy '*' --fail --silent --show-error --max-time 2.5 \
-            "http://${host}:${port}/health" 2>/dev/null)" \
-            && jq -e '.ok == true and .status == "live"' >/dev/null 2>&1 <<<"$body"; then
-            return 0
+        if [[ -n "$deadline" ]]; then
+            max_time="$(_ods_pixel_gateway_deadline remaining "$deadline" 2.5)" || return 1
+        fi
+        if body="$(curl --noproxy '*' --fail --silent --show-error --max-time "$max_time" \
+            "http://${host}:${port}/health" 2>/dev/null)"; then
+            if [[ -n "$deadline" ]]; then
+                max_time="$(_ods_pixel_gateway_deadline remaining "$deadline" 5)" || return 1
+                health_check=(timeout --kill-after=1 "$max_time" jq -e '.ok == true and .status == "live"')
+            fi
+            if "${health_check[@]}" >/dev/null 2>&1 <<<"$body"; then
+                return 0
+            fi
         fi
     done
     return 1
@@ -6558,6 +6598,7 @@ ods_pixel_install_default_agent() {
         ai_bad "Pixel could not recreate its agent sandbox for the reviewed ODS runtime. See $pixel_log."
         return 1
     fi
+    ai "Starting Portal's gateway; this may take a few minutes..."
     if ! _ods_pixel_restart_gateway_and_verify "$owner" "$home" "$pixel_root" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel could not restart and verify its gateway after the ODS runtime update. See $pixel_log."
