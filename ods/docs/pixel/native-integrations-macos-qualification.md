@@ -377,6 +377,69 @@ bound, followed by successful first preparation and retained archive checks.
 This is one local 1-CPU Linux driver result with the 79-record capsule described
 above, not a physical Mac or CI result. The prior failures remain recorded.
 
+The ordinary physical update from `e911f5e102e69ce4a11702a0f70f19419032463f`
+first passed the actual Root Darwin sidefile creation smoke and preserved the
+preceding empty file and receipt by rename. All ten original baseline checks
+passed before activation. Core then published runtime `d9ed4b464e0dd3e973b796b5f7443898a7babd9b742a36437587ea466ff68a66`,
+but Source completion failed. A protected, read-only diagnostic confirmed an
+active schema 5 journal, held admission, and all 114 approved after-images
+(76 changed and 38 identical). Source kit, private state, logs, identity and
+jobs are absent. The two completed owner sidefiles, their Root receipt, and
+the earlier preservation archive remained unchanged throughout the diagnostic.
+The controller requires recovery; owner client handover has not run.
+
+The real bridge reproduced `connection-runtime-plugin-unavailable` at
+`pixel_connections/planner.py:160`, wrapped by `AccessError` at
+`pixel_access_bridge.py:2907`. The candidate producer included only the four
+active plugins and omitted the required Source and Frontier payloads. The
+prospective correction packages those dormant payloads without enabling them,
+preserves active paths and order, and checks completeness before new admission.
+Historical incomplete bundles remain readable for explicit recovery. A separate
+Darwin copy correction gives only newly created public symlinks mode 0755 using
+nofollow chmod, preserving inode, ownership and target; the existing immutable
+runtime is not repaired in place.
+
+The independent owner inspection preserved both model weights, the original
+configuration bytes and inode, all 20 original history files, all seven original
+session entries, and the original Portal attempt and ten chunks in the actual
+active store. Migration did remove an explicit `contextTokens` preference.
+This Mac still declares an effective 65,536-token capacity, but an invented
+32,768-token cap reproduced a real preference loss. The correction preserves
+the field's value, scope and absence and checks it on new admission. Recovery
+continues to validate historical frozen contexts under their original contract.
+These corrections have not yet established a successful physical update.
+
+The e911 CI is terminal: 155 successful checks, one failure and one intentional
+skip. Both joined-update cases, macOS smoke, all three compaction platforms and
+the 26 active-publication cases passed. The failed operation-cache job collected
+zero tests because its four file paths were passed as one quoted argument.
+The workflow now passes a Bash array; corrected collection found all 74 cases.
+No rerun, timeout extension or physical acceptance claim follows from this fix.
+
+The packaging correction was then exercised with the real retained Pixel source,
+runtime and candidate, using a separate owner-only destination and the reviewed
+component commit `a9ab834712c85a8481fc0752dfbc0ddb8d482dbd`. Normal service and
+runtime packaging, source bindings, all 111 Source code entries, OpenClaw config
+validation and the runtime plugin probe passed without mocks or Root actions.
+The runtime artifact was `4cea654ab1167524bf40fa29f59681187b0b2ede5318ee2f8dac269b649b4974`.
+Packaging took 279.17 seconds. A separate real plugin inspection confirmed only
+the original four plugins were imported; Source and Frontier remained inactive.
+The retained candidate and sidefiles kept their bytes, inodes and modes. This
+component preparation did not activate or touch the installation, and does not
+qualify the subsequent composed recovery or an installed user journey.
+
+The explicit prepublication recovery uses a distinct seven-object capsule for
+the two filled sidefiles and their two Root receipts. Its Linux owned-file
+packet passed 238 cases, including the real recovery dispatcher, partial-move
+and restored-phase replay, original inodes, prior archive history and strict
+Source absence. Sixteen Root-owned support/entry cases passed separately.
+Darwin metadata and launchd remain declared driver adapters in those results.
+The composed Mac selection/preservation packet passed 126 cases with the one
+Root-only case skipped; whole-tree Python lint and Python 3.9 parsing passed.
+The historical-mapping fixture initially failed three cases because its mocked
+manifest omitted the required `entries` mapping. Correcting that fixture alone
+restored all 60 cases in its file; production validation stayed unchanged.
+
 Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
 notifications and reboot acceptance remain pending. The Mac has not been
 restarted for this qualification. With explicit owner approval, a separate local

@@ -79,6 +79,29 @@ automatic retry. This narrower boundary must not be reported as recovery from
 every interruption. The mutator handles the first selected archive or replay of
 that same archive; it does not prune or merge unrelated preservation histories.
 
+An explicit `recover-runtime --rollback-before-source-publication` operation
+covers a different boundary: Core is active, its first Source publication never
+began, and both owner sidefiles have complete inode-bound receipts. Ordinary
+active recovery still resumes the selected candidate. The explicit rollback
+requires a schema 5 context and journal, all approved after-images, retained
+admission, original absent kit/identity proof, and fresh absence of Source state,
+metadata, identity and actors. It does not roll back a partially published Source.
+
+Before stopping Core, the operation seals private context/journal copies and a
+fixed preservation manifest. Only after every service is confirmed stopped may
+it exclusively rename the two owner sidefiles and both Root receipts into the
+capsule. Their bytes, ownership and inodes are preserved. The previous archive
+ledger is compared and extended without dropping its earlier entries. A lost
+move or ledger acknowledgement replays only the same sealed selection; an
+unsealed preparation remains retained and refuses automatic adoption.
+
+The schema 2 capsule has exactly seven objects. Readers validate its original
+active journal, sidefile contents and ready receipts, prior archive images and
+the absence of history cycles. Retirement records the owner UID only for the
+two exact sidefile leaves from an independently qualified capsule; every other
+history object keeps its Root custody requirement. A historical capsule is
+retained data, not authority to run Source or enable a connection.
+
 ## Bounds
 
 | Boundary | Limit |
