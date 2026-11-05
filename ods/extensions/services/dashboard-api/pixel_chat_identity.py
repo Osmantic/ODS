@@ -1,16 +1,34 @@
 """Bind each new Portal turn to the current, host-owned display identity."""
 import json
+from pathlib import Path
 
 from fastapi import HTTPException
+import config
 from host_agent_client import AgentClientError, async_request_json
-from portal_identity_contract import normalize_document
+from portal_identity_contract import default_document, normalize_document
+
+
+def read_local_desktop_identity() -> dict:
+    """Read persisted local identity in windows-desktop mode, or default_document()."""
+    if config.DATA_DIR:
+        path = Path(config.DATA_DIR) / "portal-identity.json"
+        if path.is_file():
+            try:
+                return normalize_document(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                pass
+    return default_document()
 
 
 async def confirmed_display_name():
+    if config.WINDOWS_DESKTOP_PROFILE:
+        return read_local_desktop_identity()["displayName"]
     try:
         document = normalize_document(await async_request_json(
             "GET", "/v1/pixel/identity", timeout=3))
     except (AgentClientError, ValueError, TypeError):
+        if config.WINDOWS_DESKTOP_PROFILE:
+            return read_local_desktop_identity()["displayName"]
         raise HTTPException(503, "Could not confirm the assistant name. Please retry.") from None
     return document["displayName"]
 
