@@ -1,5 +1,6 @@
 """Maintainer-supplied Google application custody; no real registration/account."""
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -108,6 +109,67 @@ def test_invalid_or_ambiguous_json_has_only_a_fixed_error(deployment, raw):
 def test_public_configuration_status_rejects_extra_credential_or_verification_fields(extra):
     with pytest.raises(google_app.ManagedAppError, match='google-app-status-invalid'):
         google_app.validate_public({'mode': 'managed', 'state': 'configured', 'advancedAvailable': True, **extra})
+
+
+@pytest.fixture
+def release_deployment(deployment, monkeypatch):
+    release_path = deployment.with_name('portal-google-release-app.json')
+    raw = google_app.release_payload(CLIENT)
+    client = oauth.parse_client(CLIENT)
+    pin = {
+        'tag': 'v9.0.0', 'sha256': hashlib.sha256(raw).hexdigest(),
+        'projectId': client['projectId'], 'clientId': client['clientId'],
+        'scopes': sorted({*oauth.IDENTITY_SCOPES, catalog.CALENDAR_READ_SCOPE,
+                          catalog.CALENDAR_WRITE_SCOPE, catalog.GMAIL_READ_SCOPE, catalog.GMAIL_COMPOSE_SCOPE}),
+    }
+    monkeypatch.setattr(google_app, 'PATH', deployment)
+    monkeypatch.setattr(google_app, 'RELEASE_PATH', release_path)
+    monkeypatch.setattr(google_app, 'OWNERS', (os.getuid(),))
+    monkeypatch.setattr(google_app.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(google_app, 'RELEASE_CLIENT', pin)
+    return deployment, release_path, raw
+
+
+def test_release_checks_pin_and_preserves_existing_configuration(release_deployment, monkeypatch, capsys):
+    override, release_path, raw = release_deployment
+    downloads = []
+
+    def download(pin):
+        downloads.append(pin['tag'])
+        return raw
+
+    monkeypatch.setattr(google_app, '_download_release', download)
+    assert google_app.provision_release() == 'local-override'
+    assert not release_path.exists()
+    override.unlink()
+    assert google_app.provision_release() == 'configured'
+    assert google_app.provision_release() == 'configured'
+    assert downloads == ['v9.0.0']
+    assert release_path.read_bytes() == raw
+    assert release_path.stat().st_mode & 0o777 == 0o600
+    assert google_app.load() == oauth.parse_client(CLIENT)
+    release_path.write_bytes(raw + b' ')
+    monkeypatch.setattr(google_app, '_download_release', lambda _pin: b'private wrong asset')
+    google_app.provision_for_install()
+    assert release_path.read_bytes() == raw + b' '
+    assert google_app.public_status()['state'] == 'unavailable'
+    assert 'google-release-client-mismatch' in capsys.readouterr().err
+    assert google_app.load(path=release_path) == oauth.parse_client(CLIENT)
+
+
+def test_release_disables_without_pin_or_with_unapproved_scopes(release_deployment, monkeypatch):
+    override, release_path, raw = release_deployment
+    override.unlink()
+    release_path.write_bytes(raw)
+    release_path.chmod(0o600)
+    monkeypatch.setattr(google_app, '_download_release', lambda _pin: pytest.fail('Unexpected download'))
+    monkeypatch.setitem(catalog.GOOGLE['capabilities'][0], 'scopes', ['new unapproved scope'])
+    with pytest.raises(google_app.ManagedAppError, match='google-release-scopes-changed'):
+        google_app.provision_release()
+    assert google_app.public_status()['state'] == 'unavailable'
+    monkeypatch.setattr(google_app, 'RELEASE_CLIENT', None)
+    assert google_app.provision_release() == 'disabled'
+    assert google_app.public_status()['state'] == 'not-configured'
 
 
 @pytest.mark.parametrize('state', google_app.PUBLIC_STATES)

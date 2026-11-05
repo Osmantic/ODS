@@ -3333,6 +3333,9 @@ if sys.argv[6] == 'true':
             time.sleep(1)
     else:
         raise SystemExit('Pixel access coordinator socket did not become owner-ready')
+
+from pixel_connections.google_app import provision_for_install
+provision_for_install()
 PY
     [[ $? -eq 0 ]] || return 1
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package an exact, GitHub-verified signed ODS tag; never execute its installers."""
 import argparse
+import ast
 import gzip
 import hashlib
 import io
@@ -106,6 +107,24 @@ def package_source(root, identity, output):
     (output / 'source-identity.json').write_text(json.dumps(identity, indent=2) + '\n', encoding='utf-8')
 
 
+def package_google_client(output, tag):
+    """Attach the exact reviewed runtime payload without executing archived code."""
+    helper = output / 'source/ods/bin/pixel_connections/google_app.py'
+    if '-' in tag or not helper.is_file():
+        return None
+    tree = ast.parse(helper.read_text(encoding='utf-8'))
+    pin, = (ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == 'RELEASE_CLIENT' for target in node.targets))
+    if pin is None or pin['tag'] != tag:
+        return None
+    raw = os.environ.get('ODS_PORTAL_GOOGLE_RELEASE_PAYLOAD', '').encode('utf-8')
+    if not raw or len(raw) > 16 * 1024 or hashlib.sha256(raw).hexdigest() != pin['sha256']:
+        raise ValueError('The approved Google Desktop release payload is absent or does not match the signed source')
+    asset = output / 'portal-google-desktop.json'
+    asset.write_bytes(raw)
+    return asset
+
+
 def finalize(output):
     identity = json.loads((output / 'source-identity.json').read_text(encoding='utf-8'))
     sbom = output / 'source.spdx.json'
@@ -114,6 +133,9 @@ def finalize(output):
         raise ValueError('Expected a generated SPDX 2.3 source inventory')
     prefix = 'ODS-' + identity['tag'] + '-source'
     files = [output / (prefix + '.tar.gz'), output / (prefix + '.zip'), sbom]
+    google_client = package_google_client(output, identity['tag'])
+    if google_client is not None:
+        files.append(google_client)
     manifest = dict(identity, schemaVersion=1,
                     sbomScope='Source dependency inventory; not a scan of container OS layers or downloaded models',
                     files={p.name: {'sha256': digest(p), 'size': p.stat().st_size} for p in files})
