@@ -9,14 +9,46 @@ import pathlib
 import tempfile
 import threading
 import unittest
+import zoneinfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "host"))
 import integrations_reminders as reminders  # noqa: E402
 import integrations_service as service  # noqa: E402
-from integrations_common import IntegrationError, Store, default_apps  # noqa: E402
+from integrations_common import IntegrationError, Store, default_apps, local_zone  # noqa: E402
 
 LISBON = datetime.timezone(datetime.timedelta(hours=0), "WET")
 NOW = datetime.datetime(2026, 11, 3, 16, 20, 30, tzinfo=LISBON)
+
+
+class DaylightSaving(unittest.TestCase):
+    """In Lisbon summer time ends on 2026-10-25 at 02:00 (UTC+1 to UTC+0)."""
+    ZONE = zoneinfo.ZoneInfo("Europe/Lisbon")
+    BEFORE = datetime.datetime(2026, 10, 24, 23, 0, tzinfo=ZONE)  # UTC+1
+
+    def test_a_clock_time_across_the_change_keeps_its_clock_time(self):
+        due = reminders.due_at(self.BEFORE, at="09:00")
+        self.assertEqual((due.day, due.hour, due.utcoffset()), (25, 9, datetime.timedelta(0)))
+        self.assertEqual(due.astimezone(datetime.timezone.utc).hour, 9)
+
+    def test_a_date_and_time_after_the_change_is_in_that_day_s_offset(self):
+        due = reminders.due_at(self.BEFORE, at="2026-11-04T09:00")
+        self.assertEqual(due.astimezone(datetime.timezone.utc), datetime.datetime(2026, 11, 4, 9, 0, tzinfo=datetime.timezone.utc))
+        plan = reminders.plan(self.BEFORE, "", "Dentist", at="2026-11-04T09:00")
+        self.assertEqual(plan["when"], "Wed 04 Nov 2026 at 09:00 WET")
+
+    def test_minutes_from_now_are_counted_in_real_time(self):
+        due = reminders.due_at(self.BEFORE, in_minutes=4 * 60)  # 23:00 + 4 h, across 02:00 → 01:00.
+        utc = datetime.timezone.utc
+        self.assertEqual(due.astimezone(utc) - self.BEFORE.astimezone(utc), datetime.timedelta(hours=4))
+        self.assertEqual((due.hour, due.utcoffset()), (2, datetime.timedelta(0)))
+
+    def test_the_host_zone_has_daylight_saving_rules(self):
+        self.assertEqual(local_zone({"TZ": "Europe/Lisbon"}), self.ZONE)
+        self.assertEqual(local_zone({"TZ": ":Asia/Tokyo"}), zoneinfo.ZoneInfo("Asia/Tokyo"))
+        system = local_zone({}, "/usr/share/zoneinfo/Europe/Lisbon")
+        self.assertEqual(datetime.datetime(2026, 7, 1, tzinfo=system).utcoffset(), datetime.timedelta(hours=1))
+        self.assertEqual(datetime.datetime(2026, 12, 1, tzinfo=system).utcoffset(), datetime.timedelta(0))
+        self.assertEqual(local_zone({}, "/nonexistent/localtime"), datetime.timezone.utc)
 
 
 class DueTimes(unittest.TestCase):

@@ -11,7 +11,7 @@ import time
 
 import integrations_apps as apps
 import integrations_reminders as reminders
-from integrations_common import IntegrationError, digest
+from integrations_common import IntegrationError, digest, local_zone
 from integrations_ntfy import send_notification
 
 APP_ACTIONS = {"documents-search": "documents", "documents-read": "documents", "photos-search": "photos",
@@ -207,7 +207,7 @@ class AppActions:
 
     def _watch_change(self, config, settings, key, action, request):
         if action == "watch-add":
-            url, title = apps.valid_watch_url(request.get("url")), str(request.get("title") or "").strip()[:200]
+            url, title = apps.valid_watch_url(request.get("url")), " ".join(str(request.get("title") or "").split())[:200]
             below = None if request.get("below") in (None, "") else apps.price_limit(request.get("below"))
             summary = f"Watch {title or url}" + (f" for a price at or under {below:g}" if below is not None else "")
             details = ("watch-add", url, title, below)
@@ -226,22 +226,27 @@ class AppActions:
                 self._notify_approval(notification)
             if waiting:
                 return waiting
-        with self.store.lock:
-            state = self.store.watch_state()
+        with self.watch_lock:
+            # changedetection.io first, outside the store lock; then the watch's state under it.
             if action == "watch-add":
                 listing = apps.watches(settings, key)
                 uuid = next((uuid for uuid, watch in listing.items() if watch.get("url") == url), None)
-                if uuid is not None:
-                    # Asked again, often a retried call: keep the one watch, so each change notifies once.
-                    summary = self._rewatch(state, uuid, title or listing[uuid].get("title") or url, below)
-                else:
+                added = uuid is None
+                if added:
                     uuid = apps.add_watch(settings, key, url, title, below)
-                    # Not yet seen: the first look only records the page (a price watch still checks its price).
-                    state[uuid] = {"lastChanged": None, "below": below, "lastPrice": None}
             else:
                 apps.remove_watch(settings, key, uuid)
-                state.pop(uuid, None)
-            self.store.save_watch_state(state)
+            with self.store.lock:
+                state = self.store.watch_state()
+                if action == "watch-remove":
+                    state.pop(uuid, None)
+                elif added:
+                    # Not yet seen: the first look only records the page (a price watch still checks its price).
+                    state[uuid] = {"lastChanged": None, "below": below, "lastPrice": None}
+                else:
+                    # Asked again, often a retried call: keep the one watch, so each change notifies once.
+                    summary = self._rewatch(state, uuid, title or listing[uuid].get("title") or url, below)
+                self.store.save_watch_state(state)
         self._log(action, summary, "done")
         return {"done": summary, "id": uuid}
 
@@ -275,6 +280,8 @@ class AppActions:
         if entry["below"] is None:
             raise AppActions._page_watched(name)
         entry["below"] = below
+        # Priced again at the next look, against the new limit: a price already under it is told then.
+        entry["lastPrice"] = None
         return f"Price limit for {name} is now {below:g}"
 
     def check_watches(self):
@@ -301,6 +308,10 @@ class AppActions:
             current = self.store.watch_state()
             fresh = {uuid: entry for uuid, entry in current.items() if uuid not in listing and entry.get("lastChanged") is None}
             seen = {uuid: entry for uuid, entry in kept.items() if uuid in current or uuid not in state}
+            for uuid, entry in seen.items():
+                # A price limit Portal changed meanwhile stays, priced again at the next look.
+                if uuid in current and current[uuid].get("below") != (state.get(uuid) or {}).get("below"):
+                    seen[uuid] = {**entry, "below": current[uuid].get("below"), "lastPrice": current[uuid].get("lastPrice")}
             self.store.save_watch_state({**fresh, **seen})
         for notice in notices:
             self._tell(config, notice["title"], notice["message"], link=notice["link"])
@@ -339,7 +350,8 @@ class AppActions:
         if not config["notifications"]["enabled"]:
             raise IntegrationError("notifications-off", "Reminders reach the owner through ntfy notifications, which are not set up. "
                                    "The owner can connect ntfy in Settings → Portal integrations.")
-        plan = reminders.plan(datetime.datetime.now().astimezone(), request.get("title"), request.get("message"),
+        # In the host's zone with its daylight-saving rules, so "09:00" after a change is still 09:00.
+        plan = reminders.plan(datetime.datetime.now(local_zone()), request.get("title"), request.get("message"),
                               request.get("inMinutes"), request.get("at"))
         self._log("reminder-set", plan["name"], plan["when"])
         return {"plan": plan}

@@ -1,4 +1,5 @@
 """Shared pieces of Portal integrations: errors, limits and the owner-only state files."""
+import datetime
 import hashlib
 import json
 import os
@@ -7,6 +8,7 @@ import threading
 import time
 import uuid
 import urllib.request
+import zoneinfo
 
 SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 64 * 1024
@@ -17,6 +19,22 @@ ACTIVITY_LINES = 500
 # The owner's apps and the local addresses the ODS extension catalog publishes them on.
 APP_URLS = {"documents": "http://127.0.0.1:7807", "photos": "http://127.0.0.1:2283",
             "watch": "http://127.0.0.1:11039", "news": "http://127.0.0.1:11029"}
+
+
+def local_zone(environ=os.environ, localtime="/etc/localtime"):
+    """This computer's time zone with its daylight-saving rules: TZ when set, else the system's.
+
+    A fixed offset (datetime.now().astimezone()) is today's: a reminder or a date after a
+    daylight-saving change would be an hour off.
+    """
+    name = environ.get("TZ", "").lstrip(":")
+    if name:
+        return zoneinfo.ZoneInfo(name)
+    try:
+        with open(localtime, "rb") as file:
+            return zoneinfo.ZoneInfo.from_file(file, key="localtime")
+    except FileNotFoundError:
+        return datetime.timezone.utc  # No zone set up (a bare container): UTC, as the C library assumes.
 
 
 class _NoRedirects(urllib.request.HTTPRedirectHandler):

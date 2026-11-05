@@ -1,5 +1,6 @@
 """Notifications to the owner's phone or computer through their ntfy server."""
 import base64
+import http.client
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -36,7 +37,8 @@ def send_notification(config, secrets, title, message, priority="default", link=
         raise IntegrationError("notifications-off", "Notifications are not set up. The owner can connect ntfy in Settings → Portal integrations.")
     if not isinstance(message, str) or not message.strip() or len(message) > 4000:
         raise IntegrationError("invalid-notification", "Give a message of up to 4,000 characters.")
-    title = (title if isinstance(title, str) and title.strip() else "Portal").strip()[:200]
+    # One line: a line break in a header is refused by http.client (a watched page's or a job's name may hold one).
+    title = " ".join(title.split())[:200] if isinstance(title, str) and title.strip() else "Portal"
     request = urllib.request.Request(f"{settings['url']}/{settings['topic']}", data=message.strip().encode(), method="POST")
     request.add_header("Title", header_text(title))
     request.add_header("Priority", priority if priority in ("min", "low", "default", "high", "urgent") else "default")
@@ -58,6 +60,6 @@ def send_notification(config, secrets, title, message, priority="default", link=
     except urllib.error.HTTPError as error:
         reason = "the user or password was refused" if error.code in (401, 403) else f"ntfy answered {error.code}"
         raise IntegrationError("notification-failed", f"The notification was not sent: {reason}.") from None
-    except (urllib.error.URLError, OSError):
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
         raise IntegrationError("notification-failed", f"The notification was not sent: ntfy at {settings['url']} could not be reached.") from None
     return title

@@ -202,6 +202,9 @@ class Integrations(AppActions, memory.MemoryActions, telegram.TelegramActions):
         self.digest_failing = False  # Whether the last digest could not be made, so its retries do not say so again.
         self.failing_tasks = set()  # Scheduled tasks whose last run failed, so a retry does not notify again.
         self.reminders_sent = collections.deque(maxlen=500)  # Reminder jobs already sent, so a retried run stays quiet.
+        # One watch added or removed at a time: changedetection.io is asked outside the store lock, which
+        # every Settings view and approval waits for, and two adds of one page must not make two watches.
+        self.watch_lock = threading.Lock()
 
     def handle(self, role, request):
         """role is "owner" or "agent", set by the socket the request came in on."""

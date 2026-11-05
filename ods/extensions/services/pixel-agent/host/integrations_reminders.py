@@ -29,15 +29,19 @@ def _minutes(value):
 
 
 def due_at(now, in_minutes=None, at=None):
-    """When the reminder is due, as an aware datetime. now is aware, in the host's local time; a time
-    without a date is its next occurrence, and a date and time without an offset is local."""
+    """When the reminder is due, as an aware datetime. now is aware, in the host's time zone (a zone
+    with its daylight-saving rules, such as a zoneinfo.ZoneInfo, so a time across a change keeps its
+    clock time); a time without a date is its next occurrence, and a date and time without an offset
+    is local."""
     given = [value not in (None, "") for value in (in_minutes, at)]
     if given == [False, False]:
         raise IntegrationError("invalid-reminder", WHEN_HELP)
     if given == [True, True]:
         raise IntegrationError("invalid-reminder", "Give inMinutes or at, not both.")
     if given[0]:
-        return now + datetime.timedelta(minutes=_minutes(in_minutes))
+        # Real elapsed time: adding to a zoned time adds to its clock, an hour off across a change.
+        utc = now.astimezone(datetime.timezone.utc) + datetime.timedelta(minutes=_minutes(in_minutes))
+        return utc.astimezone(now.tzinfo)
     text = str(at).strip()
     clock = CLOCK.match(text)
     if clock:

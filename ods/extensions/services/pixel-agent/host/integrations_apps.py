@@ -8,6 +8,7 @@ removing a page watch follows the owner's choice, ask first or allowed.
 """
 import datetime
 import html
+import http.client
 import json
 import math
 import re
@@ -16,7 +17,7 @@ import urllib.parse
 import urllib.request
 import zoneinfo
 
-from integrations_common import APP_URLS, IntegrationError, NETWORK_TIMEOUT, clip, open_direct
+from integrations_common import APP_URLS, IntegrationError, NETWORK_TIMEOUT, clip, local_zone, open_direct
 
 APPS = tuple(APP_URLS)
 NAMES = {"documents": "Paperless-ngx", "photos": "Immich", "watch": "changedetection.io", "news": "FreshRSS"}
@@ -111,7 +112,8 @@ def request(app, url, *, method="GET", headers=None, body=None, form=None, parse
         if error.code == 404:
             raise IntegrationError("app-not-found", f"{NAMES[app]} has no such item, or this is not its address.") from None
         raise IntegrationError("app-failed", f"{NAMES[app]} answered {error.code}.") from None
-    except (urllib.error.URLError, OSError):
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
+        # HTTPException: an answer cut short or malformed, such as an app restarting mid-reply.
         raise IntegrationError("app-unreachable", f"{NAMES[app]} at {url.split('/api')[0]} could not be reached.") from None
     if len(raw) > MAX_APP_BYTES:
         raise IntegrationError("app-too-large", f"{NAMES[app]} sent too much at once.")
@@ -228,6 +230,24 @@ def best_place(place, known):
     return None
 
 
+def _utc(moment):
+    return moment.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+
+
+def taken_between(after, before, zone):
+    """Immich's date filters for whole days in the owner's time zone.
+
+    Immich compares them with the moment a photo was taken (UTC), so a day starts and ends at
+    the owner's local midnight, not UTC's.
+    """
+    filters = {}
+    if after:
+        filters["takenAfter"] = _utc(datetime.datetime.fromisoformat(f"{after}T00:00:00").replace(tzinfo=zone))
+    if before:
+        filters["takenBefore"] = _utc(datetime.datetime.fromisoformat(f"{before}T23:59:59.999").replace(tzinfo=zone))
+    return filters
+
+
 def photos_search(settings, key, *, query="", place="", after="", before=""):
     query, place = " ".join(str(query or "").split())[:200], " ".join(str(place or "").split())[:100]
     for value in (after, before):
@@ -244,10 +264,7 @@ def photos_search(settings, key, *, query="", place="", after="", before=""):
         if found is None:
             return {"results": [], "mode": "details", "more": False, "note": f"No photos are from a place named {place}."}
         filters[found[0]] = found[1]
-    if after:
-        filters["takenAfter"] = f"{after}T00:00:00.000Z"
-    if before:
-        filters["takenBefore"] = f"{before}T23:59:59.999Z"
+    filters.update(taken_between(after, before, local_zone()))
     narrowed = bool(place or after or before)
     reply, mode, note = None, "description", ""
     if query and describes_photos(settings, key):

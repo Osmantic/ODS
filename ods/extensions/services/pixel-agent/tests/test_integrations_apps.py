@@ -4,6 +4,7 @@ if sys.platform == "win32":
     raise SkipTest("Requires Unix sockets; run under Linux/WSL")
 
 import email.header
+import http.client
 import http.server
 import json
 import pathlib
@@ -13,6 +14,7 @@ import time
 import unittest
 import unittest.mock
 import urllib.parse
+import zoneinfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "host"))
 import integrations_apps as apps  # noqa: E402
@@ -1016,6 +1018,95 @@ class AppTests(unittest.TestCase):
             with self.assertRaisesRegex(service.IntegrationError, "full web address"):
                 self.app("watch", "add", url=bad)
         self.assertEqual(FakeChanges.watches, {})
+
+    def test_raising_a_price_limit_above_the_price_notifies_at_the_next_look(self):
+        self.save(self.settings(changes="allow"))
+        self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=40)
+        FakeChanges.prices["w1"] = 45
+        self.service.check_watches()
+        self.assertEqual(FakeNtfy.sent, [])
+        self.assertEqual(self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=50)["done"],
+                         "Price limit for Kettle is now 50")
+        # The page did not change, yet the price is read again against the new limit, and told once.
+        self.service.check_watches()
+        self.service.check_watches()
+        self.assertEqual([note["message"] for note in FakeNtfy.sent], ["Kettle is now 45, at or under your limit of 50."])
+
+    def test_a_price_limit_changed_during_a_look_stays(self):
+        self.save(self.settings(changes="allow"))
+        self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=50)
+        FakeChanges.prices["w1"] = 60
+        original, changed = self.service._price, []
+
+        def slow_price(*arguments):
+            if not changed:  # Portal lowers the limit while the look reads the price.
+                changed.append(self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=40)["done"])
+            return original(*arguments)
+        self.service._price = slow_price
+        self.service.check_watches()
+        self.assertEqual(changed, ["Price limit for Kettle is now 40"])
+        self.assertEqual(self.store.watch_state()["w1"]["below"], 40.0)
+        self.service._price = original
+        FakeChanges.prices["w1"] = 39
+        FakeChanges.watches["w1"]["last_changed"] += 10
+        self.service.check_watches()
+        self.assertEqual([note["message"] for note in FakeNtfy.sent], ["Kettle is now 39, at or under your limit of 40."])
+
+    def test_a_line_break_in_a_watched_page_s_name_still_notifies(self):
+        self.save(self.settings())
+        FakeChanges.watches["x1"] = {"url": "https://shop.example/shoes", "title": "Shoes\nSale", "last_changed": 5}
+        self.service.check_watches()
+        FakeChanges.watches["x1"]["last_changed"] = 6
+        self.service.check_watches()
+        self.assertEqual(FakeNtfy.sent[-1]["title"], "Page changed: Shoes Sale")
+        self.save(self.settings(changes="allow"))
+        added = self.app("watch", "add", url="https://shop.example/hat", title="Hat\r\nSale")
+        self.assertEqual(added["done"], "Watch Hat Sale")
+
+    def test_an_answer_cut_short_is_an_unreachable_app_not_a_crash(self):
+        self.save(self.settings())
+        for problem in (http.client.IncompleteRead(b"{"), http.client.BadStatusLine("junk"), http.client.LineTooLong("header")):
+            with unittest.mock.patch.object(apps, "open_direct", side_effect=problem):
+                with self.assertRaises(service.IntegrationError) as caught:
+                    apps.watches(self.store.config()["apps"]["watch"], "watch-key")
+                self.assertEqual(caught.exception.code, "app-unreachable")
+            with unittest.mock.patch.object(ntfy, "open_direct", side_effect=problem):
+                with self.assertRaises(service.IntegrationError) as caught:
+                    ntfy.send_notification(self.store.config(), self.store.secrets(), "Title", "Message")
+                self.assertEqual(caught.exception.code, "notification-failed")
+
+    def test_photo_days_follow_the_owner_s_time_zone(self):
+        utc = zoneinfo.ZoneInfo("UTC")
+        self.assertEqual(apps.taken_between("2026-06-01", "2026-06-02", utc),
+                         {"takenAfter": "2026-06-01T00:00:00.000Z", "takenBefore": "2026-06-02T23:59:59.999Z"})
+        sydney = zoneinfo.ZoneInfo("Australia/Sydney")  # UTC+10 in June.
+        self.assertEqual(apps.taken_between("2026-06-01", "2026-06-01", sydney),
+                         {"takenAfter": "2026-05-31T14:00:00.000Z", "takenBefore": "2026-06-01T13:59:59.999Z"})
+        # The day summer time ends in Lisbon starts at UTC+1 and ends at UTC+0.
+        lisbon = zoneinfo.ZoneInfo("Europe/Lisbon")
+        self.assertEqual(apps.taken_between("2026-10-25", "2026-10-25", lisbon),
+                         {"takenAfter": "2026-10-24T23:00:00.000Z", "takenBefore": "2026-10-25T23:59:59.999Z"})
+        self.assertEqual(apps.taken_between("", "", lisbon), {})
+
+    def test_changedetection_is_asked_without_holding_the_settings_lock(self):
+        self.save(self.settings(changes="allow"))
+        original, free = apps.add_watch, []
+
+        def add_watch(*arguments):
+            # Another thread (the owner's Settings, an approval) can take the lock meanwhile.
+            def take():
+                taken = self.store.lock.acquire(timeout=2)
+                if taken:
+                    self.store.lock.release()
+                free.append(taken)
+            other = threading.Thread(target=take)
+            other.start()
+            other.join()
+            return original(*arguments)
+        with unittest.mock.patch.object(apps, "add_watch", side_effect=add_watch):
+            self.app("watch", "add", url="https://shop.example/page", title="Shop")
+        self.assertEqual(free, [True])
+        self.assertIn("w1", self.store.watch_state())
 
     def test_prices_to_read_is_a_pure_choice(self):
         listing = {"page": {"last_changed": 9}, "new": {"last_changed": 0}, "same": {"last_changed": 5}, "moved": {"last_changed": 7}}
