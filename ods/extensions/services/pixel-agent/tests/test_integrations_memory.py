@@ -29,6 +29,11 @@ class PureMemory(unittest.TestCase):
             with self.assertRaises(IntegrationError) as caught:
                 memory.fact(value)
             self.assertIn(reason, caught.exception.message)
+        # Control characters go (the chat card refuses them), and length is counted as the card counts it.
+        self.assertEqual(memory.fact("The owner\x1b[31m is\x00 vegetarian.\x7f"), "The owner [31m is vegetarian.")
+        self.assertEqual(memory.fact("🌱" * 120), "🌱" * 120)
+        with self.assertRaises(IntegrationError):
+            memory.fact("🌱" * 121)
 
     def test_only_portal_chat_sessions_count(self):
         self.assertEqual(memory.session(CHAT), CHAT)
@@ -162,6 +167,8 @@ class ServiceMemory(unittest.TestCase):
         self.assertEqual(stat_mode, 0o600)
         actions = [entry["action"] for entry in self.owner("get")["activity"]]
         self.assertEqual(actions[:2], ["memory-answer", "memory-propose"])
+        # The activity log never holds the fact: it stays after the owner deletes the memory.
+        self.assertNotIn("vegetarian", json.dumps(self.owner("get")["activity"]))
 
     def test_portal_cannot_change_memory_settings_or_decide_for_the_owner(self):
         for action in sorted(memory.OWNER_ACTIONS):

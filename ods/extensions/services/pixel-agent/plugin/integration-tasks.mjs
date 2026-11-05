@@ -23,7 +23,11 @@ function digestJob(plan, agentId) {
 
 // A turn that asks for a reminder gets a note naming the tool: pixel_ods_notify sits behind
 // tool search, and without it a small model says it cannot schedule anything (#7794).
-const ASKS_REMINDER = /\bremind(?:er|ers|ing)?\b|\blembr(?:e|ete|ar|ança|ete-me)\b/i;
+const ASKS_REMINDER = /\bremind(?:er|ers|ing)?\b|\blembr(?:e|ete|ar|ança|ete-me|a-me)\b/i;
+// "Remind me what my deposit was": asking Portal to recall something, not to schedule it, unless
+// the message also says when ("Remind me what to buy at 18:00").
+const ASKS_RECALL = /\bremind\s+me\s+(?:what|who|whom|where|which|how|why|of|whether|if)\b/i;
+const SAYS_WHEN = /\b(?:in|at|by)\s+\d|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\b(?:tomorrow|tonight|later|every|daily|weekly)\b/i;
 // The exact call, because a small model that only knows the tool's name searches and describes it
 // again and again instead of calling it (e2e: three attempts for "Remind me in 3 minutes ...").
 // The example uses the owner's own delay when the message gives one: a fixed example value is
@@ -34,7 +38,7 @@ const REMINDER_END = ' It schedules the reminder and it reaches their phone then
 export const REMINDER_HINT = REMINDER_CALL + '{"message": "<the reminder>", "inMinutes": <minutes from now>}, '
   + 'or {"message": "<the reminder>", "at": "<HH:MM>"} for a time of day.' + REMINDER_END;
 export function reminderHint(text) {
-  if (typeof text !== 'string' || !ASKS_REMINDER.test(text)) return '';
+  if (typeof text !== 'string' || !ASKS_REMINDER.test(text) || (ASKS_RECALL.test(text) && !SAYS_WHEN.test(text))) return '';
   const delay = text.match(DELAY);
   if (!delay) return REMINDER_HINT;
   const minutes = Number(delay[1]) * (/^h/i.test(delay[2]) ? 60 : 1);

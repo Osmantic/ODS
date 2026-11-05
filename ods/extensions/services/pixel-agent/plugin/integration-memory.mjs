@@ -41,12 +41,22 @@ const ANSWERED = {
 };
 
 // Chats whose current turn proposes no memory, with why: 'answered' (the turn applied the owner's
-// answer to a memory card) or 'reminder' (the owner asked for a reminder). Shared across plugin
+// answer to a memory card), 'reminder' (the owner asked for a reminder) or 'card' (this turn
+// already shows a memory card; another fact waits in Settings). Shared across plugin
 // instances (the prompt hook and the tool can come from different ones), as the scheduler is.
 const NO_PROPOSAL_TURNS = Symbol.for('ods.pixel-ods.memoryNoProposalTurns');
 export function noProposalTurns(shared = globalThis) {
   shared[NO_PROPOSAL_TURNS] ??= new Map();
   return shared[NO_PROPOSAL_TURNS];
+}
+
+// The owner's card answers already applied, by chat, fact and choice: each attempt of the answer's
+// run builds its prompt again, and the service no longer has the fact waiting the second time.
+const APPLIED_ANSWERS = Symbol.for('ods.pixel-ods.memoryAppliedAnswers');
+const APPLIED_KEEP = 200;
+function appliedAnswers(shared) {
+  shared[APPLIED_ANSWERS] ??= new Map();
+  return shared[APPLIED_ANSWERS];
 }
 
 // submit is integrations.mjs's submitIntegration, passed in: that module imports this one.
@@ -68,9 +78,17 @@ export function createMemoryHooks({submit, warn = () => {}, shared = globalThis}
       else noProposalTurns(shared).delete(session);
       try {
         if (answer) {
-          const reply = await submit({action: 'memory-answer', session, ...answer}, {timeoutMs: CONTEXT_TIMEOUT_MS});
-          if (reply?.ok) notes.answer = ANSWERED[reply.status] ?? ANSWERED.unknown;
-          else warn(`Portal memory: answer not applied: ${reply?.message}`);
+          const applied = appliedAnswers(shared), key = JSON.stringify([session, answer.text, answer.choice]);
+          let status = applied.get(key);
+          if (status === undefined) {
+            const reply = await submit({action: 'memory-answer', session, ...answer}, {timeoutMs: CONTEXT_TIMEOUT_MS});
+            if (reply?.ok) {
+              status = reply.status;
+              if (status !== 'unknown') applied.set(key, status);
+              if (applied.size > APPLIED_KEEP) applied.delete(applied.keys().next().value);
+            } else warn(`Portal memory: answer not applied: ${reply?.message}`);
+          }
+          if (status !== undefined) notes.answer = ANSWERED[status] ?? ANSWERED.unknown;
         }
         const reply = await submit({action: 'memory-context', session}, {timeoutMs: CONTEXT_TIMEOUT_MS});
         if (reply?.ok && reply.text) notes.facts = reply.text;

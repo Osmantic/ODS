@@ -91,7 +91,13 @@ function notesRequest(params) {
 // itself still comes: told to wait, the small model never answered a question the owner asked
 // (e2e: "Suggest one dinner..." ended with no answer after a proposal).
 async function remember(submit, params, sessionKey, signal, shared) {
-  const blocked = noProposalTurns(shared).get(chatSession(sessionKey));
+  const session = chatSession(sessionKey);
+  if (!session) {
+    // Only the owner's own chat can show the card and holds the "don't remember" mark: a
+    // delegated helper or a scheduled task saves nothing.
+    return text('Nothing was saved: Portal remembers only what the owner says in their own Portal chat.', {status: 'done'});
+  }
+  const blocked = noProposalTurns(shared).get(session);
   if (blocked === 'answered') {
     return text('The owner has just answered your memory question; this reply only acknowledges it. Save nothing else now.', {status: 'done'});
   }
@@ -102,15 +108,21 @@ async function remember(submit, params, sessionKey, signal, shared) {
   }
   let reply;
   try {
-    reply = await submit({action: 'memory-propose', text: str(params?.text), session: chatSession(sessionKey)}, {signal});
+    reply = await submit({action: 'memory-propose', text: str(params?.text), session}, {signal});
   } catch (error) {
     return text(error.message, {status: 'unavailable'}, true);
   }
   if (!reply?.ok) return text(reply?.message || 'The memory was not saved.', {status: 'refused', code: reply?.error}, true);
   if (reply.status === 'known') return text(`Already remembered: ${reply.text}`, {status: 'done'});
   if (reply.status === 'saved') return text(`Remembered: ${reply.text}`, {status: 'done'});
+  if (blocked === 'card') {
+    // A reply shows one card; the next fact waits in Settings.
+    return text(`Also waiting for the owner: "${reply.text}". They can decide in Settings → Portal integrations → Memory; mention that, not a card.`,
+      {status: 'done'});
+  }
+  noProposalTurns(shared).set(session, 'card');
   const questions = [{id: MEMORY_QUESTION_ID, question: memoryQuestion(reply.text), options: Object.keys(MEMORY_CHOICES)}];
-  return text(`${questions[0].question}\n\nThe owner decides on a card shown below your reply; never answer it for them. Call no other tool now: answer the owner's message in plain text.`,
+  return text(`${questions[0].question}\n\nThe owner decides on a card shown below your reply; never answer it for them. Now answer the owner's message, using other tools only if it needs them.`,
     {status: 'awaiting_user', questions});
 }
 

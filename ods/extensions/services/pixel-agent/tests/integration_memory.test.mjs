@@ -47,31 +47,37 @@ test('the dashboard answer to a memory card is read back exactly', () => {
 
 test('remember asks the owner with a card the chat can show, unless the owner said to save without asking', async () => {
   const {sent, submit} = recorder(payload => ({ok: true, status: 'ask', id: 'm1', text: payload.text}));
-  const result = await notes({submit, sessionKey: SESSION}).execute('1', {action: 'remember', text: 'The owner is vegetarian.'});
+  const result = await notes({submit, sessionKey: SESSION, shared: {}}).execute('1', {action: 'remember', text: 'The owner is vegetarian.'});
   assert.deepEqual(sent[0].payload, {action: 'memory-propose', text: 'The owner is vegetarian.', session: USER});
   assert.equal(result.details.status, 'awaiting_user');
   assert.deepEqual(parseQuestions(result.details.questions), [{id: 'memory_save', question: 'Remember this about you? "The owner is vegetarian."',
     options: ['Save', "Don't save", 'Always save without asking']}]);
-  // The card waits for the owner, but the reply to their message still comes, without tools.
+  // The card waits for the owner, but the reply to their message still comes, with tools if it needs them.
   assert.match(result.content[0].text, /never answer it for them/);
-  assert.match(result.content[0].text, /answer the owner's message in plain text/);
+  assert.match(result.content[0].text, /Now answer the owner's message, using other tools only if it needs them/);
   for (const [status, expected] of [['saved', 'Remembered: The owner is vegetarian.'], ['known', 'Already remembered: The owner is vegetarian.']]) {
     const reply = await notes({submit: async () => ({ok: true, status, text: 'The owner is vegetarian.'}), sessionKey: SESSION})
       .execute('2', {action: 'remember', text: 'The owner is vegetarian.'});
     assert.equal(reply.content[0].text, expected);
     assert.equal(reply.details.status, 'done');
   }
-  const outside = recorder({'memory-propose': {ok: true, status: 'ask', text: 'x'}});
-  await notes({submit: outside.submit, sessionKey: 'agent:pixel:cron:job'}).execute('3', {action: 'remember', text: 'x'});
-  assert.equal(outside.sent[0].payload.session, '', 'a scheduled task has no chat');
+  // Outside the owner's own chat (a scheduled task, a delegated helper) nothing is proposed:
+  // no card can be shown there, and a chat's "don't remember" mark could not be checked.
+  for (const sessionKey of ['agent:pixel:cron:job', 'agent:pixel:subagent:helper-1', '']) {
+    const outside = recorder({'memory-propose': {ok: true, status: 'ask', text: 'x'}});
+    const reply = await notes({submit: outside.submit, sessionKey, shared: {}}).execute('3', {action: 'remember', text: 'x'});
+    assert.equal(outside.sent.length, 0, sessionKey);
+    assert.equal(reply.details.status, 'done');
+    assert.match(reply.content[0].text, /only what the owner says in their own Portal chat/);
+  }
 });
 
 test('a refused memory is an error the model can read', async () => {
-  const refused = await notes({submit: async () => ({ok: false, error: 'memory-quiet-chat', message: 'The owner set this chat not to be remembered. Do not save this.'})})
+  const refused = await notes({submit: async () => ({ok: false, error: 'memory-quiet-chat', message: 'The owner set this chat not to be remembered. Do not save this.'}), sessionKey: SESSION, shared: {}})
     .execute('1', {action: 'remember', text: 'x'});
   assert.equal(refused.isError, true);
   assert.match(refused.content[0].text, /not to be remembered/);
-  const down = await notes({submit: async () => { throw new Error('The integrations service is not running.'); }}).execute('2', {action: 'remember', text: 'x'});
+  const down = await notes({submit: async () => { throw new Error('The integrations service is not running.'); }, sessionKey: SESSION, shared: {}}).execute('2', {action: 'remember', text: 'x'});
   assert.equal(down.isError, true);
   assert.match(notes({}).description, /action remember/);
   assert.deepEqual(notes({}).parameters.properties.action.enum, ['search', 'read', 'write', 'remember']);
@@ -80,11 +86,20 @@ test('a refused memory is an error the model can read', async () => {
 test('the guard turns a memory card into the chat question card, like pixel_ods_ask_user', async () => {
   const guard = createToolLoopGuard(), ctx = {agentId: 'pixel', runId: 'memory-card', sessionId: 'session'};
   guard.observeRun(ctx, 'pixel', {prompt: 'I am vegetarian, by the way.'});
-  const result = await notes({submit: async payload => ({ok: true, status: 'ask', id: 'm1', text: payload.text}), sessionKey: SESSION})
+  const result = await notes({submit: async payload => ({ok: true, status: 'ask', id: 'm1', text: payload.text}), sessionKey: SESSION, shared: {}})
     .execute('remember', {action: 'remember', text: 'The owner is vegetarian.'});
   guard.afterToolCall({toolName: 'pixel_ods_notes', result}, {...ctx, toolCallId: 'remember'});
-  assert.equal(guard.beforeToolCall({toolName: 'exec', params: {command: 'echo test'}}, ctx).block, true, 'the turn waits for the owner');
+  // The card waits beside the reply; a request in the same message still gets its tools
+  // ("I'm vegetarian, find me a recipe online" searches after remembering).
+  assert.notEqual(guard.beforeToolCall({toolName: 'web_search', params: {query: 'vegetarian recipe'}}, ctx)?.block, true);
   assert.deepEqual(guard.deliveryVerificationForRun(ctx.runId).questions, result.details.questions);
+  // A clarification question still holds the turn.
+  const asking = createToolLoopGuard(), askCtx = {agentId: 'pixel', runId: 'ask-card', sessionId: 'session'};
+  asking.observeRun(askCtx, 'pixel', {prompt: 'Book me a table'});
+  const askQuestions = [{id: 'when', question: 'Which day?', options: ['Friday', 'Saturday']}];
+  asking.afterToolCall({toolName: 'pixel_ods_ask_user', result: {content: [{type: 'text', text: 'Which day?'}], details: {status: 'awaiting_user', questions: askQuestions}}},
+    {...askCtx, toolCallId: 'ask'});
+  assert.equal(asking.beforeToolCall({toolName: 'web_search', params: {query: 'x'}}, askCtx).block, true);
   // An ordinary notes result is not a question.
   const other = createToolLoopGuard(), plain = {agentId: 'pixel', runId: 'notes-search', sessionId: 'session'};
   other.observeRun(plain, 'pixel', {prompt: 'Find my lease note'});
@@ -170,4 +185,36 @@ test('a quiet chat, memory off, other sessions and a missing service add nothing
   assert.deepEqual(warnings, ['Portal memory: unavailable for this turn: The integrations service is not running.']);
   const stale = createMemoryHooks({submit: async payload => payload.action === 'memory-answer' ? {ok: true, status: 'unknown'} : {ok: true, text: '', enabled: true}});
   assert.match((await stale.promptContext(`${memoryQuestion('x')}\nSave`, SESSION)).answer, /no longer waiting/);
+});
+
+test('a second fact in the same reply waits in Settings, and only the first gets a card', async () => {
+  const shared = {};
+  const {sent, submit} = recorder(payload => ({ok: true, status: 'ask', id: payload.text, text: payload.text}));
+  const tool = notes({submit, sessionKey: SESSION, shared});
+  const first = await tool.execute('1', {action: 'remember', text: 'The owner is vegetarian.'});
+  assert.equal(first.details.status, 'awaiting_user');
+  const second = await tool.execute('2', {action: 'remember', text: 'The owner lives in Lisbon.'});
+  assert.equal(second.details.status, 'done');
+  assert.equal(second.details.questions, undefined);
+  assert.match(second.content[0].text, /Settings → Portal integrations → Memory/);
+  assert.equal(sent.filter(item => item.payload.action === 'memory-propose').length, 2, 'the second fact still waits for the owner');
+  // The next turn may show a card again.
+  await createMemoryHooks({submit: async () => ({ok: true, text: '', enabled: true, quiet: false}), shared}).promptContext('Hi', SESSION);
+  assert.equal((await tool.execute('3', {action: 'remember', text: 'The owner likes tea.'})).details.status, 'awaiting_user');
+});
+
+test('an answer to a memory card is applied once, even when its run builds the prompt again', async () => {
+  const shared = {};
+  let waiting = true;
+  const {sent, submit} = recorder(payload => payload.action === 'memory-answer'
+    ? {ok: true, status: waiting ? (waiting = false, 'saved') : 'unknown'}
+    : {ok: true, text: '', enabled: true, quiet: false});
+  const hooks = createMemoryHooks({submit, shared});
+  const answer = `${memoryQuestion('The owner is vegetarian.')}\nSave`;
+  const attempts = [await hooks.promptContext(answer, SESSION), await hooks.promptContext(answer, SESSION)];
+  for (const turn of attempts) assert.match(turn.answer, /saved the memory/);
+  assert.equal(sent.filter(item => item.payload.action === 'memory-answer').length, 1);
+  // The same words in another chat are their own answer.
+  await hooks.promptContext(answer, `agent:pixel:openai-user:ods-${'c'.repeat(64)}`);
+  assert.equal(sent.filter(item => item.payload.action === 'memory-answer').length, 2);
 });

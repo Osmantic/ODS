@@ -9247,7 +9247,8 @@ export function createToolLoopGuard({
     if (state?.managedTeamReadOnly && !['tool_search','read','web_search','web_fetch','pixel_ods_research','pixel_ods_web_extract','pixel_ods_ask_user','pixel_ods_goal','pixel_ods_activity','pixel_ods_history','pixel_ods_skill','session_status','memory_search','memory_get'].includes(delegatedName)) {
       return {block:true,blockReason:'Your team role is read-only. Do not create, edit, execute commands, publish, or operate services. Review the supplied evidence using read/search tools if needed, then return your findings as text. The Builder owns implementation and test execution.'};
     }
-    if (state?.ownerQuestions) return {block:true, blockReason:'Waiting for the owner to answer the clarification questions. End this turn without further tools; never choose answers for the owner.'};
+    // A memory card waits beside the reply: the owner's request in the same message still gets its tools.
+    if (state?.ownerQuestions && !state.ownerQuestionsMemory) return {block:true, blockReason:'Waiting for the owner to answer the clarification questions. End this turn without further tools; never choose answers for the owner.'};
     if (state?.progressBudget.exhausted) {
       return { block: true, blockReason: RUN_PROGRESS_STOP_REASON };
     }
@@ -11963,11 +11964,14 @@ export function createToolLoopGuard({
         state.extensionReadOnlyRecovery.completedStatusCalls += 1;
     }
     // The owner's choice card: a clarification question, or a fact Portal asks to remember.
-    const questionResult = ['pixel_ods_ask_user', 'pixel_ods_notes'].map(name => toolName === name ? event
-      : toolName === 'tool_call' ? toolSearchSelectedToolEvent(event, name, 'pixel-ods') : undefined).find(Boolean);
+    const [questionTool, questionResult] = ['pixel_ods_ask_user', 'pixel_ods_notes'].map(name => [name, toolName === name ? event
+      : toolName === 'tool_call' ? toolSearchSelectedToolEvent(event, name, 'pixel-ods') : undefined]).find(([, found]) => found) ?? [];
     if (!state.ownerQuestions && questionResult?.result?.details?.status === 'awaiting_user' && !failedToolOutcome(questionResult)) {
       state.ownerQuestions = parseQuestions(questionResult.result.details.questions);
-      rememberPendingClarification(state, runId);
+      // A memory card is no clarification: its answer goes to the memory service
+      // (integration-memory.mjs), and the request it sat beside is not waiting for it.
+      state.ownerQuestionsMemory = questionTool === 'pixel_ods_notes';
+      if (!state.ownerQuestionsMemory) rememberPendingClarification(state, runId);
     }
     const toolCallId = context?.toolCallId ?? event?.toolCallId;
     event = {...event, params: canonicalWorkspaceParams(toolName, event?.params, state.configuredWorkspaceRoot)};

@@ -15,7 +15,8 @@ from integrations_common import IntegrationError, now
 MAX_ITEMS = 200
 MAX_PENDING = 20
 MAX_QUIET = 1000
-MAX_TEXT = 240  # The chat card shows it inside a question of at most 300 characters.
+MAX_TEXT = 240  # The chat card shows it inside a question of at most 300 characters (UTF-16 units, as the card counts).
+CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 MAX_CONTEXT = 2000  # Characters of facts added to a turn.
 SESSION = re.compile(r"^ods-[a-f0-9]{64}$")  # A Portal chat, as the gateway names its session.
 CHOICES = {"save", "discard", "always"}
@@ -28,10 +29,10 @@ def fact(value):
     """A fact as stored: one line, trimmed, without control characters."""
     if not isinstance(value, str):
         raise IntegrationError("invalid-memory", "Give the fact as text, such as \"The owner is vegetarian.\"")
-    text = " ".join(value.split())
+    text = " ".join(CONTROL.sub(" ", value).split())
     if not text:
         raise IntegrationError("invalid-memory", "Give the fact as text, such as \"The owner is vegetarian.\"")
-    if len(text) > MAX_TEXT:
+    if len(text.encode("utf-16-le")) // 2 > MAX_TEXT:
         raise IntegrationError("invalid-memory", f"Keep a memory under {MAX_TEXT} characters: one short fact.")
     return text
 
@@ -187,12 +188,13 @@ class MemoryActions:
         if action == "memory-propose":
             reply = []
             self._memory_change(lambda memory: _keep(propose(memory, request.get("text"), chat), reply))
-            self._log("memory-propose", reply[0]["text"][:80], reply[0]["status"])
+            # Never the fact itself: the log outlives a memory the owner deletes or declines.
+            self._log("memory-propose", "a fact", reply[0]["status"])
             return reply[0]
         if action == "memory-answer":
             outcome = []
             self._memory_change(lambda memory: _keep(answer(memory, request.get("text"), request.get("choice")), outcome))
-            self._log("memory-answer", str(request.get("text", ""))[:80], outcome[0])
+            self._log("memory-answer", "a fact", outcome[0])
             return {"status": outcome[0]}
         raise IntegrationError("invalid-request", "Unknown memory action.")
 
