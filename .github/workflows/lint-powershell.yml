@@ -251,6 +251,16 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-app-shortcut.ps1
 
+      - name: Windows Desktop GPU Runtime Contracts (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-desktop-gpu-runtime.ps1
+
+      - name: Windows Desktop GPU Runtime Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-desktop-gpu-runtime.ps1
+
       - name: Windows Native llama-server (non-Portal) and Lemonade Retirement Contracts (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh

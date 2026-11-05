@@ -14,6 +14,7 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
+import config
 from config import INSTALL_DIR
 from env_values import parse_env_value
 from host_agent_client import (
@@ -52,29 +53,35 @@ def _read_utf8(path: Path) -> str:
 
 def _read_current_version() -> str:
     """Read installed version from .env (preferred) or .version file."""
-    env_file = Path(INSTALL_DIR) / ".env"
-    if env_file.exists():
-        try:
-            for line in _read_utf8(env_file).splitlines():
-                if line.startswith("ODS_VERSION="):
-                    version = parse_env_value(line.split("=", 1)[1])
-                    if version.strip():
-                        return version
-        except OSError:
-            pass
-    version_file = Path(INSTALL_DIR) / ".version"
-    if version_file.exists():
-        try:
-            raw = _read_utf8(version_file).strip()
-            if raw:
-                if raw.startswith("{"):
-                    data = json.loads(raw)
-                    if isinstance(data, dict) and data.get("version"):
-                        return str(data["version"])
-                else:
-                    return raw
-        except (OSError, json.JSONDecodeError, ValueError):
-            pass
+    search_roots = (
+        [Path(config.DATA_DIR), Path(INSTALL_DIR)]
+        if config.WINDOWS_DESKTOP_PROFILE and config.DATA_DIR
+        else [Path(INSTALL_DIR)]
+    )
+    for root in search_roots:
+        env_file = root / ".env"
+        if env_file.exists():
+            try:
+                for line in _read_utf8(env_file).splitlines():
+                    if line.startswith("ODS_VERSION="):
+                        version = parse_env_value(line.split("=", 1)[1])
+                        if version.strip():
+                            return version
+            except OSError:
+                pass
+        version_file = root / ".version"
+        if version_file.exists():
+            try:
+                raw = _read_utf8(version_file).strip()
+                if raw:
+                    if raw.startswith("{"):
+                        data = json.loads(raw)
+                        if isinstance(data, dict) and data.get("version"):
+                            return str(data["version"])
+                    else:
+                        return raw
+            except (OSError, json.JSONDecodeError, ValueError):
+                pass
     manifest_file = Path(INSTALL_DIR) / "manifest.json"
     if manifest_file.exists():
         try:
@@ -458,7 +465,12 @@ async def get_update_dry_run():
 
 @router.get("/api/update/status", dependencies=[Depends(verify_api_key)])
 async def get_update_status():
-    """Return host-agent managed update status."""
+    """Return host-agent or native Windows updater status."""
+    if config.WINDOWS_DESKTOP_PROFILE:
+        from native_updater import get_native_updater_state
+
+        current = await asyncio.to_thread(_read_current_version)
+        return get_native_updater_state(current_version=current)
     return await asyncio.to_thread(_get_update_agent_status)
 
 
@@ -468,6 +480,26 @@ async def trigger_update(action: UpdateAction, api_key: str = Depends(verify_api
     if action.action not in _VALID_ACTIONS:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action.action}")
 
+    if config.WINDOWS_DESKTOP_PROFILE:
+        from native_updater import get_native_updater_state
+
+        current = await asyncio.to_thread(_read_current_version)
+        if action.action == "check":
+            version_res = await get_version(force=True)
+            state = get_native_updater_state(current_version=current)
+            state["updateAvailable"] = bool(version_res.get("update_available"))
+            state["latestVersion"] = version_res.get("latest")
+            state["changelogUrl"] = version_res.get("changelog_url")
+            return {"success": True, **state}
+        if action.action == "backup":
+            return {
+                "success": True,
+                "status": "ready",
+                "message": "Native Windows updates automatically snapshot previous version on apply.",
+            }
+        state = get_native_updater_state(current_version=current)
+        return {"success": True, **state}
+
     if action.action == "check":
         return await asyncio.to_thread(_call_update_agent, "check", {}, 35)
     if action.action == "backup":
@@ -475,3 +507,52 @@ async def trigger_update(action: UpdateAction, api_key: str = Depends(verify_api
         return await asyncio.to_thread(_call_update_agent, "backup", payload, 65)
 
     return await asyncio.to_thread(_call_update_agent, "start", {}, 10)
+
+
+@router.post("/api/update/native/stage", dependencies=[Depends(verify_api_key)])
+async def post_stage_native_update(payload: dict):
+    """Download, verify SHA-256, and stage a native Windows Desktop update archive."""
+    from native_updater import stage_native_update
+
+    target_version = str(payload.get("targetVersion") or payload.get("version") or "").strip()
+    download_url = str(payload.get("downloadUrl") or payload.get("url") or "").strip()
+    expected_sha256 = str(payload.get("expectedSha256") or payload.get("sha256") or "").strip()
+    if not target_version or not download_url or not expected_sha256:
+        raise HTTPException(
+            status_code=400,
+            detail="targetVersion, downloadUrl, and expectedSha256 are required",
+        )
+    current = await asyncio.to_thread(_read_current_version)
+    try:
+        state = await stage_native_update(
+            target_version=target_version,
+            download_url=download_url,
+            expected_sha256=expected_sha256,
+            current_version=current,
+            changelog_url=payload.get("changelogUrl"),
+            release_notes=payload.get("releaseNotes"),
+        )
+        return {"ok": True, **state}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/api/update/native/apply", dependencies=[Depends(verify_api_key)])
+async def post_apply_native_update(payload: Optional[dict] = None):
+    """Atomically swap a staged native Windows Desktop update into the active app directory."""
+    from native_updater import apply_staged_update
+
+    body = payload or {}
+    raw_app_dir = body.get("appDir") or (
+        str(Path(config.DATA_DIR) / "app" / "current") if config.DATA_DIR else ""
+    )
+    if not raw_app_dir:
+        raise HTTPException(status_code=400, detail="appDir is required")
+    app_dir = Path(str(raw_app_dir))
+    try:
+        state = await asyncio.to_thread(apply_staged_update, app_dir)
+        return {"ok": True, **state}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
