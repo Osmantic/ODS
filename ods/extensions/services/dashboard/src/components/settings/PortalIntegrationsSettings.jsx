@@ -142,11 +142,6 @@ export default function PortalIntegrationsSettings() {
     setParams(previous => { const next = new URLSearchParams(previous); next.set('view', id); return next })
   }, [setParams])
   const closeView = useCallback(() => setParams(previous => { const next = new URLSearchParams(previous); next.delete('view'); return next }), [setParams])
-  // Keyboard and screen-reader users land on the view they opened, and back on its tile.
-  useEffect(() => {
-    if (current) viewTop.current?.focus()
-    else if (lastTile.current) document.querySelector(`[data-tile="${lastTile.current}"]`)?.focus()
-  }, [current])
   const [view, setView] = useState(null)
   // The saved settings the draft was made from. Its revision goes with every save of the draft,
   // so a save after another window's save is refused instead of undoing that window's changes.
@@ -163,6 +158,19 @@ export default function PortalIntegrationsSettings() {
   dirtyRef.current = dirty
   const baseRef = useRef(base)
   baseRef.current = base
+  const busyRef = useRef(busy)
+  busyRef.current = busy
+  const refreshError = useRef('')
+  // Telegram keeps its own edits (it saves with its own button); the page marks its tile and
+  // asks before leaving while they are unsaved.
+  const [telegramEdited, setTelegramEdited] = useState(false)
+  const loaded = Boolean(view && base && draft)
+  // Keyboard and screen-reader users land on the view they opened, and back on its tile; a link
+  // to a view moves there once the page has loaded.
+  useEffect(() => {
+    if (current) viewTop.current?.focus()
+    else if (lastTile.current) document.querySelector(`[data-tile="${lastTile.current}"]`)?.focus()
+  }, [current, loaded])
 
   // keepDraft: new approvals and activity only; rebase: the owner's edits moved onto the newer settings.
   const show = useCallback((result, { keepDraft = false, rebase = false } = {}) => {
@@ -201,22 +209,34 @@ export default function PortalIntegrationsSettings() {
   useEffect(() => { run([[null]]) }, [run])
   // New approvals arrive while this page is open; keep the owner's unsaved edits, and say when the
   // settings were saved elsewhere meanwhile.
+  // Not while the page itself is saving or acting: its own save is not "another window", and an
+  // answer older than what the page shows (it left before a save finished) is dropped.
   useEffect(() => {
-    const timer = setInterval(() => call(null).then(result => {
-      show(result, { keepDraft: dirtyRef.current })
-      if (dirtyRef.current && result.settings.revision !== baseRef.current?.revision) setNotice(CHANGED_ELSEWHERE)
-    }).catch(failure => setError(failure.message)), 15000)
+    const timer = setInterval(() => {
+      if (busyRef.current) return
+      call(null).then(result => {
+        if (busyRef.current || (baseRef.current && result.settings.revision < baseRef.current.revision)) return
+        if (refreshError.current) {
+          const failed = refreshError.current
+          refreshError.current = ''
+          setError(previous => (previous === failed ? '' : previous))
+        }
+        show(result, { keepDraft: dirtyRef.current })
+        if (dirtyRef.current && result.settings.revision !== baseRef.current?.revision) setNotice(CHANGED_ELSEWHERE)
+      }).catch(failure => { refreshError.current = failure.message; setError(failure.message) })
+    }, 15000)
     return () => clearInterval(timer)
   }, [show])
   // Leaving the page with unsaved changes asks first.
+  const unsaved = dirty || telegramEdited
   useEffect(() => {
-    if (!dirty) return undefined
+    if (!unsaved) return undefined
     const warn = event => { event.preventDefault(); event.returnValue = '' }
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
-  }, [dirty])
+  }, [unsaved])
 
-  if (!view || !base || !draft) return <section className={cardStyle}><p className="text-sm text-theme-text-muted" role={error ? 'alert' : 'status'}>{error || 'Loading Portal integrations…'}</p>
+  if (!loaded) return <section className={cardStyle}><p className="text-sm text-theme-text-muted" role={error ? 'alert' : 'status'}>{error || 'Loading Portal integrations…'}</p>
     {error && <button className={buttonStyle} onClick={() => run([[null]])}>Reload</button>}</section>
 
   const ids = idsForSave(draft, new Set(base.mcp.servers.map(server => server.id)))
@@ -240,7 +260,10 @@ export default function PortalIntegrationsSettings() {
     ? { enabled, approvalLink: approvalLinkFor(window.location.origin) } : { enabled })
 
   const tiles = HUB_TILES.filter(tile => (tile.id === 'telegram' ? Boolean(view.telegram) : tile.id === 'memory' ? Boolean(view.memory) : true))
-  const edited = editedTiles(draft, draftFrom(base), typed)
+  // Saved by the bar's Save; typed secrets of a removed server or variable are not saved, so not counted.
+  const edited = editedTiles(draft, draftFrom(base), typedForDraft(typed, draft))
+  // Also marked on the hub: Telegram, saved with its own button.
+  const marked = telegramEdited ? new Set([...edited, 'telegram']) : edited
   const open = tiles.find(tile => tile.id === current)
   // Every view stays mounted, hidden when not open, so typing in one survives a visit to another.
   const pane = id => ({ hidden: !open || open.id !== id })
@@ -267,8 +290,8 @@ export default function PortalIntegrationsSettings() {
       {notice && <p role="status" className="text-sm text-theme-text-muted">{notice}</p>}
     </section>
 
-    {!open && <Hub tiles={tiles} view={view} edited={edited} onOpen={openView} />}
-    {open && <ViewBar tile={open} edited={edited.has(open.id)} onBack={closeView} focusRef={viewTop} />}
+    {!open && <Hub tiles={tiles} view={view} edited={marked} onOpen={openView} />}
+    {open && <ViewBar tile={open} edited={marked.has(open.id)} onBack={closeView} focusRef={viewTop} />}
 
     <div {...pane('approvals')}><Approvals approvals={view.approvals} busy={busy} onDecide={decide} /></div>
 
@@ -331,7 +354,7 @@ export default function PortalIntegrationsSettings() {
     {APP_IDS.map(id => <div key={id} {...pane(id)}><PortalAppsSettings ids={[id]} {...appsProps} /></div>)}
 
     {view.telegram && <div {...pane('telegram')}><PortalTelegramSettings telegram={view.telegram} busy={busy}
-      onAct={steps => run(steps, '', { keepDraft: dirty })} /></div>}
+      onAct={steps => run(steps, '', { keepDraft: dirty })} onEdited={setTelegramEdited} /></div>}
 
     {view.memory && <div {...pane('memory')}><PortalMemorySettings memory={view.memory} busy={busy} onAct={(steps, done) => run(steps, done, { keepDraft: dirty })} /></div>}
 
@@ -339,9 +362,10 @@ export default function PortalIntegrationsSettings() {
 
     {/* Always in reach, in the hub and in every view. */}
     {dirty && <div role="region" aria-label="Unsaved changes" className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-theme-accent bg-theme-card p-3 shadow-lg">
-      {error
-        ? <p role="alert" className="min-w-0 text-sm text-red-400 whitespace-pre-wrap break-words">{error}</p>
-        : <p className="text-sm">You have unsaved changes{edited.size ? ` in ${tiles.filter(tile => edited.has(tile.id)).map(tile => tile.title).join(', ')}` : ''}.</p>}
+      <div className="min-w-0 space-y-1">
+        <p className="text-sm">You have unsaved changes{edited.size ? ` in ${tiles.filter(tile => edited.has(tile.id)).map(tile => tile.title).join(', ')}` : ''}.</p>
+        {error && <p role="alert" className="text-sm text-red-400 whitespace-pre-wrap break-words">{error}</p>}
+      </div>
       <div className="flex gap-2">
         <button className={buttonStyle} disabled={busy} onClick={discard}>Discard</button>
         <button className="rounded bg-theme-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-theme-accent" disabled={busy} onClick={save}>Save</button>

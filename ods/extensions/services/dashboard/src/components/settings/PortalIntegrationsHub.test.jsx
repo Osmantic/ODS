@@ -207,3 +207,9 @@ describe('the hub', () => {
     expect(screen.getByText('Turn on the kitchen light')).toBeVisible()
   })
 })
+
+it('a link straight to a view moves focus there once the page has loaded', async () => {
+  show(view(), '/settings?section=portal-integrations&view=approvals')
+  const back = await screen.findByRole('button', { name: 'All integrations' })
+  await waitFor(() => expect(document.activeElement).toBe(back))
+})

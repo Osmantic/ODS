@@ -8,13 +8,16 @@ function Fact({ item, busy, onEdit, onDelete }) {
   const [editing, setEditing] = useState(false)
   const [text, setText] = useState(item.text)
   const save = async () => { if ((await onEdit(item.id, text)).ok) setEditing(false) }
+  const cancel = () => { setText(item.text); setEditing(false) }
+  // Enter does what the Save button does, so not for an empty memory.
+  const keys = event => { if (event.key === 'Enter' && !busy && text.trim()) save(); if (event.key === 'Escape') cancel() }
   if (editing) {
     return <li className="space-y-2 rounded border border-theme-border p-3 text-sm">
       <label className="block">Memory<input className={inputStyle} value={text} maxLength={240} disabled={busy} autoFocus
-        onChange={event => setText(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') save(); if (event.key === 'Escape') setEditing(false) }} /></label>
+        onChange={event => setText(event.target.value)} onKeyDown={keys} /></label>
       <div className="flex gap-2">
         <button className={buttonStyle} disabled={busy || !text.trim()} onClick={save}>Save</button>
-        <button className={buttonStyle} disabled={busy} onClick={() => { setText(item.text); setEditing(false) }}>Cancel</button>
+        <button className={buttonStyle} disabled={busy} onClick={cancel}>Cancel</button>
       </div>
     </li>
   }

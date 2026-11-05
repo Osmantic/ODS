@@ -522,3 +522,101 @@ it('moves only the owner\'s own changes onto newer settings, server by server an
   expect(rebaseDraft(withApps(base, true), withApps(base, false), withApps(latest, false)).apps.documents.enabled).toBe(true)
   expect(rebaseDraft(withApps(base, false), withApps(base, false), withApps(latest, true)).apps.documents.enabled).toBe(true)
 })
+
+const unsavedBar = () => screen.queryByRole('region', { name: 'Unsaved changes' })
+const tileLabel = async title => (await screen.findByRole('button', { name: new RegExp('^' + escape(title) + ',') })).getAttribute('aria-label')
+
+it('a token typed for an MCP server that is then removed leaves nothing unsaved', async () => {
+  fakeService()
+  await openTile('Home Assistant')
+  fireEvent.click(await screen.findByRole('button', { name: 'Add MCP server' }))
+  fireEvent.change(screen.getByLabelText('Access token (optional)'), { target: { value: 'secret-token' } })
+  expect(unsavedBar()).not.toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Remove MCP server' }))
+  expect(unsavedBar()).toBeNull()
+  expect(screen.getByRole('navigation', { name: 'Integration' })).not.toHaveTextContent('Unsaved changes')
+  backToHub()
+  expect(await tileLabel('Home Assistant')).not.toMatch(/unsaved changes/)
+})
+
+it('turning the news digest on and off again is no unsaved change', async () => {
+  fakeService()
+  await openTile('FreshRSS')
+  const digest = screen.getByLabelText('Send me a daily news digest')
+  fireEvent.click(digest)
+  expect(unsavedBar()).not.toBeNull()
+  fireEvent.click(digest)
+  expect(unsavedBar()).toBeNull()
+  backToHub()
+  expect(await tileLabel('FreshRSS')).not.toMatch(/unsaved changes/)
+})
+
+it('a refresh that failed once stops showing its error when the next one works, beside the unsaved summary', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    const { fetchMock } = fakeService()
+    await openTile('ntfy')
+    fireEvent.change(screen.getByLabelText('User (optional)'), { target: { value: 'a-user' } })
+    fetchMock.mockImplementationOnce(async () => response({ detail: 'Portal is restarting.' }, 503))
+    await vi.advanceTimersByTimeAsync(15000)
+    const bar = within(unsavedBar())
+    expect(await bar.findByRole('alert')).toHaveTextContent('Portal is restarting.')
+    expect(bar.getByText('You have unsaved changes in ntfy.')).toBeInTheDocument()
+    await vi.advanceTimersByTimeAsync(15000)
+    await waitFor(() => expect(bar.queryByRole('alert')).toBeNull())
+    expect(screen.getByLabelText('User (optional)')).toHaveValue('a-user')
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('its own save before a slow step that fails is not taken for another window', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    const { fetchMock, posts } = fakeService()
+    const real = fetchMock.getMockImplementation()
+    let release
+    fetchMock.mockImplementation(async (url, options) => {
+      if (!url.endsWith('/test-notification')) return real(url, options)
+      posts.push(['test-notification', {}])
+      await new Promise(resolve => { release = resolve })
+      return response({ detail: 'ntfy did not answer.' }, 502)
+    })
+    await openTile('ntfy')
+    fireEvent.click(screen.getByLabelText('Send notifications through ntfy'))
+    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }))
+    await waitFor(() => expect(release).toBeTypeOf('function'))
+    expect(posts.map(([action]) => action)).toEqual(['save', 'test-notification'])
+    // The save went through, the test still runs: the page refreshes meanwhile.
+    await vi.advanceTimersByTimeAsync(15000)
+    // The step fails: the page says so, and nothing about another window.
+    release()
+    expect(await screen.findByRole('alert')).toHaveTextContent('ntfy did not answer.')
+    expect(screen.queryByText(/saved in another window/)).toBeNull()
+    expect(unsavedBar()).toBeNull()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('a refresh answer older than the page\'s own save is dropped', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    const { fetchMock, posts } = fakeService()
+    await openTile('ntfy')
+    fireEvent.change(screen.getByLabelText('User (optional)'), { target: { value: 'a-user' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await screen.findByText('Saved.')
+    // An answer that left before the save finished: the old revision and the old user.
+    fetchMock.mockImplementationOnce(async () => response(view()))
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(screen.getByLabelText('User (optional)')).toHaveValue('a-user')
+    fireEvent.change(screen.getByLabelText('Topic'), { target: { value: 'family' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(posts.filter(([action]) => action === 'save')).toHaveLength(2))
+    expect(posts.at(-1)[1].expectedRevision).toBe(1)
+    expect(await screen.findByText('Saved.')).toBeInTheDocument()
+  } finally {
+    vi.useRealTimers()
+  }
+})

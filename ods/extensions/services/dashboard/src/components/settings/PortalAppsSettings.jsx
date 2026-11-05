@@ -58,11 +58,14 @@ function WatchOptions({ app, saved, busy, revision, onChange, onLoadWatches }) {
   </>
 }
 
-function NewsOptions({ app, busy, onChange }) {
-  const setDigest = patch => onChange({ digest: { ...app.digest, timezone: browserTimezone(), ...patch } })
+// The digest runs in this browser's time zone once the owner turns it on or sets its time;
+// turned off, it keeps the saved zone, so on and then off again is no unsaved change.
+function NewsOptions({ app, saved, busy, onChange }) {
+  const setDigest = (patch, timezone = browserTimezone()) => onChange({ digest: { ...app.digest, timezone, ...patch } })
+  const turnDigest = enabled => setDigest({ enabled }, enabled ? browserTimezone() : saved?.digest?.timezone ?? app.digest.timezone)
   return <>
     <div className="space-y-2 md:col-span-2">
-      <Toggle checked={app.digest.enabled} disabled={busy} onChange={enabled => setDigest({ enabled })}>Send me a daily news digest</Toggle>
+      <Toggle checked={app.digest.enabled} disabled={busy} onChange={turnDigest}>Send me a daily news digest</Toggle>
       <label className="block text-sm">Digest time ({app.digest.timezone})
         <input className={inputStyle} type="time" value={app.digest.time} disabled={busy || !app.digest.enabled} onChange={event => setDigest({ time: event.target.value })} /></label>
       <p className="text-xs text-theme-text-muted">Each day at this time Portal sends a short brief of your new unread stories through ntfy, up to 15 of them, grouped by feed. Each story comes in one digest only. It is a scheduled task, kept in step with this setting.</p>
@@ -90,7 +93,7 @@ function AppCard({ plain = false, id, app, saved, secret, busy, result, revision
           placeholder={saved?.hasKey ? 'Saved. Type to replace.' : ''} onChange={event => onSecret(event.target.value)} /></label>
       <p className="text-xs text-theme-text-muted md:col-span-2">{meta.where}</p>
       {id === 'watch' && <WatchOptions app={app} saved={saved} busy={busy} revision={revision} onChange={onChange} onLoadWatches={onLoadWatches} />}
-      {id === 'news' && <NewsOptions app={app} busy={busy} onChange={onChange} />}
+      {id === 'news' && <NewsOptions app={app} saved={saved} busy={busy} onChange={onChange} />}
     </div>
     <div className="flex flex-wrap gap-2">
       <button className={buttonStyle} disabled={busy || !hasKey} onClick={onTest}>Test {meta.product}</button>

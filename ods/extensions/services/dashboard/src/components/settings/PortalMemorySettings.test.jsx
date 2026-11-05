@@ -128,3 +128,17 @@ it('an older service without memory shows no memory card', async () => {
   expect(screen.queryByRole('heading', { name: 'Memory' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /^Memory,/ })).not.toBeInTheDocument()
 })
+
+it('Escape drops an abandoned edit, and Enter never saves an empty memory', async () => {
+  const posts = fakeService({ enabled: true, askFirst: true, items: [fact('a', 'The owner is vegetarian.')], pending: [] })
+  const memory = await card()
+  fireEvent.click(memory.getByRole('button', { name: 'Edit memory: The owner is vegetarian.' }))
+  fireEvent.change(memory.getByLabelText('Memory'), { target: { value: 'Half-typed' } })
+  fireEvent.keyDown(memory.getByLabelText('Memory'), { key: 'Escape' })
+  fireEvent.click(memory.getByRole('button', { name: 'Edit memory: The owner is vegetarian.' }))
+  expect(memory.getByLabelText('Memory')).toHaveValue('The owner is vegetarian.')
+  fireEvent.change(memory.getByLabelText('Memory'), { target: { value: '   ' } })
+  fireEvent.keyDown(memory.getByLabelText('Memory'), { key: 'Enter' })
+  expect(posts).toEqual([])
+  expect(screen.queryByRole('alert')).toBeNull()
+})
