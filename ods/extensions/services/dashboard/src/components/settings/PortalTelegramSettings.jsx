@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 const inputStyle = 'w-full rounded border border-theme-border bg-theme-bg px-3 py-2 text-theme-text focus:outline-none focus:ring-2 focus:ring-theme-accent'
 const buttonStyle = 'rounded border border-theme-border px-3 py-2 text-sm hover:bg-white/5 disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-theme-accent'
@@ -9,18 +9,25 @@ const DEFAULT_API = 'https://api.telegram.org'
 const savedApiRoot = value => value.trim().replace(/\/+$/, '')
 
 // Chat with Portal from Telegram through the owner's own bot. Saved with its own button:
-// the bot token is a secret that is sent only when typed.
-export default function PortalTelegramSettings({ telegram, busy, onAct }) {
-  const [enabled, setEnabled] = useState(telegram.enabled)
-  const [ownerId, setOwnerId] = useState(telegram.ownerId)
+// the bot token is a secret that is sent only when typed. onEdited(bool) tells the page
+// whether this view holds unsaved edits.
+export default function PortalTelegramSettings({ telegram, busy, onAct, onEdited }) {
+  // Only the fields the owner changed here; the others follow the saved settings, so a save in
+  // another window shows here and this page's Save does not undo it.
+  const [edits, setEdits] = useState({})
   const [token, setToken] = useState('')
-  const [apiRoot, setApiRoot] = useState(telegram.apiRoot)
   const [result, setResult] = useState(null)
+  const enabled = edits.enabled ?? telegram.enabled
+  const ownerId = edits.ownerId ?? telegram.ownerId
+  const apiRoot = edits.apiRoot ?? telegram.apiRoot
+  const edit = (field, value) => setEdits(previous => ({ ...previous, [field]: value }))
   const changed = enabled !== telegram.enabled || ownerId.trim() !== telegram.ownerId || token !== '' || (savedApiRoot(apiRoot) || DEFAULT_API) !== telegram.apiRoot
+  useEffect(() => { onEdited?.(changed) }, [changed, onEdited])
+  useEffect(() => () => onEdited?.(false), [onEdited])
   const save = async () => {
     setResult(null)
     const outcome = await onAct([['telegram-save', { enabled, ownerId: ownerId.trim(), apiRoot: savedApiRoot(apiRoot) || DEFAULT_API, ...(token ? { token } : {}) }]])
-    if (outcome.ok) setToken('')
+    if (outcome.ok) { setToken(''); setEdits({}) }
     setResult(outcome)
   }
   const test = async () => { setResult(null); setResult(await onAct([['telegram-test']])) }
@@ -34,17 +41,17 @@ export default function PortalTelegramSettings({ telegram, busy, onAct }) {
       <li>Message <span className="text-theme-text">@userinfobot</span> to see your Telegram user ID, a number.</li>
       <li>Paste both here, turn Telegram on and save. Then press Test and message your bot.</li>
     </ol>
-    <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={enabled} disabled={busy} onChange={event => setEnabled(event.target.checked)} />Let me chat with Portal from Telegram</label>
+    <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={enabled} disabled={busy} onChange={event => edit('enabled', event.target.checked)} />Let me chat with Portal from Telegram</label>
     <div className="grid gap-3 md:grid-cols-2">
       <label className="text-sm">Bot token<input className={inputStyle} type="password" autoComplete="off" value={token} disabled={busy} spellCheck={false}
         placeholder={telegram.hasToken ? 'Saved. Type to replace.' : '123456789:AAH…'} onChange={event => setToken(event.target.value)} /></label>
       <label className="text-sm">Your Telegram user ID<input className={inputStyle} inputMode="numeric" value={ownerId} disabled={busy} spellCheck={false}
-        placeholder="123456789" onChange={event => setOwnerId(event.target.value)} /></label>
+        placeholder="123456789" onChange={event => edit('ownerId', event.target.value)} /></label>
     </div>
     <details className="text-sm">
       <summary className="cursor-pointer text-theme-text-muted">Advanced</summary>
       <label className="mt-2 block">Telegram API address<input className={inputStyle} value={apiRoot} disabled={busy} spellCheck={false}
-        onChange={event => setApiRoot(event.target.value)} /></label>
+        onChange={event => edit('apiRoot', event.target.value)} /></label>
       <p className="mt-1 text-xs text-theme-text-muted">Change it only for your own Telegram Bot API server.</p>
     </details>
     <div className="flex flex-wrap items-center gap-2">

@@ -18,6 +18,8 @@ const TELEGRAM = { enabled: false, ownerId: '', apiRoot: 'https://api.telegram.o
 const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => body })
 const TOKEN = '987654321:AAH' + 'x'.repeat(32)
 
+let saveElsewhere
+
 function fakeService(telegram = TELEGRAM) {
   let current = { settings: SETTINGS, approvals: [], activity: [], telegram }
   const posts = []
@@ -39,6 +41,8 @@ function fakeService(telegram = TELEGRAM) {
     return response(current)
   }))
   render(createElement(PortalIntegrationsSettings))
+  // Another window saving Telegram.
+  saveElsewhere = patch => { current = { ...current, telegram: { ...current.telegram, ...patch } } }
   return posts
 }
 
@@ -108,4 +112,39 @@ it('shows a Telegram problem and that strangers were ignored', async () => {
   expect(telegram.getByRole('alert')).toHaveTextContent('Telegram refused the bot token.')
   expect(telegram.getByText(/Someone other than you wrote to your bot/)).toBeInTheDocument()
   expect(telegram.getByText(/Telegram carries these messages on its servers/)).toBeInTheDocument()
+})
+
+it('shows Telegram saved in another window, and its Save does not undo it', async () => {
+  const posts = fakeService()
+  let telegram = await card()
+  expect(telegram.getByLabelText('Let me chat with Portal from Telegram')).not.toBeChecked()
+  saveElsewhere({ enabled: true, ownerId: '123456789', hasToken: true })
+  fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+  telegram = within((await screen.findByRole('heading', { name: 'Telegram' })).closest('section'))
+  await waitFor(() => expect(telegram.getByLabelText('Let me chat with Portal from Telegram')).toBeChecked())
+  expect(telegram.getByLabelText('Your Telegram user ID')).toHaveValue('123456789')
+  expect(telegram.getByRole('button', { name: 'Save Telegram' })).toBeDisabled()
+  expect(telegram.getByRole('button', { name: 'Test' })).toBeEnabled()
+  // An edit here changes only that field.
+  fireEvent.change(telegram.getByLabelText('Your Telegram user ID'), { target: { value: '123456780' } })
+  fireEvent.click(telegram.getByRole('button', { name: 'Save Telegram' }))
+  await waitFor(() => expect(posts.at(-1)).toEqual(['telegram-save', { enabled: true, ownerId: '123456780', apiRoot: 'https://api.telegram.org' }]))
+})
+
+it('unsaved Telegram edits mark its tile and ask before leaving the page, outside the page Save', async () => {
+  fakeService()
+  const telegram = await card()
+  const leaving = vi.spyOn(window, 'addEventListener')
+  fireEvent.change(telegram.getByLabelText('Your Telegram user ID'), { target: { value: '123456789' } })
+  expect(screen.getByRole('navigation', { name: 'Integration' })).toHaveTextContent('Unsaved changes')
+  await waitFor(() => expect(leaving).toHaveBeenCalledWith('beforeunload', expect.any(Function)))
+  // Telegram saves with its own button, so the page's save bar stays away.
+  expect(screen.queryByRole('region', { name: 'Unsaved changes' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'All integrations' }))
+  expect(await screen.findByRole('button', { name: /^Telegram,/ })).toHaveAttribute('aria-label', expect.stringMatching(/, unsaved changes$/))
+  // Saved: the mark goes.
+  fireEvent.click(screen.getByRole('button', { name: /^Telegram,/ }))
+  fireEvent.click(telegram.getByRole('button', { name: 'Save Telegram' }))
+  expect(await telegram.findByText('Telegram saved.')).toBeInTheDocument()
+  expect(screen.getByRole('navigation', { name: 'Integration' })).not.toHaveTextContent('Unsaved changes')
 })
