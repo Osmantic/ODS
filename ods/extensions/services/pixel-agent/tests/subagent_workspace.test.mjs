@@ -32,7 +32,7 @@ function fixture(t) {
     api:{config,on:(name,callback)=>{callbacks[name]=callback;}},
     AGENT_ID:'pixel',toolLoopGuard:guard,accessRuntime:runtime,
     goalProgress:{before(){}},bundleAdmission:{before(){}},taskActivity:{before(){}},
-    projectRunControl:createProjectRunControl(),artifactAdmission:{before(){}},
+    projectRunControl:createProjectRunControl(),artifactAdmission:{before(){}},projectSnapshots:{before(){},end(){}},
     delegationDelivery:{blocked(){},before(){},hasPendingChildren(){return false; }},
     withPixelCronDeliveryDefault,withPixelSubagentWorkspace,withCronCommandPayloadBlock,withSleepReminderBlock,
     getSessionEntry:scope=>{assert.equal(scope.sessionKey,ctx.sessionKey);return session;},

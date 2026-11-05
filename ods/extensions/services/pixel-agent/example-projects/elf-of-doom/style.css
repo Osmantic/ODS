@@ -33,6 +33,12 @@ html, body { height: 100%; background: #050303; overflow: hidden; font-family: "
 .pot-slot:disabled { opacity: .35; cursor: default; }
 
 .hud-center { text-align: center; padding-top: 6px; }
+/* While a boss is alive, the center column grows to fill the flex line. #hud is justify-content:
+   space-between, which pins a shrink-to-fit middle against the viewport; with flex-grow the column fills
+   the row and centres its text against the real #hud box instead, so the title, the Arrows counter and
+   the bar below them all stay visually centred and the bar's height is contributed below the counter.
+   layoutBossBar() in ui.js adds and removes this class with the bar's own visibility. */
+.hud-center.boss-active { flex: 1 1 auto; min-width: 0; }
 #zone-label { color: #e8c27a; font-size: 19px; font-weight: bold; letter-spacing: 3px; text-transform: uppercase; text-shadow: 0 0 14px rgba(200,80,10,.6), 0 2px 3px #000; font-variant: small-caps; }
 #wave-label { color: #cf9a86; font-size: 12px; letter-spacing: 1px; text-shadow: 0 1px 2px #000; margin-top: 3px; }
 
@@ -50,7 +56,20 @@ html, body { height: 100%; background: #050303; overflow: hidden; font-family: "
 .skill.ready { border-color: rgba(255,200,90,.8); box-shadow: 0 0 10px rgba(255,150,40,.35), 0 4px 12px rgba(0,0,0,.7); }
 
 /* Boss bar */
-#boss-wrap { position: absolute; top: 88px; left: 50%; transform: translateX(-50%); width: min(560px, 80%); text-align: center; pointer-events: none; }
+/* This bar used to be pinned at a fixed top: 88px, which quietly assumed the center HUD block above it
+   (realm title -> wave line -> Arrows counter) always came to the same height. It does not: whenever the
+   realm title wraps onto a second line, the wrapped title pushes the Arrows counter down into exactly the
+   88px band and the boss name is drawn straight over it, so the arrow count is unreadable for the whole
+   fight. "Fenris Hollow of Har-Mazel" does it in every Skarnax fight, and from loop 2 on the " · Loop N"
+   suffix pushes more titles past the wrap.
+   So the bar is now a flex item in #hud rather than an absolute overlay: layoutBossBar() in ui.js gives
+   the center column flex-grow, which centres it against the real #hud box while the bar's own height is
+   contributed *below* it. The bar therefore follows the title however many lines it takes, and with a
+   one-line title the column's height is unchanged, so the bar lands on the same 88px it always had.
+   The previous attempt at this re-measured the block each frame and wrote a CSS custom property; that
+   broke the headless harness (its DOM shim has no style.setProperty) and, being viewport-relative next
+   to a letterboxed object-fit: contain canvas, was not even the right coordinate space. */
+#boss-wrap { max-width: 560px; text-align: center; pointer-events: none; margin-top: 10px; }
 #boss-name { color: #e8735a; font-weight: bold; letter-spacing: 3px; text-transform: uppercase; font-size: 14px; text-shadow: 0 0 12px rgba(200,30,10,.9), 0 2px 2px #000; margin-bottom: 4px; font-variant: small-caps; }
 .boss-bar { height: 16px; border-color: rgba(200,80,50,.5); }
 #boss-fill { width: 100%; background: linear-gradient(180deg, #a83226, #4e0808); box-shadow: 0 0 10px rgba(255,40,20,.5) inset; }

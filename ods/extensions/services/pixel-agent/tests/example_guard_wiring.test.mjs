@@ -22,7 +22,7 @@ import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs'
 import {EXAMPLE_NOTES, exampleNotice} from '../plugin/example-guard.mjs';
 import {exampleRecordDirectory, exampleRecordFile} from '../plugin/example-projects.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
-import {promptContractForAgent} from '../plugin/prompt-contract.mjs';
+import {longTaskContract, promptContractForAgent} from '../plugin/prompt-contract.mjs';
 import {inResponseLanguage, responseLanguageTurnContext} from '../plugin/response-language.mjs';
 import {createSubagentDelivery} from '../plugin/subagent-delivery.mjs';
 import {withPixelSubagentWorkspace} from '../plugin/subagent-workspace.mjs';
@@ -99,7 +99,7 @@ function entry(root) {
     accessRuntime: {isProbe: () => false, beforeTool() {}, afterTool() {}, finish() {}},
     privateBrowserAccessForAgent: () => false, executionHostForAgent: () => 'sandbox',
     goalProgress: {...quiet, finalize: (_event, _context, {guardDecision}) => guardDecision}, taskActivity: quiet,
-    promptContractForAgent, configuredContextWindow: undefined, configuredLeanPrompt: false,
+    promptContractForAgent, longTaskContract, configuredContextWindow: undefined, configuredLeanPrompt: false,
     configuredResponseLanguage: undefined, inResponseLanguage, responseLanguageTurnContext, managedTeamRole,
     extensionRepositoryContext: async () => '', GOAL_CONTRACT: '', ACTIVITY_CONTRACT: '',
     executionLocationContext: () => '', executionContext: () => '',
@@ -109,7 +109,7 @@ function entry(root) {
     getSessionEntry: () => undefined, resolveStorePath: () => undefined, resolveUserPath: value => value,
     resolveAgentWorkspaceDir: config => config?.agents?.list?.find(agent => agent.id === 'pixel')?.workspace,
     bundleAdmission: createWorkspaceBundleAdmission(), artifactAdmission: createWorkspaceArtifactAdmission(),
-    projectRunControl: createProjectRunControl(), compactToolResultEnvelope,
+    projectRunControl: createProjectRunControl(), projectSnapshots: {before() {}, end() {}}, compactToolResultEnvelope,
   });
   return {callbacks, delivery: links.delegationDelivery, guard: links.toolLoopGuard};
 }

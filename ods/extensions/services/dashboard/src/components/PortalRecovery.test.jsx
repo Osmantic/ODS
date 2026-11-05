@@ -1,6 +1,6 @@
 import {act, fireEvent, screen, within} from '@testing-library/react'
 import {render} from '../test/test-utils'
-import PortalRecovery from './PortalRecovery'
+import PortalRecovery, {VERIFY_HINT_DELAY_MS} from './PortalRecovery'
 
 const DISCORD = 'https://discord.gg/4ntNp9MAwC'
 const sandbox = {available:true, surface:'wsl-systemd', configured_mode:'sandboxed', effective_mode:'sandboxed',
@@ -19,14 +19,26 @@ function host(routes) {
   }))
 }
 
-afterEach(() => { vi.unstubAllGlobals() })
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+// An available Portal's hint, once it has stayed long enough to be drawn.
+async function renderHint(props = {}) {
+  vi.useFakeTimers()
+  const view = render(<PortalRecovery status="available" action="verify-sandbox" {...props}/>)
+  await act(async () => { await vi.advanceTimersByTimeAsync(VERIFY_HINT_DELAY_MS) })
+  return view
+}
 
 it('verifies an idle Sandbox with a fresh revision, exactly as Portal permissions does', async () => {
   const change = deferred()
   host({'GET /api/pixel/access-mode': reply(stale), 'POST /api/pixel/access-mode': () => change.promise})
   const settled = vi.fn()
-  render(<PortalRecovery status="available" action="verify-sandbox" onSettled={settled}/>)
-  expect(banner().getByRole('status')).toHaveTextContent('ODS re-checks it automatically')
+  await renderHint({onSettled: settled})
+  // An out-of-date check is not a restart (laptop, 2026-10-31: shown after hours
+  // of uptime), and ODS usually clears it by itself, so the line says when to act.
+  expect(banner().getByRole('status')).toHaveTextContent(
+    'Portal’s sandbox check is out of date. ODS usually re-checks it on its own; if this message stays, you can check it now.')
+  expect(banner().getByRole('status')).not.toHaveTextContent('restarted')
   // Nothing is sent before the owner chooses it.
   expect(fetch).not.toHaveBeenCalled()
   fireEvent.click(banner().getByRole('button', {name:'Verify now'}))
@@ -60,7 +72,7 @@ it('restores Sandbox for a held chat when Full Access was configured, and says w
 it('does nothing when the host already re-proved the runtime before the click', async () => {
   host({'GET /api/pixel/access-mode': reply(sandbox)})
   const settled = vi.fn()
-  render(<PortalRecovery status="available" action="verify-sandbox" onSettled={settled}/>)
+  await renderHint({onSettled: settled})
   fireEvent.click(banner().getByRole('button', {name:'Verify now'}))
   await act(async () => {})
   expect(posts('/api/pixel/access-mode')).toHaveLength(0)
@@ -83,7 +95,7 @@ it.each([
 ])('explains a %s with its cause and next step', async (_name, routes, text, help) => {
   host(routes)
   const settled = vi.fn()
-  render(<PortalRecovery status="available" action="verify-sandbox" onSettled={settled}/>)
+  await renderHint({onSettled: settled})
   fireEvent.click(banner().getByRole('button', {name:'Verify now'}))
   await act(async () => {})
   const failure = banner().getByRole('alert')
@@ -95,24 +107,107 @@ it.each([
   expect(banner().getByRole('button', {name:'Verify now'})).toBeEnabled()
 })
 
+it('draws the Verify hint for an available Portal only once it has stayed, and held states at once', async () => {
+  host({})
+  vi.useFakeTimers()
+  const region = () => screen.queryByRole('region', {name:'Portal recovery'})
+  const view = render(<PortalRecovery status="available" action="verify-sandbox" update={1}/>)
+  // The host usually re-checks it a few seconds after Portal goes idle, so a
+  // notice drawn at once flashed after every reply (laptop, 2026-10-31).
+  await act(async () => { await vi.advanceTimersByTimeAsync(VERIFY_HINT_DELAY_MS - 1000) })
+  expect(region()).toBeNull()
+  // A reply started and the hint went away, so its time starts again.
+  view.rerender(<PortalRecovery status="available" update={2}/>)
+  view.rerender(<PortalRecovery status="available" action="verify-sandbox" update={3}/>)
+  await act(async () => { await vi.advanceTimersByTimeAsync(VERIFY_HINT_DELAY_MS - 1000) })
+  expect(region()).toBeNull()
+  // Updates that keep naming it do not restart it.
+  view.rerender(<PortalRecovery status="available" action="verify-sandbox" update={4}/>)
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+  expect(banner().getByRole('button', {name:'Verify now'})).toBeEnabled()
+  // Once ODS re-checks it, the notice goes at once.
+  view.rerender(<PortalRecovery status="available" update={5}/>)
+  expect(region()).toBeNull()
+  // A held chat waits for the owner, so its Verify shows at once; so does
+  // Restore Sandbox for an unfinished change.
+  view.rerender(<PortalRecovery status="recovery" action="verify-sandbox" update={6}
+    detail="Portal stopped during an earlier turn, so new messages are held until its permissions are checked again."/>)
+  expect(banner().getByRole('button', {name:'Verify now'})).toBeEnabled()
+  view.rerender(<PortalRecovery status="available" action="restore-sandbox" update={7}/>)
+  expect(banner().getByRole('button', {name:'Restore Sandbox'})).toBeEnabled()
+  expect(fetch).not.toHaveBeenCalled()
+})
+
+it.each([
+  ['verify-sandbox', 'Verify now'],
+  ['restore-sandbox', 'Restore Sandbox'],
+])('ends a finished %s attempt at the next status update that does not name it', async (action, label) => {
+  const read = deferred()
+  host({'GET /api/pixel/access-mode': () => read.promise})
+  const view = await renderHint({action, update: 1})
+  fireEvent.click(banner().getByRole('button', {name: label}))
+  await act(async () => {})
+  // A reply started while the attempt ran, so the status stopped naming it.
+  view.rerender(<PortalRecovery status="available" update={2}/>)
+  await act(async () => read.resolve(reply({...stale, busy:true})))
+  // The owner still sees why nothing changed...
+  expect(banner().getByRole('alert')).toHaveTextContent('Portal is still finishing earlier work')
+  // ...until the next status update, although nothing else changed. Before,
+  // the notice and its button stayed up through the reply, and for good once
+  // the host re-checked the sandbox without naming it again.
+  view.rerender(<PortalRecovery status="available" update={3}/>)
+  expect(screen.queryByRole('region', {name:'Portal recovery'})).toBeNull()
+})
+
+it('keeps a finished Sandbox attempt while later status updates still name it', async () => {
+  host({'GET /api/pixel/access-mode': reply({...stale, busy:true})})
+  const view = await renderHint({update: 1})
+  fireEvent.click(banner().getByRole('button', {name:'Verify now'}))
+  await act(async () => {})
+  view.rerender(<PortalRecovery status="available" action="verify-sandbox" update={2}/>)
+  expect(banner().getByRole('alert')).toHaveTextContent('Portal is still finishing earlier work')
+  expect(banner().getByRole('button', {name:'Verify now'})).toBeEnabled()
+})
+
+it('keeps the button of an attempt the owner already made working when its hint carries over', async () => {
+  const answers = [reply({...stale, reason:'chat-recovery-required', busy:true}), reply(sandbox)]
+  host({'GET /api/pixel/access-mode': () => answers.shift()})
+  const settled = vi.fn()
+  vi.useFakeTimers()
+  const view = render(<PortalRecovery status="recovery" action="verify-sandbox" update={1} onSettled={settled}
+    detail="Portal stopped during an earlier turn, so new messages are held until its permissions are checked again."/>)
+  fireEvent.click(banner().getByRole('button', {name:'Verify now'}))
+  await act(async () => {})
+  expect(banner().getByText(/Portal is still finishing earlier work/)).toBeVisible()
+  // The chat is no longer held but the check is still out of date. The hint is
+  // new for an available Portal, yet the owner's attempt is not: no delay.
+  view.rerender(<PortalRecovery status="available" action="verify-sandbox" update={2} onSettled={settled}/>)
+  fireEvent.click(banner().getByRole('button', {name:'Verify now'}))
+  await act(async () => {})
+  expect(settled).toHaveBeenCalledOnce()
+})
+
 it('resumes an unloaded model and keeps showing a failure while Portal reports the attempt as a switch', async () => {
   const start = deferred()
   host({'POST /api/models/runtime/start': () => start.promise})
-  const view = render(<PortalRecovery status="unloaded" detail="The model is unloaded, so Portal is paused. Choose Resume model to load it again."/>)
+  const view = render(<PortalRecovery status="unloaded" update={1} detail="The model is unloaded, so Portal is paused. Choose Resume model to load it again."/>)
   fireEvent.click(banner().getByRole('button', {name:'Resume model'}))
   await act(async () => {})
   expect(posts('/api/models/runtime/start').map(([, options]) => options.body)).toEqual(['{}'])
   // The host owns a model operation while it resumes, so status reads "switching".
-  view.rerender(<PortalRecovery status="switching"/>)
+  view.rerender(<PortalRecovery status="switching" update={2}/>)
   expect(banner().getByText('Loading the model. This can take a few minutes…')).toBeVisible()
   await act(async () => start.resolve(reply({detail:{error:'Windows runtime start is unconfirmed', code:'runtime_control_unconfirmed'}}, 409)))
   const failure = banner().getByText(/The model did not start/)
   expect(failure).toHaveAttribute('role', 'alert')
   expect(failure).toHaveTextContent('The model did not start: Windows runtime start is unconfirmed. Wait a moment and choose Resume model again.')
   expect(within(failure).getByRole('link', {name:'Get help on Discord'})).toHaveAttribute('href', DISCORD)
-  view.rerender(<PortalRecovery status="unloaded" detail="The model is unloaded, so Portal is paused. Choose Resume model to load it again."/>)
+  // Unlike a Sandbox attempt, its outcome outlasts updates that name nothing.
+  view.rerender(<PortalRecovery status="switching" update={3}/>)
   expect(banner().getByText(/The model did not start/)).toBeVisible()
-  view.rerender(<PortalRecovery status="available"/>)
+  view.rerender(<PortalRecovery status="unloaded" update={4} detail="The model is unloaded, so Portal is paused. Choose Resume model to load it again."/>)
+  expect(banner().getByText(/The model did not start/)).toBeVisible()
+  view.rerender(<PortalRecovery status="available" update={5}/>)
   expect(screen.queryByRole('region', {name:'Portal recovery'})).toBeNull()
 })
 

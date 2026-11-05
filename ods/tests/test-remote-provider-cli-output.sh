@@ -18,8 +18,8 @@ extract() {
         in_block && /^}$/ { exit }
     ' "$ROOT/ods-cli"
 }
-for name in _remote_provider_print_apply_result _remote_provider_print_status _remote_provider_fail \
-    _remote_provider_not_serving_reason _remote_provider_transport_reason; do
+for name in _remote_provider_image_input_jq _remote_provider_print_apply_result _remote_provider_print_status \
+    _remote_provider_fail _remote_provider_not_serving_reason _remote_provider_transport_reason; do
     body="$(extract "$name")"
     [[ -n "$body" ]] || fail "$name was not found in ods-cli"
     eval "$body"

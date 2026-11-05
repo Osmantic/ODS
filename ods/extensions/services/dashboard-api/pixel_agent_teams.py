@@ -19,7 +19,7 @@ import stat
 import tempfile
 import time
 import uuid
-from portal_goal import goal_prompt, goal_decision, public_plan
+from portal_goal import GOAL_CONTINUE_STOPS, goal_prompt, goal_decision, public_plan
 
 ACTIVE = {"queued", "running", "waiting", "stopping", "interrupted"}
 TERMINAL = {"completed", "failed", "cancelled", "skipped"}
@@ -436,7 +436,7 @@ class TeamManager:
                     agent["started"] = agent["started"] or time.time()
                     self._save(owner, row)
                     content, outcome, questions, done, error = "", None, None, False, False
-                    publication = None
+                    publication, limit_stop = None, None
                     # Never reuse an earlier turn's completion plan as a fresh receipt.
                     agent['activity'] = None
                     last_save = 0
@@ -467,6 +467,8 @@ class TeamManager:
                             receipt = frame.get("pixel_outcome", {})
                             if receipt.get("schemaVersion") == 1 and receipt.get("status") in {"none", "passed", "pending", "failed"}:
                                 outcome = receipt["status"]
+                                stop = receipt.get("stop")
+                                limit_stop = stop if outcome == "failed" and isinstance(stop, str) and stop in GOAL_CONTINUE_STOPS else None
                             value = frame.get("pixel_questions", {})
                             if value.get("schemaVersion") == 1 and questions_valid(value.get("questions")):
                                 questions = value["questions"]
@@ -475,7 +477,12 @@ class TeamManager:
                             self._save(owner, row)
                             last_save = time.monotonic()
                     stopped = self.store.get(owner, row["id"])["stop_requested"]
-                    if done and not error and outcome in {'none', 'passed'} and publication:
+                    # A goal round that a Portal limit stopped, with its reply
+                    # received, continues from the saved work like any other
+                    # unfinished round, and keeps its publication; every other
+                    # failed round ends the goal.
+                    goal_stop = limit_stop if row.get('mode') == 'goal' and done and not error and content.strip() else None
+                    if done and not error and (outcome in {'none', 'passed'} or goal_stop) and publication:
                         agent['publication'] = publication
                     row["stop_requested"] = stopped
                     if content:
@@ -488,6 +495,8 @@ class TeamManager:
                             plan = public_plan((agent.get('activity') or {}).get('goal'))
                             if plan and plan['steps']:
                                 agent['goal_plan'] = plan
+                            # The answer continues this round, which was not stopped.
+                            agent['goal_stopped'] = None
                         agent["questions"] = questions
                         agent["status"], row["status"] = "waiting", "waiting"
                         self._save(owner, row)
@@ -499,7 +508,7 @@ class TeamManager:
                         agent["finished"] = time.time()
                         self._stop_remaining(owner, row)
                         return
-                    if not done or error or not content.strip() or outcome not in {"none", "passed"}:
+                    if (not done or error or not content.strip() or outcome not in {"none", "passed"}) and not goal_stop:
                         if (not done or error or not content.strip()) and agent['role']!='builder' and agent.get('recoveries',0)<1:
                             agent['recoveries']=1
                             agent['recovery_request_ids'] = [*agent.get('recovery_request_ids', []), agent['request_id']][-4:]
@@ -524,7 +533,7 @@ class TeamManager:
                         self._save(owner, row)
                         return
                     if row.get('mode') == 'goal':
-                        decision = goal_decision(agent)
+                        decision = goal_decision(agent, goal_stop)
                         if decision == 'continue':
                             agent['goal_round'] = agent.get('goal_round', 0) + 1
                             agent['request_id'] = f"goal-{agent['goal_round']}-answer-{agent.get('clarifications', 0)}"

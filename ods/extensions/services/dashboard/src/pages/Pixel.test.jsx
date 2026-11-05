@@ -79,15 +79,20 @@ const sseResponse = (frames, { status = 200, chunks } = {}) => {
 }
 
 describe('Pixel', () => {
+  // What the host answers when the page asks which turns offer "Put back
+  // files"; a test that needs a button sets its own.
+  let restoreOptionsAnswer
   beforeEach(() => {
     previewManifests.clear()
-    // Stream fixtures are independent of background context reads. The full
-    // context lifecycle is exercised in PixelCompaction.test.jsx; retain all
-    // network observations here without consuming the next SSE fixture.
+    // Stream fixtures are independent of background context and turn-undo
+    // reads. The full context lifecycle is exercised in PixelCompaction.test.jsx;
+    // retain all network observations here without consuming the next SSE fixture.
+    restoreOptionsAnswer=()=>response({schemaVersion:1,projects:[]})
     const responses=vi.fn()
     const fetchMock=vi.fn((url,...args)=>previewManifests.has(url)?Promise.resolve(previewManifestResponse(previewManifests.get(url))):url==='/api/pixel/chat/context'
       ? Promise.resolve(response({schemaVersion:1,status:'missing',sessionRevision:null,context:null,model:null,
         compaction:{status:'idle',count:0},history:{revision:null,acknowledgedMessages:0}}))
+      : url==='/api/pixel/projects/restore-options' ? Promise.resolve(restoreOptionsAnswer())
       : responses(url,...args))
     for(const method of ['mockResolvedValue','mockResolvedValueOnce','mockRejectedValue','mockRejectedValueOnce','mockImplementation','mockImplementationOnce']) {
       fetchMock[method]=(...args)=>{responses[method](...args);return fetchMock}
@@ -164,6 +169,48 @@ describe('Pixel', () => {
     expect(screen.queryByRole('button',{name:'Reuse prompt'})).toBeNull()
     expect(screen.queryByText(/(?:Live|Recorded) activity ·/)).toBeNull()
     expect(screen.queryByRole('button',{name:'Copy Markdown'})).toBeNull()
+  })
+
+  it('offers Put back files under the turn the host lists for a project, and its Undo after that', async () => {
+    const runId = 'chatcmpl_12345678-1234-1234-1234-123456789012', later = 'chatcmpl_22345678-1234-1234-1234-123456789012'
+    const undo = 'restore_99999999-2222-4333-8444-555555555555'
+    const project = (name, observedAt) => ({schemaVersion:1,kind:'ods-workspace-project',relativeDirectory:`Playground/${name}`,observedAt})
+    const task = (id, startedAt, finishedAt, projects) => ({schemaVersion:4,runId:id,startedAt,finishedAt,state:'completed',calls:1,failures:0,blocked:0,truncated:false,
+      activities:[{kind:'run',calls:1,failures:0,blocked:0}],events:[{sequence:1,kind:'run',state:'completed',startedAt,finishedAt,display:null}],context:null,goal:null,projects})
+    localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'undo-chat',messages:[
+      {role:'user',content:'Make the elves faster'},
+      {role:'assistant',content:'The elves are faster.',task:task(runId,'2026-10-30T12:00:00.000Z','2026-10-30T12:05:00.000Z',
+        [project('game','2026-10-30T12:03:00.000Z')])},
+      {role:'user',content:'What did you change?'},
+      {role:'assistant',content:'I changed chars.js.',task:task(later,'2026-10-30T12:10:00.000Z','2026-10-30T12:11:00.000Z',
+        [project('game','2026-10-30T12:03:00.000Z')])},
+    ]}))
+    let restored = false
+    restoreOptionsAnswer = () => response({schemaVersion:1,projects:[{project:'Playground/game',snapshot:runId,late:false,
+      restore:restored ? {undo,side:'before'} : null}]})
+    fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/projects/restore') {
+        restored = true
+        return response({schemaVersion:2,status:'restored',project:'Playground/game',snapshot:runId,written:1,removed:0,left:[],leftCount:0,
+          failed:[],failedCount:0,failure:null,late:false,undo,confirm:null})
+      }
+      return response({available:true,model:'pixel/default'})
+    })
+    render(<Pixel/>)
+    await waitFor(()=>expect(screen.getByText('Available')).toBeInTheDocument())
+    // The host names the latest turn that changed the project; the later question gets nothing.
+    const buttons = await screen.findAllByRole('button',{name:'Put back files from before this turn'})
+    expect(buttons).toHaveLength(1)
+    const [, asked] = fetch.mock.calls.find(([url])=>url==='/api/pixel/projects/restore-options')
+    expect(JSON.parse(asked.body)).toEqual({runs:[runId,later]})
+    fireEvent.click(buttons[0])
+    await waitFor(()=>expect(fetch.mock.calls.some(([url])=>url==='/api/pixel/projects/restore')).toBe(true))
+    const [, options] = fetch.mock.calls.find(([url])=>url==='/api/pixel/projects/restore')
+    expect(JSON.parse(options.body)).toEqual({chat_id:'undo-chat',project:'Playground/game',snapshot:runId})
+    expect(await screen.findByText("Playground/game is back to how it was before this turn: 1 file written back. A preview of this project may still show this turn's version until Portal publishes it again.")).toBeVisible()
+    expect(screen.getByRole('button',{name:'Undo putting back Playground/game'})).toBeEnabled()
+    // The host is asked again, so a reload would offer the same Undo.
+    await waitFor(()=>expect(fetch.mock.calls.filter(([url])=>url==='/api/pixel/projects/restore-options').length).toBe(2))
   })
 
   it('accepts only the fixed approval receipt grammar', () => {

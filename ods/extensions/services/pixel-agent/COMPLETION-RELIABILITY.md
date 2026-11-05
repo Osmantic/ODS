@@ -669,7 +669,7 @@ had failed, so 4 of 6 levels threw `ReferenceError`. The owner saw "LLM request
 failed." and OpenClaw's advice to increase `agents.defaults.timeoutSeconds`,
 which ODS resets. The model had no warning that the deadline was near.
 
-`plugin/run-deadline.mjs` now handles both sides:
+`plugin/run-deadline.mjs` now handles three things:
 
 - **The model is warned.** `before_prompt_build` runs once per attempt, just
   after the runtime arms that attempt's timer. For the owner's own Portal turns
@@ -692,14 +692,54 @@ which ODS resets. The model had no warning that the deadline was near.
   - Each stage is sent once per response. After a compaction, whose summary
     can drop it (`keepRecentTokens` is 8192 on a 131K model), the stage now due
     is sent again with the same bytes. A tool-limit stop, its tool-free answer
-    turn, an owner cancel and any other ODS abort get no notice.
+    turn, an owner cancel, the guard's own deadline stop and any other ODS
+    abort get no notice.
+- **Portal stops a `/goal` round itself, just before the deadline.** OpenClaw's
+  timer cannot be relied on to end a response before the ingress cuts it off
+  with no reply, and a goal round cut off that way ends its goal instead of
+  continuing (laptop, 2026-10-30). A later attempt gets a fresh 30 minutes.
+  The first attempt's timer can extend by the compaction grace
+  (`agents.defaults.compaction.timeoutSeconds`, which ODS pins to 1800
+  seconds) when a compaction is in flight, or start a compaction and a retry
+  when the prompt fills over 65% of the window. So for the owner's goal
+  rounds the guard stops the response 15 seconds before its deadline (1/60 of
+  shorter timeouts), counted from the response's start, whatever attempt it
+  is on. Other chats keep OpenClaw's timer and the ingress, as before, and so
+  do goal rounds that would end their goal after a stop anyway (Operations,
+  exact downloads, managed extension requests, a repeated research loop). A
+  round waiting on the owner's answer is stopped like any other and delivers
+  its question card, which the goal waits on. It stops only where the abort
+  reaches OpenClaw's run and costs no answer:
+  - a tool that is running, with the run-ID marker that also ends a sandboxed
+    command, like every ODS stop;
+  - a model call of an agent turn at least 3 seconds old. An abort while a
+    call still sets up its stream left the attempt hung until its own timer,
+    and one before the attempt's first turn cannot reach the prompt OpenClaw
+    starts next. So the stop waits for that turn. A compaction call is never
+    a stop point: before the prompt there is no live run to abort, and after
+    an answer it belongs to that answer;
+  - the next tool call, which it refuses.
+
+  It never stops an attempt that wrote its answer (OpenClaw drops the answer
+  of an attempt anything but its own timer aborted). The answer counts until
+  a reply that is not one, not until the next model call: the compaction
+  after an answer can start before its `before_compaction` hook, which waits
+  behind the finalization hooks. If that attempt goes on, its next tool call
+  is stopped, and so is a revision it asks for. It never stops the answer
+  turn after a tool-limit stop or a refused delete, an owner's Stop, or a
+  newer run in the chat. If the stop is not taken, the next turn or tool call
+  tries again. Once the stop is due, tool results no longer count toward the
+  tool limit, so its own refusals and the commands it ends never make the
+  round a tool-limit stop.
 - **The owner is told what happened.** No hook reports the runtime's timeout
-  kind, so `agent_end` classifies it. All of these must hold:
+  kind, so `agent_end` classifies it. After the guard's own stop the deadline
+  is the cause. Otherwise all of these must hold:
   - the attempt failed (`success: false`);
   - the attempt, counted from its own start, ran at least the timeout minus
     15 seconds;
   - ODS did not stop it: no owner cancel, tool limit or recursive-delete
-    refusal, and no guard abort. The guard marks every run it aborts.
+    refusal, and no guard abort. The guard marks every run it aborts, except
+    for its own deadline stop.
   - its last assistant message is not a completed answer, which OpenClaw
     delivers itself.
 
@@ -719,21 +759,34 @@ which ODS resets. The model had no warning that the deadline was near.
   response gets only the limit and the "continue" step.
 
   The ingress replaces the runtime text with it and reports `pixel_outcome`
-  `failed`. Channel delivery (`reply_payload_sending`) uses the same
+  `failed`, with `stop: 'run-deadline'` for a `/goal` round, which continues
+  the goal. Channel delivery (`reply_payload_sending`) uses the same
   verification. This also covers a deadline during a tool call, where OpenClaw
   emits no timeout text at all.
 
-A deadline during compaction does not get this copy. The runtime extends that
-attempt by the compaction grace (`agents.defaults.compaction.timeoutSeconds`,
-which ODS also pins to 1800 seconds). That always outlasts the ingress's
-2-minute margin, so the response still ends with the dashboard's "Portal could
-not complete the response".
+Some goal rounds still reach the ingress's cut with no reply:
+- a compaction between attempts, or a compaction call in flight, that runs
+  past the cut: there is nothing safe to stop until the next turn;
+- an attempt that wrote its answer and is still finalizing;
+- a model call that begins in the last 3 seconds before the first attempt's
+  own timer, which then fires first and may start its compaction and retry;
+- a turn after an answer whose model call runs past the cut without calling
+  a tool;
+- time before the first attempt's prompt hook, which counts against the
+  ingress's 1920 seconds but not against the 30 minutes: a long history
+  preparation by the ingress, the gateway's session-lane wait, sandbox and
+  bootstrap setup.
 
-Subagent, cron and team-worker runs get no notice or copy: subagent and cron
-lanes can use another timeout or none, and a team worker reports to its
+The dashboard then shows "Portal could not complete the response", and the
+goal ends there.
+
+Subagent, cron and team-worker runs get no notice, stop or copy: subagent and
+cron lanes can use another timeout or none, and a team worker reports to its
 coordinator rather than the owner.
 `tests/run_deadline.test.mjs` and `tests/run_deadline_delivery.test.mjs`
-(including the real ingress over loopback) cover these paths.
+(including the real ingress over loopback) cover these paths, and
+`tests/runtime_retried_deadline.integration.mjs` covers the guard's stop with
+the pinned OpenClaw gateway and the real ingress.
 
 ## Search availability
 

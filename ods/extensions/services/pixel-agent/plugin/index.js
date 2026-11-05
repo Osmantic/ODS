@@ -1,6 +1,7 @@
 import {createWorkspaceArtifactAdmission,createWorkspaceArtifactTool} from './workspace-artifact.mjs';
 import {createAgentSkillTool} from './agent-skills.mjs';
 import {registerProjectBuild} from './project-registration.mjs';
+import {projectCapabilityOutputLimit} from './project-capabilities.mjs';
 import {createProjectRunControl} from './project-run-control.mjs';
 import {registerBootstrapCapabilities} from './bootstrap-capabilities.mjs';
 import {registerStableRuntimeLine} from './runtime-line.mjs';
@@ -44,7 +45,7 @@ import {
   statusFileFromEnv,
   statusPayload,
 } from "./projection.mjs";
-import { promptContractForAgent } from "./prompt-contract.mjs";
+import { longTaskContract, promptContractForAgent } from "./prompt-contract.mjs";
 import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
 import { createIntegrationTools, INTEGRATION_TOOL_NAMES, submitIntegration } from "./integrations.mjs";
@@ -95,6 +96,7 @@ import {createWorkspaceBundleAdmission, createWorkspaceBundleService, createWork
 import {createWorkspaceBundleExecution} from './workspace-bundle-execution.mjs';
 import { createTaskActivity } from "./task-activity.mjs";
 import { createWorkspaceProjects } from "./workspace-projects.mjs";
+import { createProjectRestoreRoute, createProjectSnapshots } from "./project-snapshots.mjs";
 import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs";
 import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
 import {createContextCompaction, readContextRequest, prepareStableContextModel} from './context-compaction.mjs';
@@ -120,6 +122,7 @@ const pendingClarifications = createPendingClarifications();
 const taskActivity = createTaskActivity({agentId:AGENT_ID, goalForRun:id=>goalProgress.projection(id),projectsForSession:key=>workspaceProjects.forSession(key)});
 let execCancellationControl;
 let accessRuntime;
+let projectSnapshots;
 let contextCompaction;
 let conversationImageLifecycle;
 let currentManagedRuntime;
@@ -390,10 +393,13 @@ export default definePluginEntry({
       warn: (message) => api.logger.warn(message),
       info: (message) => api.logger.info?.(message),
       exampleOwnerRun: context => delegationDelivery.ownerRunOf(context),
+      goalRun: runId => goalProgress.active(runId),
       // Only a remote API route carries a route fingerprint
       // (model-runtime-readback.mjs); its output limit is the owner's setting.
       remoteModelRoute: () => typeof (api.runtime?.config?.current?.() ?? api.config)
         ?.plugins?.entries?.['pixel-ods']?.config?.modelRouteFingerprint === 'string',
+      // The per-result cap a tool-limit stop's result must fit (4,000 when unset).
+      toolResultMaxChars: () => projectCapabilityOutputLimit(api.runtime?.config?.current?.() ?? api.config, AGENT_ID),
     });
     const bundleExecution = createWorkspaceBundleExecution({
       readConfig: () => api.runtime?.config?.current?.() ?? api.config,
@@ -418,6 +424,19 @@ export default definePluginEntry({
         await abortAndDrainAgentHarnessRun({sessionId,sessionKey,settleMs:4000,forceClear:false,reason:'ods_client_disconnect'});
         return !resolveActiveEmbeddedRunSessionId(sessionKey);
       },
+    });
+    // Before a response first touches a Playground project, a copy of its
+    // files; the owner's "Put back files" restores one, never while a Portal
+    // run, tool or background command is alive.
+    projectSnapshots ??= createProjectSnapshots({
+      workspaceRoot: () => api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
+        ?? api.config?.agents?.defaults?.workspace,
+      ownerRun: context => delegationDelivery.ownerRunOf(context),
+      busy: user => Boolean(resolveActiveEmbeddedRunSessionId(`agent:${AGENT_ID}:openai-user:${user}`))
+        || delegationDelivery.pending(user, key => Boolean(resolveActiveEmbeddedRunSessionId(key))),
+      portalActive: () => (currentManagedRuntime?.status() ?? accessRuntime.status())?.active !== 0,
+      changed: (root, name) => toolLoopGuard.exampleOwnerChanged(root, name),
+      warn: message => api.logger.warn(message),
     });
     api.on('subagent_spawned',(event,context)=>delegationDelivery.nativeSpawn(event,context));
     api.on('gateway_stop',()=>delegationDelivery.invalidate());
@@ -481,7 +500,11 @@ export default definePluginEntry({
       const appendContext = [goalProgress.active(context?.runId ?? event?.runId) ? goalContract : '', languageNote,
         toolLoopGuard.clarificationContextForRun(context?.runId ?? event?.runId) ??
           toolLoopGuard.clarificationContextForRun(delegationDelivery.ownerRunFor(context)), memory.answer, memory.hint, reminder].filter(Boolean).join('\n\n');
-      return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(appendContext ? {appendContext} : {}), appendSystemContext: `${inResponseLanguage(ACTIVITY_CONTRACT, configuredResponseLanguage)} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? goalContract : ""} ${contract.appendSystemContext} ${inResponseLanguage(executionContext(), configuredResponseLanguage)} ${repositoryEvidence}` } : prependContext ? {prependContext} : undefined;
+      // Ordinary workspace work only: Operations, exact downloads and managed
+      // extension requests refuse update_plan, and read-only roles cannot edit.
+      const longTask = toolLoopGuard.longTaskEligible(context?.runId ?? event?.runId)
+        ? longTaskContract(context, ownerEvent, {configuredContextWindow, configuredLeanPrompt}) : '';
+      return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(appendContext ? {appendContext} : {}), appendSystemContext: `${inResponseLanguage(ACTIVITY_CONTRACT, configuredResponseLanguage)} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? goalContract : ""} ${contract.appendSystemContext}${longTask ? ` ${longTask}` : ''} ${inResponseLanguage(executionContext(), configuredResponseLanguage)} ${repositoryEvidence}` } : prependContext ? {prependContext} : undefined;
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
@@ -518,7 +541,9 @@ export default definePluginEntry({
       try {conversationImageLifecycle.observe(context);}catch {api.logger.warn('Portal conversation image custody could not be updated.');}
       toolLoopGuard.endPreviewRevalidation(event, context);
       toolLoopGuard.observeAgentEnd(event, context);
-      if (!accessRuntime.isProbe(context)) { goalProgress.finish(event, context); taskActivity.finish(event, context); }
+      if (!accessRuntime.isProbe(context)) {
+        goalProgress.finish(event, context); taskActivity.finish(event, context); void projectSnapshots.end(event, context);
+      }
       if (!managedRuntime) return accessRuntime.finish({runId: event.runId}, context);
     });
     api.on("before_tool_call", async (event, context) => {
@@ -542,6 +567,7 @@ export default definePluginEntry({
       artifactAdmission.before(event, context, decision);
       projectRunControl.before(event, context, decision);
       taskActivity.before(event, context, decision?.block === true);
+      await projectSnapshots.before(event, context, decision);
       return decision;
     });
     api.on("after_tool_call", (event, context) => {
@@ -694,7 +720,7 @@ export default definePluginEntry({
           const value=JSON.parse(Buffer.concat(chunks).toString('utf8'));
           if (!value || Object.keys(value).sort().join()!=='runId,user' || !OPENAI_RUN_ID.test(value.runId ?? '') || !/^ods-[a-f0-9]{64}$/.test(value.user ?? '')) throw Error();
           const finalRun=delegationDelivery.finalRun(value.user,value.runId);
-          if (finalRun) await toolLoopGuard.settleDelivery(finalRun);
+          if (finalRun) await toolLoopGuard.settleDelivery(finalRun,{delegated:true});
           // Recheck cancellation/access/owner custody after asynchronous receipt settlement.
           sendJson(res,200,delegationDelivery.read(value.user,value.runId));
         } catch {sendJson(res,409,{error:'delegated delivery unavailable'});}
@@ -804,6 +830,13 @@ export default definePluginEntry({
         return true;
       },
     });
+    // Portal's "Put back files": the owner restores one Playground project to
+    // the copy kept before a turn touched it (the host ingress calls it under
+    // the chat's history lock), and asks which turns offer it.
+    api.registerHttpRoute({path: '/pixel-ods/project-restore', auth: 'gateway', match: 'exact',
+      handler: createProjectRestoreRoute({snapshots: projectSnapshots, sendJson})});
+    api.registerHttpRoute({path: '/pixel-ods/project-restore-options', auth: 'gateway', match: 'exact',
+      handler: createProjectRestoreRoute({snapshots: projectSnapshots, sendJson, kind: 'options'})});
     // Portal's sidebar lists the shipped example project (Elf of Doom) like
     // any other Playground project while its folder exists, and opens it with
     // a create-only preview publication of that folder: no model run.

@@ -630,6 +630,27 @@ test('a run that starts while another works keeps the known-good tree, so the fi
   assert.ok(first.finish('Reformatted.').endsWith(first.notice()));
 });
 
+test('the owner putting the example\'s files back while another run works is kept, not put back', () => {
+  const {root, example, original} = workspace();
+  const guard = createToolLoopGuard();
+  const other = turn(guard, 'Make the snake faster', root, {sessionKey: chat('b')});
+  // Portal's Put back files (project-snapshots.mjs) changes the folder outside any run.
+  const putBack = () => fs.appendFileSync(path.join(example, 'chars.js'), '\n// as before the turn\n');
+  putBack();
+  guard.exampleOwnerChanged(root, 'snake-game');
+  assert.match(other.read('Playground/snake-game/game.js').text, /speed/);
+  assert.deepEqual(tree(example), original, 'another project\'s restore does not make this change the owner\'s');
+  putBack();
+  guard.exampleOwnerChanged(root, 'elf-of-doom');
+  const kept = tree(example);
+  assert.notDeepEqual(kept, original);
+  other.read('Playground/snake-game/game.js');
+  assert.deepEqual(tree(example), kept);
+  assert.equal(other.finish('The snake is faster.'), `The snake is faster.\n\n${other.notice()}`);
+  assert.equal(other.recovered.length, 1, 'only the first change was put back');
+  assert.deepEqual(tree(example), kept);
+});
+
 test('after a gateway restart the folder as ODS first finds it is the known-good tree', () => {
   const {root, example} = workspace();
   fs.appendFileSync(path.join(example, 'ui.js'), '\n// before the restart\n');
@@ -1516,7 +1537,8 @@ test('the per-call notes stay bounded: a call whose result was never persisted d
   }
   const persist = ctx => guard.toolResultPersist({toolName: 'read', toolCallId: ctx.toolCallId,
     message: {role: 'toolResult', toolName: 'read', toolCallId: ctx.toolCallId, content: [{type: 'text', text: 'ok'}]}}, ctx, 'pixel');
-  assert.equal(persist(unpersisted[0]), undefined, 'the oldest note was dropped');
+  // 300 reads with no file change also bring the edit-early notice (EDIT_EARLY_NOTICE).
+  assert.ok(!JSON.stringify(persist(unpersisted[0]) ?? {}).includes(RESTORED.model), 'the oldest note was dropped');
   assert.ok(persist(unpersisted.at(-1)).message.content.at(-1).text.endsWith(RESTORED.model));
   run.finish();
 });

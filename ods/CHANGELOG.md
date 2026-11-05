@@ -307,6 +307,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a long line of spaces.
 
 ### Changed
+- Elf of Doom's bosses each bring their own threat, and the endless loops
+  grow in a new way. A spider's web now also stops Shasan shooting for as long
+  as it slows him, shown as silk wrapped around him. Xath-Rokka, the Dread
+  Weaver, spits four webs in a wide fan. The two trolls have 30% more health
+  and regenerate 1% of it a second, and once enraged they regenerate 2%, move
+  faster and swing more often. Rukhmak calls his reinforcements twice as often
+  as the other bosses. The Hollow Crown spits the four-web fan and turns into
+  a light-blue ghost a few times a minute, untouchable and regenerating while
+  it lasts. Each new loop adds 25% more enemies (up to four times the first
+  loop's count), 35% more enemy health (100% once the count stops growing),
+  15% more damage, 10% more speed (up to 50% in all) and doubles boss health.
+  The boss name and bar no longer cover the arrow counter when a realm's title
+  wraps onto two lines. Portal made the changes, running Qwen3.8-Flash-Next on
+  local hardware; the game files are exactly the ones
+  https://odsspark.com/game/ serves. An install that already has
+  `Playground/elf-of-doom` keeps its own copy.
+- Elf of Doom stays fast in big fights and long sessions, and leveling slows
+  down deep into the endless loop. Enemies and floor pickups are drawn from
+  pictures baked once instead of being redrawn shape by shape every frame, so
+  150 enemies on screen while you move and shoot hold about 120 fps instead of
+  dropping to 26. The hero's drawing saved the canvas state twice per frame and
+  restored it once, so every game got slower the longer it ran; it now
+  restores what it saves. Every level after level 25 costs 5,000 XP, after
+  level 50 10,000 and after level 75 15,000; levels 12 to 25 still cost 2,500.
+  Portal made the changes, running Qwen3.8-Flash-Next on local hardware; the
+  game files are exactly the ones https://odsspark.com/game/ serves. An install
+  that already has `Playground/elf-of-doom` keeps its own copy.
 - Elf of Doom keeps its HUD on screen when you continue past the quest panel.
   The panel hid it and nothing showed it again, so every loop after the first
   was played without the portrait, health bar, level, realm name or arrow
