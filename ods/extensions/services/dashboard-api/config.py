@@ -14,7 +14,44 @@ from env_values import parse_env_value
 
 logger = logging.getLogger(__name__)
 
-# --- Paths ---
+# --- Runtime Profile & Paths ---
+
+RUNTIME_PROFILES = frozenset({"compose", "windows-desktop"})
+_LOOPBACK_SERVICE_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def resolve_runtime_profile(environment: Mapping[str, str] | None = None) -> str:
+    """Resolve and validate ODS_RUNTIME_PROFILE (defaults to ``compose``)."""
+    env = environment if environment is not None else os.environ
+    raw = str(env.get("ODS_RUNTIME_PROFILE", "") or "").strip().lower()
+    if not raw:
+        return "compose"
+    if raw not in RUNTIME_PROFILES:
+        raise RuntimeError(
+            f"Unsupported ODS_RUNTIME_PROFILE={raw!r}; expected one of {sorted(RUNTIME_PROFILES)}"
+        )
+    return raw
+
+
+def validate_windows_desktop_env(environment: Mapping[str, str] | None = None) -> None:
+    """Ensure required native desktop environment variables are explicitly configured."""
+    env = environment if environment is not None else os.environ
+    raw_data_dir = str(env.get("ODS_DATA_DIR", "") or "").strip()
+    if not raw_data_dir or not Path(raw_data_dir).is_absolute():
+        raise RuntimeError(
+            "ODS_DATA_DIR must be set to an absolute path when ODS_RUNTIME_PROFILE=windows-desktop"
+        )
+    raw_api_key = str(env.get("DASHBOARD_API_KEY", "") or "").strip()
+    if not raw_api_key:
+        raise RuntimeError(
+            "DASHBOARD_API_KEY must be set when ODS_RUNTIME_PROFILE=windows-desktop"
+        )
+
+
+RUNTIME_PROFILE = resolve_runtime_profile()
+WINDOWS_DESKTOP_PROFILE = RUNTIME_PROFILE == "windows-desktop"
+if WINDOWS_DESKTOP_PROFILE:
+    validate_windows_desktop_env()
 
 INSTALL_DIR = os.environ.get("ODS_INSTALL_DIR", os.path.expanduser("~/ods"))
 DATA_DIR = os.environ.get("ODS_DATA_DIR", os.path.expanduser("~/.ods"))
@@ -25,7 +62,10 @@ EXTENSIONS_DIR = Path(
     )
 )
 
-DEFAULT_SERVICE_HOST = os.environ.get("SERVICE_HOST", "host.docker.internal")
+DEFAULT_SERVICE_HOST = os.environ.get(
+    "SERVICE_HOST",
+    "127.0.0.1" if WINDOWS_DESKTOP_PROFILE else "host.docker.internal",
+)
 GPU_BACKEND = os.environ.get("GPU_BACKEND", "nvidia")
 ODS_MODES = frozenset({"local", "cloud", "hybrid"})
 LOCAL_MODEL_MODES = frozenset({"local", "hybrid"})
@@ -98,7 +138,9 @@ def normalize_llm_contract(value: Any) -> dict[str, Any] | None:
 
 # This is the mode of the running dashboard-api container. Unlike the mounted
 # .env file, the process environment is fixed until the service is recreated.
-ODS_MODE_EFFECTIVE = normalize_ods_mode(os.environ.get("ODS_MODE"))
+ODS_MODE_EFFECTIVE = normalize_ods_mode(
+    os.environ.get("ODS_MODE") or ("local" if WINDOWS_DESKTOP_PROFILE else "")
+)
 
 
 _ENV_FILE_PERMISSION_ERROR: str | None = None
@@ -144,9 +186,16 @@ def _handle_env_read_success(env_path: Path) -> None:
     _ENV_FILE_PERMISSION_ERROR_LOGGED = False
 
 
+def _resolve_env_file_path() -> Path:
+    """Resolve the active .env path (always ODS_DATA_DIR/.env in windows-desktop mode)."""
+    if WINDOWS_DESKTOP_PROFILE:
+        return Path(DATA_DIR) / ".env"
+    return Path(INSTALL_DIR) / ".env"
+
+
 def _find_env_file_value(key: str) -> tuple[bool, str]:
     """Return the last persisted value and distinguish missing from empty."""
-    env_path = Path(INSTALL_DIR) / ".env"
+    env_path = _resolve_env_file_path()
     found = False
     value = ""
     try:
@@ -181,7 +230,7 @@ def read_live_env_value(key: str, default: str = "") -> str:
 def read_live_env_values(keys: tuple[str, ...]) -> dict[str, str]:
     """Read one persisted snapshot so a route and its credential cannot diverge."""
     values = {key: os.environ.get(key, "") for key in keys}
-    env_path = Path(INSTALL_DIR) / ".env"
+    env_path = _resolve_env_file_path()
     try:
         text = env_path.read_text(encoding="utf-8")
         _handle_env_read_success(env_path)
@@ -679,15 +728,61 @@ def load_extension_manifests(
     return services, features, errors
 
 
+def _apply_windows_desktop_services_filter(
+    services: dict[str, dict[str, Any]],
+    environment: Mapping[str, str] | None = None,
+) -> None:
+    """Keep only loopback-reachable services and route llama-server to loopback in windows-desktop mode."""
+    env = environment if environment is not None else os.environ
+    llama_port = str(env.get("LLAMA_PORT") or read_live_env_value("LLAMA_PORT") or "8080").strip()
+    default_llm_url = f"http://127.0.0.1:{llama_port}" if llama_port.isdigit() else "http://127.0.0.1:8080"
+    native_llm_url = (
+        env.get("ODS_NATIVE_LLM_URL")
+        or env.get("ODS_LLAMA_ENDPOINT")
+        or read_live_env_value("ODS_NATIVE_LLM_URL")
+        or read_live_env_value("ODS_LLAMA_ENDPOINT")
+        or env.get("LLM_API_URL")
+        or env.get("OLLAMA_URL")
+        or default_llm_url
+    ).strip()
+    parsed = urlparse(native_llm_url)
+    llm_host = (parsed.hostname or "127.0.0.1").strip().lower()
+    if llm_host == "localhost":
+        llm_host = "127.0.0.1"
+    llm_port = parsed.port or (int(llama_port) if llama_port.isdigit() else 8080)
+
+    llama_cfg = services.get("llama-server")
+    if isinstance(llama_cfg, dict) and llm_host in _LOOPBACK_SERVICE_HOSTS:
+        llama_cfg["host"] = llm_host
+        llama_cfg["port"] = int(llm_port)
+        llama_cfg["external_port"] = int(llm_port)
+        llama_cfg["external_link"] = False
+        llama_cfg["type"] = "native"
+
+    for sid in list(services.keys()):
+        cfg = services[sid]
+        host = str(cfg.get("host", "") or "").strip().lower()
+        if host not in _LOOPBACK_SERVICE_HOSTS:
+            services.pop(sid, None)
+        elif host == "localhost":
+            # Avoid 2-second Windows IPv6 (::1) SYN timeout on closed loopback ports
+            cfg["host"] = "127.0.0.1"
+
+
 # --- Service Registry ---
 
 MANIFEST_SERVICES, MANIFEST_FEATURES, MANIFEST_ERRORS = load_extension_manifests(EXTENSIONS_DIR, GPU_BACKEND)
 SERVICES = MANIFEST_SERVICES
+if WINDOWS_DESKTOP_PROFILE:
+    _apply_windows_desktop_services_filter(SERVICES)
 if not SERVICES:
     logger.error("No services loaded from manifests in %s — dashboard will have no services", EXTENSIONS_DIR)
 
-LLM_BACKEND = normalize_llm_backend(os.environ.get("LLM_BACKEND", ""))
-_apply_host_native_llm_service_override(SERVICES, GPU_BACKEND)
+LLM_BACKEND = normalize_llm_backend(
+    os.environ.get("LLM_BACKEND") or ("llama-server" if WINDOWS_DESKTOP_PROFILE else "")
+)
+if not WINDOWS_DESKTOP_PROFILE:
+    _apply_host_native_llm_service_override(SERVICES, GPU_BACKEND)
 _apply_external_llm_service_override(SERVICES)
 _apply_vllm_service_override(SERVICES)
 
@@ -920,6 +1015,8 @@ def _resolve_agent_host() -> str:
          under default Docker iptables, but kept so explicit operator setups
          relying on it don't silently change)
     """
+    if WINDOWS_DESKTOP_PROFILE:
+        return ""
     explicit = os.environ.get("ODS_AGENT_HOST", "").strip()
     if explicit:
         return explicit
@@ -941,7 +1038,7 @@ def _resolve_agent_host() -> str:
 
 AGENT_HOST = _resolve_agent_host()
 AGENT_PORT = int(os.environ.get("ODS_AGENT_PORT", "7710"))
-AGENT_URL = f"http://{AGENT_HOST}:{AGENT_PORT}"
+AGENT_URL = f"http://{AGENT_HOST}:{AGENT_PORT}" if AGENT_HOST else ""
 DASHBOARD_API_KEY = os.environ.get("DASHBOARD_API_KEY", "")
 # Prefer dedicated ODS_AGENT_KEY; fall back to DASHBOARD_API_KEY for
 # existing installs that haven't generated a separate key yet.
