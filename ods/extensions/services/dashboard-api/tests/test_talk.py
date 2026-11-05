@@ -28,7 +28,89 @@ def talk_client(test_client, signed_talk_cookie, monkeypatch):
     # Never reach a real llama-server /props from the test process.
     monkeypatch.setattr("routers.talk.get_llama_context_size", no_live_context)
     test_client.cookies.set("ods-session", signed_talk_cookie)
+    response = test_client.post("/api/talk/session")
+    assert response.status_code == 200, response.text
+    test_client.headers["X-ODS-Talk-Conversation"] = response.json()["conversation_id"]
     return test_client
+
+
+@pytest.fixture(autouse=True)
+def isolated_talk_storage(tmp_path, monkeypatch):
+    import talk_runtime
+    monkeypatch.setattr("config.DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(talk_runtime, "_bridge", None)
+    monkeypatch.setattr(talk_runtime, "_path", None)
+
+
+def _patch_conversation_stream(monkeypatch, stream):
+    """Keep SSE translation tests independent of the native bridge protocol."""
+    async def replacement(self, owner, conversation_id, text):
+        assert conversation_id
+        iterator = stream(owner, text)
+        try:
+            async for event in iterator:
+                yield event
+        finally:
+            await iterator.aclose()
+    monkeypatch.setattr("talk_conversations.ConversationBridge.stream", replacement)
+
+
+def _patch_conversation_reply(monkeypatch, submit):
+    async def stream(owner, text):
+        reply = await submit(owner, text)
+        yield {"type": "complete", "session_id": reply.session_id,
+               "text": reply.text, "status": reply.status, "warning": reply.warning}
+    _patch_conversation_stream(monkeypatch, stream)
+
+
+def test_conversation_binding_survives_bridge_restart(talk_client, monkeypatch):
+    cid = talk_client.headers["X-ODS-Talk-Conversation"]
+    before = talk_client.get(f"/api/talk/session/{cid}")
+    assert before.status_code == 200
+    assert before.json()["state"] == "new"
+    assert set(before.json()) == {"conversation_id", "state", "expires_at"}
+    monkeypatch.setattr("talk_runtime._bridge", None)
+    after = talk_client.get(f"/api/talk/session/{cid}")
+    assert after.json() == before.json()
+
+
+@pytest.mark.parametrize("route,kwargs", [
+    ("/api/talk/message", {"json": {"text": "hi"}}),
+    ("/api/talk/message/stream", {"json": {"text": "hi"}}),
+    ("/api/talk/approval", {"json": {"choice": "once"}}),
+    ("/api/talk/audio-message", {"files": {"file": ("voice.webm", b"audio", "audio/webm")}}),
+    ("/api/talk/attachment", {"files": {"file": ("note.txt", b"note", "text/plain")}}),
+])
+def test_conversation_routes_refuse_missing_and_foreign_binding(talk_client, monkeypatch, route, kwargs):
+    import session_signer
+
+    async def forbidden(*args, **kw):
+        raise AssertionError("Invalid binding must not reach transcription or native work")
+
+    monkeypatch.setattr("routers.talk._transcribe_bytes", forbidden)
+    monkeypatch.setattr("routers.talk._send_to_hermes", forbidden)
+    monkeypatch.setattr("talk_conversations._open_talk_connection", forbidden)
+    cid = talk_client.headers.pop("X-ODS-Talk-Conversation")
+    response = talk_client.post(route, **kwargs)
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "conversation_required"
+    talk_client.headers["X-ODS-Talk-Conversation"] = cid
+    talk_client.cookies.set("ods-session", session_signer.issue(ttl_seconds=3600))
+    response = talk_client.post(route, **kwargs)
+    assert response.status_code == 410, response.text
+    assert response.json()["detail"]["code"] == "conversation_not_found"
+    assert talk_client.get(f"/api/talk/session/{cid}").status_code == 410
+
+
+def test_expired_conversation_is_not_reallocated(talk_client, monkeypatch):
+    import talk_runtime
+    cid = talk_client.headers["X-ODS-Talk-Conversation"]
+    current = talk_client.get(f"/api/talk/session/{cid}").json()
+    monkeypatch.setattr(talk_runtime._bridge.store, "clock", lambda: current["expires_at"] + 1)
+    response = talk_client.get(f"/api/talk/session/{cid}")
+    assert response.status_code == 410
+    # Expired and unknown bindings deliberately share the same private error.
+    assert response.json()["detail"]["code"] == "conversation_not_found"
 
 
 TALK_NOT_SUPPORTED_COPY = (
@@ -224,7 +306,7 @@ def test_talk_message_rejects_incompatible_model_before_hermes(talk_client, monk
         calls.append((session_key, text))
         return None
 
-    monkeypatch.setattr("hermes_bridge.submit_prompt", fake_submit)
+    _patch_conversation_reply(monkeypatch, fake_submit)
     async def incompatible_model():
         return {
             "agentViability": {
@@ -335,7 +417,7 @@ def test_talk_message_routes_through_hermes_bridge(talk_client, monkeypatch):
         calls.append((session_key, text))
         return HermesReply(session_id="sid-1", text="hello back")
 
-    monkeypatch.setattr("hermes_bridge.submit_prompt", fake_submit)
+    _patch_conversation_reply(monkeypatch, fake_submit)
 
     resp = talk_client.post("/api/talk/message", json={"text": "hello"})
     assert resp.status_code == 200, resp.text
@@ -350,7 +432,7 @@ def test_talk_audio_message_transcribes_and_routes(talk_client, monkeypatch):
         assert content_type == "audio/webm"
         return "what is running locally"
 
-    async def fake_send(session_key, text):
+    async def fake_send(session_key, conversation_id, text):
         return {
             "session_id": "sid-2",
             "text": f"answer to {text}",
@@ -442,7 +524,7 @@ def test_talk_message_stream_emits_session_then_deltas_then_complete(talk_client
         yield {"type": "complete", "session_id": "sid-stream-1", "text": "Hello world",
                "status": "ok", "warning": None}
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+    _patch_conversation_stream(monkeypatch, fake_stream)
 
     resp = talk_client.post("/api/talk/message/stream", json={"text": "hello"})
     assert resp.status_code == 200, resp.text
@@ -470,7 +552,7 @@ def test_talk_message_stream_emits_error_frame_and_done_on_bridge_failure(talk_c
             yield  # pragma: no cover — needed to make this an async generator
         raise bridge.HermesBridgeError("upstream tripped")
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+    _patch_conversation_stream(monkeypatch, fake_stream)
 
     resp = talk_client.post("/api/talk/message/stream", json={"text": "hi"})
     assert resp.status_code == 200, resp.text
@@ -491,7 +573,7 @@ def test_talk_message_stream_emits_503_when_hermes_unavailable(talk_client, monk
             yield  # pragma: no cover
         raise bridge.HermesUnavailable("hermes is offline")
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+    _patch_conversation_stream(monkeypatch, fake_stream)
 
     resp = talk_client.post("/api/talk/message/stream", json={"text": "hi"})
     assert resp.status_code == 200
@@ -534,7 +616,7 @@ def test_talk_message_stream_emits_keepalive_during_silent_bridge(talk_client, m
         yield {"type": "delta", "text": "ok"}
         yield {"type": "complete", "session_id": "sid-kp", "text": "ok", "status": "ok", "warning": None}
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", slow_stream)
+    _patch_conversation_stream(monkeypatch, slow_stream)
 
     resp = talk_client.post("/api/talk/message/stream", json={"text": "hi"})
     assert resp.status_code == 200
@@ -575,12 +657,8 @@ def test_talk_message_stream_cancels_upstream_on_client_disconnect(talk_client, 
             bridge_cancelled.set()
             raise
 
-    async def fake_interrupt(_session_key):
-        cleanup_order.append("interrupt")
-        return True
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", hanging_stream)
-    monkeypatch.setattr("hermes_bridge.interrupt_active_prompt", fake_interrupt)
+    _patch_conversation_stream(monkeypatch, hanging_stream)
 
     # Build a stub Request that reports disconnected after the first poll.
     class StubRequest:
@@ -595,7 +673,7 @@ def test_talk_message_stream_cancels_upstream_on_client_disconnect(talk_client, 
     from routers.talk import _stream_hermes_sse
 
     async def drive():
-        gen = _stream_hermes_sse("k", "hi", StubRequest())
+        gen = _stream_hermes_sse("k", "cid", "hi", StubRequest())
         collected = []
         # Iterate the SSE generator; the consumer side is what FastAPI does.
         async for chunk in gen:
@@ -615,7 +693,7 @@ def test_talk_message_stream_cancels_upstream_on_client_disconnect(talk_client, 
     # And the upstream bridge task must have been cancelled (no hang).
     assert bridge_started.is_set()
     assert bridge_cancelled.is_set()
-    assert cleanup_order == ["interrupt", "cancel"]
+    assert cleanup_order == ["cancel"]
 
 
 def test_talk_disconnect_consumes_raced_bridge_timeout(monkeypatch):
@@ -634,23 +712,20 @@ def test_talk_disconnect_consumes_raced_bridge_timeout(monkeypatch):
         timeout_raised.set()
         raise _asyncio.TimeoutError
 
-    async def fake_interrupt(_session_key):
-        release_timeout.set()
-        await timeout_raised.wait()
-        return True
 
     class DisconnectedRequest:
         async def is_disconnected(self):
+            release_timeout.set()
+            await timeout_raised.wait()
             return True
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", timing_out_stream)
-    monkeypatch.setattr("hermes_bridge.interrupt_active_prompt", fake_interrupt)
+    _patch_conversation_stream(monkeypatch, timing_out_stream)
 
     async def drive():
         return [
             chunk
             async for chunk in _stream_hermes_sse(
-                "k", "hi", DisconnectedRequest()
+                "k", "cid", "hi", DisconnectedRequest()
             )
         ]
 
@@ -658,14 +733,15 @@ def test_talk_disconnect_consumes_raced_bridge_timeout(monkeypatch):
     body = b"".join(chunks).decode("utf-8")
     assert '"type":"session"' in body
     assert '"type":"done"' not in body
+    assert timeout_raised.is_set()
 
 
-def test_talk_stream_aclose_interrupts_abandoned_upstream(monkeypatch):
+def test_talk_stream_aclose_closes_abandoned_iterator(monkeypatch):
     """ASGI may close an SSE generator without raising CancelledError.
 
-    Closing while a bridge read is pending must still interrupt Hermes before
-    cancelling the local reader; otherwise Hermes detaches the session and the
-    single local model slot remains occupied.
+    Closing while a bridge read is pending must cancel and join the reader.
+    Native interruption is owned by ConversationBridge and covered by the
+    combined HTTP/bridge tests in test_talk_conversations.py.
     """
     import asyncio as _asyncio
     from routers.talk import _stream_hermes_sse
@@ -683,19 +759,15 @@ def test_talk_stream_aclose_interrupts_abandoned_upstream(monkeypatch):
             order.append("cancel")
             raise
 
-    async def fake_interrupt(_session_key):
-        order.append("interrupt")
-        return True
 
     class ConnectedRequest:
         async def is_disconnected(self):
             return False
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", hanging_stream)
-    monkeypatch.setattr("hermes_bridge.interrupt_active_prompt", fake_interrupt)
+    _patch_conversation_stream(monkeypatch, hanging_stream)
 
     async def drive():
-        stream = _stream_hermes_sse("phone", "hi", ConnectedRequest())
+        stream = _stream_hermes_sse("phone", "cid", "hi", ConnectedRequest())
         first = await stream.__anext__()
         second = await stream.__anext__()
         assert b'"type":"session"' in first
@@ -704,7 +776,7 @@ def test_talk_stream_aclose_interrupts_abandoned_upstream(monkeypatch):
         await stream.aclose()
 
     _run_with_one_loop(drive)
-    assert order == ["interrupt", "cancel"]
+    assert order == ["cancel"]
 
 
 def test_talk_streaming_response_watches_disconnect_on_asgi_24(monkeypatch):
@@ -727,21 +799,17 @@ def test_talk_streaming_response_watches_disconnect_on_asgi_24(monkeypatch):
             order.append("cancel")
             raise
 
-    async def fake_interrupt(_session_key):
-        order.append("interrupt")
-        return True
 
     class ConnectedRequest:
         async def is_disconnected(self):
             return False
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", hanging_stream)
-    monkeypatch.setattr("hermes_bridge.interrupt_active_prompt", fake_interrupt)
+    _patch_conversation_stream(monkeypatch, hanging_stream)
 
     async def drive():
         session_sent = _asyncio.Event()
         response = _TalkStreamingResponse(
-            _stream_hermes_sse("phone", "hi", ConnectedRequest()),
+            _stream_hermes_sse("phone", "cid", "hi", ConnectedRequest()),
             media_type="text/event-stream",
         )
 
@@ -763,7 +831,7 @@ def test_talk_streaming_response_watches_disconnect_on_asgi_24(monkeypatch):
         )
 
     _run_with_one_loop(drive)
-    assert order == ["interrupt", "cancel"]
+    assert order == ["cancel"]
 
 
 def _run_with_one_loop(coro_factory):
@@ -1220,7 +1288,7 @@ def test_talk_message_stream_forwards_hermes_status_updates(talk_client, monkeyp
         yield {"type": "delta", "text": "OK"}
         yield {"type": "complete", "session_id": "sid", "text": "OK", "status": "ok", "warning": None}
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+    _patch_conversation_stream(monkeypatch, fake_stream)
 
     resp = talk_client.post("/api/talk/message/stream", json={"text": "hi"})
     assert resp.status_code == 200
@@ -1249,7 +1317,7 @@ def test_talk_message_stream_translates_tool_events_to_status_frames(talk_client
         yield {"type": "delta", "text": "Sunny, 64°F."}
         yield {"type": "complete", "session_id": "sid", "text": "Sunny, 64°F.", "status": "ok", "warning": None}
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+    _patch_conversation_stream(monkeypatch, fake_stream)
 
     resp = talk_client.post("/api/talk/message/stream", json={"text": "what is the weather?"})
     assert resp.status_code == 200
@@ -1281,7 +1349,7 @@ def test_talk_message_stream_status_label_for_unknown_tool(talk_client, monkeypa
         yield {"type": "tool_start", "tool": "some_new_skill_2026", "detail": None}
         yield {"type": "complete", "session_id": "sid", "text": "ok", "status": "ok", "warning": None}
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+    _patch_conversation_stream(monkeypatch, fake_stream)
 
     resp = talk_client.post("/api/talk/message/stream", json={"text": "hi"})
     assert resp.status_code == 200
@@ -1318,7 +1386,7 @@ def test_talk_attachment_text_file_routes_through_hermes_with_inlined_content(ta
         yield {"type": "session", "session_id": "sid"}
         yield {"type": "complete", "session_id": "sid", "text": "Reviewed.", "status": "ok", "warning": None}
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+    _patch_conversation_stream(monkeypatch, fake_stream)
 
     resp = talk_client.post(
         "/api/talk/attachment",
@@ -1369,7 +1437,7 @@ def test_talk_attachment_image_routes_to_vision_endpoint_bypassing_hermes(talk_c
         yield _sse_event("complete", {"session_id": "vision", "text": "Red.", "status": "ok", "warning": None})
         yield _sse_event("done", {})
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_hermes_stream)
+    _patch_conversation_stream(monkeypatch, fake_hermes_stream)
     monkeypatch.setattr("routers.talk._stream_vision_chat", fake_vision_stream)
     monkeypatch.setattr("routers.talk._vision_route", AsyncMock(return_value=_VISION_ROUTE))
 
@@ -1567,7 +1635,7 @@ def test_talk_message_stream_sets_unbuffered_headers(talk_client, monkeypatch):
         yield {"type": "session", "session_id": "sid-h"}
         yield {"type": "complete", "session_id": "sid-h", "text": "ok", "status": "ok", "warning": None}
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", fake_stream)
+    _patch_conversation_stream(monkeypatch, fake_stream)
 
     resp = talk_client.post("/api/talk/message/stream", json={"text": "hi"})
     assert resp.status_code == 200
@@ -1849,7 +1917,7 @@ def test_talk_approval_endpoint_is_choice_only(talk_client, monkeypatch):
         calls.append((session_key, choice))
         return True
 
-    monkeypatch.setattr("hermes_bridge.respond_approval", fake_respond)
+    monkeypatch.setattr("talk_conversations.respond_approval", fake_respond)
 
     for payload in ({}, {"choice": "always"}, {"choice": "once", "command": "changed"}):
         assert talk_client.post("/api/talk/approval", json=payload).status_code == 422
@@ -1864,11 +1932,11 @@ def test_talk_approval_endpoint_is_choice_only(talk_client, monkeypatch):
     async def no_pending(_session_key, _choice):
         return False
 
-    monkeypatch.setattr("hermes_bridge.respond_approval", no_pending)
+    monkeypatch.setattr("talk_conversations.respond_approval", no_pending)
     assert talk_client.post("/api/talk/approval", json={"choice": "deny"}).status_code == 409
 
 
-def test_sse_disconnect_denies_approval_before_cancelling(monkeypatch):
+def test_sse_disconnect_closes_iterator_with_visible_approval(monkeypatch):
     import asyncio as _asyncio
     from routers.talk import _stream_hermes_sse
 
@@ -1889,24 +1957,16 @@ def test_sse_disconnect_denies_approval_before_cancelling(monkeypatch):
             order.append("cancel")
             raise
 
-    async def fake_deny(_session_key):
-        order.append("deny")
-        return True
 
-    async def fake_interrupt(_session_key):
-        order.append("interrupt")
-        return True
 
-    monkeypatch.setattr("hermes_bridge.stream_prompt", approval_then_hang)
-    monkeypatch.setattr("hermes_bridge.deny_pending_approval", fake_deny)
-    monkeypatch.setattr("hermes_bridge.interrupt_active_prompt", fake_interrupt)
+    _patch_conversation_stream(monkeypatch, approval_then_hang)
 
     class DisconnectedRequest:
         async def is_disconnected(self):
             return True
 
     async def drive():
-        return [chunk async for chunk in _stream_hermes_sse("phone", "hi", DisconnectedRequest())]
+        return [chunk async for chunk in _stream_hermes_sse("phone", "cid", "hi", DisconnectedRequest())]
 
     loop = _asyncio.new_event_loop()
     try:
@@ -1917,7 +1977,7 @@ def test_sse_disconnect_denies_approval_before_cancelling(monkeypatch):
     assert '"type":"approval"' in body
     assert '"choices":["once","deny"]' in body
     assert '"type":"done"' not in body
-    assert order == ["deny", "interrupt", "cancel"]
+    assert order == ["cancel"]
 
 
 def _context_catalog():
@@ -1974,7 +2034,7 @@ def test_talk_status_blocks_a_model_served_below_the_hermes_floor(talk_client, m
     assert data["modelCompatibility"]["hermesTalk"]["code"] == "context_below_hermes_minimum"
 
 
-def test_talk_session_is_refused_up_front_below_the_floor(talk_client, monkeypatch):
+def test_talk_session_allocation_is_local_but_sending_checks_context_floor(talk_client, monkeypatch):
     _patch_context_talk(monkeypatch, gguf="Qwen3.5-27B-Q4_K_M.gguf", env={"CTX_SIZE": "32768"})
 
     async def fail_session(_session_key):
@@ -1983,7 +2043,9 @@ def test_talk_session_is_refused_up_front_below_the_floor(talk_client, monkeypat
     monkeypatch.setattr("hermes_bridge.ensure_session", fail_session)
 
     resp = talk_client.post("/api/talk/session")
-
+    assert resp.status_code == 200
+    assert "conversation_id" in resp.json()
+    resp = talk_client.post("/api/talk/message", json={"text": "hello"})
     assert resp.status_code == 409
     assert "64K" in resp.json()["detail"]
 

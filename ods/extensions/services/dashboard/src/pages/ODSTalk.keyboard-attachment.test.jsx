@@ -1,10 +1,11 @@
+import { installTalkFetch } from '../test/talk-session'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import ODSTalk from './ODSTalk' // eslint-disable-line no-unused-vars
 
 const ready = { ok: true, status: 200, json: async () => ({ capabilities: { text_chat: true } }) }
 const reply = () => ({ ok: true, status: 200, body: new globalThis.ReadableStream({ start(controller) {
-  controller.enqueue(new TextEncoder().encode('data: {"type":"complete","text":"Attachment received","status":"ok"}\n\ndata: {"type":"done"}\n\n'))
+  controller.enqueue(new TextEncoder().encode('data: {"type":"complete","conversation_id":"test-conversation","text":"Attachment received","status":"ok"}\n\ndata: {"type":"done"}\n\n'))
   controller.close()
 } }) })
 
@@ -17,7 +18,7 @@ describe('Talk keyboard attachment submission', () => {
   ])('Enter sends %s through the attachment endpoint', async (_label, type, name, caption) => {
     vi.stubGlobal('URL', { createObjectURL: () => 'blob:talk-test', revokeObjectURL: vi.fn() })
     const fetchMock = vi.fn(async url => url === '/api/talk/status' ? ready : reply())
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
     const { container } = render(<ODSTalk />)
     await screen.findByText('Ready')
     const file = new File(['sample'], name, { type })
@@ -36,7 +37,7 @@ describe('Talk keyboard attachment submission', () => {
 
   test('Shift+Enter keeps the attachment and does not send', async () => {
     const fetchMock = vi.fn(async () => ready)
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
     const { container } = render(<ODSTalk />)
     await screen.findByText('Ready')
     fireEvent.change(container.querySelector('input[type="file"]'), {

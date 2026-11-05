@@ -18,6 +18,9 @@ services:
       # are owned by the user, not container-root. Same pattern as n8n.
       - HERMES_UID=${ODS_UID:-10000}
       - HERMES_GID=${ODS_GID:-10000}
+      # Loaded in every Python child after the upstream auth/UID bootstrap.
+      # The pinned adapter restores Talk sessions without replaying a turn.
+      - PYTHONPATH=/opt/ods-hermes-runtime
       # Point Hermes at the local LLM. provider=custom is the documented
       # alias for any OpenAI-compatible local server (vLLM / llama.cpp / Ollama).
       # The actual provider/model wiring lives in cli-config.yaml (mounted below).
@@ -94,6 +97,7 @@ services:
       # HERMES_REQUIRE_OWNER_CARD=true. Keep network access trusted.
       - HERMES_DASHBOARD_TUI=1
     volumes:
+      - ./extensions/services/hermes/talk-runtime:/opt/ods-hermes-runtime:ro,z
       - ./data/hermes-auth:/run/ods-hermes-auth:z
       - ./extensions/services/dashboard-api/hermes_auth.py:/opt/hermes/ods-auth-bootstrap.py:ro,z
       # Persistent state: Hermes's HERMES_HOME. Sessions, skills, memories,
