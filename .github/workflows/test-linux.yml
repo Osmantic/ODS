@@ -453,6 +453,9 @@ jobs:
       - name: Mode Switch Tests
         run: bash tests/test-mode-switch-status.sh
 
+      - name: Demo Offline Bash 3.2 Compatibility Tests
+        run: bash tests/test-demo-offline-bash32.sh
+
       - name: .env Upserts After an Unterminated Last Line
         run: bash tests/test-env-append-final-newline.sh
 
