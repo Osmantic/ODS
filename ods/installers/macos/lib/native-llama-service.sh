@@ -46,10 +46,9 @@ stop_install_owned_processes() {
         command="${command#"${command%%[![:space:]]*}"}"
         [[ "$pid" =~ ^[0-9]+$ ]] || continue
         [[ "$pid" != "$$" ]] || continue
-        executable="${command%%[[:space:]]*}"
-        if [[ "$executable" == "$binary" ]]; then
+        if [[ "$command" == "$binary" || "$command" == "$binary "* ]]; then
             :
-        elif [[ "${executable##*/}" == llama-server \
+        elif [[ "$command" == *"llama-server "* \
             && "$command" == *" --model $install_dir/data/models/"* ]]; then
             :
         else
