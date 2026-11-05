@@ -99,6 +99,14 @@ def _root(path, *, private=False):
     return path
 
 
+
+def _file_stamp(info):
+    # Reading a file may update atime. It is not evidence that the selected
+    # object or its contents changed; ownership and change time still are.
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink, info.st_uid, info.st_gid,
+        info.st_size, info.st_mtime_ns, info.st_ctime_ns, getattr(info, 'st_flags', None))
+
+
 def _file(path, *, owner=True):
     info = path.lstat()
     mode = stat.S_IMODE(info.st_mode)
@@ -109,13 +117,13 @@ def _file(path, *, owner=True):
     _acl(path)
     value = hashlib.sha256()
     with path.open('rb') as stream:
-        if os.fstat(stream.fileno()) != info:
+        if _file_stamp(os.fstat(stream.fileno())) != _file_stamp(info):
             _error()
         for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             value.update(chunk)
-    after = path.lstat()
-    if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (
-            info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns):
+        if _file_stamp(os.fstat(stream.fileno())) != _file_stamp(info):
+            _error()
+    if _file_stamp(path.lstat()) != _file_stamp(info):
         _error()
     return {'sha256': value.hexdigest(), 'size': info.st_size, 'mode': mode,
         'uid': info.st_uid, 'gid': info.st_gid, 'dev': info.st_dev, 'ino': info.st_ino}

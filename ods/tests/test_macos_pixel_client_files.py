@@ -5,6 +5,7 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -240,3 +241,25 @@ def test_owner_code_with_extended_acl_is_not_replaced(layout):
     with pytest.raises(ValueError, match='native-client-files-unqualified'):
         module.stage(source, installed, transaction)
     assert record(target) == before
+
+
+
+@pytest.mark.parametrize('changed', ['atime', 'mode', 'owner', 'link', 'size', 'mtime', 'ctime', 'inode'])
+def test_file_read_tolerates_access_time_but_refuses_custody_drift(tmp_path, monkeypatch, changed):
+    path = write(tmp_path, 'file', b'fixture')
+    original_fstat = os.fstat
+    field = {'atime': 'st_atime_ns', 'mode': 'st_mode', 'owner': 'st_uid', 'link': 'st_nlink',
+        'size': 'st_size', 'mtime': 'st_mtime_ns', 'ctime': 'st_ctime_ns', 'inode': 'st_ino'}[changed]
+
+    def observed(fd):
+        actual = original_fstat(fd)
+        values = {name: getattr(actual, name) for name in dir(actual) if name.startswith('st_')}
+        values[field] += 1
+        return SimpleNamespace(**values)
+
+    monkeypatch.setattr(module.os, 'fstat', observed)
+    if changed == 'atime':
+        assert module._file(path)['size'] == len(b'fixture')
+    else:
+        with pytest.raises(ValueError, match='native-client-files-unqualified'):
+            module._file(path)
