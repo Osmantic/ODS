@@ -29,7 +29,7 @@ def update(update_id, text, sender=OWNER, chat_type="private"):
 
 class FakeTelegram(http.server.BaseHTTPRequestHandler):
     """The Bot API calls the bridge makes: getMe, getUpdates, sendMessage and sendChatAction."""
-    token, updates, sent, offsets, status = TOKEN, [], [], [], 200
+    token, updates, sent, offsets, status, refuse_sends = TOKEN, [], [], [], 200, 0
 
     def do_POST(self):
         token, method = self.path.split("/")[1][3:], self.path.split("/")[2]
@@ -43,6 +43,9 @@ class FakeTelegram(http.server.BaseHTTPRequestHandler):
             waiting = [item for item in FakeTelegram.updates if item["update_id"] >= body["offset"]]
             return self.reply({"ok": True, "result": waiting})
         if method == "sendMessage":
+            if FakeTelegram.refuse_sends:  # Telegram's flood limit.
+                FakeTelegram.refuse_sends -= 1
+                return self.reply({"ok": False, "description": "Too Many Requests"}, 429)
             FakeTelegram.sent.append((body["chat_id"], body["text"]))
         return self.reply({"ok": True, "result": True})
 
@@ -149,6 +152,11 @@ class Pure(unittest.TestCase):
         repeated = 'Remember this about you? "The owner is vegetarian."\n- Save\n- Don\'t save'
         self.assertEqual(telegram.telegram_reply(repeated, CARD), telegram.questions_text(CARD))
         self.assertEqual(telegram.telegram_reply("Noted.", CARD), "Noted.\n\n" + telegram.questions_text(CARD))
+        # An answer that also quotes the card keeps the answer; the card comes once, as numbered choices.
+        answer = 'Try a chickpea curry tonight.\n\nRemember this about you? "The owner is vegetarian."'
+        self.assertEqual(telegram.telegram_reply(answer, CARD), "Try a chickpea curry tonight.\n\n" + telegram.questions_text(CARD))
+        listed = 'Here is a recipe: lentil soup.\nRemember this about you? "The owner is vegetarian."\n1. Save\n2. Don\'t save'
+        self.assertEqual(telegram.telegram_reply(listed, CARD), "Here is a recipe: lentil soup.\n\n" + telegram.questions_text(CARD))
         self.assertEqual(telegram.portal_request("b", "telegram-1-1"),
                          {"model": "openclaw/default", "stream": True, "user": "telegram-1-1",
                           "messages": [{"role": "user", "content": "b"}]})
@@ -170,6 +178,7 @@ class Bridge(unittest.TestCase):
         self.addCleanup(self.ingress.server_close)
         self.addCleanup(self.ingress.shutdown)
         FakeTelegram.token, FakeTelegram.updates, FakeTelegram.sent, FakeTelegram.offsets, FakeTelegram.status = TOKEN, [], [], [], 200
+        FakeTelegram.refuse_sends = 0
         FakeIngress.requests, FakeIngress.answer, FakeIngress.questions, FakeIngress.status = [], "Hello from Portal.", None, 200
         self.api = f"http://127.0.0.1:{self.telegram.server_address[1]}"
 
@@ -304,6 +313,23 @@ class Bridge(unittest.TestCase):
         FakeTelegram.status = 200
         self.poll(update(1, "Back?"))
         self.assertEqual(self.owner("get")["telegram"]["lastError"], "")
+
+    def test_a_failed_answer_leaves_the_messages_after_it_waiting(self):
+        self.turn_on()
+        FakeTelegram.refuse_sends = 1
+        with self.assertRaises(IntegrationError):
+            self.poll(update(1, "one"), update(2, "two"), update(3, "three"))
+        # The first was handled and marked read; the two after it are read again next time.
+        self.assertEqual(self.store.telegram()["offset"], 2)
+        self.assertTrue(self.service.telegram_poll())
+        self.assertEqual([request["messages"][0]["content"] for request in FakeIngress.requests], ["one", "two", "three"])
+        self.assertEqual(len(FakeTelegram.sent), 2)
+        self.assertEqual(self.store.telegram()["offset"], 4)
+        # A later poll with nothing new clears a problem shown before.
+        self.service._telegram_change(lambda current: {**current, "lastError": "Telegram could not be reached."})
+        FakeTelegram.updates.clear()
+        self.assertTrue(self.service.telegram_poll())
+        self.assertEqual(self.store.telegram()["lastError"], "")
 
     def test_a_new_token_starts_reading_that_bot_from_scratch(self):
         self.turn_on()

@@ -157,12 +157,21 @@ def answer_text(questions, reply):
     return f"{question['question']}\n{choice}"
 
 
+LIST_MARK = re.compile(r"^\s*(?:[-*•]|\d+[.)])?\s*")
+
+
 def telegram_reply(content, questions):
-    """Portal's answer for Telegram; a card's numbered choices replace an answer that only repeats its question."""
+    """Portal's answer for Telegram, then a card's numbered choices. The model often writes the card
+    out itself: its question and choices are taken out of the answer, which is kept otherwise."""
     content = content.strip()
     if not questions:
         return content
-    if not content or any(question["question"] in content for question in questions):
+    options = {option.casefold() for question in questions for option in question["options"]}
+    for question in questions:
+        content = content.replace(question["question"], "")
+    lines = [line for line in content.splitlines() if LIST_MARK.sub("", line).strip().casefold() not in options]
+    content = "\n".join(lines).strip()
+    if not content.strip(" .:?!\"'\n"):
         return questions_text(questions)
     return content + "\n\n" + questions_text(questions)
 
@@ -262,7 +271,7 @@ class TelegramActions:
             if error.code == 409:
                 raise IntegrationError("telegram-conflict", "Another program is reading this bot's messages. Stop it, or make a new bot for Portal.") from None
             raise IntegrationError("telegram-failed", f"Telegram answered {error.code}.") from None
-        except (urllib.error.URLError, OSError, ValueError):
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
             raise IntegrationError("telegram-unreachable", "Telegram could not be reached.") from None
         if not isinstance(body, dict) or body.get("ok") is not True:
             raise IntegrationError("telegram-failed", "Telegram did not accept the request.")
@@ -278,14 +287,19 @@ class TelegramActions:
                                     POLL_SECONDS + NETWORK_TIMEOUT)
         if not isinstance(updates, list):
             raise IntegrationError("telegram-failed", "Telegram sent an unreadable answer.")
-        messages, strangers = owner_messages(updates, state["ownerId"])
-        offset = next_offset(updates, state["offset"])
-        # Marked read first: a message that crashes Portal is not asked again forever.
-        self._telegram_change(lambda current: {**current, "offset": offset, "lastError": ""})
-        for stranger in strangers:
-            self._refused(stranger)
-        for message in messages:
-            self._telegram_message(state, bot_token, message)
+        offset = state["offset"]
+        if not updates:  # Telegram answered: a problem shown before is over.
+            self._telegram_change(lambda current: {**current, "lastError": ""})
+        for update in updates:
+            # Each message is marked read just before it is handled: one that crashes Portal is not
+            # asked again forever, and a failure (Telegram busy) leaves the messages after it waiting.
+            offset = next_offset([update], offset)
+            self._telegram_change(lambda current, offset=offset: {**current, "offset": offset, "lastError": ""})
+            messages, strangers = owner_messages([update], state["ownerId"])
+            for stranger in strangers:
+                self._refused(stranger)
+            for message in messages:
+                self._telegram_message(state, bot_token, message)
         return True
 
     def _refused(self, sender):
