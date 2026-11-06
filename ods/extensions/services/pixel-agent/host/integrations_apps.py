@@ -9,6 +9,7 @@ removing a page watch follows the owner's choice, ask first or allowed.
 import datetime
 import html
 import http.client
+import ipaddress
 import json
 import math
 import re
@@ -29,6 +30,7 @@ MAX_BRIEF_STORIES = 15
 # Stories already sent in a digest; more than a digest fetches, so an unread story is never sent twice.
 MAX_SENT_STORIES = 10 * MAX_NEWS_ITEMS
 MAX_WATCHES = 100
+MAX_WATCH_QUERY = 300  # Enough for a product page; not for a document's worth of data.
 # ntfy turns a longer message into a file attachment (4,096 bytes); stay under it.
 MAX_NOTICE_BYTES = 3900
 DIGEST_NAME = "Daily news digest"
@@ -353,12 +355,40 @@ def watch_price(settings, key, uuid):
     return float(found.group(1)) if found else None
 
 
+LOCAL_NAMES = (".local", ".localhost", ".internal", ".lan", ".home.arpa")
+
+
+def _local_host(host):
+    """A host on this computer or the owner's own network, written as such (names are not resolved)."""
+    host = host.rstrip(".").lower()
+    if host == "localhost" or host.endswith(LOCAL_NAMES) or "." not in host:
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return not address.is_global
+
+
 def valid_watch_url(url):
+    """A public web page Portal may ask changedetection.io to fetch.
+
+    Portal can be steered by what it reads, so it may not point the watcher at this computer or the
+    owner's network, hide a user and password in the address, or carry a long query of data out.
+    The owner adds such a watch in changedetection.io itself.
+    """
     url = str(url or "").strip()
     parsed = urllib.parse.urlsplit(url)
     if (len(url) > 2000 or parsed.scheme not in ("http", "https") or not parsed.hostname
             or any(char.isspace() or ord(char) < 32 for char in url)):
         raise IntegrationError("invalid-request", "Give the page's full web address, starting with https://.")
+    if parsed.username is not None or parsed.password is not None:
+        raise IntegrationError("invalid-request", "Give the page's address without a user name or password.")
+    if _local_host(parsed.hostname):
+        raise IntegrationError("watch-local", "Portal watches public web pages only. The owner can add a page on this "
+                               "computer or their own network in changedetection.io.")
+    if len(parsed.query) > MAX_WATCH_QUERY:
+        raise IntegrationError("invalid-request", f"Give the page's address with a query of up to {MAX_WATCH_QUERY} characters.")
     return url
 
 

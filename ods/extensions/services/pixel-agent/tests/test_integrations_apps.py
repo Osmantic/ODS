@@ -1061,7 +1061,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(FakeNtfy.sent[-1]["title"], "Page changed: Shoes Sale")
         self.save(self.settings(changes="allow"))
         added = self.app("watch", "add", url="https://shop.example/hat", title="Hat\r\nSale")
-        self.assertEqual(added["done"], "Watch Hat Sale")
+        self.assertEqual(added["done"], "Watch Hat Sale at https://shop.example/hat")
 
     def test_an_answer_cut_short_is_an_unreachable_app_not_a_crash(self):
         self.save(self.settings())
@@ -1107,6 +1107,25 @@ class AppTests(unittest.TestCase):
             self.app("watch", "add", url="https://shop.example/page", title="Shop")
         self.assertEqual(free, [True])
         self.assertIn("w1", self.store.watch_state())
+
+    def test_portal_watches_public_pages_only_and_the_approval_shows_the_address(self):
+        self.save(self.settings())  # Watch changes ask first.
+        for url in ("http://localhost:8080/", "http://127.0.0.1/admin", "http://192.168.1.1/", "http://10.0.0.5/x",
+                    "http://169.254.169.254/latest/meta-data/", "http://[::1]/", "http://router/", "http://nas.local/",
+                    "http://printer.lan/", "http://box.home.arpa/", "http://172.16.0.1/", "http://100.64.0.1/"):
+            with self.assertRaises(service.IntegrationError, msg=url) as caught:
+                self.app("watch", "add", url=url, title="Kindle price")
+            self.assertEqual(caught.exception.code, "watch-local", url)
+        for url, reason in (("https://owner:secret@shop.example/", "without a user name"),
+                            ("https://shop.example/?d=" + "x" * 400, "query of up to 300")):
+            with self.assertRaisesRegex(service.IntegrationError, reason):
+                self.app("watch", "add", url=url)
+        self.assertEqual(self.owner("get")["approvals"], [], "nothing refused reaches the owner")
+        # A public page waits for the owner, and the card shows where the watcher will go, not only the title.
+        self.app("watch", "add", url="https://evil.example/kindle?ref=1", title="Kindle price")
+        self.assertEqual(len(self.owner("get")["approvals"]), 1)
+        summary = self.owner("get")["approvals"][0]["summary"]
+        self.assertEqual(summary, "Watch Kindle price at https://evil.example/kindle?ref=1")
 
     def test_prices_to_read_is_a_pure_choice(self):
         listing = {"page": {"last_changed": 9}, "new": {"last_changed": 0}, "same": {"last_changed": 5}, "moved": {"last_changed": 7}}

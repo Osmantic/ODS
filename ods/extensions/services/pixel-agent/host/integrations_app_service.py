@@ -209,7 +209,8 @@ class AppActions:
         if action == "watch-add":
             url, title = apps.valid_watch_url(request.get("url")), " ".join(str(request.get("title") or "").split())[:200]
             below = None if request.get("below") in (None, "") else apps.price_limit(request.get("below"))
-            summary = f"Watch {title or url}" + (f" for a price at or under {below:g}" if below is not None else "")
+            # The address the watcher will fetch is always shown: a title is Portal's words, and may hide it.
+            summary = (f"Watch {title} at {url}" if title else f"Watch {url}") + (f" for a price at or under {below:g}" if below is not None else "")
             details = ("watch-add", url, title, below)
             unchanged = self._already_watched(settings, key, url, title, below)
             if unchanged:

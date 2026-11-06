@@ -14,6 +14,17 @@ const SHARED_CRON = Symbol.for('ods.pixel-ods.getCron');
 
 const str = value => (typeof value === 'string' ? value : '');
 
+// The daily digest job, as the service describes it (integrations_apps.py DIGEST_MARKER). Its run
+// reads feeds anyone can write, unattended, so it may only read the digest (isDigestRun).
+export const DIGEST_DESCRIPTION = 'Created by Portal integrations for the daily news digest.';
+const DIGEST_JOBS = Symbol.for('ods.pixel-ods.digestJobs');
+const digestJobs = shared => (shared[DIGEST_JOBS] ??= new Set());
+// The job whose run a session is: OpenClaw names an isolated cron run's session agent:<agent>:cron:<job id>.
+export function cronJobOfSession(sessionKey) {
+  const match = typeof sessionKey === 'string' ? sessionKey.match(/^agent:[^:]+:cron:([^:]+)/i) : null;
+  return match ? match[1].toLowerCase() : '';
+}
+
 function digestJob(plan, agentId) {
   return {name: plan.name, description: plan.description, enabled: true, agentId,
     schedule: {kind: 'cron', expr: plan.expr, tz: plan.tz}, sessionTarget: 'isolated', wakeMode: 'now',
@@ -33,6 +44,7 @@ const SAYS_WHEN = /\b(?:in|at|by)\s+\d|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1
 // The example uses the owner's own delay when the message gives one: a fixed example value is
 // copied as is (e2e: "in 3 minutes" was scheduled for 10, the example's number).
 const DELAY = /\b(?:in|daqui a|em)\s+(\d{1,4})\s*(min(?:ute|uto)?s?|h(?:ours?|oras?)?)\b/i;
+const MORE_DELAY = /^\s*(?:,|and|e)?\s*(\d{1,4})\s*(min(?:ute|uto)?s?|m|h(?:ours?|oras?)?)\b/i;
 const REMINDER_CALL = 'To remind the owner later, make one call: tool_call with id "openclaw:pixel-ods:pixel_ods_notify" and args ';
 const REMINDER_END = ' It schedules the reminder and it reaches their phone then. No search is needed first. Never use sleep for this.';
 export const REMINDER_HINT = REMINDER_CALL + '{"message": "<the reminder>", "inMinutes": <minutes from now>}, '
@@ -41,7 +53,14 @@ export function reminderHint(text) {
   if (typeof text !== 'string' || !ASKS_REMINDER.test(text) || (ASKS_RECALL.test(text) && !SAYS_WHEN.test(text))) return '';
   const delay = text.match(DELAY);
   if (!delay) return REMINDER_HINT;
-  const minutes = Number(delay[1]) * (/^h/i.test(delay[2]) ? 60 : 1);
+  // Every part of a delay such as "1 hour 30 minutes", "1h 30m" or "1 hora e 30 minutos": the model
+  // copies the number as is, so the first part alone would fire it early.
+  let minutes = Number(delay[1]) * (/^h/i.test(delay[2]) ? 60 : 1);
+  let rest = text.slice(delay.index + delay[0].length);
+  for (let part = rest.match(MORE_DELAY); part; part = rest.match(MORE_DELAY)) {
+    minutes += Number(part[1]) * (/^h/i.test(part[2]) ? 60 : 1);
+    rest = rest.slice(part[0].length);
+  }
   return REMINDER_CALL + JSON.stringify({message: '<the reminder>', inMinutes: minutes}) + '.' + REMINDER_END;
 }
 
@@ -83,13 +102,15 @@ export function createTaskHooks({submit = submitIntegration, agentId = 'pixel', 
     if (!reply?.ok) throw new Error(reply?.message || 'The digest settings could not be read.');
     const {plan} = reply;
     const mine = (await cron.list({includeDisabled: true})).filter(job => job.description === plan.description);
+    for (const job of mine) digestJobs(shared).add(str(job.id).toLowerCase());
     if (!plan.enabled) {
       for (const job of mine) await cron.remove(job.id);
       return mine.length ? 'removed' : 'off';
     }
     for (const job of mine.slice(1)) await cron.remove(job.id);
     if (!mine.length) {
-      await cron.add(digestJob(plan, agentId));
+      const added = await cron.add(digestJob(plan, agentId));
+      if (added?.id) digestJobs(shared).add(str(added.id).toLowerCase());
       return 'added';
     }
     if (sameSchedule(mine[0], plan)) return 'kept';
@@ -117,9 +138,24 @@ export function createTaskHooks({submit = submitIntegration, agentId = 'pixel', 
 
   const syncQuietly = () => syncDigest().catch(error => warn(`Portal integrations: daily digest not scheduled: ${error.message}`));
 
+  // Whether a session is a run of the daily digest. A scheduled run this cannot identify counts as
+  // one (it can still read the digest); a Portal chat or another session never does.
+  async function isDigestRun(sessionKey) {
+    const id = cronJobOfSession(sessionKey);
+    if (!id) return false;
+    if (digestJobs(shared).has(id)) return true;
+    const cron = scheduler();
+    if (!cron) return true;
+    const job = (await cron.list({includeDisabled: true})).find(item => str(item.id).toLowerCase() === id);
+    if (!job) return true;
+    if (job.description === DIGEST_DESCRIPTION) digestJobs(shared).add(id);
+    return job.description === DIGEST_DESCRIPTION;
+  }
+
   return {
     syncDigest,
     scheduleReminder,
+    isDigestRun,
     gatewayStart(_event, context) {
       remember(context);
       if (!timer) {
@@ -136,6 +172,8 @@ export function createTaskHooks({submit = submitIntegration, agentId = 'pixel', 
       remember(context);
       if (event?.agentId && event.agentId !== agentId) return;
       const job = event?.job ?? {};
+      // Known before its run calls a tool: the job starts first.
+      if (job.description === DIGEST_DESCRIPTION && event?.jobId) digestJobs(shared).add(str(event.jobId).toLowerCase());
       if (isReminder(job)) {
         try {
           await reminderEvent(event, job);

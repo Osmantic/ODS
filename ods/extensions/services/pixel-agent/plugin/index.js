@@ -485,7 +485,7 @@ export default definePluginEntry({
       const exampleContext = toolLoopGuard.exampleContextForRun(context?.runId ?? event?.runId);
       const ownerText = currentUserText(ownerEvent?.messages, ownerEvent?.prompt);
       const reminder = accessRuntime.isProbe(context) ? '' : reminderHint(ownerText);
-      const memory = accessRuntime.isProbe(context) ? {} : await memoryHooks.promptContext(ownerText, context?.sessionKey, {reminder: Boolean(reminder)});
+      const memory = accessRuntime.isProbe(context) ? {} : await memoryHooks.promptContext(ownerText, context?.sessionKey, {reminder: Boolean(reminder), runId: context?.runId ?? event?.runId});
       const prependContext = [contract?.prependContext,cancelContext,deliveryContext,exampleContext,memory.facts].filter(Boolean).join('\n\n');
       // Beside the owner turn (OpenClaw appendContext), also model-only. A
       // child's announce continuation of a clarification answer carries that
@@ -968,7 +968,7 @@ export default definePluginEntry({
     // Built per call: the notes tool's memory needs to know which chat proposed a fact.
     for (const name of INTEGRATION_TOOL_NAMES) {
       api.registerTool(onlyPixel(context => createIntegrationTools({scheduleReminder: taskHooks.scheduleReminder,
-        sessionKey: context?.sessionKey}).find(tool => tool.name === name)), {names: [name]});
+        isDigestRun: taskHooks.isDigestRun, sessionKey: context?.sessionKey}).find(tool => tool.name === name)), {names: [name]});
     }
     api.on("gateway_start", (event, context) => taskHooks.gatewayStart(event, context));
     api.on("gateway_stop", () => taskHooks.gatewayStop());

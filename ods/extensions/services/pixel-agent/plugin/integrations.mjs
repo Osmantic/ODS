@@ -152,7 +152,15 @@ async function remind(submit, scheduleReminder, params, signal) {
 
 const noScheduler = () => Promise.reject(new Error('Reminders are not available here.'));
 
-export function createIntegrationTools({submit = submitIntegration, scheduleReminder = noScheduler, sessionKey = '', shared = globalThis} = {}) {
+// isDigestRun(sessionKey): whether this session is a run of the daily news digest
+// (integration-tasks.mjs). That run reads feeds anyone can write, with nobody watching: it may
+// read the digest and nothing else, so a story cannot steer it to the owner's other apps.
+const DIGEST_ONLY = 'The daily news digest run may only read the digest: tool_call with id "pixel_ods_mcp" and args '
+  + '{"action": "call", "server": "news", "tool": "digest", "arguments": {}}.';
+const notDigestRun = async () => false;
+
+export function createIntegrationTools({submit = submitIntegration, scheduleReminder = noScheduler, sessionKey = '', shared = globalThis,
+  isDigestRun = notDigestRun} = {}) {
   return [
     {
       name: 'pixel_ods_notes',
@@ -183,7 +191,9 @@ export function createIntegrationTools({submit = submitIntegration, scheduleRemi
           inMinutes: {type: 'number', description: 'For a reminder: send it this many minutes from now, such as 10.'},
           at: {type: 'string', description: 'For a reminder: send it at this local time, such as 17:30, or date and time, such as 2026-11-04T09:00.'}}},
       execute: (_id, params, signal) => {
-        if (params?.inMinutes !== undefined || params?.at !== undefined) return remind(submit, scheduleReminder, params, signal);
+        // A small model fills every field: null or "" is no reminder time (the service reads them so too).
+        const given = value => value !== undefined && value !== null && value !== '';
+        if (given(params?.inMinutes) || given(params?.at)) return remind(submit, scheduleReminder, params, signal);
         return run(submit, {action: 'notify', title: str(params?.title) || 'Portal',
           message: str(params?.message), priority: params?.priority ?? 'default'}, signal, () => 'Notification sent.');
       },
@@ -196,11 +206,17 @@ export function createIntegrationTools({submit = submitIntegration, scheduleRemi
           server: {type: 'string', description: 'For call: the server id from list, such as home.'},
           tool: {type: 'string', description: 'For call: the tool name from list.'},
           arguments: {type: 'object', description: 'For call: the tool arguments as an object.'}}},
-      execute: (_id, params, signal) => {
+      execute: async (_id, params, signal) => {
+        if (await isDigestRun(sessionKey) && !(params?.action === 'call' && params?.server === 'news' && params?.tool === 'digest')) {
+          return text(DIGEST_ONLY, {status: 'refused', code: 'digest-only'}, true);
+        }
         if (params?.action === 'list') return run(submit, {action: 'mcp-tools'}, signal, toolsText);
         // A small model sometimes sends no arguments at all; show it the exact shape to retry with.
         if (params?.action !== 'call') return Promise.resolve(text(MCP_USAGE, {status: 'invalid'}, true));
         const args = params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? params.arguments : {};
+        // The digest takes no arguments; in its run, none reach the service.
+        if (await isDigestRun(sessionKey)) return run(submit, {action: 'mcp-call', server: 'news', tool: 'digest', arguments: {}}, signal,
+          reply => `${reply.isError ? 'The tool reported an error:\n' : ''}${reply.text}`);
         return run(submit, {action: 'mcp-call', server: str(params?.server), tool: str(params?.tool), arguments: args}, signal,
           reply => `${reply.isError ? 'The tool reported an error:\n' : ''}${reply.text}`);
       },
