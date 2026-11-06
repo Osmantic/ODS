@@ -48,6 +48,9 @@ import {
 import { longTaskContract, promptContractForAgent } from "./prompt-contract.mjs";
 import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
+import { createIntegrationTools, INTEGRATION_TOOL_NAMES, submitIntegration } from "./integrations.mjs";
+import { createMemoryHooks } from "./integration-memory.mjs";
+import { createTaskHooks, reminderHint } from "./integration-tasks.mjs";
 import { createPendingClarifications } from "./pending-clarification.mjs";
 import {
   appsToolText,
@@ -58,11 +61,13 @@ import {
   createExecCancellationControl,
   createRunAbortAdapter,
   createToolLoopGuardRegistry,
+  currentUserText,
   managedTeamRole,
   privateBrowserAccessForAgent,
 } from "./tool-loop-guard.mjs";
 import { withPixelCronDeliveryDefault } from "./cron-delivery-default.mjs";
 import { withCronCommandPayloadBlock } from "./cron-command-payload-guard.mjs";
+import { withSleepReminderBlock } from "./sleep-reminder-guard.mjs";
 import { withPixelSubagentWorkspace } from "./subagent-workspace.mjs";
 import { createPublicPageReader, createPublicWebExtractTool } from "./web-extract.mjs";
 import { citationPageReadsAllowed, createHostCitationVerifier } from "./citation-verification.mjs";
@@ -444,6 +449,8 @@ export default definePluginEntry({
     // OpenClaw does not replay arbitrary plugin tools after an empty model
     // continuation. Give the Pixel agent an explicit, trusted prompt contract
     // so every ODS lookup is followed by a user-visible answer.
+    // Portal's memory of the owner: facts for each chat turn, and the owner's answers to memory cards.
+    const memoryHooks = createMemoryHooks({submit: submitIntegration, warn: message => api.logger.warn(message)});
     api.on("before_prompt_build", async (event, context) => {
       // A canceled child's queued announcement must not replace the guard's
       // active owner mapping. The enforced before_agent_run gate below also
@@ -476,7 +483,10 @@ export default definePluginEntry({
       const deliveryContext = delegationDelivery.promptContext(context);
       // A turn that mentions the shipped example without naming it.
       const exampleContext = toolLoopGuard.exampleContextForRun(context?.runId ?? event?.runId);
-      const prependContext = [contract?.prependContext,cancelContext,deliveryContext,exampleContext].filter(Boolean).join('\n\n');
+      const ownerText = currentUserText(ownerEvent?.messages, ownerEvent?.prompt);
+      const reminder = accessRuntime.isProbe(context) ? '' : reminderHint(ownerText);
+      const memory = accessRuntime.isProbe(context) ? {} : await memoryHooks.promptContext(ownerText, context?.sessionKey, {reminder: Boolean(reminder), runId: context?.runId ?? event?.runId});
+      const prependContext = [contract?.prependContext,cancelContext,deliveryContext,exampleContext,memory.facts].filter(Boolean).join('\n\n');
       // Beside the owner turn (OpenClaw appendContext), also model-only. A
       // child's announce continuation of a clarification answer carries that
       // answer's note too: in a replacement session only the note names the
@@ -489,7 +499,7 @@ export default definePluginEntry({
       const goalContract = inResponseLanguage(GOAL_CONTRACT, configuredResponseLanguage);
       const appendContext = [goalProgress.active(context?.runId ?? event?.runId) ? goalContract : '', languageNote,
         toolLoopGuard.clarificationContextForRun(context?.runId ?? event?.runId) ??
-          toolLoopGuard.clarificationContextForRun(delegationDelivery.ownerRunFor(context))].filter(Boolean).join('\n\n');
+          toolLoopGuard.clarificationContextForRun(delegationDelivery.ownerRunFor(context)), memory.answer, memory.hint, reminder].filter(Boolean).join('\n\n');
       // Ordinary workspace work only: Operations, exact downloads and managed
       // extension requests refuse update_plan, and read-only roles cannot edit.
       const longTask = toolLoopGuard.longTaskEligible(context?.runId ?? event?.runId)
@@ -550,6 +560,7 @@ export default definePluginEntry({
         scope => getSessionEntry({...scope,
           storePath: resolveStorePath(runtimeConfig?.session?.store, {agentId: AGENT_ID})}), {resolveUserPath, resolveAgentWorkspaceDir});
       guard = withCronCommandPayloadBlock(guard, event, context);
+      guard = withSleepReminderBlock(guard, event, context);
       const decision = guard?.block ? guard : delegationDelivery.blocked(context,event) ?? goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
       delegationDelivery.before(event,context,decision);
       bundleAdmission.before(event, context, decision);
@@ -951,6 +962,17 @@ export default definePluginEntry({
     })), {names:['pixel_ods_workspace_artifact']});
     registerTool(api, createAgentSkillTool(), {names:['pixel_ods_skill']});
     registerTool(api, createAskUserTool({responseLanguage: configuredResponseLanguage}), {names:['pixel_ods_ask_user']});
+    // Finished scheduled tasks notify the owner; the daily news digest and reminders are cron jobs.
+    const taskHooks = createTaskHooks({warn: message => api.logger.warn(message)});
+    // The owner's notes, notifications, MCP servers and apps, all through the host integrations service.
+    // Built per call: the notes tool's memory needs to know which chat proposed a fact.
+    for (const name of INTEGRATION_TOOL_NAMES) {
+      api.registerTool(onlyPixel(context => createIntegrationTools({scheduleReminder: taskHooks.scheduleReminder,
+        isDigestRun: taskHooks.isDigestRun, sessionKey: context?.sessionKey}).find(tool => tool.name === name)), {names: [name]});
+    }
+    api.on("gateway_start", (event, context) => taskHooks.gatewayStart(event, context));
+    api.on("gateway_stop", () => taskHooks.gatewayStop());
+    api.on("cron_changed", (event, context) => taskHooks.cronChanged(event, context));
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
     registerTool(api, createActivityTool(), {names:['pixel_ods_activity']});
     registerProjectBuild(api, onlyPixel, projectRunControl);
