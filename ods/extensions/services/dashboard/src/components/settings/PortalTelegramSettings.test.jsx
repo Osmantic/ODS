@@ -31,7 +31,9 @@ function fakeService(telegram = TELEGRAM) {
     if (action === 'telegram-save') {
       if (body.enabled && !(body.ownerId && (body.token || current.telegram.hasToken))) return response({ detail: 'Give the bot token and your Telegram user ID, or turn Telegram off.', code: 'invalid-settings' }, 400)
       // As the service: the address is saved without a trailing slash.
-      current = { ...current, telegram: { ...current.telegram, enabled: body.enabled, ownerId: body.ownerId, apiRoot: body.apiRoot.replace(/\/+$/, ''), hasToken: current.telegram.hasToken || Boolean(body.token) } }
+      // As the service: the saved token goes only to the address it was saved for.
+      const apiRoot = body.apiRoot.replace(/\/+$/, ''), moved = apiRoot !== current.telegram.apiRoot
+      current = { ...current, telegram: { ...current.telegram, enabled: body.enabled, ownerId: body.ownerId, apiRoot, hasToken: Boolean(body.token) || (current.telegram.hasToken && !moved) } }
       return response({ ...current, notice: 'Telegram saved.' })
     }
     if (action === 'telegram-test') {
@@ -147,4 +149,18 @@ it('unsaved Telegram edits mark its tile and ask before leaving the page, outsid
   fireEvent.click(telegram.getByRole('button', { name: 'Save Telegram' }))
   expect(await telegram.findByText('Telegram saved.')).toBeInTheDocument()
   expect(screen.getByRole('navigation', { name: 'Integration' })).not.toHaveTextContent('Unsaved changes')
+})
+
+it('says another API address needs the bot token again', async () => {
+  fakeService({ ...TELEGRAM, enabled: false, ownerId: '123456789', hasToken: true })
+  const telegram = await card()
+  expect(telegram.queryByText(/needs the bot token again/)).toBeNull()
+  fireEvent.change(telegram.getByLabelText('Telegram API address'), { target: { value: 'https://bots.example' } })
+  expect(telegram.getByRole('note')).toHaveTextContent('Another address needs the bot token again')
+  fireEvent.change(telegram.getByLabelText('Bot token'), { target: { value: TOKEN } })
+  expect(telegram.queryByText(/needs the bot token again/)).toBeNull()
+  fireEvent.change(telegram.getByLabelText('Bot token'), { target: { value: '' } })
+  fireEvent.click(telegram.getByRole('button', { name: 'Save Telegram' }))
+  expect(await telegram.findByText('Telegram saved.')).toBeInTheDocument()
+  expect(telegram.getByLabelText('Bot token')).toHaveAttribute('placeholder', '123456789:AAH…')
 })

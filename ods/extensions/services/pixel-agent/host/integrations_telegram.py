@@ -34,6 +34,7 @@ MAX_MESSAGE = 4000  # Telegram takes up to 4,096 characters per message.
 MAX_TEXT = 8000
 MAX_REPLY_BYTES = 4 * 1024 * 1024
 MAX_REFUSED = 50
+REFUSED_LOG_SECONDS = 24 * 3600
 OWNER_ACTIONS = {"telegram-save", "telegram-test"}
 HELP = ("This is your Portal. Write here as you would in the Portal chat. "
         "/new starts a new conversation.")
@@ -84,9 +85,11 @@ def owner_messages(updates, owner_id):
         if not isinstance(message, dict):
             continue
         chat, sender = message.get("chat") or {}, message.get("from") or {}
-        if str(sender.get("id")) != owner_id or chat.get("type") != "private":
+        if str(sender.get("id")) != owner_id:
             strangers.append(str(sender.get("id", "unknown")))
             continue
+        if chat.get("type") != "private":
+            continue  # The owner in a group with the bot: Portal answers only in the private chat.
         text = message.get("text")
         messages.append({"chat": chat.get("id"), "text": text if isinstance(text, str) else None})
     return messages, strangers
@@ -244,7 +247,15 @@ class TelegramActions:
             new_token = token(given) if given not in (None, "") else None
             saved = secrets.get("telegramToken", "")
             before = self.store.telegram()
-            updated = validate(before, request, bool(new_token or saved))
+            # The saved token goes only to the address it was given for: another address needs it again,
+            # as an ntfy password or an MCP token does.
+            moved = _api_root(request.get("apiRoot", DEFAULT_API)) != before["apiRoot"]
+            updated = validate(before, request, bool(new_token or (saved and not moved)))
+            if moved and saved and not new_token:
+                secrets["telegramToken"] = ""
+                self.store.save_secrets(secrets)
+            if moved:  # Another server: its bot and its messages are read from scratch.
+                updated = {**updated, "bot": "", "offset": 0, "questions": None, "lastError": ""}
             if updated["ownerId"] != before["ownerId"]:
                 # Another owner: whoever was refused before may be the owner now, and the
                 # "someone else wrote" note was about the old owner's bot.
@@ -290,7 +301,7 @@ class TelegramActions:
         if not isinstance(updates, list):
             raise IntegrationError("telegram-failed", "Telegram sent an unreadable answer.")
         offset = state["offset"]
-        if not updates:  # Telegram answered: a problem shown before is over.
+        if not updates and state["lastError"]:  # Telegram answered: a problem shown before is over.
             self._telegram_change(lambda current: {**current, "lastError": ""})
         for update in updates:
             # Each message is marked read just before it is handled: one that crashes Portal is not
@@ -305,11 +316,15 @@ class TelegramActions:
         return True
 
     def _refused(self, sender):
-        refused = self._telegram()[0]["refused"]
-        if sender in refused:
+        state = self._telegram()[0]
+        if sender in state["refused"]:
             return
-        self._telegram_change(lambda current: {**current, "refused": (current["refused"] + [sender])[-MAX_REFUSED:]})
-        self._log("telegram-refused", "someone else wrote to the bot", "ignored")
+        # One activity line a day at most: many strangers must not push Portal's own entries out of the log.
+        told = now() - state["refusedLoggedAt"] < REFUSED_LOG_SECONDS
+        self._telegram_change(lambda current: {**current, "refused": (current["refused"] + [sender])[-MAX_REFUSED:],
+                                               **({} if told else {"refusedLoggedAt": now()})})
+        if not told:
+            self._log("telegram-refused", "someone else wrote to the bot", "ignored")
 
     def _send(self, state, bot_token, chat, text):
         for piece in chunks(text):

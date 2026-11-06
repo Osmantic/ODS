@@ -120,7 +120,8 @@ class Pure(unittest.TestCase):
                    update(4, None), {"update_id": 5, "edited_message": {}}, "junk"]
         messages, strangers = telegram.owner_messages(updates, OWNER)
         self.assertEqual(messages, [{"chat": int(OWNER), "text": "Hi"}, {"chat": int(OWNER), "text": None}])
-        self.assertEqual(strangers, ["555555", OWNER])
+        # The owner writing in a group is no stranger: that message is simply not answered there.
+        self.assertEqual(strangers, ["555555"])
         self.assertEqual(telegram.next_offset(updates, 0), 6)
         self.assertEqual(telegram.next_offset([], 7), 7)
 
@@ -333,6 +334,44 @@ class Bridge(unittest.TestCase):
         FakeTelegram.updates.clear()
         self.assertTrue(self.service.telegram_poll())
         self.assertEqual(self.store.telegram()["lastError"], "")
+
+    def test_an_idle_poll_writes_nothing(self):
+        self.turn_on()
+        writes = []
+        original = self.store.save_telegram
+        self.store.save_telegram = lambda value: (writes.append(value), original(value))
+        for _ in range(3):
+            self.assertTrue(self.service.telegram_poll())
+        self.assertEqual(writes, [])
+
+    def test_many_strangers_leave_one_activity_line_a_day(self):
+        self.turn_on()
+        self.poll(*[update(index, "let me in", sender=str(500000 + index)) for index in range(1, 61)])
+        refused = [entry for entry in self.owner("get")["activity"] if entry["action"] == "telegram-refused"]
+        self.assertEqual(len(refused), 1)
+        self.assertEqual(self.owner("get")["telegram"]["refusedCount"], telegram.MAX_REFUSED)
+        self.assertEqual(FakeIngress.requests, [])
+
+    def test_another_api_address_needs_the_token_again(self):
+        self.turn_on()
+        self.poll(update(1, "hello"))
+        self.assertEqual(self.store.telegram()["offset"], 2)
+        # A refused save forgets nothing.
+        with self.assertRaises(IntegrationError):
+            self.owner("telegram-save", enabled=True, ownerId="@me", apiRoot="https://bots.example")
+        self.assertEqual(self.store.secrets()["telegramToken"], TOKEN)
+        # Another address without the token: the saved token is not sent there, and Telegram cannot stay on.
+        with self.assertRaisesRegex(IntegrationError, "Give the bot token"):
+            self.owner("telegram-save", enabled=True, ownerId=OWNER, apiRoot="https://bots.example")
+        self.assertEqual(self.store.secrets()["telegramToken"], TOKEN)
+        self.owner("telegram-save", enabled=False, ownerId=OWNER, apiRoot="https://bots.example")
+        self.assertEqual(self.store.secrets()["telegramToken"], "")
+        self.assertEqual((self.store.telegram()["offset"], self.store.telegram()["bot"]), (0, ""))
+        self.assertFalse(self.owner("get")["telegram"]["hasToken"])
+        # The same address, written with a trailing slash, keeps it.
+        self.owner("telegram-save", enabled=True, ownerId=OWNER, apiRoot=self.api, token=TOKEN)
+        self.owner("telegram-save", enabled=True, ownerId=OWNER, apiRoot=self.api + "/")
+        self.assertEqual(self.store.secrets()["telegramToken"], TOKEN)
 
     def test_a_new_token_starts_reading_that_bot_from_scratch(self):
         self.turn_on()

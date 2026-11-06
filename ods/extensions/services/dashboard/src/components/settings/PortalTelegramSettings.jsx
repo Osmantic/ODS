@@ -53,6 +53,9 @@ export default function PortalTelegramSettings({ telegram, busy, onAct, onEdited
       <label className="mt-2 block">Telegram API address<input className={inputStyle} value={apiRoot} disabled={busy} spellCheck={false}
         onChange={event => edit('apiRoot', event.target.value)} /></label>
       <p className="mt-1 text-xs text-theme-text-muted">Change it only for your own Telegram Bot API server.</p>
+      {/* The service gives the saved token only to the address it was saved for. */}
+      {telegram.hasToken && !token && (savedApiRoot(apiRoot) || DEFAULT_API) !== telegram.apiRoot &&
+        <p role="note" className="mt-1 text-xs text-amber-300">Another address needs the bot token again: paste it above before saving.</p>}
     </details>
     <div className="flex flex-wrap items-center gap-2">
       <button className={buttonStyle} disabled={busy || !changed} onClick={save}>Save Telegram</button>
