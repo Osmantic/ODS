@@ -127,7 +127,8 @@ async function remember(submit, params, sessionKey, signal, shared) {
   }
   noProposalTurns(shared).set(session, `card:${reply.id}`);
   const questions = [{id: MEMORY_QUESTION_ID, question: memoryQuestion(reply.text), options: Object.keys(MEMORY_CHOICES)}];
-  return text(`${questions[0].question}\n\nThe owner decides on a card shown below your reply; never answer it for them. Now answer the owner's message, using other tools only if it needs them.`,
+  // "Not saved yet" first: told only that a card is shown, the small model told the owner the fact was saved (e2e).
+  return text(`Not saved yet: ${questions[0].question}\n\nThe owner decides on a card shown below your reply; never answer it for them, and never say it is saved. Now answer the owner's message, using other tools only if it needs them.`,
     {status: 'awaiting_user', questions});
 }
 

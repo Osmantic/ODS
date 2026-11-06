@@ -53,7 +53,8 @@ test('remember asks the owner with a card the chat can show, unless the owner sa
   assert.deepEqual(parseQuestions(result.details.questions), [{id: 'memory_save', question: 'Remember this about you? "The owner is vegetarian."',
     options: ['Save', "Don't save", 'Always save without asking']}]);
   // The card waits for the owner, but the reply to their message still comes, with tools if it needs them.
-  assert.match(result.content[0].text, /never answer it for them/);
+  assert.match(result.content[0].text, /^Not saved yet: Remember this about you\?/);
+  assert.match(result.content[0].text, /never answer it for them, and never say it is saved/);
   assert.match(result.content[0].text, /Now answer the owner's message, using other tools only if it needs them/);
   for (const [status, expected] of [['saved', 'Remembered: The owner is vegetarian.'], ['known', 'Already remembered: The owner is vegetarian.']]) {
     const reply = await notes({submit: async () => ({ok: true, status, text: 'The owner is vegetarian.'}), sessionKey: SESSION})
