@@ -33,7 +33,7 @@ def observed(active, monkeypatch):  # noqa: F811
     target = n.f.root / 'runtime/openclaw.mjs'
     trace = SimpleNamespace(frames=[], leases=[], current=None, outsideBytes=0, aclChecks=0)
     actual_inspect, actual_fdopen = runtime_custody.RuntimeCustody.inspect, os.fdopen
-    actual_stat, actual_acl = os.stat, custody._native_no_acl
+    actual_stat, actual_lstat, actual_acl = os.stat, os.lstat, custody._native_no_acl
 
     def inspect(qualifier):
         lease = bridge.LaunchdAccessBridge._native_runtime_lease(n.f.bridge)
@@ -81,6 +81,11 @@ def observed(active, monkeypatch):  # noqa: F811
             trace.current['targetMetadataChecks'] += 1
         return actual_stat(path, *args, **kwargs)
 
+    def lstat(path, *args, **kwargs):
+        if trace.current is not None and not isinstance(path, int) and Path(path) == target:
+            trace.current['targetMetadataChecks'] += 1
+        return actual_lstat(path, *args, **kwargs)
+
     def acl(fd):
         trace.aclChecks += 1
         return actual_acl(fd)
@@ -88,6 +93,7 @@ def observed(active, monkeypatch):  # noqa: F811
     monkeypatch.setattr(runtime_custody.RuntimeCustody, 'inspect', inspect)
     monkeypatch.setattr(os, 'fdopen', fdopen)
     monkeypatch.setattr(os, 'stat', stat)
+    monkeypatch.setattr(os, 'lstat', lstat)
     monkeypatch.setattr(custody, '_native_no_acl', acl)
     n.operation_trace = trace
     return n
