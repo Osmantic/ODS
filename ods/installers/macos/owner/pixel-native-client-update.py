@@ -89,6 +89,41 @@ def image_id(run, name):
     return value
 
 
+def selected_image_matches(run, tag, observed, expected):
+    """Bind the tag to the container, including Docker's OCI image-store IDs.
+
+    Some Docker versions return an index ID for the tag and a config ID for
+    the container. In that case prove that the exact platform manifest named
+    by the container is selected by the unchanged tag.
+    """
+    if image_id(run, tag) != expected:
+        return False
+    if observed.get('Image') == expected:
+        return True
+    descriptor = observed.get('ImageManifestDescriptor')
+    if type(descriptor) is not dict:
+        return False
+    platform = descriptor.get('platform')
+    if type(platform) is not dict:
+        return False
+    parts = [platform.get('os'), platform.get('architecture')]
+    if platform.get('variant') is not None:
+        parts.append(platform['variant'])
+    if (any(type(part) is not str or not re.fullmatch('[a-z0-9][a-z0-9._-]*', part) for part in parts)
+            or not re.fullmatch('sha256:[a-f0-9]{64}', str(descriptor.get('digest', '')))
+            or descriptor.get('mediaType') not in ('application/vnd.oci.image.manifest.v1+json',
+                'application/vnd.docker.distribution.manifest.v2+json')):
+        return False
+    try:
+        selected = json.loads(checked(run, 'image', 'inspect', '--platform', '/'.join(parts),
+            '--format', '{{json .Descriptor}}', tag))
+    except (ValueError, TypeError):
+        return False
+    return (type(selected) is dict and selected.get('digest') == descriptor['digest']
+        and selected.get('mediaType') == descriptor['mediaType']
+        and selected.get('platform') == platform and image_id(run, tag) == expected)
+
+
 def container(run, project, service):
     values = checked(run, 'ps', '-a', '--no-trunc', '--filter',
         'label=com.docker.compose.project=' + project, '--filter',
@@ -286,13 +321,14 @@ def prepare(*, install_dir, ods_source, destination, transport):
     compatible(previous, candidate, install_dir)
     observations = {name: container(run, transport['project'], name) for name in SERVICES}
     before = {name: container_identity(value) for name, value in observations.items()}
+    previous_images = {name: image_id(run, value['tag']) for name, value in before.items()}
     for name, value in before.items():
-        if image_id(run, value['tag']) != value['image']:
+        if not selected_image_matches(run, value['tag'], observations[name], previous_images[name]):
             raise ValueError('native-client-selected-image-tag-changed')
         if observations[name]['State'].get('Running') is not True:
             raise ValueError('native-client-running-baseline-required')
     record = {'schemaVersion': 1, 'installDir': str(install_dir), 'transport': transport, 'dockerEndpoint': endpoint,
-        'sourceDigest': files.identity(destination / 'files'), 'previous': before,
+        'sourceDigest': files.identity(destination / 'files'), 'previous': before, 'previousImages': previous_images,
         'hostAgent': host_agent(install_dir), 'images': {}, 'phase': 'building'}
     host_loaded(record)
     write(destination / 'previous-resolved.json', previous)
@@ -307,6 +343,19 @@ def prepare(*, install_dir, ods_source, destination, transport):
     record['previousRecipeSha256'] = digest(rollback)
     write(destination / 'journal.json', record)
     write(destination / 'previous.compose.json', rollback)
+    # Keep the exact old index addressable after the normal tag is moved and
+    # its container is recreated. Never overwrite an existing rollback tag.
+    record['rollbackImages'] = {}
+    for name in SERVICES:
+        tag = 'ods-native-rollback:' + secrets.token_hex(16) + '-' + name
+        probe = run('image', 'inspect', tag)
+        if probe.returncode == 0 or 'No such image' not in probe.stderr:
+            raise ValueError('native-client-rollback-tag-unavailable')
+        record['rollbackImages'][name] = tag
+        write(destination / 'journal.json', record)
+        checked(run, 'tag', previous_images[name], tag)
+        if image_id(run, tag) != previous_images[name]:
+            raise ValueError('native-client-rollback-image-changed')
     for name in SERVICES:
         hashed = checked(run, 'compose', '--project-directory', str(install_dir),
             '--project-name', transport['project'], '--env-file', '/dev/null',
@@ -433,7 +482,10 @@ def begin(destination):
 
 def selected_key(destination):
     record, _, _ = load(destination)
-    return digest({key: record[key] for key in ('sourceDigest', 'images', 'previous', 'hostAgent')})
+    fields = ('sourceDigest', 'images', 'previous', 'hostAgent')
+    selected = {key: record[key] for key in fields}
+    selected.update({key: record[key] for key in ('previousImages', 'rollbackImages') if key in record})
+    return digest(selected)
 
 
 def validate_pre_activation(destination):
@@ -448,10 +500,14 @@ def validate_pre_activation(destination):
     if {name: document['services'][name] for name in SERVICES} != record['previousClients']:
         raise ValueError('native-client-baseline-definition-changed')
     for name, previous in record['previous'].items():
-        if container_identity(container(run, record['transport']['project'], name)) != previous:
+        observed = container(run, record['transport']['project'], name)
+        if container_identity(observed) != previous:
             raise ValueError('native-client-baseline-changed')
-        if image_id(run, previous['tag']) != previous['image']:
+        if not selected_image_matches(run, previous['tag'], observed,
+                record.get('previousImages', {}).get(name, previous['image'])):
             raise ValueError('native-client-selected-image-tag-changed')
+        if 'rollbackImages' in record and image_id(run, record['rollbackImages'][name]) != record['previousImages'][name]:
+            raise ValueError('native-client-rollback-image-changed')
 
 
 def _up(run, install_dir, project, recipe):
@@ -470,9 +526,9 @@ def verify(destination):
     for name in SERVICES:
         current = container(run, record['transport']['project'], name)
         observations[name] = current
-        if (current['Image'] != record['images'][name] or current['State'].get('Running') is not True
+        if (not selected_image_matches(run, record['previous'][name]['tag'], current, record['images'][name])
+                or current['State'].get('Running') is not True
                 or current['State'].get('Health', {}).get('Status') != 'healthy'
-                or image_id(run, record['previous'][name]['tag']) != record['images'][name]
                 or current['Config']['Labels'].get('com.docker.compose.config-hash') != record.get('candidateHashes', {}).get(name)):
             raise ValueError('native-client-image-not-ready')
     replay_document(recipe, observations,
@@ -510,7 +566,8 @@ def apply(destination):
     try:
         for name in SERVICES:
             previous = record['previous'][name]
-            if image_id(run, previous['tag']) not in (previous['image'], record['images'][name]):
+            old_image = record.get('previousImages', {}).get(name, previous['image'])
+            if image_id(run, previous['tag']) not in (old_image, record['images'][name]):
                 raise ValueError('native-client-image-tag-drift')
             checked(run, 'tag', record['images'][name], previous['tag'])
         # Reuse the installer migration for Mac SQLite ownership. It stops
@@ -570,9 +627,13 @@ def restore(destination):
     host_command(record, 'stop')
     for name in SERVICES:
         previous = record['previous'][name]
-        if image_id(run, previous['tag']) not in (previous['image'], record['images'][name]):
+        old_image = record.get('previousImages', {}).get(name, previous['image'])
+        if image_id(run, previous['tag']) not in (old_image, record['images'][name]):
             raise ValueError('native-client-image-tag-drift')
-        checked(run, 'tag', previous['image'], previous['tag'])
+        rollback_image = record.get('rollbackImages', {}).get(name, old_image)
+        if 'rollbackImages' in record and image_id(run, rollback_image) != old_image:
+            raise ValueError('native-client-rollback-image-changed')
+        checked(run, 'tag', rollback_image, previous['tag'])
     _up(run, install_dir, record['transport']['project'], destination / 'previous.compose.json')
     helper('pixel-native-client-files').restore(destination / 'files')
     host_command(record, 'start')

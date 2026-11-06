@@ -19,6 +19,36 @@ def selected_tags(observations):
     return {name: value['Config']['Image'] for name, value in observations.items()}
 
 
+@pytest.mark.parametrize('fault', [None, 'wrong-manifest', 'wrong-platform', 'wrong-type',
+    'missing-descriptor', 'tag-drift', 'tag-changes-during-inspect', 'inspect-failed', 'bad-platform'])
+def test_image_store_manifest_proves_container_and_stable_tag(monkeypatch, fault):
+    root = 'sha256:' + 'a' * 64
+    manifest = {'digest': 'sha256:' + 'b' * 64, 'mediaType': 'application/vnd.oci.image.manifest.v1+json',
+        'platform': {'os': 'linux', 'architecture': 'arm64'}}
+    observed = {'Image': 'sha256:' + 'c' * 64, 'ImageManifestDescriptor': copy.deepcopy(manifest)}
+    selected = copy.deepcopy(manifest)
+    if fault == 'wrong-manifest': selected['digest'] = 'sha256:' + 'd' * 64
+    if fault == 'wrong-platform': selected['platform']['architecture'] = 'amd64'
+    if fault == 'wrong-type': selected['mediaType'] = 'other'
+    if fault == 'missing-descriptor': observed.pop('ImageManifestDescriptor')
+    if fault == 'bad-platform': observed['ImageManifestDescriptor']['platform']['architecture'] = '../bad'
+    ids = iter([('sha256:' + 'f' * 64) if fault == 'tag-drift' else root,
+        ('sha256:' + 'f' * 64) if fault == 'tag-changes-during-inspect' else root])
+    monkeypatch.setattr(module, 'image_id', lambda *_args: next(ids))
+    def inspect(_run, *args, **_kwargs):
+        assert args == ('image', 'inspect', '--platform', 'linux/arm64', '--format', '{{json .Descriptor}}', 'ods-dashboard')
+        if fault == 'inspect-failed': raise ValueError('docker-failed')
+        return json.dumps(selected)
+    monkeypatch.setattr(module, 'checked', inspect)
+    assert module.selected_image_matches(None, 'ods-dashboard', observed, root) is (fault is None)
+
+
+def test_legacy_container_image_identity_needs_no_manifest(monkeypatch):
+    image = 'sha256:' + 'a' * 64
+    monkeypatch.setattr(module, 'image_id', lambda *_args: image)
+    assert module.selected_image_matches(None, 'ods-dashboard', {'Image': image}, image)
+
+
 @pytest.fixture
 def recipe(tmp_path):
     installed = tmp_path.resolve() / 'ods'
@@ -274,7 +304,8 @@ def test_host_absence_is_not_inferred_from_arbitrary_launchctl_errors(monkeypatc
 
 
 @pytest.mark.parametrize('fault', ['candidate-up', 'host-start', 'verify'])
-def test_apply_failure_restores_files_images_and_host_under_the_same_hold(recipe, tmp_path, monkeypatch, fault):
+@pytest.mark.parametrize('indexed_store', [False, True])
+def test_apply_failure_restores_files_images_and_host_under_the_same_hold(recipe, tmp_path, monkeypatch, fault, indexed_store):
     installed, document, observations, old_images = recipe
     previous = {name: module.container_identity(value) for name, value in observations.items()}
     images = {name: 'sha256:' + str(index + 7) * 64 for index, name in enumerate(module.SERVICES)}
@@ -284,13 +315,21 @@ def test_apply_failure_restores_files_images_and_host_under_the_same_hold(recipe
         'previous': previous, 'images': images, 'candidateClients': document['services'],
         'previousRecipeSha256': module.digest(rollback), 'binding': binding}
     tags = {previous[name]['tag']: old_images[name] for name in module.SERVICES}
+    if indexed_store:
+        record['previousImages'] = {name: 'sha256:' + str(index + 4) * 64
+            for index, name in enumerate(module.SERVICES)}
+        record['rollbackImages'] = {name: 'rollback-' + name for name in module.SERVICES}
+        for name in module.SERVICES:
+            tags[previous[name]['tag']] = record['previousImages'][name]
+            tags[record['rollbackImages'][name]] = record['previousImages'][name]
+    original_tags = copy.deepcopy(tags)
     events, holds = [], []
     def require_held(value, _install, _run):
         holds.append(copy.deepcopy(value['binding']))
         events.append(('held', value['phase']))
     def checked(_run, *args, **_kwargs):
         if args[0] == 'tag':
-            tags[args[2]] = args[1]
+            tags[args[2]] = tags.get(args[1], args[1])
             events.append(('tag', args[2], args[1]))
             return ''
         if args[-3:-1] == ('config', '--hash'):
@@ -335,7 +374,7 @@ def test_apply_failure_restores_files_images_and_host_under_the_same_hold(recipe
     assert record['phase'] == 'restored'
     assert record['binding'] == binding
     assert holds == [binding, binding]
-    assert tags == {previous[name]['tag']: old_images[name] for name in module.SERVICES}
+    assert tags == original_tags
     assert events.count(('files', 'restore')) == 1
     assert ('up', 'previous.compose.json') in events
     assert events[-2:] == [('host', 'start'), ('write', 'journal.json', 'restored')]
