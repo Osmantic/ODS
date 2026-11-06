@@ -38,9 +38,12 @@ def history_driver(material, monkeypatch):
     monkeypatch.setattr(bridge, '_native_source_clock_ns', raw_clock)
     monkeypatch.setattr(c, '_native_clock_ns', raw_clock)
     monkeypatch.setattr(c, '_native_boot_uuid', lambda: '01234567-89AB-4DEF-8123-0123456789AB')
-    def publisher(selection):
-        helper._material(selection)
-        return helper
+    def publisher(selection=None, *, with_material=False, _current_bridge=None):
+        if _current_bridge is not None:
+            selection = c.native_current_source_selection(_current_bridge)
+            return selection, helper, helper._material(selection)
+        qualified = helper._material(selection)
+        return (helper, qualified) if with_material else helper
     monkeypatch.setattr(ex, '_publisher', publisher)
     parent = material.world / 'public-records'
     parent.mkdir(mode=0o755)
