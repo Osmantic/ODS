@@ -180,7 +180,7 @@ const CONNECTION_ACTIONS = {
 // Connected-apps status (GET, no body) or one custodian action (POST). The
 // controller builds every body and validates every request; this hop only
 // authenticates the owner, bounds the body and names the action.
-export async function handleConnections(req, res, {ownerKey, request = requestAccessController} = {}) {
+export async function handleConnections(req, res, {ownerKey, request = requestAccessController, platform = process.platform} = {}) {
   const reply = (status, body) => {res.writeHead(status, {'Content-Type':'application/json', 'Cache-Control':'no-store'});res.end(JSON.stringify(body));};
   if (!ownerKey) return reply(503, {error:'access-owner-auth-unavailable'});
   const expected = Buffer.from(`Bearer ${ownerKey}`), supplied = Buffer.from(typeof req.headers.authorization === 'string' ? req.headers.authorization : '');
@@ -193,7 +193,7 @@ export async function handleConnections(req, res, {ownerKey, request = requestAc
     return reply(400, {error:'invalid-request'});
   }
   try {
-    const result = await request({operation:'connection-status'}, {timeout:20000});
+    const result = await request({operation:'connection-status'}, {timeout:platform === 'darwin' ? 92000 : 20000});
     reply(result.status, result.body);
   } catch {reply(503, {error:'connections-unavailable'});}
 }

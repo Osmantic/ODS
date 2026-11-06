@@ -38,7 +38,7 @@ def request_access(operation, request=None, *, settings_data_dir=None):
             raise ValueError('unqualified schedule data directory')
         payload['source'] = {'kind': 'data-directory', 'identity': hashlib.sha256(str(Path(settings_data_dir)).encode()).hexdigest()}
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(20 if operation == "connection-agent-status" else
+        connection.settimeout((95 if sys.platform == 'darwin' else 20) if operation == "connection-agent-status" else
                               1850 if operation in ("model-begin", "installer-source-begin") else 335)
         connection.connect(ACCESS_SOCKET_PATH)
         if operation.startswith("installer-") or operation == "connection-agent-status":

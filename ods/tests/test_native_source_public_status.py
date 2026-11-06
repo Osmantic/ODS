@@ -50,7 +50,7 @@ def native_status(tmp_path, monkeypatch):
         'dispatchReady': False, 'rawStatus': None, 'reason': None}
     def read(selected):
         assert selected is bridge
-        assert bridge.events[-3:] == [('bounded', 20), ('locked',), ('discover',)]
+        assert bridge.events[-3:] == [('bounded', 90), ('locked',), ('discover',)]
         bridge.events.append(('fixed-reader',))
         return dict(view)
     monkeypatch.setattr(source_backend, 'native_status_projection', read)

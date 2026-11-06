@@ -23,7 +23,7 @@ for (const platform of ['linux','darwin']) test(`${platform} status uses the fix
   assert.deepEqual(calls[0].options.env,{PATH:'/usr/bin:/bin'});
   assert.equal(calls[0].options.cwd,'/');
   assert.equal(calls[0].options.maxBuffer,8192);
-  assert.equal(calls[0].options.timeout,22000);
+  assert.equal(calls[0].options.timeout,platform === 'darwin' ? 97000 : 22000);
   assert.equal(calls[0].options.shell,undefined);
 });
 

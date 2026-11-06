@@ -53,7 +53,7 @@ def test_declared_native_read_uses_its_actual_root_transport_and_closed_reply(mo
         calls.append('socket')
         return 200, value
     def proxy(request, **kwargs):
-        assert proxied and request is None and kwargs['path'] == '/v1/connections' and kwargs['timeout'] == 22
+        assert proxied and request is None and kwargs['path'] == '/v1/connections' and kwargs['timeout'] == 96
         calls.append('proxy')
         return 200, value
     monkeypatch.setattr(client, 'request_access', local)

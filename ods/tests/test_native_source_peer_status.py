@@ -41,7 +41,7 @@ def test_native_read_uses_kernel_reader_before_sending_fixed_request():
             patch.object(unix_peer, 'peer_ids', side_effect=peer) as reader:
         assert client.request_access('connection-agent-status') == (200, {})
     reader.assert_called_once_with(connection)
-    assert connection.timeout == 20
+    assert connection.timeout == 95
     assert connection.sent == [b'{"operation": "connection-agent-status"}\n']
 
 

@@ -35,7 +35,11 @@ test('large schedule results use their own bounded socket frame; legacy frame ca
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'schedules-socket-'));
   const socketPath=path.join(dir,'control.sock');
   const body={kind:'runs',taskId:'fixture-job',items:[{timestamp:1,status:'ok',summary:'A'.repeat(100000),summaryTruncated:false,durationMs:1}],offset:0,hasMore:false,nextOffset:null};
-  const server=net.createServer(socket=>socket.once('data',()=>socket.end(JSON.stringify({status:200,body})+'\n')));
+  const server=net.createServer(socket=>{
+    // The client deliberately closes after rejecting an oversized frame.
+    socket.on('error',error=>{if(error.code !== 'EPIPE') throw error;});
+    socket.once('data',()=>socket.end(JSON.stringify({status:200,body})+'\n'));
+  });
   await new Promise(resolve=>server.listen(socketPath,resolve));
   t.after(async()=>{await new Promise(resolve=>server.close(resolve));fs.rmSync(dir,{recursive:true,force:true});});
   const payload={operation:'schedules',request:{action:'runs',id:'fixture-job',offset:0}};
@@ -106,9 +110,9 @@ test('controller timeout and oversized response fail without retry', async t => 
   assert.equal(connections,2);
 });
 
-test('connected-apps status is owner-only, read-only and asks the controller one fixed question', async t => {
+for (const [platform, timeout] of [['linux', 20000], ['darwin', 92000]]) test(`${platform} connected-apps status remains owner-only and read-only`, async t => {
   const calls=[];
-  const server=http.createServer((req,res)=>void handleConnections(req,res,{ownerKey, request:async (value, options)=>{calls.push([value, options]);return {status:200,body:{schemaVersion:1}}}}));
+  const server=http.createServer((req,res)=>void handleConnections(req,res,{ownerKey, platform, request:async (value, options)=>{calls.push([value, options]);return {status:200,body:{schemaVersion:1}}}}));
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   t.after(()=>new Promise(resolve=>server.close(resolve)));
   const url=`http://127.0.0.1:${server.address().port}/v1/connections`;
@@ -122,7 +126,7 @@ test('connected-apps status is owner-only, read-only and asks the controller one
   assert.equal(response.status,200);
   assert.equal(response.headers.get('cache-control'),'no-store');
   assert.deepEqual(await response.json(),{schemaVersion:1});
-  assert.deepEqual(calls,[[{operation:'connection-status'},{timeout:20000}]]);
+  assert.deepEqual(calls,[[{operation:'connection-status'},{timeout}]]);
 });
 
 async function connectionServer(t, answer) {

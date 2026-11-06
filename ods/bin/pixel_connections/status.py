@@ -425,7 +425,9 @@ def _report(*, surface: str, record_path: Path, token_path: Path, status_path: P
 def native_report(bridge, *, now: datetime | None = None) -> dict[str, Any]:
     """Read-only Mac status, with no provisioning or provider request."""
     from . import source_backend
-    with bridge.bounded(20), bridge.locked():
+    # Physical macOS must repeatedly qualify the installed runtime and its
+    # ACLs. Keep the read bounded while allowing that proof to finish on disk.
+    with bridge.bounded(90), bridge.locked():
         bridge.discover()
         observed = source_backend.native_status_projection(bridge)
         paths = observed['paths']

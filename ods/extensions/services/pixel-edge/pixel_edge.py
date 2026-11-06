@@ -1484,7 +1484,9 @@ async def handle_connections(request: web.Request):
         return web.json_response({'error': 'invalid-request'}, status=400)
     try:
         connector, origin = _access_transport()
-        timeout = ClientTimeout(total=21, sock_connect=3)
+        # A native Mac performs a bounded, complete runtime custody scan.
+        timeout = ClientTimeout(total=94 if os.environ.get('PIXEL_ACCESS_TRANSPORT') == 'docker-desktop-host' else 21,
+                                sock_connect=3)
         async with ClientSession(connector=connector, timeout=timeout, trust_env=False) as session:
             async with session.get(origin + '/v1/connections', allow_redirects=False,
                     headers={'Authorization': 'Bearer ' + preview_proxy_token}) as response:

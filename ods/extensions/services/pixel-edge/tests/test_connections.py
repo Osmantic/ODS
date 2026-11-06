@@ -95,6 +95,17 @@ class ConnectionsRelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.headers['Cache-Control'], 'no-store')
         self.assertEqual(self.calls, [('GET', 'Bearer ' + 'o' * 64, '')])
 
+    async def test_status_waits_for_the_native_controller_but_keeps_linux_budget(self):
+        for transport, seconds in (('unix', 21), ('docker-desktop-host', 94)):
+            with self.subTest(transport=transport), patch.dict(os.environ, {'PIXEL_ACCESS_TRANSPORT': 'unix'}):
+                connector, origin = edge._access_transport()
+                with patch.dict(os.environ, {'PIXEL_ACCESS_TRANSPORT': transport}), \
+                        patch.object(edge, '_access_transport', return_value=(connector, origin)), \
+                        patch.object(edge, 'ClientTimeout', wraps=edge.ClientTimeout) as timeout:
+                    async with self.client.get(self.url, headers=OWNER) as response:
+                        self.assertEqual(response.status, 200)
+                    self.assertEqual(timeout.call_args.kwargs['total'], seconds)
+
     async def test_only_safe_optional_managed_configuration_metadata_crosses_edge(self):
         for state in ('configured', 'not-configured', 'unavailable'):
             self.reply = dict(CONNECTED, googleAuth={'mode': 'managed', 'state': state, 'advancedAvailable': True})

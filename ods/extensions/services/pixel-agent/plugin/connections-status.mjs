@@ -56,7 +56,7 @@ export function readConnectionStatus({execute = execFile, platform = process.pla
   if (!['linux','darwin'].includes(platform)) return Promise.reject(Error('Connection status unavailable'));
   return new Promise((resolve,reject) => {
     execute('/usr/bin/python3',['-I',HELPER],{
-      cwd:'/',env:{PATH:'/usr/bin:/bin'},encoding:'utf8',timeout:22000,maxBuffer:8192,signal,
+      cwd:'/',env:{PATH:'/usr/bin:/bin'},encoding:'utf8',timeout:platform === 'darwin' ? 97000 : 22000,maxBuffer:8192,signal,
     },(error,stdout) => {
       try {
         if (error || typeof stdout !== 'string' || Buffer.byteLength(stdout,'utf8') > 8192

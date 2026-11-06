@@ -111,7 +111,7 @@ def test_a_connected_account_is_reported_exactly(client, mock_request, tmp_path)
     assert response.json() == reply
     assert response.headers["cache-control"] == "no-store"
     assert response.json()["connectors"]["google"]["state"] == "connected"
-    mock_request.assert_awaited_once_with("GET", "/v1/pixel/connections", timeout=25)
+    mock_request.assert_awaited_once_with("GET", "/v1/pixel/connections", timeout=100)
 
 
 def test_nothing_connected_is_reported(client, mock_request, tmp_path):

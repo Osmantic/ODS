@@ -270,7 +270,7 @@ async def get_connections_enabled():
 async def _agent_status() -> dict:
     """The validated status, or HTTPException with the owner-facing reason."""
     try:
-        raw = await request_agent_json("GET", "/v1/pixel/connections", timeout=25)
+        raw = await request_agent_json("GET", "/v1/pixel/connections", timeout=100)
     except AgentHTTPError as exc:
         code = exc.status_code if exc.status_code in (400, 409, 503) else 502
         raise HTTPException(code, "Connected apps status is unavailable right now. Try again in a moment.",

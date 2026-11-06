@@ -172,7 +172,8 @@ def request_runtime_connections(*, config):
         from pixel_access_client import request_access
         status, body = request_access('connection-status')
     else:
-        status, body = _request_runtime_controller(None, config=config, path='/v1/connections', timeout=22)
+        status, body = _request_runtime_controller(None, config=config, path='/v1/connections',
+            timeout=96 if system == 'Darwin' else 22)
     if status == 200:
         from pixel_connections.status import validate_public
         try:
