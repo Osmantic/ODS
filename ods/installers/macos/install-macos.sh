@@ -223,6 +223,8 @@ SOURCE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # ── Source libraries ──
 LIB_DIR="${SCRIPT_DIR}/lib"
 source "${LIB_DIR}/constants.sh"
+source "${LIB_DIR}/checkout-source.sh"
+ods_macos_select_checkout_source "$SOURCE_ROOT"
 
 # Any failed install, including a set -e stop, ends with where to get help.
 # The libraries trap EXIT only inside subshells, so this stays in place.
