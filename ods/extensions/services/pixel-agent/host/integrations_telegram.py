@@ -169,7 +169,9 @@ def telegram_reply(content, questions):
     options = {option.casefold() for question in questions for option in question["options"]}
     for question in questions:
         content = content.replace(question["question"], "")
-    lines = [line for line in content.splitlines() if LIST_MARK.sub("", line).strip().casefold() not in options]
+    # Out go the card's choices and list markers left on their own ("1." with no text after it).
+    lines = [line for line in content.splitlines()
+             if not (LIST_MARK.sub("", line).strip().casefold() in options or (line.strip() and not LIST_MARK.sub("", line).strip()))]
     content = "\n".join(lines).strip()
     if not content.strip(" .:?!\"'\n"):
         return questions_text(questions)

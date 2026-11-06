@@ -157,6 +157,9 @@ class Pure(unittest.TestCase):
         self.assertEqual(telegram.telegram_reply(answer, CARD), "Try a chickpea curry tonight.\n\n" + telegram.questions_text(CARD))
         listed = 'Here is a recipe: lentil soup.\nRemember this about you? "The owner is vegetarian."\n1. Save\n2. Don\'t save'
         self.assertEqual(telegram.telegram_reply(listed, CARD), "Here is a recipe: lentil soup.\n\n" + telegram.questions_text(CARD))
+        # Seen on the VM: the model numbered the card's question; its marker is not left behind.
+        self.assertEqual(telegram.telegram_reply('1. Remember this about you? "The owner is vegetarian."\n2.', CARD), telegram.questions_text(CARD))
+        self.assertEqual(telegram.telegram_reply("Done.\n1.\n- ", CARD), "Done.\n\n" + telegram.questions_text(CARD))
         self.assertEqual(telegram.portal_request("b", "telegram-1-1"),
                          {"model": "openclaw/default", "stream": True, "user": "telegram-1-1",
                           "messages": [{"role": "user", "content": "b"}]})
