@@ -1391,7 +1391,7 @@ def test_state_rejects_writable_or_symlink_parent(monkeypatch, mode):
 
 
 def test_controller_bundle_contains_model_modules_and_all_sources_exist():
-    assert {"pixel_model_contract.py", "pixel_model_coordinator.py",
+    assert {"pixel_model_contract.py", "pixel_model_coordinator.py", "pixel_source_upgrade.py",
             "access_release_transaction.py"} <= set(installer.HOST_FILES)
     host = ROOT / "extensions/services/pixel-agent/host"
     for name in installer.HOST_FILES:
@@ -1400,6 +1400,21 @@ def test_controller_bundle_contains_model_modules_and_all_sources_exist():
                            ("pixel_provider", installer.PROVIDER_FILES)):
         for name in names:
             assert (ROOT / "bin" / package / name).is_file(), name
+
+
+def test_packaged_source_guard_imports_and_accepts_absent_reservation(tmp_path):
+    # Isolated Python must find this dependency in the deployed controller,
+    # without relying on the developer checkout's sys.path.
+    module = ROOT / 'bin/pixel_source_upgrade.py'
+    (tmp_path / module.name).write_bytes(module.read_bytes())
+    state = tmp_path / 'state'
+    state.mkdir(mode=0o700)
+    result = subprocess.run([sys.executable, '-I', '-c',
+        'import sys; from types import SimpleNamespace; from pathlib import Path; '
+        'sys.path.insert(0,sys.argv[1]); import pixel_source_upgrade; '
+        'pixel_source_upgrade.guard_fresh_admission(SimpleNamespace(state=Path(sys.argv[2])))',
+        str(tmp_path), str(state)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_missing_source_is_rejected_before_any_write(bundled_deployment, monkeypatch, tmp_path):

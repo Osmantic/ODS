@@ -72,7 +72,7 @@ HOST_FILES = (
     "model_transaction.py", "access_release_transaction.py", "pixel_access_bridge.py", "pixel_gateway_service.py",
     "pixel_access_client.py", "pixel_access_reconcile.py", "pixel_model_transition.py",
     "pixel_access_protocol.py", "pixel_macos_custody.py", "pixel_macos_process.py",
-    "pixel_model_contract.py", "pixel_model_coordinator.py", "pixel_macos_policy.py",
+    "pixel_model_contract.py", "pixel_model_coordinator.py", "pixel_source_upgrade.py", "pixel_macos_policy.py",
     "pixel_schedules.py", "scheduled_tasks_owner.py", "scheduled_tasks_gateway.mjs",
 )
 SOURCE_HOST_FILES = ('connection_transaction.py', 'native_mcp_owner.py', 'native_mcp_oauth.mjs', 'pixel_connection_agent_status.py')
