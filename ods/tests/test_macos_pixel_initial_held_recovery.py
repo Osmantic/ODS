@@ -70,7 +70,7 @@ def test_exact_retained_hold_is_rechecked_without_changing_receipts(held, phase)
 
 @pytest.mark.parametrize('fault', ['wrong-kind', 'wrong-phase', 'wrong-project', 'wrong-source',
     'wrong-config', 'wrong-revision', 'wrong-token', 'unsafe-mode', 'journal-changed',
-    'released-during-proof', 'active-stream', 'pointer-changed'])
+    'released-during-proof', 'active-stream', 'boolean-stream', 'pointer-changed'])
 def test_unbound_or_changed_hold_fails_closed(held, monkeypatch, fault):
     if fault == 'wrong-kind': held.record['operation']['kind'] = 'finalize-clients'
     elif fault == 'wrong-phase': held.record['phase'] = 'releasing'
@@ -95,6 +95,10 @@ def test_unbound_or_changed_hold_fails_closed(held, monkeypatch, fault):
         original = installer._migration_edge_request
         monkeypatch.setattr(installer, '_migration_edge_request',
             lambda *args: dict(original(*args), streams=1))
+    elif fault == 'boolean-stream':
+        original = installer._migration_edge_request
+        monkeypatch.setattr(installer, '_migration_edge_request',
+            lambda *args: dict(original(*args), streams=False))
     elif fault == 'pointer-changed':
         original = installer._migration_edge_request
         def moved(*args):

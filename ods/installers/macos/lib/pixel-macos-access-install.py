@@ -4998,7 +4998,8 @@ def _verify_initial_retained_hold(plan, container, observed):
             raise InstallError('native-initial-admission-not-ready')
         confirmed = _migration_edge_request(plan, container, 'acquire', binding)
         if (type(confirmed) is not dict or confirmed.get('capability') != 'available'
-                or confirmed.get('phase') != 'held' or confirmed.get('streams') != 0
+                or confirmed.get('phase') != 'held' or type(confirmed.get('streams')) is not int
+                or confirmed['streams'] != 0
                 or confirmed.get('admission_blocked') is not True
                 or confirmed.get('revision') != binding['revision']
                 or private_directory(preparation) != preparation_id or private_directory(directory) != directory_id
@@ -5065,7 +5066,8 @@ def verify_initial_install(plan):
     def admission_ready():
         value = _migration_edge_request(plan, edge['container'])
         if (value.get('capability') == 'available' and value.get('phase') == 'held'
-                and value.get('streams') == 0 and value.get('admission_blocked') is True):
+                and type(value.get('streams')) is int and value['streams'] == 0
+                and value.get('admission_blocked') is True):
             _verify_initial_retained_hold(plan, edge['container'], value)
         elif (value.get('capability') != 'available' or value.get('phase') != 'idle'
                 or value.get('admission_blocked') is not False):
