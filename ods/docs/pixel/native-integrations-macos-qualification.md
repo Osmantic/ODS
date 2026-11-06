@@ -156,6 +156,14 @@ It resumes owner finalization; it cannot activate a prepare-only result or
 recover an unrelated deployment. The installed-source `update-pixel` route
 continues to update the native runtime from already installed public code.
 
+An initial install can also retain an owner-side `protected-activation` error
+after the protected services actually completed. The explicit initial-install
+recovery accepts that receipt only for readback: it must prove the exact
+protected installation and Source state, check the selected client routes, and
+repeat the protected proof before publishing the owner selection. An incomplete
+or changed protected activation still refuses recovery; the original receipts
+are retained and protected activation is never replayed by this path.
+
 After a successful update:
 
 ```sh

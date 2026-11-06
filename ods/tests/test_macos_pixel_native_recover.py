@@ -167,10 +167,13 @@ def retained(tmp_path, monkeypatch):
     return preparation, receipt, activation
 
 
+@pytest.mark.parametrize('phase', ['final-health', 'protected-activation'])
 @pytest.mark.parametrize('fault', [None, 'proof', 'reproof', 'health', 'client', 'route',
     'changed', 'foreign-selection', 'legacy-host', 'lock-link', 'ingress-refresh'])
-def test_recovery_preserves_failed_attempt_and_never_reactivates(retained, monkeypatch, tmp_path, fault):
+def test_recovery_preserves_failed_attempt_and_never_reactivates(retained, monkeypatch, tmp_path, fault, phase):
     preparation, receipt, activation = retained
+    activation = dict(activation, phase=phase)
+    (preparation / 'activation.json').write_text(json.dumps(activation))
     originals = {name: (preparation / name).read_bytes() for name in ('preparation.json', 'activation.json')}
     destination = preparation / 'selection-update.json'
     if fault == 'foreign-selection':
@@ -187,7 +190,7 @@ def test_recovery_preserves_failed_attempt_and_never_reactivates(retained, monke
         events.append('proof')
         proof_count += 1
         if fault == 'changed':
-            (preparation / 'activation.json').write_text(json.dumps(dict(activation, phase='protected-activation')))
+            (preparation / 'activation.json').write_text(json.dumps(dict(activation, phase='infrastructure')))
         return dict(status='unknown' if fault == 'proof' or fault == 'reproof' and proof_count == 2 else 'active',
                     runtimeDigest=receipt['runtimeDigest'], serviceDigest=receipt['serviceDigest'])
     def health(run):
@@ -250,9 +253,9 @@ def test_recovery_preserves_failed_attempt_and_never_reactivates(retained, monke
         assert (preparation / name).read_bytes() == value
 
 
-@pytest.mark.parametrize('field,value', [('phase', 'protected-activation'), ('phase', 'infrastructure'),
+@pytest.mark.parametrize('field,value', [('phase', 'infrastructure'),
     ('status', 'activating'), ('requiresRecovery', False), ('runtimeDigest', 'd' * 64), ('schemaVersion', True)])
-def test_only_matching_late_initial_failures_can_resume(retained, field, value):
+def test_only_matching_initial_failures_can_resume(retained, field, value):
     _, receipt, activation = retained
     with pytest.raises(ValueError):
         module.selection(receipt, dict(activation, **{field: value}))

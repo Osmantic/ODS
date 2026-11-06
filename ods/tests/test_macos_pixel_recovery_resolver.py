@@ -67,7 +67,8 @@ def snapshot(root):
 
 
 @pytest.mark.parametrize('phase,cache,replay', [('final-health', False, False),
-    ('webui-routing', False, False), ('final-health', True, False), ('final-health', True, True)])
+    ('webui-routing', False, False), ('protected-activation', False, False),
+    ('final-health', True, False), ('final-health', True, True)])
 def test_recovery_resolves_without_modifying_old_install(retained, phase, cache, replay):
     directory = retained / 'data/pixel-native/preparation'
     path = directory / 'activation.json'
@@ -91,7 +92,11 @@ def test_recovery_resolves_without_modifying_old_install(retained, phase, cache,
     assert (retained / '.compose-flags').exists() is cache
 
 
-def test_default_resolvers_still_refuse_failed_selection(retained):
+@pytest.mark.parametrize('phase', ['final-health', 'protected-activation'])
+def test_default_resolvers_still_refuse_failed_selection(retained, phase):
+    activation = retained / 'data/pixel-native/preparation/activation.json'
+    value = json.loads(activation.read_text())
+    activation.write_text(json.dumps(dict(value, phase=phase)))
     with pytest.raises(subprocess.CalledProcessError) as error:
         finalize.compose_flags(retained, environment())
     assert error.value.returncode == 73
@@ -110,7 +115,7 @@ def test_recovery_resolver_refuses_uncertain_selection(retained, fault):
     path = directory / ('preparation.json' if fault in ('home', 'ref') else 'activation.json')
     value = json.loads(path.read_text())
     changes = {'digest': ('serviceDigest', 'd' * 64), 'status': ('status', 'activating'),
-               'phase': ('phase', 'protected-activation'), 'home': ('home', '/wrong'),
+               'phase': ('phase', 'infrastructure'), 'home': ('home', '/wrong'),
                'ref': ('pixelSourceRef', 'not-an-exact-ref')}
     if fault in changes:
         key, changed = changes[fault]
