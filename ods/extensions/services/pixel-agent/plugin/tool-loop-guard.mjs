@@ -9248,6 +9248,11 @@ export function createToolLoopGuard({
       return {block:true,blockReason:'Your team role is read-only. Do not create, edit, execute commands, publish, or operate services. Review the supplied evidence using read/search tools if needed, then return your findings as text. The Builder owns implementation and test execution.'};
     }
     if (state?.ownerQuestions) return {block:true, blockReason:'Waiting for the owner to answer the clarification questions. End this turn without further tools; never choose answers for the owner.'};
+    // The memory card already asks the owner; a question of the model's own about the same fact
+    // would take its place (e2e: "Save the fact that…? Yes, save it / Don't save it").
+    if (state?.memoryQuestions && delegatedName === 'pixel_ods_ask_user') {
+      return {block:true, blockReason:'The owner already has a card below your reply asking whether to remember that fact. Do not ask about it again; answer the owner\'s message in plain text.'};
+    }
     if (state?.progressBudget.exhausted) {
       return { block: true, blockReason: RUN_PROGRESS_STOP_REASON };
     }

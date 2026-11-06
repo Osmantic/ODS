@@ -41,8 +41,8 @@ const ANSWERED = {
 };
 
 // Chats whose current turn proposes no memory, with why: 'answered' (the turn applied the owner's
-// answer to a memory card), 'reminder' (the owner asked for a reminder) or 'card' (this turn
-// already shows a memory card; another fact waits in Settings). Shared across plugin
+// answer to a memory card), 'reminder' (the owner asked for a reminder) or 'card:<id>' (this turn
+// already shows the card of that pending fact; another fact waits in Settings). Shared across plugin
 // instances (the prompt hook and the tool can come from different ones), as the scheduler is.
 const NO_PROPOSAL_TURNS = Symbol.for('ods.pixel-ods.memoryNoProposalTurns');
 export function noProposalTurns(shared = globalThis) {

@@ -196,8 +196,12 @@ test('a second fact in the same reply waits in Settings, and only the first gets
   const second = await tool.execute('2', {action: 'remember', text: 'The owner lives in Lisbon.'});
   assert.equal(second.details.status, 'done');
   assert.equal(second.details.questions, undefined);
-  assert.match(second.content[0].text, /Settings → Portal integrations → Memory/);
+  assert.match(second.content[0].text, /^Not saved yet: .*Settings → Portal integrations → Memory/);
   assert.equal(sent.filter(item => item.payload.action === 'memory-propose').length, 2, 'the second fact still waits for the owner');
+  // The first fact again (a retried call): its card is already there, and nothing reads as saved.
+  const again = await tool.execute('2b', {action: 'remember', text: 'The owner is vegetarian.'});
+  assert.equal(again.details.status, 'done');
+  assert.match(again.content[0].text, /already has a card below your reply.*nothing is saved until they answer/);
   // The next turn may show a card again.
   await createMemoryHooks({submit: async () => ({ok: true, text: '', enabled: true, quiet: false}), shared}).promptContext('Hi', SESSION);
   assert.equal((await tool.execute('3', {action: 'remember', text: 'The owner likes tea.'})).details.status, 'awaiting_user');
@@ -244,6 +248,17 @@ test('a memory card rides with the reply: the answer is delivered, with the card
     {...bothCtx, toolCallId: 'ask'});
   assert.deepEqual(both.deliveryVerificationForRun(bothCtx.runId).questions, parseQuestions(ask));
   assert.equal(both.beforeToolCall({toolName: 'web_search', params: {query: 'x'}}, bothCtx).block, true);
+  // After a memory card, the model may not ask the owner about it again with a card of its own.
+  const again = createToolLoopGuard(), againCtx = {agentId: 'pixel', runId: 'again', sessionId: 'session'};
+  again.observeRun(againCtx, 'pixel', {prompt: 'I am vegetarian.'});
+  again.afterToolCall({toolName: 'pixel_ods_notes', result}, {...againCtx, toolCallId: 'remember'});
+  for (const call of [{toolName: 'pixel_ods_ask_user', params: {questions: ask}},
+    {toolName: 'tool_call', params: {id: 'openclaw:pixel-ods:pixel_ods_ask_user', args: {questions: ask}}}]) {
+    const refused = again.beforeToolCall(call, againCtx);
+    assert.equal(refused?.block, true, call.toolName);
+    assert.match(refused.blockReason, /already has a card below your reply/);
+  }
+  assert.notEqual(again.beforeToolCall({toolName: 'web_search', params: {query: 'x'}}, againCtx)?.block, true);
 });
 
 test('the same card answer in a later run is applied again', async () => {

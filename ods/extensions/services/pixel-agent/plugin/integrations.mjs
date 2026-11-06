@@ -115,12 +115,17 @@ async function remember(submit, params, sessionKey, signal, shared) {
   if (!reply?.ok) return text(reply?.message || 'The memory was not saved.', {status: 'refused', code: reply?.error}, true);
   if (reply.status === 'known') return text(`Already remembered: ${reply.text}`, {status: 'done'});
   if (reply.status === 'saved') return text(`Remembered: ${reply.text}`, {status: 'done'});
-  if (blocked === 'card') {
-    // A reply shows one card; the next fact waits in Settings.
-    return text(`Also waiting for the owner: "${reply.text}". They can decide in Settings → Portal integrations → Memory; mention that, not a card.`,
+  if (blocked === `card:${reply.id}`) {
+    // The same fact again, often a retried call: its card is already there.
+    return text(`The owner already has a card below your reply for "${reply.text}"; nothing is saved until they answer it. Answer their message in plain text.`,
       {status: 'done'});
   }
-  noProposalTurns(shared).set(session, 'card');
+  if (blocked?.startsWith('card:')) {
+    // A reply shows one card; the next fact waits in Settings.
+    return text(`Not saved yet: "${reply.text}" waits for the owner in Settings → Portal integrations → Memory; mention that, not a card.`,
+      {status: 'done'});
+  }
+  noProposalTurns(shared).set(session, `card:${reply.id}`);
   const questions = [{id: MEMORY_QUESTION_ID, question: memoryQuestion(reply.text), options: Object.keys(MEMORY_CHOICES)}];
   return text(`${questions[0].question}\n\nThe owner decides on a card shown below your reply; never answer it for them. Now answer the owner's message, using other tools only if it needs them.`,
     {status: 'awaiting_user', questions});
