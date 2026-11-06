@@ -620,3 +620,49 @@ it('a refresh answer older than the page\'s own save is dropped', async () => {
     vi.useRealTimers()
   }
 })
+
+it('after a Reload with edits, typing them back leaves nothing unsaved', async () => {
+  fakeService()
+  await openTile('ntfy')
+  fireEvent.change(screen.getByLabelText('Topic'), { target: { value: 'family' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+  expect(await screen.findByText(/Your unsaved changes are kept/)).toBeInTheDocument()
+  expect(unsavedBar()).not.toBeNull()
+  fireEvent.change(screen.getByLabelText('Topic'), { target: { value: 'portal' } })
+  expect(unsavedBar()).toBeNull()
+  expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+})
+
+it('a first load that failed stops showing its error once a refresh loads the page', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn(async () => (++calls === 1 ? response({ detail: 'Portal integrations are unavailable. Reload to try again.' }, 503) : response(view()))))
+    render(createElement(PortalIntegrationsSettings))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Portal integrations are unavailable.')
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(await screen.findByRole('list', { name: 'Integrations list' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('a failed app test stops showing once the settings are saved or reloaded', async () => {
+  fakeService()
+  await openTile('Paperless-ngx')
+  const card = await screen.findByRole('listitem', { name: 'Documents' })
+  fireEvent.click(within(card).getByLabelText('Let Portal search and read my documents'))
+  fireEvent.change(within(card).getByLabelText('API token'), { target: { value: 'wrong' } })
+  fireEvent.click(within(card).getByRole('button', { name: 'Test Paperless-ngx' }))
+  expect(await within(card).findByText('Paperless-ngx refused the token or password.')).toBeInTheDocument()
+  // A new token, saved: the old refusal is no longer about these settings.
+  fireEvent.change(within(card).getByLabelText('API token'), { target: { value: 'right' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+  await screen.findByText('Saved.')
+  expect(within(card).queryByText('Paperless-ngx refused the token or password.')).toBeNull()
+  fireEvent.click(within(card).getByRole('button', { name: 'Test Paperless-ngx' }))
+  expect(await within(card).findByText('Paperless-ngx refused the token or password.')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+  await waitFor(() => expect(within(card).queryByText('Paperless-ngx refused the token or password.')).toBeNull())
+})

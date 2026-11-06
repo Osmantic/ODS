@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 // "Don't remember this chat": Portal neither learns from this chat nor uses its memories in it.
 // The integrations service enforces it; this browser remembers the choice to show it again.
@@ -27,7 +27,9 @@ export default function PortalChatMemory({ chatId }) {
   const [quiet, setQuiet] = useState(() => readQuiet().includes(chatId))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  useEffect(() => { setQuiet(readQuiet().includes(chatId)); setError('') }, [chatId])
+  // The chat on screen now: an answer for a chat the owner has left is kept, not shown on this one.
+  const shown = useRef(chatId)
+  useEffect(() => { shown.current = chatId; setQuiet(readQuiet().includes(chatId)); setError('') }, [chatId])
 
   const change = async next => {
     setBusy(true); setError('')
@@ -38,9 +40,9 @@ export default function PortalChatMemory({ chatId }) {
       const body = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Memory is unavailable. Try again.')
       writeQuiet(chatId, next)
-      setQuiet(next)
+      if (shown.current === chatId) setQuiet(next)
     } catch (failure) {
-      setError(failure.message)
+      if (shown.current === chatId) setError(failure.message)
     } finally {
       setBusy(false)
     }

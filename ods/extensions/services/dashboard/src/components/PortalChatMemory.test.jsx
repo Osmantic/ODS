@@ -44,3 +44,16 @@ it('works when the browser refuses storage', async () => {
   fireEvent.click(screen.getByRole('switch', { name: 'Don’t remember this chat' }))
   await waitFor(() => expect(screen.getByRole('switch', { name: 'Don’t remember this chat' })).toBeChecked())
 })
+
+it('an answer for a chat the owner has left is kept for that chat, not shown on the new one', async () => {
+  let release
+  vi.stubGlobal('fetch', vi.fn(() => new Promise(resolve => { release = () => resolve(response({})) })))
+  const { rerender } = render(createElement(PortalChatMemory, { chatId: 'chat-1' }))
+  fireEvent.click(screen.getByRole('switch', { name: 'Don’t remember this chat' }))
+  rerender(createElement(PortalChatMemory, { chatId: 'chat-2' }))
+  release()
+  await waitFor(() => expect(screen.getByRole('switch', { name: 'Don’t remember this chat' })).toBeEnabled())
+  expect(screen.getByRole('switch', { name: 'Don’t remember this chat' })).not.toBeChecked()
+  rerender(createElement(PortalChatMemory, { chatId: 'chat-1' }))
+  expect(screen.getByRole('switch', { name: 'Don’t remember this chat' })).toBeChecked()
+})

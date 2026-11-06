@@ -162,8 +162,8 @@ export function rebaseDraft(draft, base, latest) {
     return [rebaseRecord(mine.get(server.id), from.get(server.id), server)]
   })
   const added = draft.servers.filter(server => !from.has(server.id) && !now.has(server.id))
-  // Every other part (notifications, notes, apps) field by field.
-  const parts = Object.keys(latest).filter(key => key !== 'servers')
-    .map(key => [key, rebaseRecord(draft[key] ?? {}, base[key], latest[key])])
-  return { ...Object.fromEntries(parts), servers: [...servers, ...added] }
+  // Every other part (notifications, notes, apps) field by field. In the newer draft's key order:
+  // sameDraft compares drafts as JSON, so another order would never equal the saved settings.
+  return Object.fromEntries(Object.keys(latest).map(key => [key, key === 'servers'
+    ? [...servers, ...added] : rebaseRecord(draft[key] ?? {}, base[key], latest[key])]))
 }

@@ -221,6 +221,8 @@ export default function PortalIntegrationsSettings() {
           refreshError.current = ''
           setError(previous => (previous === failed ? '' : previous))
         }
+        // The first load failed and this refresh loads the page: that error is over.
+        if (!baseRef.current) setError('')
         show(result, { keepDraft: dirtyRef.current })
         if (dirtyRef.current && result.settings.revision !== baseRef.current?.revision) setNotice(CHANGED_ELSEWHERE)
       }).catch(failure => { refreshError.current = failure.message; setError(failure.message) })
@@ -242,8 +244,10 @@ export default function PortalIntegrationsSettings() {
   const ids = idsForSave(draft, new Set(base.mcp.servers.map(server => server.id)))
   const saveStep = () => ['save', { expectedRevision: base.revision, ...renameServers(settingsFrom(draft), typedSecrets, ids) }]
   const withSave = steps => (dirty ? [saveStep(), ...steps] : steps)
-  const save = () => run([saveStep()], 'Saved.')
-  const discard = () => { setBase(view.settings); setDraft(draftFrom(view.settings)); setTyped(NO_SECRETS); setError(''); setNotice('Changes discarded.') }
+  // A Test or digest result is about the settings it ran with; saving, discarding or reloading ends it.
+  const save = () => { setAppResult(null); return run([saveStep()], 'Saved.') }
+  const discard = () => { setAppResult(null); setBase(view.settings); setDraft(draftFrom(view.settings)); setTyped(NO_SECRETS); setError(''); setNotice('Changes discarded.') }
+  const reload = () => { setAppResult(null); return run([[null]], dirty ? 'Reloaded. Your unsaved changes are kept on top of the newest settings.' : '', { rebase: dirty }) }
   const setNotifications = patch => setDraft(previous => ({ ...previous, notifications: { ...previous.notifications, ...patch } }))
   const setNotes = patch => setDraft(previous => ({ ...previous, notes: { ...previous.notes, ...patch } }))
   const setServer = (id, patch) => setDraft(previous => ({ ...previous, servers: previous.servers.map(server => server.id === id ? { ...server, ...patch } : server) }))
@@ -281,7 +285,7 @@ export default function PortalIntegrationsSettings() {
         <div className="min-w-0"><h2 id="portal-integrations-title" className="text-lg font-semibold">Portal integrations</h2>
           {!open && <p className="text-sm text-theme-text-muted">Connect Portal to the apps and services you use. Passwords and tokens stay on this computer.</p>}</div>
         <div className="flex gap-2">
-          <button className={buttonStyle} disabled={busy} onClick={() => run([[null]], dirty ? 'Reloaded. Your unsaved changes are kept on top of the newest settings.' : '', { rebase: dirty })}>Reload</button>
+          <button className={buttonStyle} disabled={busy} onClick={reload}>Reload</button>
           <button className={buttonStyle} disabled={busy || !dirty} onClick={save}>Save changes</button>
         </div>
       </div>
