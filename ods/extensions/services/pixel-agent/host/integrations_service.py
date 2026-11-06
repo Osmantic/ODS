@@ -1177,9 +1177,14 @@ if __name__ == "__main__":
         raise SystemExit("usage: integrations_service.py serve|health AGENT_SOCKET STATE_DIR")
     if sys.argv[1] == "health":
         request = {"schemaVersion": 1, "action": "get"}
-        owner = (native_owner_request(pathlib.Path(sys.argv[3]) / OWNER_SOCKET, request, timeout=5)
-                 if sys.platform == "darwin" else client(pathlib.Path(sys.argv[3]) / OWNER_SOCKET, request, timeout=5))
-        agent = client(sys.argv[2], {"schemaVersion": 1, "action": "mcp-tools"}, timeout=5)
+        try:
+            owner = (native_owner_request(pathlib.Path(sys.argv[3]) / OWNER_SOCKET, request, timeout=5)
+                     if sys.platform == "darwin" else client(pathlib.Path(sys.argv[3]) / OWNER_SOCKET, request, timeout=5))
+            agent = client(sys.argv[2], {"schemaVersion": 1, "action": "mcp-tools"}, timeout=5)
+        except (FileNotFoundError, ConnectionRefusedError):
+            # A freshly bootstrapped service may not have opened both sockets.
+            # The installer may retry this read-only probe within its deadline.
+            raise SystemExit(75)
         if owner.get("ok") is not True or agent.get("ok") is not True or type(agent.get("servers")) is not list:
             raise SystemExit("native integrations are not ready")
         print(json.dumps({"schemaVersion": 1, "status": "ready", "owner": True, "agent": True}))

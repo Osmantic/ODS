@@ -16,6 +16,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 
 
 SOURCES = frozenset({"integrations_common.py", "integrations_mcp.py", "integrations_notes.py",
@@ -521,15 +522,24 @@ def readiness(*, owner, python, program_root='/usr/local/libexec/ods-pixel-servi
     entry = owner_entry(owner)
     script = Path(program_root) / 'integrations_service.py'
     operations_helpers().custody.protected_bytes(str(script))
-    result = subprocess.run([str(python), '-I', '-B', str(script), 'health',
-        str(RUNTIME / 'control.sock'), str(state_directory(entry))],
-        user=entry.pw_uid, group=entry.pw_gid, extra_groups=[], cwd='/',
-        env={'PATH': '/usr/bin:/bin', 'HOME': entry.pw_dir}, stdin=subprocess.DEVNULL,
-        capture_output=True, timeout=15)
-    try:
-        value = json.loads(result.stdout) if result.returncode == 0 else None
-    except ValueError:
-        value = None
-    if value != {'schemaVersion': 1, 'status': 'ready', 'owner': True, 'agent': True}:
-        raise ValueError('native-integrations-readiness-failed')
-    return True
+    deadline = time.monotonic() + 20
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        result = subprocess.run([str(python), '-I', '-B', str(script), 'health',
+            str(RUNTIME / 'control.sock'), str(state_directory(entry))],
+            user=entry.pw_uid, group=entry.pw_gid, extra_groups=[], cwd='/',
+            env={'PATH': '/usr/bin:/bin', 'HOME': entry.pw_dir}, stdin=subprocess.DEVNULL,
+            capture_output=True, timeout=min(15, remaining))
+        if result.returncode == 75:
+            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+            continue
+        try:
+            value = json.loads(result.stdout) if result.returncode == 0 else None
+        except ValueError:
+            value = None
+        if value == {'schemaVersion': 1, 'status': 'ready', 'owner': True, 'agent': True}:
+            return True
+        break
+    raise ValueError('native-integrations-readiness-failed')

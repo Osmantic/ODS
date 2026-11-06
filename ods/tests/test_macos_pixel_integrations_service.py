@@ -120,7 +120,7 @@ def test_readiness_runs_only_bounded_owner_get_and_agent_inventory(world, monkey
     args, options = calls[0]
     assert args[-3:] == ['health', '/private/var/lib/ods-pixel-integrations/control.sock', '/Users/fixture/.config/ods/pixel-integrations']
     assert options['user'] == 501 and options['group'] == 20 and options['extra_groups'] == []
-    assert options['timeout'] == 15 and options['env'] == {'PATH': '/usr/bin:/bin', 'HOME': '/Users/fixture'}
+    assert 0 < options['timeout'] <= 15 and options['env'] == {'PATH': '/usr/bin:/bin', 'HOME': '/Users/fixture'}
     assert all(name not in ' '.join(args) for name in ('notify', 'discover', 'decide', 'send-digest'))
 
 
@@ -128,6 +128,29 @@ def test_readiness_runs_only_bounded_owner_get_and_agent_inventory(world, monkey
 def test_readiness_fails_closed_for_partial_or_corrupt_results(world, monkeypatch, output):
     monkeypatch.setattr(native, 'operations_helpers', lambda: SimpleNamespace(custody=SimpleNamespace(protected_bytes=lambda *args, **kwargs: b'')))
     monkeypatch.setattr(native.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=output))
+    with pytest.raises(ValueError, match='readiness-failed'):
+        native.readiness(owner='fixture', python='/Library/Developer/Python')
+
+
+def test_readiness_retries_only_transient_socket_startup(world, monkeypatch):
+    monkeypatch.setattr(native, 'operations_helpers', lambda: SimpleNamespace(custody=SimpleNamespace(protected_bytes=lambda *args, **kwargs: b'')))
+    monkeypatch.setattr(native.time, 'sleep', lambda _seconds: None)
+    calls = []
+    def run(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1: return SimpleNamespace(returncode=75, stdout=b'')
+        return SimpleNamespace(returncode=0, stdout=b'{"schemaVersion":1,"status":"ready","owner":true,"agent":true}')
+    monkeypatch.setattr(native.subprocess, 'run', run)
+    assert native.readiness(owner='fixture', python='/Library/Developer/Python')
+    assert len(calls) == 2
+
+
+def test_readiness_bounds_transient_retry(world, monkeypatch):
+    monkeypatch.setattr(native, 'operations_helpers', lambda: SimpleNamespace(custody=SimpleNamespace(protected_bytes=lambda *args, **kwargs: b'')))
+    ticks = iter([0, 0, 19.9, 20.1])
+    monkeypatch.setattr(native.time, 'monotonic', lambda: next(ticks))
+    monkeypatch.setattr(native.time, 'sleep', lambda _seconds: None)
+    monkeypatch.setattr(native.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=75, stdout=b''))
     with pytest.raises(ValueError, match='readiness-failed'):
         native.readiness(owner='fixture', python='/Library/Developer/Python')
 
