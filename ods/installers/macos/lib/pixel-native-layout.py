@@ -4,6 +4,7 @@ This does not start jobs, grant broker access, or expose a network listener.
 The protected installer generates the actual Seatbelt policy during planning.
 """
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -82,12 +83,20 @@ def prepare(*, candidate, home, node, runtime, docker, docker_socket, ods_source
             or not stat.S_ISSOCK(docker_socket.stat().st_mode)):
         raise ValueError('native-executable-and-docker-socket-required')
     compose_plugin_dir = compose_plugin_directory(docker, owner.pw_dir)
-    receipt = config.private_json(candidate / 'candidate.json')
+    receipt_body = config.service_snapshot(candidate, 'candidate.json', private=True)
+    receipt = json.loads(receipt_body)
     config_body = config.service_snapshot(candidate, 'openclaw.json', private=True)
     document = json.loads(config_body)
     if (type(receipt) is not dict or receipt.get('status') != 'staged'
             or receipt.get('requiresServiceQualification') is not True):
         raise ValueError('native-staged-candidate-required')
+    hashes = receipt.get('connectionSidefiles')
+    if type(hashes) is not dict or set(hashes) != {'gateway.env', 'onboarding.json'}:
+        raise ValueError('native-connection-sidefile-producer-required')
+    sidefiles = {name: config.service_snapshot(candidate, name, private=True) for name in hashes}
+    if any(len(body) > 131072 or hashlib.sha256(body).hexdigest() != hashes[name]
+           for name, body in sidefiles.items()):
+        raise ValueError('native-connection-sidefile-producer-changed')
     selected = [item for item in document['agents']['list'] if item.get('id') == 'pixel']
     workspace = home / '.openclaw/workspace-pixel'
     bind = str(home / '.openclaw/.ods-exec-control') + ':/run/pixel-ods-control:ro'
@@ -118,6 +127,9 @@ def prepare(*, candidate, home, node, runtime, docker, docker_socket, ods_source
                 path = Path(directory) / name
                 path.chmod(0o700 if path.stat().st_mode & 0o111 else 0o600)
         write_private(staged / '.openclaw/openclaw.json', config_body)
+        write_private(staged / '.openclaw/candidate.json', receipt_body)
+        for name, body in sidefiles.items():
+            write_private(staged / '.openclaw' / name, body)
         with (staged / '.openclaw/.ods-exec-control/cancellable-exec.sh').open('xb') as output:
             if config.bundle._file(wrapper.parent, wrapper.name, output) != wrapper_record:
                 raise ValueError('native-exec-wrapper-changed')
@@ -152,7 +164,10 @@ def prepare(*, candidate, home, node, runtime, docker, docker_socket, ods_source
         write_private(staged / 'layout.json', (json.dumps({'schemaVersion': 1,
             'status': 'staged', 'requiresServiceQualification': True,
             'pixelSourceRef': receipt['pixelSourceRef'], 'gatewayPort': port}) + '\n').encode())
-        if config.service_snapshot(candidate, 'openclaw.json', private=True) != config_body or os.path.lexists(home):
+        if (config.service_snapshot(candidate, 'openclaw.json', private=True) != config_body
+                or config.service_snapshot(candidate, 'candidate.json', private=True) != receipt_body
+                or any(config.service_snapshot(candidate, name, private=True) != body
+                       for name, body in sidefiles.items()) or os.path.lexists(home)):
             raise ValueError('native-layout-input-changed')
         os.rename(staged, home)
     return home / 'gateway.plist'
