@@ -54,7 +54,7 @@ import PortalTurnUndo from '../components/PortalTurnUndo'
 import useProjectRestoreOptions from '../hooks/useProjectRestoreOptions'
 import {isProviderRateLimit, isAdmissionRejected, isBusyRefusal, busyRefusalText, portalResponseFailure} from '../lib/portalResponseFailure'
 import {publicationDisplayText} from '../lib/publicationDisplay'
-import {isQuestionAnswer, parseQuestionsFrame, questionMetadata} from '../lib/pixelQuestions'
+import {isQuestionAnswer, onlyQuestions, parseQuestionsFrame, questionMetadata} from '../lib/pixelQuestions'
 import PixelTurnNavigation from '../components/PixelTurnNavigation'
 import PixelSnapshotChanges from '../components/PixelSnapshotChanges'
 import PortalDeliveredArtifacts from '../components/PortalDeliveredArtifacts'
@@ -2382,9 +2382,9 @@ export default function Pixel({ systemStatus = null }) {
               {message.role === 'assistant' && message.content ? (
                 <>
                   {message.publication && <PixelSnapshotChanges preview={message.publication} before={message.beforePublication} variant="summary" onPreview={()=>openPublication(message.publication,'preview')} onReview={path=>openPublication(message.publication,'review',path)}/>}
-                  {!message.questions && (shownContent || message.status==='streaming') && (message.status==='error' ? <PortalResponseError content={shownContent}/> : <PortalStreamingText key={message.revealResponse || chatIdRef.current} active={message.status==='streaming'} animate={Boolean(message.revealResponse) || message.status==='streaming'} instant={['stopped','recovering','unconfirmed'].includes(message.status)} onReveal={chatScroll.onContentResize} components={MARKDOWN_COMPONENTS} artifacts={message.role==='assistant' && message.status==='done' ? message.artifacts : null}>{shownContent}</PortalStreamingText>)}
+                  {(!message.questions || !onlyQuestions(shownContent, message.questions)) && (shownContent || message.status==='streaming') && (message.status==='error' ? <PortalResponseError content={shownContent}/> : <PortalStreamingText key={message.revealResponse || chatIdRef.current} active={message.status==='streaming'} animate={Boolean(message.revealResponse) || message.status==='streaming'} instant={['stopped','recovering','unconfirmed'].includes(message.status)} onReveal={chatScroll.onContentResize} components={MARKDOWN_COMPONENTS} artifacts={message.role==='assistant' && message.status==='done' ? message.artifacts : null}>{shownContent}</PortalStreamingText>)}
                   <OperationsApprovalCard content={message.content} />
-                  {!message.questions && message.status!=='streaming' && <PortalResponseActions content={displayedContent}/>}
+                  {(!message.questions || !onlyQuestions(shownContent, message.questions)) && message.status!=='streaming' && <PortalResponseActions content={displayedContent}/>}
                 </>
               ) : (
                 <span className="break-words whitespace-pre-wrap">{message.content}</span>

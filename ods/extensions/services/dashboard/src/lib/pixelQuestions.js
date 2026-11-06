@@ -37,3 +37,19 @@ export function isQuestionAnswer(messages,index) {
   const answer=answersMessage(previous.questions,previous.questionDraft)
   return Boolean(answer && (message.content===answer || previous.task?.goal && message.content===continueGoal(messages,index-1,answer)))
 }
+
+const LIST_MARK = /^\s*(?:[-*•]|\d+[.)])?\s*/
+// Whether a reply only writes out its card (a clarification's text is the card itself) rather than
+// carrying an answer of its own beside it (a memory card below Portal's answer): its questions,
+// their choices and list markers taken out, nothing but punctuation is left.
+export function onlyQuestions(content, questions) {
+  if (typeof content !== 'string' || !Array.isArray(questions)) return true
+  const options = new Set(questions.flatMap(question => question.options.map(option => option.toLowerCase())))
+  let rest = content
+  for (const question of questions) rest = rest.split(question.question).join('')
+  rest = rest.split('\n').filter(line => {
+    const text = line.replace(LIST_MARK, '').trim()
+    return text && !options.has(text.toLowerCase())
+  }).join('\n')
+  return !rest.replace(/[\s.:?!"']/g, '')
+}
