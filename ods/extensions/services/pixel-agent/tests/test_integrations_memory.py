@@ -70,16 +70,19 @@ class PureMemory(unittest.TestCase):
 
     def test_the_owner_s_answer_saves_drops_or_stops_asking(self):
         state, _ = memory.propose(blank(), "The owner is vegetarian.", CHAT)
-        saved, outcome = memory.answer(state, "The owner is vegetarian.", "save")
+        saved, outcome = memory.answer(state, "The owner is vegetarian.", "save", CHAT)
         self.assertEqual((outcome, [item["text"] for item in saved["items"]], saved["pending"], saved["askFirst"]),
                          ("saved", ["The owner is vegetarian."], [], True))
-        dropped, outcome = memory.answer(state, "The owner is vegetarian.", "discard")
+        dropped, outcome = memory.answer(state, "The owner is vegetarian.", "discard", CHAT)
         self.assertEqual((outcome, dropped["items"], dropped["pending"]), ("discarded", [], []))
-        always, outcome = memory.answer(state, "The owner is vegetarian.", "always")
+        always, outcome = memory.answer(state, "The owner is vegetarian.", "always", CHAT)
         self.assertEqual((outcome, len(always["items"]), always["askFirst"]), ("saved", 1, False))
-        self.assertEqual(memory.answer(saved, "The owner is vegetarian.", "save")[1], "unknown", "an answer to nothing waiting changes nothing")
+        self.assertEqual(memory.answer(saved, "The owner is vegetarian.", "save", CHAT)[1], "unknown", "an answer to nothing waiting changes nothing")
         with self.assertRaises(IntegrationError):
-            memory.answer(state, "The owner is vegetarian.", "maybe")
+            memory.answer(state, "The owner is vegetarian.", "maybe", CHAT)
+        # A card answers only the fact its own chat proposed.
+        elsewhere, outcome = memory.answer(state, "The owner is vegetarian.", "save", OTHER)
+        self.assertEqual((outcome, elsewhere["items"], len(elsewhere["pending"])), ("unknown", [], 1))
 
     def test_settings_decisions_edits_and_deletes(self):
         state, reply = memory.propose(blank(), "The owner runs on Sundays.", CHAT)

@@ -211,10 +211,49 @@ test('an answer to a memory card is applied once, even when its run builds the p
     : {ok: true, text: '', enabled: true, quiet: false});
   const hooks = createMemoryHooks({submit, shared});
   const answer = `${memoryQuestion('The owner is vegetarian.')}\nSave`;
-  const attempts = [await hooks.promptContext(answer, SESSION), await hooks.promptContext(answer, SESSION)];
+  const attempts = [await hooks.promptContext(answer, SESSION, {runId: 'run-1'}), await hooks.promptContext(answer, SESSION, {runId: 'run-1'})];
   for (const turn of attempts) assert.match(turn.answer, /saved the memory/);
   assert.equal(sent.filter(item => item.payload.action === 'memory-answer').length, 1);
   // The same words in another chat are their own answer.
-  await hooks.promptContext(answer, `agent:pixel:openai-user:ods-${'c'.repeat(64)}`);
+  await hooks.promptContext(answer, `agent:pixel:openai-user:ods-${'c'.repeat(64)}`, {runId: 'run-1'});
+  assert.equal(sent.filter(item => item.payload.action === 'memory-answer').length, 2);
+});
+
+test('a memory card rides with the reply: the answer is delivered, with the card below it', async () => {
+  const guard = createToolLoopGuard(), ctx = {agentId: 'pixel', runId: 'dinner', sessionId: 'session'};
+  guard.observeRun(ctx, 'pixel', {prompt: "I'm vegetarian, suggest a dinner."});
+  const result = await notes({submit: async payload => ({ok: true, status: 'ask', id: 'm1', text: payload.text}), sessionKey: SESSION, shared: {}})
+    .execute('remember', {action: 'remember', text: 'The owner is vegetarian.'});
+  guard.afterToolCall({toolName: 'pixel_ods_notes', result}, {...ctx, toolCallId: 'remember'});
+  const reply = 'Try a chickpea curry tonight.';
+  guard.beforeAgentFinalize({runId: ctx.runId, lastAssistantMessage: reply, messages: [{role: 'assistant', content: [{type: 'text', text: reply}]}]}, ctx);
+  assert.deepEqual(guard.deliveryVerificationForRun(ctx.runId), {status: 'pending', text: reply, questions: result.details.questions});
+  // As the chat's reply hook delivers it: the reply, not the card's text.
+  assert.equal(guard.replyPayloadSending({runId: ctx.runId, kind: 'final', payload: {text: reply}}).payload.text, reply);
+  // No reply text (the harness skipped its final hook): the card's own text stands in.
+  const quiet = createToolLoopGuard(), quietCtx = {agentId: 'pixel', runId: 'quiet', sessionId: 'session'};
+  quiet.observeRun(quietCtx, 'pixel', {prompt: 'I am vegetarian.'});
+  quiet.afterToolCall({toolName: 'pixel_ods_notes', result}, {...quietCtx, toolCallId: 'remember'});
+  assert.match(quiet.deliveryVerificationForRun(quietCtx.runId).text, /Remember this about you\? "The owner is vegetarian\."/);
+  // A clarification asked in the same run wins: its card goes, and the fact waits in Settings.
+  const both = createToolLoopGuard(), bothCtx = {agentId: 'pixel', runId: 'both', sessionId: 'session'};
+  both.observeRun(bothCtx, 'pixel', {prompt: 'I am vegetarian; book a table'});
+  both.afterToolCall({toolName: 'pixel_ods_notes', result}, {...bothCtx, toolCallId: 'remember'});
+  const ask = [{id: 'when', question: 'Which day?', options: ['Friday', 'Saturday']}];
+  both.afterToolCall({toolName: 'pixel_ods_ask_user', result: {content: [{type: 'text', text: 'Which day?'}], details: {status: 'awaiting_user', questions: ask}}},
+    {...bothCtx, toolCallId: 'ask'});
+  assert.deepEqual(both.deliveryVerificationForRun(bothCtx.runId).questions, parseQuestions(ask));
+  assert.equal(both.beforeToolCall({toolName: 'web_search', params: {query: 'x'}}, bothCtx).block, true);
+});
+
+test('the same card answer in a later run is applied again', async () => {
+  const shared = {};
+  const {sent, submit} = recorder(payload => payload.action === 'memory-answer' ? {ok: true, status: 'saved'} : {ok: true, text: '', enabled: true, quiet: false});
+  const hooks = createMemoryHooks({submit, shared});
+  const answer = `${memoryQuestion('The owner is vegetarian.')}\nSave`;
+  await hooks.promptContext(answer, SESSION, {runId: 'run-1'});
+  await hooks.promptContext(answer, SESSION, {runId: 'run-1'});
+  // Deleted in Settings and proposed again: a new run, a new answer for the service.
+  await hooks.promptContext(answer, SESSION, {runId: 'run-2'});
   assert.equal(sent.filter(item => item.payload.action === 'memory-answer').length, 2);
 });

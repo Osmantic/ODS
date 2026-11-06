@@ -79,12 +79,13 @@ def propose(memory, text, chat):
     return memory, {"status": "ask", "id": pending["id"], "text": text}
 
 
-def answer(memory, text, choice):
-    """The owner's answer to a pending fact, found by its text; the new state and what happened."""
+def answer(memory, text, choice, chat=""):
+    """The owner's answer to a pending fact, found by its text in the chat that proposed it; the new
+    state and what happened. A card answers only the fact its own chat proposed."""
     if choice not in CHOICES:
         raise IntegrationError("invalid-memory", "Answer save, discard or always.")
     text = fact(text)
-    pending = next((item for item in reversed(memory["pending"]) if _same(item["text"], text)), None)
+    pending = next((item for item in reversed(memory["pending"]) if _same(item["text"], text) and item["chat"] == chat), None)
     if pending is None:
         return memory, "unknown"
     return decide(memory, pending["id"], choice)
@@ -193,7 +194,7 @@ class MemoryActions:
             return reply[0]
         if action == "memory-answer":
             outcome = []
-            self._memory_change(lambda memory: _keep(answer(memory, request.get("text"), request.get("choice")), outcome))
+            self._memory_change(lambda memory: _keep(answer(memory, request.get("text"), request.get("choice"), chat), outcome))
             self._log("memory-answer", "a fact", outcome[0])
             return {"status": outcome[0]}
         raise IntegrationError("invalid-request", "Unknown memory action.")

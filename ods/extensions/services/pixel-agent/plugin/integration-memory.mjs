@@ -64,7 +64,7 @@ export function createMemoryHooks({submit, warn = () => {}, shared = globalThis}
   return {
     // Before a turn: the owner's answer to a memory card is applied, then the facts for this chat.
     // reminder: the turn asks for a reminder (integration-tasks.mjs reminderHint gave it one).
-    async promptContext(userText, sessionKey, {reminder = false} = {}) {
+    async promptContext(userText, sessionKey, {reminder = false, runId = ''} = {}) {
       const session = chatSession(sessionKey);
       if (!session) return {};
       const notes = {};
@@ -78,13 +78,14 @@ export function createMemoryHooks({submit, warn = () => {}, shared = globalThis}
       else noProposalTurns(shared).delete(session);
       try {
         if (answer) {
-          const applied = appliedAnswers(shared), key = JSON.stringify([session, answer.text, answer.choice]);
-          let status = applied.get(key);
+          // By run: the same words in a later turn (the fact proposed again after a delete) are a new answer.
+          const applied = appliedAnswers(shared), key = runId ? JSON.stringify([runId, session, answer.text, answer.choice]) : '';
+          let status = key ? applied.get(key) : undefined;
           if (status === undefined) {
             const reply = await submit({action: 'memory-answer', session, ...answer}, {timeoutMs: CONTEXT_TIMEOUT_MS});
             if (reply?.ok) {
               status = reply.status;
-              if (status !== 'unknown') applied.set(key, status);
+              if (key && status !== 'unknown') applied.set(key, status);
               if (applied.size > APPLIED_KEEP) applied.delete(applied.keys().next().value);
             } else warn(`Portal memory: answer not applied: ${reply?.message}`);
           }
