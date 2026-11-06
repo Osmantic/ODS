@@ -4948,6 +4948,67 @@ def _execute_upgrade_install(plan, source):
     return 'active'
 
 
+def _verify_initial_retained_hold(plan, container, observed):
+    """Prove the exact retained owner recovery already holds this Edge.
+
+    Acquire is idempotent for the same held token and revision. A release
+    changes the revision, so a concurrent release cannot create a new hold.
+    The recovery coordinator separately checks its exact operation key before
+    resuming and never publishes a selection without its second full proof.
+    """
+    from pixel_access_bridge import AccessError, private_json
+    owner = plan['owner'].pw_uid
+    preparation = Path(plan['access_settings']['install_dir']) / 'data/pixel-native/preparation'
+    def private_directory(path):
+        info = path.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != owner
+                or stat.S_IMODE(info.st_mode) != 0o700 or path.resolve(strict=True) != path):
+            raise InstallError('native-initial-admission-not-ready')
+        return (info.st_dev, info.st_ino)
+    try:
+        preparation_id = private_directory(preparation)
+        pointer_path = preparation / 'ingress-refresh-current.json'
+        pointer = private_json(pointer_path, owner, 4096)
+        if (type(pointer) is not dict or set(pointer) != {'directory'}
+                or type(pointer['directory']) is not str
+                or not re.fullmatch('ingress-refresh-[a-f0-9]{32}', pointer['directory'])):
+            raise InstallError('native-initial-admission-not-ready')
+        directory = preparation / pointer['directory']
+        directory_id = private_directory(directory)
+        journal = directory / 'refresh.json'
+        record = private_json(journal, owner, 2 * 1024 * 1024)
+        operation = record.get('operation') if type(record) is dict else None
+        binding = record.get('binding') if type(record) is dict else None
+        selection = record.get('selection') if type(record) is dict else None
+        rollback = record.get('rollback') if type(record) is dict else None
+        if (type(record) is not dict or type(record.get('schemaVersion')) is not int
+                or record['schemaVersion'] != 1 or record.get('phase') not in ('operating', 'operation-failed')
+                or type(operation) is not dict or set(operation) != {'kind', 'key'}
+                or operation['kind'] != 'retained-recovery' or type(operation['key']) is not str
+                or not re.fullmatch('[a-f0-9]{64}', operation['key'])
+                or type(binding) is not dict or set(binding) != {'token', 'revision'}
+                or any(type(value) is not str or not re.fullmatch('[a-f0-9]{64}', value)
+                    for value in binding.values())
+                or type(selection) is not dict or selection.get('sha256') != hashlib.sha256(
+                    plan['runtime_bundle']['source_config_bytes']).hexdigest()
+                or record.get('source') != plan['runtime_bundle']['source_config']
+                or record.get('project') != plan['source_environment']['PIXEL_HISTORY_PROJECT']
+                or type(rollback) is not dict or rollback.get('path') != str(directory / 'rollback.compose.json')
+                or observed.get('revision') != binding['revision']):
+            raise InstallError('native-initial-admission-not-ready')
+        confirmed = _migration_edge_request(plan, container, 'acquire', binding)
+        if (type(confirmed) is not dict or confirmed.get('capability') != 'available'
+                or confirmed.get('phase') != 'held' or confirmed.get('streams') != 0
+                or confirmed.get('admission_blocked') is not True
+                or confirmed.get('revision') != binding['revision']
+                or private_directory(preparation) != preparation_id or private_directory(directory) != directory_id
+                or private_json(pointer_path, owner, 4096) != pointer
+                or private_json(journal, owner, 2 * 1024 * 1024) != record):
+            raise InstallError('native-initial-admission-not-ready')
+    except (AccessError, KeyError, TypeError, ValueError, OSError):
+        raise InstallError('native-initial-admission-not-ready') from None
+
+
 def verify_initial_install(plan):
     """Read back a completed protected initial install without activating it.
 
@@ -5003,7 +5064,10 @@ def verify_initial_install(plan):
     _ready_access_relay(services[2], plan)
     def admission_ready():
         value = _migration_edge_request(plan, edge['container'])
-        if (value.get('capability') != 'available' or value.get('phase') != 'idle'
+        if (value.get('capability') == 'available' and value.get('phase') == 'held'
+                and value.get('streams') == 0 and value.get('admission_blocked') is True):
+            _verify_initial_retained_hold(plan, edge['container'], value)
+        elif (value.get('capability') != 'available' or value.get('phase') != 'idle'
                 or value.get('admission_blocked') is not False):
             raise InstallError('native-initial-admission-not-ready')
     admission_ready()

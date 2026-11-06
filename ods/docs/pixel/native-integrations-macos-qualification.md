@@ -163,6 +163,9 @@ protected installation and Source state, check the selected client routes, and
 repeat the protected proof before publishing the owner selection. An incomplete
 or changed protected activation still refuses recovery; the original receipts
 are retained and protected activation is never replayed by this path.
+When that recovery already holds Edge admission, the readback also checks the
+private recovery journal, selected configuration, and exact live hold token and
+revision. An unrelated or changed hold remains a refusal.
 
 After a successful update:
 
