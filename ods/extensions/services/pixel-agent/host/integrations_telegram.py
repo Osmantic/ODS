@@ -372,10 +372,11 @@ def telegram_loop(service, stop):
         try:
             busy = service.telegram_poll()
         except IntegrationError as error:
-            told = service._telegram()[0]["lastError"] == error.message
-            service._telegram_change(lambda current: {**current, "lastError": error.message})
+            message = error.message
+            told = service._telegram()[0]["lastError"] == message
+            service._telegram_change(lambda current: {**current, "lastError": message})
             if not told:  # Once per problem, not every retry.
-                service._log("telegram", "Telegram", error.message)
+                service._log("telegram", "Telegram", message)
             stop.wait(RETRY_SECONDS)
             continue
         if not busy:
