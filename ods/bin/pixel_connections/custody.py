@@ -816,6 +816,28 @@ def native_source_selection(bridge, deployment):
     return selected
 
 
+def native_current_source_selection(bridge):
+    """Select the current protected deployment without a caller-provided copy.
+
+    The class method is the authority: never invoke an instance override or
+    accept a deployment supplied by a request. Subsequent uses of the sealed
+    selection still run its ordinary guard and detect deployment changes.
+    """
+    _native_root()
+    from pixel_access_bridge import LaunchdAccessBridge
+    from .planner import ConnectionDeployment
+    if type(bridge) is not LaunchdAccessBridge:
+        raise CustodyError('native-source-deployment-required')
+    current = LaunchdAccessBridge.connection_deployment(bridge)
+    if type(current) is not ConnectionDeployment:
+        raise CustodyError('native-source-deployment-changed')
+    doc = current.document
+    if (doc['ownerUid'], doc['ownerGid'], doc['home']) != (
+            bridge.owner.pw_uid, bridge.owner.pw_gid, str(bridge.home)):
+        raise CustodyError('native-source-owner-changed')
+    return _NativeSourceSelection(bridge, current, _NATIVE_SEAL)
+
+
 def _native_initial_boot_pending(value):
     if value is None:
         return False
@@ -2312,10 +2334,8 @@ def _native_installer_absence_state(bridge, *, qualified_runtime=None, _installe
             finally:
                 os.close(kit_fd)
         if qualified_runtime is not None:
-            from .native_executor import _publisher
-            selection = native_source_selection(bridge, bridge.connection_deployment())
-            publisher = _publisher(selection)
-            _module, _doc, component, _ref = publisher._material(selection)
+            from .native_executor import _publisher_current
+            selection, publisher, (_module, _doc, component, _ref) = _publisher_current(bridge)
             if _doc['sourceRoot'] != qualified_runtime['sourceRoot']:
                 raise CustodyError('native-source-installer-kit-unqualified')
             if any(name != 'source-kit.json' and image['sha256'] != hashlib.sha256(component[name]).hexdigest()

@@ -234,6 +234,32 @@ def test_root_and_owner_rederive_same_immutable_paths_from_actual_inventories(de
     assert not any('/current/plugin' in path and path.endswith('/plugin') for path in planned['plugins']['load']['paths'])
 
 
+@pytest.mark.parametrize('legacy', [False, True])
+def test_scoped_bundle_verifies_metadata_and_keeps_legacy_gate(deployment, monkeypatch, legacy):
+    f = deployment
+    with f.bridge._native_runtime_operation():
+        runtime, _checksum, _entrypoint = f.bridge._native_runtime_selection(f.environment)
+        operation = f.bridge._native_runtime_lease()
+        if legacy:
+            helper = f.source / 'installers/macos/lib/pixel-runtime-bundle.py'
+            body = helper.read_text()
+            marker = 'NATIVE_OPERATION_VERIFIES_TREE_METADATA = True'
+            assert marker in body
+            helper.write_text(body.replace(marker, 'NATIVE_OPERATION_VERIFIES_TREE_METADATA = False'))
+        actual = mac_custody.protected_tree_metadata
+        checked = []
+        def metadata(root):
+            checked.append(Path(root))
+            return actual(root)
+        monkeypatch.setattr(mac_custody, 'protected_tree_metadata', metadata)
+        paths, checksum = planner._native_bundle_plugins(runtime, _operation=operation)
+        assert set(paths) == set(planner.DEPLOYMENT_PLUGINS)
+        assert checksum == f.root.name
+        # Modern helper performs the complete gate inside verify. The legacy
+        # caller gate stays in addition to any check that helper happens to do.
+        assert checked == [f.root] * (2 if legacy else 1)
+
+
 @pytest.mark.parametrize('change', ['uid', 'gid', 'config', 'source', 'runtime', 'plugin', 'plist', 'missing-env', 'missing-answers'])
 def test_current_custody_or_identity_drift_refuses_before_owner_state_write(deployment, tmp_path, change):
     f = deployment

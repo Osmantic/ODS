@@ -303,6 +303,18 @@ def test_parse_or_duck_guard_alone_never_authorizes_source_writes(native):
     assert not source.NATIVE_STATE.exists() and not native.changes
 
 
+def test_current_selection_ignores_instance_override_and_rechecks_later_drift(native, monkeypatch):
+    monkeypatch.setattr(native.f.bridge, 'connection_deployment',
+        lambda: pytest.fail('untrusted instance method must not supply authority'))
+    selected = source.native_current_source_selection(native.f.bridge)
+    assert selected.deployment == native.f.value
+    assert selected.guard() == native.f.value.document
+    (native.f.root / 'runtime/openclaw.mjs').write_bytes(b'changed')
+    with pytest.raises(Exception, match='custody-unqualified'):
+        selected.guard()
+    assert not source.NATIVE_STATE.exists() and not native.changes
+
+
 def test_real_guard_requalifies_runtime_before_identity_or_state(native):
     (native.f.root / 'runtime/openclaw.mjs').write_bytes(b'changed')
     before = (native.metadata / 'source-identity.json').read_bytes()

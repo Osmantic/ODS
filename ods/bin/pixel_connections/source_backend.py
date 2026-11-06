@@ -65,11 +65,20 @@ class NativeSource:
         if LaunchdAccessBridge._native_runtime_lease(self.bridge) is None:
             raise c.CustodyError('native-source-backend-scope-required')
         LaunchdAccessBridge._native_source_deadline_ns(self.bridge)
-        return c.native_source_selection(self.bridge, self.bridge.connection_deployment())
+        return c.native_current_source_selection(self.bridge)
 
     def _view(self):
         from .native_executor import _view
         return _view(self.selection)
+
+    def _status_publisher(self):
+        if type(self) is not NativeSource or self.seal is not _SEAL or type(self.bridge) is not LaunchdAccessBridge:
+            raise c.CustodyError('native-source-backend-required')
+        if LaunchdAccessBridge._native_runtime_lease(self.bridge) is None:
+            raise c.CustodyError('native-source-backend-scope-required')
+        LaunchdAccessBridge._native_source_deadline_ns(self.bridge)
+        from .native_executor import _publisher_current
+        return _publisher_current(self.bridge)
 
     def _files(self):
         """Root file custody only, including during withdrawal or after reboot.
@@ -474,10 +483,7 @@ def native_status_view(bridge):
     not a wire response. Native MCP-only requests do not need this Google view.
     """
     source = NativeSource(bridge, _SEAL)
-    selection = source.selection
-    from .native_executor import _publisher
-    publisher = _publisher(selection)
-    _module, doc, _component, _ref = publisher._material(selection)
+    selection, publisher, (_module, doc, _component, _ref) = source._status_publisher()
     paths = c.NativeSourcePaths(install=c.NATIVE_KIT, state=c.NATIVE_STATE, env=c.NATIVE_ENV, kit=c.NATIVE_KIT)
     if not os.path.lexists(c.NATIVE_STATE):
         if os.path.lexists(c.NATIVE_META / 'source-installer-code-only.json'):

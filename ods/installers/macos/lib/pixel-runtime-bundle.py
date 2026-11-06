@@ -22,6 +22,9 @@ import tempfile
 
 
 MANIFEST = 'bundle.json'
+# A scoped verify inventories root custody and ACLs itself. Older protected
+# helpers without this declaration still require the planner's separate scan.
+NATIVE_OPERATION_VERIFIES_TREE_METADATA = True
 RELEASE_SELECTION = 'ods-release-selection.json'
 MAX_SELECTION = 2 * 1024 * 1024
 SELECTION_KIND = 'ods-pixel-expected-release-selection'
@@ -92,10 +95,13 @@ class BundleError(ValueError):
     pass
 
 
+_INVALID_RELATIVE_CHARACTERS = re.compile(r'[\x00-\x1f\x7f\ud800-\udfff]')
+
+
 def _relative(value):
     if (type(value) is not str or not value or value.startswith('/')
             or any(part in ('', '.', '..') for part in value.split('/'))
-            or any(ord(c) < 32 or ord(c) == 127 or 0xD800 <= ord(c) <= 0xDFFF for c in value)):
+            or _INVALID_RELATIVE_CHARACTERS.search(value)):
         raise BundleError('invalid-bundle-path')
     return value
 
@@ -486,14 +492,24 @@ def _operation_cache(operation, root, *, metadata=False):
 
 def _file(root, relative, output=None, *, _operation=None):
     fd = _open_file(root, relative)
+    return _file_descriptor(fd, root, relative, output, _operation=_operation)
+
+
+def _file_descriptor(fd, root, relative, output=None, *, _operation=None, _expected=None):
     with os.fdopen(fd, 'rb') as source:
         before = os.fstat(source.fileno())
+        if (_expected is not None and
+                (before.st_dev, before.st_ino, before.st_mode, before.st_uid, before.st_gid,
+                 before.st_nlink, before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
+                (_expected.st_dev, _expected.st_ino, _expected.st_mode, _expected.st_uid, _expected.st_gid,
+                 _expected.st_nlink, _expected.st_size, _expected.st_mtime_ns, _expected.st_ctime_ns)):
+            raise BundleError('bundle-source-changed')
         if not stat.S_ISREG(before.st_mode) or before.st_mode & 0o7000:
             raise BundleError('unsupported-bundle-file')
         cache = _operation_cache(_operation, root)
         signature = (before.st_dev, before.st_ino, before.st_mode, before.st_uid, before.st_gid,
                      before.st_nlink, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-        key = str(Path(root) / relative)
+        key = os.path.join(os.fspath(root), relative)
         cached = cache.get(key) if cache is not None else None
         if cache is not None:
             from pixel_provider.runtime_custody import ROOT_UID, _acl
@@ -518,12 +534,76 @@ def _file(root, relative, output=None, *, _operation=None):
                 before.st_size, checksum]
 
 
+def _scoped_inventory(root, root_info, *, exclude_manifest, normalize_modes, operation):
+    """Inventory through held directory FDs after the complete custody proof."""
+    entries = {}
+    def visit(directory, prefix):
+        for name in sorted(os.listdir(directory)):
+            relative = _relative(prefix + name)
+            if exclude_manifest and relative == MANIFEST:
+                continue
+            info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode):
+                path = root / relative
+                target = os.readlink(path)
+                try:
+                    resolved = path.resolve(strict=True)
+                except (OSError, RuntimeError):
+                    raise BundleError('bundle-link-unavailable') from None
+                if (target.startswith('/') or resolved != root and root not in resolved.parents
+                        or any(ord(c) < 32 for c in target)):
+                    raise BundleError('bundle-link-escapes')
+                entries[relative] = ['link', target]
+            elif stat.S_ISDIR(info.st_mode):
+                if info.st_mode & 0o7000:
+                    raise BundleError('unsupported-bundle-directory')
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                try:
+                    opened = os.fstat(child)
+                    if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                        raise BundleError('bundle-source-changed')
+                    entries[relative] = ['directory', 0o755 if normalize_modes else stat.S_IMODE(info.st_mode)]
+                    if len(entries) > MAX_ENTRIES:
+                        raise BundleError('bundle-too-many-entries')
+                    visit(child, relative + '/')
+                    after = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                    if (not stat.S_ISDIR(after.st_mode)
+                            or (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino)):
+                        raise BundleError('bundle-source-changed')
+                finally:
+                    os.close(child)
+            else:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                entries[relative] = _file_descriptor(fd, root, relative, _operation=operation, _expected=info)
+                if not normalize_modes:
+                    entries[relative][1] = stat.S_IMODE(info.st_mode)
+            if len(entries) > MAX_ENTRIES:
+                raise BundleError('bundle-too-many-entries')
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (root_info.st_dev, root_info.st_ino):
+            raise BundleError('bundle-source-changed')
+        visit(fd, '')
+        after = root.lstat()
+        if (not stat.S_ISDIR(after.st_mode)
+                or (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino)):
+            raise BundleError('bundle-source-changed')
+    finally:
+        os.close(fd)
+    return entries
+
+
 def inventory(root, *, exclude_manifest=False, normalize_modes=True, _operation=None):
     root = Path(root)
     if _operation is not None:
         _operation_cache(_operation, root, metadata=True)
-    if not stat.S_ISDIR(root.lstat().st_mode):
+    root_info = root.lstat()
+    if not stat.S_ISDIR(root_info.st_mode):
         raise BundleError('bundle-directory-required')
+    if _operation is not None:
+        return _scoped_inventory(root, root_info, exclude_manifest=exclude_manifest,
+            normalize_modes=normalize_modes, operation=_operation)
     entries = {}
     def walk_error(error):
         raise error

@@ -174,9 +174,12 @@ def executor(generation, built, monkeypatch):
     monkeypatch.setattr(os, 'mkdir', mkdir)
     # Full production bundle/authority verification remains real. Only the
     # relocated protected-helper import uses the existing Root metadata driver.
-    def publisher(selection):
-        helper._material(selection)
-        return helper
+    def publisher(selection=None, *, with_material=False, _current_bridge=None):
+        if _current_bridge is not None:
+            selection = c.native_current_source_selection(_current_bridge)
+            return selection, helper, helper._material(selection)
+        qualified = helper._material(selection)
+        return (helper, qualified) if with_material else helper
     monkeypatch.setattr(ex, '_publisher', publisher)
     driver = Launchd(n)
     monkeypatch.setattr(n.f.bridge, 'command', driver)

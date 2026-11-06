@@ -6,6 +6,7 @@ must still verify the loaded launchd job and qualify the host access controls.
 import ctypes
 from contextlib import contextmanager
 import errno
+from functools import lru_cache
 import hashlib
 import os
 import plistlib
@@ -98,9 +99,9 @@ def verify_loaded_launchd_definition(raw, target, filename, expected):
         fail()
 
 
-def _require_no_acl(fd):
-    if sys.platform != 'darwin':
-        raise CustodyError('macos-custody-platform-required')
+@lru_cache(maxsize=1)
+def _acl_library():
+    """Reuse function bindings, never the result of a descriptor ACL check."""
     libc = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
     libc.acl_get_fd_np.argtypes = [ctypes.c_int, ctypes.c_int]
     libc.acl_get_fd_np.restype = ctypes.c_void_p
@@ -111,6 +112,13 @@ def _require_no_acl(fd):
     libc.acl_get_entry.restype = ctypes.c_int
     libc.acl_free.argtypes = [ctypes.c_void_p]
     libc.acl_free.restype = ctypes.c_int
+    return libc
+
+
+def _require_no_acl(fd):
+    if sys.platform != 'darwin':
+        raise CustodyError('macos-custody-platform-required')
+    libc = _acl_library()
     ctypes.set_errno(0)
     acl = libc.acl_get_fd_np(fd, 0x100)  # ACL_TYPE_EXTENDED from sys/acl.h.
     if not acl:

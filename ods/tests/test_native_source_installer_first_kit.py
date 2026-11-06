@@ -48,9 +48,12 @@ def first_target(material, built, monkeypatch, request):
     # Only the relocated protected-copy import uses the existing metadata
     # driver. Full immutable bundle/component qualification remains actual;
     # no context/absence/publication authority function is substituted.
-    def publisher(selection):
-        helper._material(selection)
-        return helper
+    def publisher(selection=None, *, with_material=False, _current_bridge=None):
+        if _current_bridge is not None:
+            selection = c.native_current_source_selection(_current_bridge)
+            return selection, helper, helper._material(selection)
+        qualified = helper._material(selection)
+        return (helper, qualified) if with_material else helper
     monkeypatch.setattr(ex, '_publisher', publisher)
     scope = n.f.bridge.bounded(900 if code_only else 300)
     scope.__enter__()

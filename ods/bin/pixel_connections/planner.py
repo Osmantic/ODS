@@ -129,7 +129,6 @@ def _native_bundle_plugins(runtime, *, _operation=None):
     if _operation is not None:
         from pixel_access_bridge import _native_runtime_bundle_cache
         _native_runtime_bundle_cache(_operation, root)
-    protected_tree_metadata(root)
     helper = Path(runtime['sourceRoot']) / 'installers/macos/lib/pixel-runtime-bundle.py'
     helper_body = protected_bytes(helper)
     spec = importlib.util.spec_from_file_location('_connection_bundle', helper)
@@ -143,8 +142,12 @@ def _native_bundle_plugins(runtime, *, _operation=None):
     # catch TypeError and retry a call that may already have done real work.
     import inspect
     parameter = inspect.signature(module.verify).parameters.get('_operation')
-    if (_operation is not None and parameter is not None
-            and parameter.kind is inspect.Parameter.KEYWORD_ONLY and parameter.default is None):
+    scoped = (_operation is not None and parameter is not None
+        and parameter.kind is inspect.Parameter.KEYWORD_ONLY and parameter.default is None)
+    if not (scoped and getattr(module, 'NATIVE_OPERATION_VERIFIES_TREE_METADATA', False) is True):
+        # Legacy helpers may not perform the scoped metadata proof themselves.
+        protected_tree_metadata(root)
+    if scoped:
         manifest, checksum = module.verify(root, expected_digest=root.name, _operation=_operation)
     else:
         manifest, checksum = module.verify(root, expected_digest=root.name)

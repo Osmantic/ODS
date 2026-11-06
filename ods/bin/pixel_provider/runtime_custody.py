@@ -109,7 +109,7 @@ def _native_metadata(path, maximum):
 
 
 def _regular(path, cache=None, *, maximum=None):
-    info = path.lstat()
+    info = os.lstat(path)
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != ROOT_UID or info.st_nlink != 1
             or info.st_mode & 0o022):
         raise AccessError('provider-runtime-custody-unqualified')
@@ -143,7 +143,7 @@ def _regular(path, cache=None, *, maximum=None):
                 remaining(30)
                 checksum.update(block)
         after = os.fstat(fd)
-        current = path.lstat()
+        current = os.lstat(path)
         if ((opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) !=
                 (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
                 or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)):
@@ -161,19 +161,28 @@ def tree_manifest(root, cache=None):
     root = Path(root)
     _parents(root / 'entry')
     entries = {}
+    root_string = os.fspath(root)
+    root_prefix = root_string if root_string.endswith(os.sep) else root_string + os.sep
     def walk_error(error):
         raise error
     for directory, folders, files in os.walk(root, followlinks=False, onerror=walk_error):
         remaining(30)
+        directory_string = os.fspath(directory)
+        if directory_string == root_string:
+            relative_directory = ''
+        elif directory_string.startswith(root_prefix):
+            relative_directory = directory_string[len(root_prefix):] + '/'
+        else:
+            raise AccessError('provider-runtime-file-changed')
         for name in sorted(folders + files):
-            path = Path(directory) / name
-            relative = path.relative_to(root).as_posix()
-            info = path.lstat()
+            path = os.path.join(directory_string, name)
+            relative = relative_directory + name
+            info = os.lstat(path)
             if info.st_uid != ROOT_UID or (not stat.S_ISLNK(info.st_mode) and info.st_mode & 0o022):
                 raise AccessError('provider-runtime-custody-unqualified')
             if stat.S_ISLNK(info.st_mode):
                 try:
-                    resolved = path.resolve(strict=True)
+                    resolved = Path(path).resolve(strict=True)
                 except (OSError, RuntimeError):
                     raise AccessError('provider-runtime-link-unqualified') from None
                 if resolved != root and root not in resolved.parents:

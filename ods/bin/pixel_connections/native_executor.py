@@ -38,15 +38,32 @@ def _selected(selection):
     return c._native_selected(selection, _publication=True)
 
 
-def _publisher(selection):
-    doc = _selected(selection)
+def _publisher(selection=None, *, with_material=False, _current_bridge=None):
+    if _current_bridge is None:
+        doc = _selected(selection)
+    else:
+        if selection is not None or with_material is not True:
+            _fail('deployment-required')
+        # No caller-supplied deployment or instance method is consulted.
+        selection = c.native_current_source_selection(_current_bridge)
+        doc = selection.deployment.document
+        if os.path.lexists(c.NATIVE_LEGACY_ENV):
+            raise c.CustodyError('native-source-legacy-env-preserved')
     path = Path(doc['sourceRoot']) / 'installers/macos/lib/pixel-native-source-broker.py'
     protected_bytes(path, limit=2 * 1024 * 1024)
     spec = importlib.util.spec_from_file_location('qualified_native_source_executor_publisher', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module._material(selection)  # Independent complete bundle/source authority.
-    return module
+    material = module._material(selection)  # Independent complete bundle/source authority.
+    if _current_bridge is not None:
+        return selection, module, material
+    # The returned material is the proof just performed, not a cached proof.
+    return (module, material) if with_material else module
+
+
+def _publisher_current(bridge):
+    # _material independently rechecks the freshly qualified selection.
+    return _publisher(with_material=True, _current_bridge=bridge)
 
 
 def _view(selection):

@@ -83,7 +83,13 @@ def initial(material, monkeypatch, request):
                 yield fd
     monkeypatch.setattr(mac, 'protected_directory', directory)
     monkeypatch.setattr(ex, 'protected_directory', directory)
-    monkeypatch.setattr(ex, '_publisher', lambda selected: helper if helper._material(selected) else None)
+    def publisher(selected=None, *, with_material=False, _current_bridge=None):
+        if _current_bridge is not None:
+            selected = c.native_current_source_selection(_current_bridge)
+            return selected, helper, helper._material(selected)
+        qualified = helper._material(selected)
+        return (helper, qualified) if with_material else helper
+    monkeypatch.setattr(ex, '_publisher', publisher)
     monkeypatch.setattr(n.f.bridge, 'connection_deployment', lambda: n.f.value)
     if retained:
         def absent_command(argv, **kwargs):
@@ -127,6 +133,29 @@ def test_ordinary_inert_kit_status_is_readonly_before_first_prepare(initial, cha
     status = b.native_status_projection(n.f.bridge)
     assert not status['statePresent'] and status['tokenIdentity'] is None and status['rawStatus'] is None
     assert status['brokerUid'] is None and not n.writes and not c.NATIVE_STATE.exists()
+    assert (n.metadata / 'source-publication.json').read_bytes() == n.before
+
+
+@pytest.mark.parametrize('failed_proof', [None, 1, 2])
+def test_inert_status_uses_both_independent_material_proofs_once(initial, monkeypatch, failed_proof):
+    n = initial
+    original = helper._material
+    proofs = []
+    def material(selection):
+        proofs.append(selection)
+        if len(proofs) == failed_proof:
+            raise c.CustodyError('invented-material-drift')
+        return original(selection)
+    monkeypatch.setattr(helper, '_material', material)
+    if failed_proof:
+        with pytest.raises(c.CustodyError, match='invented-material-drift'):
+            b.native_status_projection(n.f.bridge)
+        assert len(proofs) == failed_proof
+    else:
+        status = b.native_status_projection(n.f.bridge)
+        assert not status['statePresent'] and not status['dispatchReady']
+        assert len(proofs) == 2
+    assert not n.writes and not c.NATIVE_STATE.exists()
     assert (n.metadata / 'source-publication.json').read_bytes() == n.before
 
 
