@@ -18,8 +18,9 @@ SNAPSHOT = dict(available=True, phase="idle", active=0, pid=123, revision="a" * 
 
 
 @contextlib.contextmanager
-def gateways(*families, post_reset=False, snapshot=None):
+def gateways(*families, post_reset=False, snapshot=None, get_resets=0, http_status=200):
     seen, servers, threads = [], [], []
+    resets = [get_resets]
     class Handler(socketserver.BaseRequestHandler):
         def handle(self):
             self.request.settimeout(1)
@@ -31,11 +32,16 @@ def gateways(*families, post_reset=False, snapshot=None):
             method = raw.split(b" ", 1)[0].decode()
             seen.append((self.server.address_family, method))
             assert b"Authorization: Bearer fixture" in raw
+            if method == "GET" and resets[0]:
+                resets[0] -= 1
+                self.request.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                return
             if post_reset and method == "POST":
                 self.request.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
                 return
             body = json.dumps(SNAPSHOT if snapshot is None else snapshot).encode()
-            self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+            self.request.sendall(("HTTP/1.1 %d Fixture\r\nContent-Length: " % http_status).encode()
+                                + str(len(body)).encode() + b"\r\n\r\n" + body)
     try:
         # An ephemeral port free in one address family may be occupied in the
         # other. Reserve both listeners before starting either worker.
@@ -185,3 +191,61 @@ def test_pinned_409_readback_cannot_fallback_to_another_origin(tmp_path, monkeyp
     assert len(calls) == 3
     assert all(origin == "http://[::1]:18789" for origin, _ in calls)
     assert sum(payload is not None for _, payload in calls) == 1
+
+
+def active_pending_adapter(tmp_path, port, monkeypatch):
+    adapter = adapter_at(tmp_path, port)
+    def command(arguments, **_kwargs):
+        if '--property=MainPID,ActiveState,ExecMainStartTimestampMonotonic' in arguments:
+            return 'MainPID=123\nActiveState=active\nExecMainStartTimestampMonotonic=100'
+        if '--property=MainPID,ActiveState,ControlGroup' in arguments:
+            return 'MainPID=123\nActiveState=active\nControlGroup='
+        return '123'
+    adapter.command = command
+    monkeypatch.setattr(adapter, 'pending', lambda: {'token':'d' * 64})
+    return adapter
+
+
+def test_real_channel_reset_during_pending_reload_is_observed_again_without_post_or_restart(tmp_path, monkeypatch):
+    from pixel_connections import coordinator
+    # Exhaust the native client's three safe GET retries before its stopped
+    # fallback runs. The coordinator must observe the next read-only response.
+    with gateways(socket.AF_INET, get_resets=3) as (port, seen):
+        adapter = active_pending_adapter(tmp_path, port, monkeypatch)
+        restart = []
+        monkeypatch.setattr(adapter.gateway_service, 'restart', lambda **kwargs: restart.append(True))
+        identity = coordinator._restart_baseline(adapter, {'phase':'invoking','token':'d' * 64})
+        assert identity['pid'] == 123 and identity['started'] == 100
+        assert seen == [(socket.AF_INET, 'GET')] * 4
+        assert restart == []
+
+
+def test_pending_reload_keeps_real_http_refusal_and_does_not_retry_it(tmp_path, monkeypatch):
+    from pixel_connections import coordinator
+    with gateways(socket.AF_INET, http_status=401) as (port, seen):
+        adapter = active_pending_adapter(tmp_path, port, monkeypatch)
+        with pytest.raises(bridge.AccessError) as failed:
+            coordinator._restart_baseline(adapter, {'phase':'invoking','token':'d' * 64})
+        assert failed.value.code == 'runtime-unavailable-or-busy'
+        assert failed.value.http_status == 401
+        assert seen == [(socket.AF_INET, 'GET')]
+
+
+def test_pending_read_preserves_proven_stop_but_never_hides_an_unowned_lease(tmp_path, monkeypatch):
+    adapter = adapter_at(tmp_path, 18789)
+    monkeypatch.setattr(adapter, 'pending', lambda: {'token':'d' * 64})
+    def missing_channel(**_kwargs):
+        raise bridge.AccessError('runtime-unavailable-or-busy')
+    monkeypatch.setattr(adapter, 'native_snapshot', missing_channel)
+    stopped = {'available':True,'phase':'held','stopped':True,'active':0,'pid':0}
+    calls = []
+    def owned_stop(token):
+        calls.append(token)
+        return stopped
+    monkeypatch.setattr(adapter, 'stopped_native', owned_stop)
+    assert adapter.native() == stopped and calls == ['d' * 64]
+    def unowned_stop(_token):
+        raise bridge.AccessError('native-lease-unconfirmed')
+    monkeypatch.setattr(adapter, 'stopped_native', unowned_stop)
+    with pytest.raises(bridge.AccessError, match='native-lease-unconfirmed'):
+        adapter.native()

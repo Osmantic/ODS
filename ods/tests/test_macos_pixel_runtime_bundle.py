@@ -52,6 +52,64 @@ def test_service_only_change_has_distinct_deterministic_deployment_identity(arti
         bundle.verify_service_binding(third_args['destination'], 'a' * 64)
 
 
+def test_real_integration_outcome_module_is_packaged_published_and_content_bound(artifacts, monkeypatch):
+    """Real source closure/copy/locking, with root metadata explicitly simulated."""
+    plugin = ROOT / 'extensions/services/pixel-agent/plugin'
+    module = plugin / 'integration-outcomes.mjs'
+    assert module.is_file()
+    assert '"./integration-outcomes.mjs"' in (plugin / 'index.js').read_text()
+    assert "'./integrations.mjs'" in module.read_text()
+    assert len(json.loads((plugin / 'openclaw.plugin.json').read_text())['contracts']['tools']) == 32
+    options = dict(artifacts, plugins=[plugin])
+    digest = bundle.build(**options)
+    staged = options['destination'] / 'plugins/0/integration-outcomes.mjs'
+    assert staged.read_bytes() == module.read_bytes()
+    monkeypatch.setattr(bundle.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(custody, '_verify_fd', lambda fd, **_: os.fstat(fd))
+    target = bundle.publish(options['destination'], expected_digest=digest,
+                            install_root=options['destination'].parent / 'protected')
+    published = target / 'plugins/0/integration-outcomes.mjs'
+    assert published.read_bytes() == module.read_bytes()
+    # Loading this exact new module resolves its local dependency from the
+    # published bundle, without loading a gateway or calling any provider.
+    result = subprocess.run(['node', '--input-type=module', '-e',
+        'const m=await import(process.argv[1]); if(typeof m.createIntegrationOutcomes!=="function")process.exit(2);',
+        published.as_uri()], capture_output=True, timeout=15)
+    assert result.returncode == 0, result.stderr.decode(errors='replace')
+    published.unlink()
+    with pytest.raises(bundle.BundleError): bundle.verify(target, expected_digest=digest)
+    with pytest.raises(bundle.BundleError):
+        bundle.publish(options['destination'], expected_digest=digest, install_root=target.parent)
+    assert not published.exists()  # Existing drift is never repaired in place.
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='GNU Linux/WSL installer custody fixture')
+def test_linux_wsl_installer_copies_and_secures_the_new_module_without_root(tmp_path):
+    import pwd
+    installation = tmp_path / 'ods'
+    plugin = installation / 'extensions/services/pixel-agent/plugin'
+    source = ROOT / 'extensions/services/pixel-agent/plugin'
+    shutil.copytree(source, plugin)
+    module = plugin / 'integration-outcomes.mjs'
+    module.chmod(0o777)  # The supported Windows-to-WSL source-copy case.
+    script = r'''
+set -e
+source "$1"
+INSTALL_DIR="$2"
+ods_pixel_run_as_owner() { shift 2; "$@"; }
+_ods_pixel_secure_plugin_tree "$3" "$4" "$2/extensions/services/pixel-agent/plugin"
+'''
+    owner = pwd.getpwuid(os.getuid())
+    result = subprocess.run(['bash', '-c', script, 'fixture', str(ROOT / 'installers/lib/pixel-host-install.sh'),
+        str(installation), owner.pw_name, owner.pw_dir], capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr.decode(errors='replace')
+    assert module.read_bytes() == (source / module.name).read_bytes()
+    assert stat.S_IMODE(module.stat().st_mode) == 0o644
+    assert stat.S_IMODE(module.parent.stat().st_mode) == 0o755
+    installer = (ROOT / 'installers/lib/pixel-host-install.sh').read_text()
+    assert '&& -f "$plugin_root/plugin/integration-outcomes.mjs"' in installer
+
+
 def test_exec_wrapper_is_content_bound_and_versions_are_preserved(artifacts):
     wrapper = artifacts['node'].with_name('wrapper.sh')
     wrapper.write_bytes(b'#!/bin/sh\nprintf old')
@@ -165,6 +223,42 @@ def shared_repairs(artifacts, monkeypatch):
             dependency = 'embedded-agent-subscribe.handlers.compaction.runtime-BcFOW95l.js'
             (dist / dependency).write_bytes(b'reviewed dependency')
             manifest['reviewedDependencies'] = {dependency: hashlib.sha256(b'reviewed dependency').hexdigest()}
+        elif name == 'openclaw-image-envelope.json':
+            dependency = 'src-M7TBQdDX.js'
+            raw = b'reviewed native validation fixture'
+            (dist / dependency).write_bytes(raw)
+            manifest['reviewedDependencies'] = {dependency: hashlib.sha256(raw).hexdigest()}
+            for dependency in ('hook-helpers-CZ2oRHhZ.js', 'hook-runner-global-mWFYlTIy.js',
+                               'agent-tools.before-tool-call-bDDdy3YD.js'):
+                raw = ('reviewed fixture dependency ' + dependency).encode()
+                (dist / dependency).write_bytes(raw)
+                manifest['reviewedDependencies'][dependency] = hashlib.sha256(raw).hexdigest()
+        elif name == 'openclaw-direct-tool-completion.json':
+            manifest['reviewedDependencies'] = {}
+            for dependency in ('hook-helpers-CZ2oRHhZ.js', 'hook-runner-global-mWFYlTIy.js',
+                               'agent-tools.before-tool-call-bDDdy3YD.js'):
+                raw = ('reviewed fixture dependency ' + dependency).encode()
+                (dist / dependency).write_bytes(raw)
+                manifest['reviewedDependencies'][dependency] = hashlib.sha256(raw).hexdigest()
+        elif name == 'openclaw-finalize-tool-scope.json':
+            dependency = 'hook-runner-global-mWFYlTIy.js'
+            raw = ('reviewed fixture dependency ' + dependency).encode()
+            (dist / dependency).write_bytes(raw)
+            manifest['reviewedDependencies'] = {dependency: hashlib.sha256(raw).hexdigest()}
+        elif name == 'openclaw-compaction-budget.json':
+            manifest['reviewedDependencies'] = {}
+            reviewed = json.loads((bundle.REPAIR_ROOT / name).read_bytes())['reviewedDependencies']
+            by_module = {module: filename for filename, module in bundle.SHARED_REPAIRS}
+            for dependency in reviewed:
+                if dependency in by_module:
+                    # The diagnostic module is itself an earlier managed
+                    # repair. Bind its final bytes; never overwrite its source.
+                    upstream = json.loads((manifests / by_module[dependency]).read_bytes())
+                    manifest['reviewedDependencies'][dependency] = upstream['patchedSha256']
+                else:
+                    raw = ('reviewed fixture dependency ' + dependency).encode()
+                    (dist / dependency).write_bytes(raw)
+                    manifest['reviewedDependencies'][dependency] = hashlib.sha256(raw).hexdigest()
         (manifests / name).write_text(json.dumps(manifest))
     monkeypatch.setattr(bundle, 'REPAIR_ROOT', manifests)
     return manifests
@@ -180,9 +274,14 @@ def test_shared_repairs_compose_deterministically_only_in_staging(artifacts, sha
     manifest, _ = bundle.verify(root, expected_digest=digest)
     repairs = json.loads((root / 'ods-runtime-repairs.json').read_bytes())
     stream = json.loads((root / 'ods-runtime-patches.json').read_bytes())[0]
-    assert len(repairs) == 23
+    assert len(repairs) == 26
+    repair_names = [item['manifest'] for item in repairs]
+    assert repair_names.index('openclaw-plugin-tool-version.json') < repair_names.index('openclaw-image-envelope.json')
+    assert repair_names.index('openclaw-image-envelope.json') < repair_names.index('openclaw-compaction-budget.json')
+    assert repairs[-1]['module'] == 'selection-BEwSQKM-.js'
+    assert len({item['module'] for item in repairs}) == len(repairs)
     assert {item["manifest"] for item in repairs}.issuperset({
-        "openclaw-context-usage.json", "openclaw-no-tools-ingress.json", "openclaw-yield-usage.json", "openclaw-compaction-empty.json", "openclaw-compaction-no-work.json", "openclaw-hook-provenance.json", "openclaw-run-id-redaction.json", "openclaw-subagent-admission.json"})
+        "openclaw-context-usage.json", "openclaw-no-tools-ingress.json", "openclaw-yield-usage.json", "openclaw-finalize-tool-scope.json", "openclaw-compaction-empty.json", "openclaw-compaction-no-work.json", "openclaw-hook-provenance.json", "openclaw-run-id-redaction.json", "openclaw-subagent-admission.json"})
     assert any(item['module'] == 'windows-command-C7mWWxtt.js'
                and item['manifest'] == 'openclaw-utf8-output.json' for item in repairs)
     assert any(item['module'] == 'payloads-CC0zlj7W.js'
@@ -203,6 +302,57 @@ def test_shared_repairs_compose_deterministically_only_in_staging(artifacts, sha
     (root / 'ods-runtime-repairs.json').write_text('[]')
     with pytest.raises(bundle.BundleError, match='content-changed'):
         bundle.verify(root, expected_digest=digest)
+
+
+@pytest.mark.parametrize('dependency', ['tool-split-C61cf48Y.js', 'tools-D5HS8Q_I.js',
+                                      'provider-stream-BXiTMl1u.js', 'openai-transport-stream-P3cLoEh2.js',
+                                      'openai-prompt-cache-Ki7_LdG-.js', 'provider-stream-shared-DwdPV7LM.js',
+                                      'session-write-lock-qJaTPAUi.js', 'file-lock-D6zEe-ZP.js',
+                                      'sidecar-lock-Bv7C32CP.js',
+                                      'hook-runner-global-mWFYlTIy.js'])
+def test_scope_dependency_failure_never_publishes_or_changes_runtime_input(
+        artifacts, shared_repairs, dependency):
+    target = artifacts['runtime'] / 'dist' / dependency
+    target.write_bytes(b'unreviewed native scope implementation')
+    before = bundle.inventory(artifacts['runtime'], normalize_modes=False)
+    # Metadata is now an earlier managed repair, so its own exact-byte guard
+    # must reject drift before any downstream dependency check or publication.
+    refusal = ('recovery module differs' if dependency == 'tools-D5HS8Q_I.js'
+               else 'dependency differs')
+    with pytest.raises(ValueError, match=refusal):
+        bundle.build(**artifacts, shared_runtime_repairs=True, stream_progress_fix=True)
+    assert not artifacts['destination'].exists()
+    assert bundle.inventory(artifacts['runtime'], normalize_modes=False) == before
+    assert not list(artifacts['destination'].parent.glob('.ods-shared-repairs-*'))
+
+
+def test_required_first_dependency_graph_binds_final_upstream_bytes_without_cycles():
+    contracts = [bundle._shared_repair_contract(*pair) for pair in bundle.SHARED_REPAIRS]
+    by_module = {row['module']: (index, row) for index, row in enumerate(contracts)}
+    edges = set()
+    for index, row in enumerate(contracts):
+        for name, digest in row['reviewedDependencies'].items():
+            if name in by_module:
+                upstream_index, upstream = by_module[name]
+                assert upstream_index < index
+                assert digest == upstream['patchedSha256']
+                edges.add((row['module'], name))
+    assert edges == {('selection-BEwSQKM-.js', 'attempt.model-diagnostic-events-DqqiPQPY.js'),
+                     ('selection-BEwSQKM-.js', 'tools-D5HS8Q_I.js')}
+
+
+def test_required_first_refuses_pristine_diagnostic_dependency_after_its_repair(
+        artifacts, shared_repairs):
+    selected = shared_repairs / 'openclaw-compaction-budget.json'
+    value = json.loads(selected.read_bytes())
+    upstream = json.loads((shared_repairs / 'openclaw-diagnostic-stream-writes.json').read_bytes())
+    value['reviewedDependencies']['attempt.model-diagnostic-events-DqqiPQPY.js'] = upstream['sourceSha256']
+    selected.write_text(json.dumps(value))
+    before = bundle.inventory(artifacts['runtime'], normalize_modes=False)
+    with pytest.raises(ValueError, match='dependency differs'):
+        bundle.build(**artifacts, shared_runtime_repairs=True, stream_progress_fix=True)
+    assert not artifacts['destination'].exists()
+    assert bundle.inventory(artifacts['runtime'], normalize_modes=False) == before
 
 
 @pytest.mark.parametrize('module', [module for _, module in bundle.SHARED_REPAIRS])
@@ -287,7 +437,8 @@ def test_stream_progress_patch_precedes_buffers_and_is_manifest_bound(artifacts,
         bundle.verify(artifacts['destination'], expected_digest=checksum)
 
 
-@pytest.mark.parametrize('mutation', [None, 'node', 'plugin', 'injected-code', 'receipt'])
+@pytest.mark.parametrize('mutation', [None, 'node', 'plugin', 'injected-code', 'receipt',
+                                    'finalizer-tool-scope', 'outer-tool-scope'])
 def test_upgrade_checks_actual_patch_not_only_candidate_manifest(artifacts, monkeypatch, mutation):
     original = ('\t\t\tconst innerStreamFn = activeSession.agent.streamFn;\n'
                 '\t\t\tconst configuredRunTimeoutMs = resolveAgentTimeoutMs({ cfg: params.config });\n'
@@ -302,9 +453,11 @@ def test_upgrade_checks_actual_patch_not_only_candidate_manifest(artifacts, monk
     if mutation:
         paths = {'node': 'node', 'plugin': 'plugins/0/index.mjs',
                  'injected-code': 'runtime/' + bundle.STREAM_PROGRESS_FILE,
-                 'receipt': 'ods-runtime-patches.json'}
+                 'receipt': 'ods-runtime-patches.json',
+                 'finalizer-tool-scope': 'runtime/dist/lifecycle-hook-helpers-Ck-WCTzd.js',
+                 'outer-tool-scope': 'runtime/dist/embedded-agent-CJx-nG3W.js'}
         path = candidate / paths[mutation]
-        path.write_bytes(path.read_bytes() + b'\nextra')
+        path.write_bytes((path.read_bytes() if path.exists() else b'') + b'\nextra')
         manifest = json.loads((candidate / bundle.MANIFEST).read_bytes())
         manifest['entries'] = bundle.inventory(candidate, exclude_manifest=True)
         body = bundle._encode(manifest)
@@ -412,6 +565,53 @@ def test_manifest_must_match_previously_selected_digest(artifacts):
     bundle.build(**artifacts)
     with pytest.raises(bundle.BundleError, match='manifest-changed'):
         bundle.verify(artifacts['destination'], expected_digest='0' * 64)
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='actual Darwin symlink permission semantics')
+def test_private_umask_new_symlink_is_readable_without_changing_target(artifacts):
+    source = artifacts['runtime'] / 'node_modules'
+    target = source / 'dependency.js'
+    target.chmod(0o640)
+    before = target.read_bytes(), bundle._signature(target.stat())
+    previous = os.umask(0o077)
+    try:
+        (source / 'alias.js').symlink_to('dependency.js')
+        assert stat.S_IMODE((source / 'alias.js').lstat().st_mode) == 0o700
+        digest = bundle.build(**artifacts)
+    finally:
+        os.umask(previous)
+    copied = artifacts['destination'] / 'runtime/node_modules/alias.js'
+    assert copied.is_symlink() and stat.S_IMODE(copied.lstat().st_mode) == 0o755
+    assert os.readlink(copied) == 'dependency.js'
+    assert (target.read_bytes(), bundle._signature(target.stat())) == before
+    assert stat.S_IMODE((source / 'alias.js').lstat().st_mode) == 0o700
+    bundle.verify(artifacts['destination'], expected_digest=digest)
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='actual Darwin nofollow chmod')
+@pytest.mark.parametrize('fault', ['unchanged-mode', 'replaced-inode'])
+def test_new_symlink_normalization_refuses_drift(artifacts, monkeypatch, fault):
+    source = artifacts['runtime'] / 'node_modules'
+    (source / 'alias.js').symlink_to('dependency.js')
+    chmod = os.chmod
+    def changed(path, mode, *args, **kwargs):
+        path = Path(path)
+        if path.name == 'alias.js':
+            assert mode == 0o755 and kwargs == {'follow_symlinks': False}
+            if fault == 'unchanged-mode': return
+            other = path.with_name('different-inode.js')
+            other.symlink_to('dependency.js')
+            os.replace(other, path)
+        return chmod(path, mode, *args, **kwargs)
+    monkeypatch.setattr(os, 'chmod', changed)
+    previous = os.umask(0o077)
+    try:
+        with pytest.raises(bundle.BundleError, match='link-copy-changed'):
+            bundle.build(**artifacts)
+    finally:
+        os.umask(previous)
+    assert not artifacts['destination'].exists()
+    assert os.readlink(source / 'alias.js') == 'dependency.js'
 
 
 def test_manifest_duplicate_keys_are_not_accepted(artifacts):

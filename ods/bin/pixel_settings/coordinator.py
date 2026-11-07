@@ -12,7 +12,7 @@ import re
 import stat
 import time
 
-from pixel_access_bridge import AccessError, atomic_json, digest, remaining, runtime_config_path
+from pixel_access_bridge import AccessError, atomic_json, digest, remaining, runtime_config_path, guard_native_enrollment
 from pixel_access_protocol import decode_frame, HEX
 from .contract import SettingsError, preview_preferences
 from .runtime import compare_readback, declared_capabilities, saved_document
@@ -253,6 +253,8 @@ def change(bridge, request):
             or not HEX.fullmatch(request["revision"]) or not _revision(request["settingsRevision"])):
         raise AccessError("invalid-settings-request")
     with bridge.locked():
+        if request["operation"] == "apply":
+            guard_native_enrollment(bridge)
         snapshot = bridge.inspect()
         with _store(bridge, exclusive=True) as directory:
             journal = bridge.pending()

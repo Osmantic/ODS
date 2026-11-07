@@ -1,4 +1,4 @@
-"""Finish a retained initial Pixel installation after final Docker health failure.
+"""Finish a retained initial Pixel installation after interrupted activation.
 
 This verifies the completed protected activation twice; it never repeats it.
 The original preparation and activation receipts remain untouched. A successful
@@ -21,7 +21,7 @@ import tempfile
 HERE = Path(__file__).resolve().parent
 GUIDANCE = {
     'native-macos-owner-required': 'Run as the signed-in macOS owner; the proof requests sudo itself.',
-    'retained-final-health-failure-required': 'Only an initial installation stopped after protected activation can use this recovery.',
+    'retained-final-health-failure-required': 'Only a matching interrupted initial installation can use this recovery; protected completion must be proved.',
     'retained-native-selection-mismatch': 'The preparation and activation identities disagree.',
     'native-recovery-selection-changed': 'The retained selection changed or a different update was published.',
     'native-initial-recovery-proof-failed': 'Protected activation could not be verified. The failed attempt remains intact.',
@@ -69,7 +69,7 @@ def selection(receipt, activation):
             or receipt.get('status') != 'prepared' or receipt.get('requiresActivation') is not True
             or receipt.get('phase') != 'awaiting-protected-activation'
             or activation.get('status') != 'error' or activation.get('requiresRecovery') is not True
-            or activation.get('phase') not in ('final-health', 'webui-routing')
+            or activation.get('phase') not in ('protected-activation', 'final-health', 'webui-routing')
             or type(activation.get('schemaVersion')) is not int or activation['schemaVersion'] != 1
             or not re.fullmatch('[a-f0-9]{40}', str(receipt.get('pixelSourceRef', '')))):
         raise ValueError('retained-final-health-failure-required')

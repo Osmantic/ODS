@@ -134,6 +134,57 @@ try {
     Check ($script:enabledTasks.Count -eq 1 -and $script:enabledTasks[0] -ceq ($identity.taskName+'-Startup') -and $script:registrations -eq 1) 'new installation re-enables the retired startup task without re-registering it'
     Enable-ODSWslStartup $identity -NewInstallation
     Check ($script:enabledTasks.Count -eq 1) 'an enabled startup task is not re-enabled'
+
+    & {
+        # Exercise the public manual-start path with the real private files,
+        # task identity assertions and startup intent. Scheduler writes remain
+        # mocked and can deny access just as an already enabled owner task did.
+        function Resolve-ODSWslRegisteredDistro { param($Name)
+            if ($Name -cne $identity.distro) { throw 'Unexpected manual-start distribution' }
+            $Name
+        }
+        function Get-ODSWslLifetimeStatus { param($Identity)
+            [pscustomobject]@{scope='wsl-lifetime';state='running';distroRunning=$true}
+        }
+        function Enable-ScheduledTask { param($TaskName)
+            if ($TaskName -cne ($identity.taskName+'-Startup')) { throw 'Unexpected manual-start task enable' }
+            $script:manualEnableCalls += $TaskName
+            if ($script:denyManualEnable) { throw [UnauthorizedAccessException]::new('fixture Scheduler enable access denied') }
+            $script:events += 'task-enabled'
+            $script:startupTask.State = 'Ready'
+        }
+        try {
+            foreach ($taskState in @('Ready','Queued','Running')) {
+                $script:startupTask.State=$taskState;$script:events=@()
+                $script:manualEnableCalls=@();$script:denyManualEnable=$true
+                $result=@(Invoke-ODSWslLifecycle start $identity.distro $identity.installRoot)
+                Check ($result.Count -eq 1 -and $result[0].state -eq 'running') "$taskState manual start returns one result despite Scheduler enable being denied"
+                Check ($script:manualEnableCalls.Count -eq 0 -and ($script:events -join ',') -ceq 'hold,stack-start') "$taskState manual start performs no redundant Scheduler write"
+                Check ((Get-ODSWslStartupIntent $identity).desiredRunning) "$taskState manual start retains owner sign-in recovery intent"
+            }
+            $script:startupTask.State='Disabled';$script:events=@()
+            $script:manualEnableCalls=@();$script:denyManualEnable=$false
+            $null=Invoke-ODSWslLifecycle start $identity.distro $identity.installRoot
+            Check ($script:manualEnableCalls.Count -eq 1 -and $script:manualEnableCalls[0] -ceq ($identity.taskName+'-Startup')) 'disabled manual-start task requires exactly one owned Scheduler enable'
+            Check (($script:events -join ',') -ceq 'hold,task-enabled,stack-start' -and $script:startupTask.State -eq 'Ready') 'disabled task is enabled before the stack starts'
+            $script:startupTask.State='Disabled';$script:events=@()
+            $script:manualEnableCalls=@();$script:denyManualEnable=$true
+            Reject {Invoke-ODSWslLifecycle start $identity.distro $identity.installRoot} 'necessary enable access denial still rejects a disabled manual start'
+            Check ($script:manualEnableCalls.Count -eq 1 -and -not ($script:events -contains 'stack-start')) 'denied required enable is not waived or followed by stack startup'
+            $script:startupTask.State='Unknown';$script:events=@();$script:manualEnableCalls=@()
+            Reject {Invoke-ODSWslLifecycle start $identity.distro $identity.installRoot} 'unknown task state cannot certify enabled sign-in recovery'
+            Check ($script:manualEnableCalls.Count -eq 0 -and -not ($script:events -contains 'stack-start')) 'unknown task state performs no Scheduler write or stack start'
+            $savedArguments=$script:startupTask.Actions[0].Arguments
+            try {
+                $script:startupTask.State='Ready';$script:events=@();$script:manualEnableCalls=@()
+                $script:startupTask.Actions[0].Arguments += ' foreign'
+                Reject {Invoke-ODSWslLifecycle start $identity.distro $identity.installRoot} 'enabled foreign task identity is refused during manual start'
+                Check ($script:manualEnableCalls.Count -eq 0 -and $script:registrations -eq 1 -and -not ($script:events -contains 'stack-start')) 'foreign task is not enabled replaced or followed by stack startup'
+            } finally { $script:startupTask.Actions[0].Arguments=$savedArguments }
+        } finally {
+            $script:startupTask.State='Ready';$script:events=@();$script:denyManualEnable=$false
+        }
+    }
     Set-ODSWslStartupIntent $identity $false
     Invoke-ODSWslStartup $fixture
     Check ($script:events.Count -eq 0) 'disabled startup performs no Docker WSL or service operation'

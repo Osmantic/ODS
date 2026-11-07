@@ -137,6 +137,7 @@ it.each(['unsupported','unverified'])('keeps the draft and images when the route
   expect(calls('/api/pixel/chat/stream')).toHaveLength(0)
   expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('Keep my question')
   expect(screen.getByRole('list',{name:'Attached images'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Schedule this draft'})).toBeDisabled()
   expect(screen.getByRole('alert')).toHaveTextContent(state==='unsupported'?'text-only':'not verified')
 })
 

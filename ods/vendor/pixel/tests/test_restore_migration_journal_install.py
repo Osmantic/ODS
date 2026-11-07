@@ -37,6 +37,8 @@ UNIT_CONFIG_KEYS = (
     "PIXEL_SOURCE_RECONCILE_UNIT",
     "PIXEL_SOURCE_DIRECT_UNIT",
     "PIXEL_SOURCE_DIRECT_PATH_UNIT",
+    "PIXEL_SOURCE_EXCHANGE_UNIT",
+    "PIXEL_SOURCE_REVOKE_UNIT",
     "PIXEL_OPS_BROKER_UNIT",
     "PIXEL_FRONTIER_BROKER_UNIT",
 )
@@ -66,6 +68,8 @@ class DeployedUnitContractTests(unittest.TestCase):
         self.assertIn("pixel-source-reconcile@.service", helper.DEPLOYED_UNIT_ALLOWLIST)
         self.assertIn("pixel-source-direct.service", helper.DEPLOYED_UNIT_ALLOWLIST)
         self.assertIn("pixel-source-direct.path", helper.DEPLOYED_UNIT_ALLOWLIST)
+        self.assertIn("pixel-source-exchange@.service", helper.DEPLOYED_UNIT_ALLOWLIST)
+        self.assertIn("pixel-source-revoke.service", helper.DEPLOYED_UNIT_ALLOWLIST)
         self.assertIn("pixel-ops-broker.service", helper.DEPLOYED_UNIT_ALLOWLIST)
         self.assertIn("pixel-frontier-broker.service", helper.DEPLOYED_UNIT_ALLOWLIST)
 

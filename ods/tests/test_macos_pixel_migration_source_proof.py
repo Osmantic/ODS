@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import plistlib
+import sysconfig
 from types import SimpleNamespace
 
 import pytest
@@ -129,6 +130,10 @@ def test_source_cli_redacts_unsafe_os_errors(monkeypatch, capsys):
 
 @pytest.mark.parametrize('nonroot', [False, True])
 def test_final_proof_runs_existing_complete_planner_without_activation(monkeypatch, capsys, nonroot):
+    # Bootstrap stdlib host configuration before simulating Darwin on Linux.
+    # The actual planner imports the access protocol, including ZoneInfo; a
+    # cold sysconfig import must not look for nonexistent Darwin build vars.
+    sysconfig.get_config_vars()
     monkeypatch.setattr(installer.sys, 'platform', 'darwin')
     monkeypatch.setattr(installer.os, 'geteuid', lambda: 501 if nonroot else 0)
     events = []

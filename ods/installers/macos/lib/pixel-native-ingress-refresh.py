@@ -203,7 +203,7 @@ def verify_current(docker_run, record):
         raise ValueError('native-ingress-recovery-container-changed')
 
 
-def rollback(run, docker_run, record, *, install_dir, dashboard_key, checkpoint):
+def rollback(run, docker_run, record, *, install_dir, dashboard_key, checkpoint, release=True):
     compose, environment = helper('pixel-native-compose'), helper('pixel-native-env')
     if record['phase'] in ('operating', 'operation-failed', 'releasing', 'ready', 'rolled-back'):
         raise ValueError('native-ingress-unreleased-refresh-required')
@@ -212,8 +212,9 @@ def rollback(run, docker_run, record, *, install_dir, dashboard_key, checkpoint)
     verify_current(docker_run, record)
     if record['phase'] == 'releasing-rollback':
         compose.wait_ready(run, services=(SERVICE,))
-        compose._edge_transition(docker_run, edge, dashboard_key, binding=record['binding'], release=True)
-        record['phase'] = 'rolled-back'
+        if release:
+            compose._edge_transition(docker_run, edge, dashboard_key, binding=record['binding'], release=True)
+        record['phase'] = 'rolled-back' if release else 'rolled-back-held'
         checkpoint(record)
         return
     compose._edge_transition(docker_run, edge, dashboard_key, binding=record['binding'])
@@ -234,8 +235,9 @@ def rollback(run, docker_run, record, *, install_dir, dashboard_key, checkpoint)
     # a failed restore. The old recipe and hold remain available for review.
     record['phase'] = 'releasing-rollback'
     checkpoint(record)
-    compose._edge_transition(docker_run, edge, dashboard_key, binding=record['binding'], release=True)
-    record['phase'] = 'rolled-back'
+    if release:
+        compose._edge_transition(docker_run, edge, dashboard_key, binding=record['binding'], release=True)
+    record['phase'] = 'rolled-back' if release else 'rolled-back-held'
     checkpoint(record)
 
 
@@ -312,7 +314,12 @@ def finish_operation(run, docker_run, record, *, operation, dashboard_key, check
 
 
 def refresh(run, docker_run, *, install_dir, directory, project, dashboard_key, allow_stopped_edge=False,
-            operation=None, operation_kind=None, operation_key=None):
+            operation=None, operation_kind=None, operation_key=None, admission_binding=None):
+    if admission_binding is not None and (
+            operation_kind != 'finalize-clients' or allow_stopped_edge or type(admission_binding) is not dict
+            or set(admission_binding) != {'token', 'revision'}
+            or any(not re.fullmatch('[a-f0-9]{64}', str(value)) for value in admission_binding.values())):
+        raise ValueError('native-client-admission-binding-required')
     compose, environment = helper('pixel-native-compose'), helper('pixel-native-env')
     selected_operation = operation_selection(operation, operation_kind, operation_key)
     selected = run('--profile', 'native-config-maintenance', 'config', '--format', 'json', timeout=30)
@@ -353,9 +360,13 @@ def refresh(run, docker_run, *, install_dir, directory, project, dashboard_key, 
     native_idle(source)
     edge = edge_ready(docker_run, project=project, dashboard_key=dashboard_key, source=source,
         allow_start=allow_stopped_edge)
-    transition = compose._edge_transition(docker_run, edge, dashboard_key)
+    if admission_binding is not None:
+        transition = compose._edge_transition(docker_run, edge, dashboard_key, binding=admission_binding)
+    else:
+        transition = compose._edge_transition(docker_run, edge, dashboard_key)
     record = {'schemaVersion': 1, 'phase': 'acquiring', 'project': project, 'source': str(source),
-        'rollback': recipe, 'binding': {'token': secrets.token_hex(32), 'revision': transition['revision']}}
+        'rollback': recipe, 'binding': admission_binding or
+            {'token': secrets.token_hex(32), 'revision': transition['revision']}}
     if selected_operation is not None:
         record['operation'] = selected_operation
         record['edgeTransitionVolume'] = edge_storage(docker_run, edge)
@@ -413,7 +424,8 @@ def refresh(run, docker_run, *, install_dir, directory, project, dashboard_key, 
     except BaseException:
         # Never roll back across a release that might have admitted new work.
         if record['phase'] not in ('operating', 'operation-failed', 'releasing', 'ready'):
-            rollback(run, docker_run, record, install_dir=install_dir, dashboard_key=dashboard_key, checkpoint=checkpoint)
+            rollback(run, docker_run, record, install_dir=install_dir, dashboard_key=dashboard_key,
+                checkpoint=checkpoint, release=admission_binding is None)
         raise
 
 
@@ -428,7 +440,7 @@ def attempt_directory(preparation):
             raise ValueError('native-ingress-refresh-pointer-invalid')
         journal = preparation / name / 'refresh.json'
         if (not journal.exists() or json.loads(environment.snapshot(journal)[0]).get('phase')
-                not in ('ready', 'rolled-back', 'not-started')):
+                not in ('ready', 'rolled-back', 'rolled-back-held', 'not-started')):
             raise ValueError('native-ingress-refresh-journal-requires-review')
     directory = preparation / ('ingress-refresh-' + secrets.token_hex(16))
     directory.mkdir(mode=0o700)
@@ -439,7 +451,7 @@ def attempt_directory(preparation):
 
 
 def refresh_locked(run, docker_run, *, install_dir, project, dashboard_key, allow_stopped_edge=False,
-                   operation=None, operation_kind=None, operation_key=None):
+                   operation=None, operation_kind=None, operation_key=None, admission_binding=None):
     """The retained-recovery caller already owns preparation/.selection.lock."""
     preparation = install_dir / 'data/pixel-native/preparation'
     selected_operation = operation_selection(operation, operation_kind, operation_key)
@@ -452,6 +464,36 @@ def refresh_locked(run, docker_run, *, install_dir, project, dashboard_key, allo
             raise ValueError('native-ingress-refresh-pointer-invalid')
         journal = preparation / name / 'refresh.json'
         record = json.loads(environment.snapshot(journal)[0])
+        if admission_binding is not None and record.get('phase') not in ('ready', 'rolled-back', 'not-started'):
+            if (record.get('binding') != admission_binding or record.get('operation') != selected_operation
+                    or record.get('project') != project):
+                raise ValueError('native-client-admission-selection-changed')
+            def checkpoint_held(value):
+                temporary = journal.parent / '.refresh.tmp'
+                private_write(temporary, (json.dumps(value, sort_keys=True) + '\n').encode())
+                os.replace(temporary, journal)
+            if record['phase'] in ('acquiring', 'held', 'recreating', 'rolling-back', 'releasing-rollback'):
+                rollback(run, docker_run, record, install_dir=install_dir, dashboard_key=dashboard_key,
+                    checkpoint=checkpoint_held, release=False)
+            elif record['phase'] == 'releasing':
+                # A successful callback can lose only its release reply. The
+                # owner client validator must still prove its exact files,
+                # images and host route before retrying that same release.
+                verify_current(docker_run, record)
+                validator = getattr(operation, 'validate_result', None)
+                if validator is None:
+                    raise ValueError('native-client-release-validator-required')
+                validator(record)
+                compose = helper('pixel-native-compose')
+                edge = compose._managed_edge(docker_run, project)
+                if edge_storage(docker_run, edge) != record['edgeTransitionVolume']:
+                    raise ValueError('native-lifecycle-transition-volume-changed')
+                compose.wait_ready(run)
+                native_idle(record['source'])
+                compose._edge_transition(docker_run, edge, dashboard_key, binding=record['binding'], release=True)
+                record['phase'] = 'ready'
+                checkpoint_held(record)
+                return {'phase': 'ready', 'operationResult': 'release-confirmed'}
         if record.get('phase') in ('operating', 'operation-failed'):
             if (record.get('operation') != selected_operation or record.get('project') != project
                     or Path(record['rollback']['path']) != journal.parent / 'rollback.compose.json'):
@@ -469,7 +511,8 @@ def refresh_locked(run, docker_run, *, install_dir, project, dashboard_key, allo
     try:
         result = refresh(run, docker_run, install_dir=install_dir, directory=directory,
             project=project, dashboard_key=dashboard_key, allow_stopped_edge=allow_stopped_edge,
-            operation=operation, operation_kind=operation_kind, operation_key=operation_key)
+            operation=operation, operation_kind=operation_kind, operation_key=operation_key,
+            admission_binding=admission_binding)
     except BaseException:
         if not (directory / 'refresh.json').exists():
             private_write(directory / 'refresh.json', b'{"phase":"not-started"}\n')
@@ -481,9 +524,13 @@ def refresh_locked(run, docker_run, *, install_dir, project, dashboard_key, allo
 
 def refresh_installed(install_dir, *, restore=False, finish_release=False, selection_locked=False,
                       allow_stopped_edge=False, operation=None, operation_kind=None, operation_key=None,
-                      lifecycle_action=None, lifecycle_service='', lifecycle_bash=None, retry_image_preparation=False):
+                      lifecycle_action=None, lifecycle_service='', lifecycle_bash=None, retry_image_preparation=False,
+                      admission_binding=None):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
+    if admission_binding is not None and (not selection_locked or operation_kind != 'finalize-clients'
+            or lifecycle_action is not None or restore or finish_release):
+        raise ValueError('native-client-admission-operation-required')
     install_dir = Path(install_dir).resolve(strict=True)
     installer = helper('pixel-macos-access-install')
     compose = helper('pixel-native-compose')
@@ -559,7 +606,8 @@ def refresh_installed(install_dir, *, restore=False, finish_release=False, selec
         if not restore and not finish_release:
             return refresh_locked(run, docker_run, install_dir=install_dir,
                 project=transport['project'], dashboard_key=key, allow_stopped_edge=allow_stopped_edge,
-                operation=operation, operation_kind=operation_kind, operation_key=operation_key)
+                operation=operation, operation_kind=operation_kind, operation_key=operation_key,
+                admission_binding=admission_binding)
         environment = helper('pixel-native-env')
         pointer = json.loads(environment.snapshot(preparation / 'ingress-refresh-current.json')[0])
         name = pointer.get('directory', '')

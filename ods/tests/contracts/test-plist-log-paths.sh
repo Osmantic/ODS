@@ -6,7 +6,7 @@ set -euo pipefail
 #
 # PR #899 moved launchd plist log paths from $INSTALL_DIR/data/ to
 # $HOME/Library/Logs/ODS/ to avoid xpcproxy sandbox denials.
-# This test validates the installer and shared host-agent plist heredocs.
+# This test validates the installer and generated host-agent plist.
 #
 # Run: bash tests/contracts/test-plist-log-paths.sh
 # ============================================================================
@@ -52,12 +52,10 @@ assert_not_contains() {
 
 echo "[contract] launchd plist log paths"
 
-# --- Extract plist heredocs ---
+# --- Extract the opencode plist heredoc ---
 opencode_plist="$(awk '/<<PLIST_EOF$/,/^PLIST_EOF$/' installers/macos/lib/post-pixel-install.sh)"
-agent_plist="$(awk '/<<AGENT_PLIST_EOF$/,/^AGENT_PLIST_EOF$/' installers/macos/lib/host-agent-install.sh)"
 
 [[ -n "$opencode_plist" ]] || { echo "[FAIL] could not extract opencode-web plist heredoc"; exit 1; }
-[[ -n "$agent_plist" ]]    || { echo "[FAIL] could not extract ods-host-agent plist heredoc"; exit 1; }
 
 # --- opencode-web plist ---
 echo "  opencode-web plist:"
@@ -73,15 +71,31 @@ assert_contains     "WorkingDirectory uses INSTALL_DIR"                    "$wor
 
 # --- ods-host-agent plist ---
 echo "  ods-host-agent plist:"
-stdout_val="$(extract_plist_value "$agent_plist" "StandardOutPath")"
-stderr_val="$(extract_plist_value "$agent_plist" "StandardErrorPath")"
-workdir_val="$(extract_plist_value "$agent_plist" "WorkingDirectory")"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+(
+    source installers/macos/lib/host-agent-install.sh
+    HOME="$tmp/home"
+    INSTALL_DIR="$tmp/external install"
+    AGENT_PYTHON="$(command -v python3)"
+    ODS_AGENT_PATH="/usr/bin:/bin"
+    ODS_AGENT_PLIST_LABEL="com.ods.test-agent"
+    ODS_AGENT_PLIST="$tmp/agent.plist"
+    _write_macos_host_agent_plist
+    python3 - "$ODS_AGENT_PLIST" "$HOME" "$INSTALL_DIR" <<'PY'
+import pathlib
+import plistlib
+import sys
 
-assert_contains     "StandardOutPath uses HOME/Library/Logs/ODS"   "$stdout_val"  '${HOME}/Library/Logs/ODS/'
-assert_contains     "StandardErrorPath uses HOME/Library/Logs/ODS" "$stderr_val"  '${HOME}/Library/Logs/ODS/'
-assert_not_contains "StandardOutPath does not use INSTALL_DIR"             "$stdout_val"  'INSTALL_DIR'
-assert_not_contains "StandardErrorPath does not use INSTALL_DIR"           "$stderr_val"  'INSTALL_DIR'
-assert_contains     "WorkingDirectory uses INSTALL_DIR"                    "$workdir_val" '${INSTALL_DIR}'
+with open(sys.argv[1], "rb") as stream:
+    job = plistlib.load(stream)
+log = str(pathlib.Path(sys.argv[2]) / "Library/Logs/ODS/ods-host-agent.log")
+assert job["StandardOutPath"] == job["StandardErrorPath"] == log
+assert job["WorkingDirectory"] == sys.argv[3]
+PY
+)
+echo "  [PASS] generated host-agent log paths and working directory"
+PASS=$((PASS + 1))
 
 echo ""
 echo "==============================="

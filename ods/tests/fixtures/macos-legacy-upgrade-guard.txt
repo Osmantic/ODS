@@ -1,0 +1,23 @@
+"""Reviewed methods from b0599adb07cedad5f95f8a423180f1407e8c8fdc.
+
+Parsed as data; importing this archived source is never permitted.
+"""
+raise RuntimeError('archived guard fixture must never execute')
+
+class LaunchdAccessBridge(SystemdAccessBridge):
+    @contextlib.contextmanager
+    def locked(self):
+        with super().locked():
+            # Do not infer successful recovery from a journal phase alone.
+            # The upgrader removes this marker only after live verification.
+            if os.path.lexists(self.state / 'runtime-upgrade.json'):
+                raise AccessError('runtime-upgrade-recovery-required')
+            yield
+
+    def status(self):
+        if os.path.lexists(self.state / 'runtime-upgrade.json'):
+            return {'available': False, 'surface': 'darwin', 'configured_mode': 'unknown',
+                    'effective_mode': 'unknown', 'runtime_verified': False, 'revision': None,
+                    'busy': False, 'pending': True, 'reason': 'runtime-upgrade-recovery-required',
+                    'scope': 'owner-host'}
+        return super().status()

@@ -24,6 +24,9 @@ os.environ.setdefault("ODS_DATA_DIR", "/tmp/ods-test-data")
 os.environ.setdefault("ODS_EXTENSIONS_DIR", "/tmp/ods-test-extensions")
 os.environ.setdefault("GPU_BACKEND", "nvidia")
 os.environ.setdefault("ODS_MODE", "local")
+# Connected apps are on by default in ODS. Tests turn them on where they test
+# them (test_pixel_connections.py), so Portal's status tests make no extra call.
+os.environ.setdefault("PORTAL_CONNECTED_APPS_ENABLED", "false")
 
 if "fcntl" not in sys.modules:
     try:

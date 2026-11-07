@@ -1,4 +1,4 @@
-import { render as renderBase, screen, fireEvent, cleanup } from '@testing-library/react'
+import { render as renderBase, screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, afterEach, expect, it, vi } from 'vitest'
 import SettingsModal from './SettingsModal'
@@ -7,8 +7,90 @@ vi.mock('../pages/ServiceMap', () => ({ default: () => <p>Integration details</p
 vi.mock('../pages/RemoteProvider', () => ({ default: () => <input aria-label="Remote draft" /> }))
 
 vi.mock('../pages/Settings', () => ({ default: ({activeSection}) => <div><p>{activeSection} content</p><input aria-label="Draft" /></div> }))
+vi.mock('./settings/ConnectedApps', () => ({ default: () => <p>Connected apps content</p> }))
 beforeEach(() => { HTMLDialogElement.prototype.showModal = function () { this.open = true } })
-afterEach(() => { cleanup(); vi.restoreAllMocks(); delete HTMLDialogElement.prototype.showModal })
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); delete HTMLDialogElement.prototype.showModal })
+
+// Whether ODS has connected apps switched on, as the dashboard API answers it.
+function connectedApps(enabled) {
+  const fetch = vi.fn(async url => {
+    if (url !== '/api/pixel/connections/enabled') throw new Error(`unexpected request ${url}`)
+    return {ok: true, json: async () => ({enabled})}
+  })
+  vi.stubGlobal('fetch', fetch)
+  return fetch
+}
+
+it('shows Connected apps only while ODS has them switched on', async () => {
+  connectedApps(true)
+  render(<SettingsModal />)
+  fireEvent.click(await screen.findByRole('button', {name: 'Connected apps', exact: true}))
+  expect(await screen.findByText('Connected apps content')).toBeVisible()
+  expect(screen.getByText('apps content')).not.toBeVisible()
+  fireEvent.change(screen.getByLabelText('Search settings'), {target: {value: 'gmail'}})
+  expect(screen.getByRole('button', {name: 'Connected apps', exact: true})).toBeVisible()
+})
+
+it('hides Connected apps, and a link to them opens General, while switched off', async () => {
+  const fetch = connectedApps(false)
+  renderBase(<MemoryRouter initialEntries={['/settings?section=apps']}><SettingsModal /></MemoryRouter>)
+  expect(await screen.findByText('general content')).toBeVisible()
+  expect(screen.queryByRole('button', {name: 'Connected apps', exact: true})).toBeNull()
+  expect(screen.queryByText('Connected apps content')).toBeNull()
+  expect(fetch).toHaveBeenCalledWith('/api/pixel/connections/enabled')
+})
+
+it('keeps the requested apps section on a failed setting read and retries without reloading', async () => {
+  const fetch = vi.fn().mockResolvedValueOnce({ok: false, status: 503})
+    .mockResolvedValue({ok: true, json: async () => ({enabled: true})})
+  vi.stubGlobal('fetch', fetch)
+  renderBase(<MemoryRouter initialEntries={['/settings?section=apps']}><SettingsModal /></MemoryRouter>)
+  expect(await screen.findByText('Connected apps settings are unavailable right now.')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Connected apps', exact: true})).toBeVisible()
+  expect(screen.queryByText('general content')).toBeNull()
+  fireEvent.click(screen.getByRole('button', {name: 'Retry', exact: true}))
+  expect(await screen.findByText('Connected apps content')).toBeVisible()
+  expect(fetch).toHaveBeenCalledTimes(2)
+})
+
+it('rechecks on focus and never lets an older disabled reply replace the newer choice', async () => {
+  let older
+  const fetch = vi.fn().mockImplementationOnce(() => new Promise(resolve => { older = resolve }))
+    .mockResolvedValue({ok: true, json: async () => ({enabled: true})})
+  vi.stubGlobal('fetch', fetch)
+  renderBase(<MemoryRouter initialEntries={['/settings?section=apps']}><SettingsModal /></MemoryRouter>)
+  fireEvent(window, new Event('focus'))
+  expect(await screen.findByText('Connected apps content')).toBeVisible()
+  await act(async () => { older({ok: true, json: async () => ({enabled: false})}) })
+  expect(screen.getByText('Connected apps content')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Connected apps', exact: true})).toBeVisible()
+})
+
+it('retains a verified enabled section through a later outage, but honors a verified opt-out', async () => {
+  let reply = {ok: true, json: async () => ({enabled: true})}
+  const fetch = vi.fn(async () => reply)
+  vi.stubGlobal('fetch', fetch)
+  renderBase(<MemoryRouter initialEntries={['/settings?section=apps']}><SettingsModal /></MemoryRouter>)
+  expect(await screen.findByText('Connected apps content')).toBeVisible()
+  reply = {ok: false, status: 503}
+  fireEvent(window, new Event('focus'))
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
+  expect(screen.getByText('Connected apps content')).toBeVisible()
+  reply = {ok: true, json: async () => ({enabled: false})}
+  fireEvent(window, new Event('focus'))
+  await waitFor(() => expect(screen.queryByRole('button', {name: 'Connected apps', exact: true})).toBeNull())
+  expect(screen.getByText('general content')).toBeVisible()
+})
+
+it('calls the model provider settings Portal models, still found by searching connections', () => {
+  connectedApps(false)
+  render(<SettingsModal />)
+  fireEvent.click(screen.getByRole('button', {name: 'Portal models', exact: true}))
+  expect(screen.getByText('connections content')).toBeVisible()
+  fireEvent.change(screen.getByLabelText('Search settings'), {target: {value: 'connections'}})
+  expect(screen.getByRole('button', {name: 'Portal models', exact: true})).toBeVisible()
+  expect(screen.queryByRole('button', {name: 'Portal connections'})).toBeNull()
+})
 
 it('renders inline, filters sections, and preserves form state across navigation', () => {
   const show = vi.spyOn(HTMLDialogElement.prototype, 'showModal').mockImplementation(function () { this.open = true })

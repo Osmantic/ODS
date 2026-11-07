@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -34,8 +35,13 @@ def inputs(tmp_path, monkeypatch):
     document = {'agents': {'list': [{'id': 'pixel', 'workspace': str(home / '.openclaw/workspace-pixel')}],
         'defaults': {'sandbox': {'docker': {'binds': [str(home / '.openclaw/.ods-exec-control') + ':/run/pixel-ods-control:ro']}}}},
         'gateway': {'port': 18789}}
+    sidefiles = {'gateway.env': b'fixture environment\n', 'onboarding.json': b'{}\n'}
+    for name, body in sidefiles.items():
+        (candidate / name).write_bytes(body)
+        (candidate / name).chmod(0o600)
     for name, value in [('openclaw.json', document), ('candidate.json', {'status': 'staged',
-        'pixelSourceRef': 'a' * 40, 'requiresServiceQualification': True})]:
+        'pixelSourceRef': 'a' * 40, 'requiresServiceQualification': True,
+        'connectionSidefiles': {name: hashlib.sha256(body).hexdigest() for name, body in sidefiles.items()}})]:
         (candidate / name).write_text(json.dumps(value))
         (candidate / name).chmod(0o600)
     (candidate / 'workspace').mkdir()
@@ -85,6 +91,8 @@ def test_layout_preserves_candidate_and_generates_unloaded_private_template(inpu
     assert '/usr/bin/env -u NODE_OPTIONS -u NODE_PATH' in (home / 'openclaw').read_text()
     assert json.loads((home / '.openclaw/openclaw.json').read_text()) == json.loads(before)
     assert (home / '.openclaw/openclaw.json').read_bytes() == before
+    for name in ('candidate.json', 'gateway.env', 'onboarding.json'):
+        assert (home / '.openclaw' / name).read_bytes() == (inputs['candidate'] / name).read_bytes()
     assert (inputs['candidate'] / 'openclaw.json').read_bytes() == before
     assert (home / '.openclaw/workspace-pixel/AGENTS.md').read_text() == 'Keep upstream workspace instructions.'
     assert (home / '.openclaw/.ods-exec-control/cancellable-exec.sh').stat().st_mode & 0o777 == 0o500
@@ -108,10 +116,14 @@ def test_layout_can_live_under_installed_ods_source(inputs):
 
 @pytest.mark.parametrize('fault', ['existing', 'home-symlink', 'workspace-symlink', 'wrong-home',
                                  'wrong-bind', 'not-socket', 'root', 'wrapper-symlink',
-                                 'mutable-image', 'invalid-project', 'invalid-gid', 'migration'])
+                                 'mutable-image', 'invalid-project', 'invalid-gid', 'migration',
+                                 'sidefile-changed', 'sidefile-missing', 'sidefile-public'])
 def test_layout_rejects_unsafe_inputs_before_publication(inputs, monkeypatch, fault):
     home, candidate = inputs['home'], inputs['candidate']
     if fault == 'migration': (candidate / 'migration.json').write_text('{}')
+    if fault == 'sidefile-changed': (candidate / 'gateway.env').write_text('changed')
+    if fault == 'sidefile-missing': (candidate / 'onboarding.json').unlink()
+    if fault == 'sidefile-public': (candidate / 'gateway.env').chmod(0o644)
     if fault == 'existing': home.mkdir()
     if fault == 'home-symlink': home.symlink_to(candidate, target_is_directory=True)
     if fault == 'workspace-symlink':

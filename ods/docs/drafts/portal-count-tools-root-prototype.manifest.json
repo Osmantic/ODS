@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "status": "incomplete-draft-prototype-not-applied",
+  "baseRevision": "fa00b6e78d569d1d313a1d110cffe571f594abbc",
+  "patchSha256": "b26dcdf609c652e7415ab8776668639094e4b2180d08250fc05b1933bdf2d239",
+  "files": [
+    {
+      "path": "ods/bin/pixel_connections/catalog.py",
+      "baseSha256": "6f8f1abdbabed6a5b2e349cb9fc562a2967e31d94978a67b881b4363503623f0",
+      "candidateSha256": "741297f05c0d7132cc21ad80af4fc0703c72a3c7883172fe5bfc63f6ced6b5a5",
+      "baseBytes": 4136,
+      "candidateBytes": 4181
+    },
+    {
+      "path": "ods/bin/pixel_connections/planner.py",
+      "baseSha256": "92adad8f06dcd4654a6f262406fc1919e29228059acc4a29c4c88250e0d76b49",
+      "candidateSha256": "10743666077b4befaec5472733107f25a0b3c0972a6acde167822abe537067aa",
+      "baseBytes": 11452,
+      "candidateBytes": 11502
+    },
+    {
+      "path": "ods/vendor/pixel/scripts/render-config.mjs",
+      "baseSha256": "019e8660460bc86e2b76b168a659a524f6ea5dae79daf2b89505e6d8b9f13531",
+      "candidateSha256": "a6b2600ba6dd12be22c26a9db8161b4a40a53560a47105a449bbfea9d98d05d6",
+      "baseBytes": 16430,
+      "candidateBytes": 16475
+    },
+    {
+      "path": "ods/vendor/pixel/scripts/migrate-source-broker-config.mjs",
+      "baseSha256": "1642a9b19143e9649baa086ef979edc4013c98aee2899d5a67cdc9032daecedb",
+      "candidateSha256": "f38b60a4e32656c8a2b69f0477b7a715dcec03f168af0ab64f8cdf3f58a197f2",
+      "baseBytes": 2575,
+      "candidateBytes": 2620
+    },
+    {
+      "path": "ods/extensions/services/pixel-agent/plugin/bootstrap-capabilities.mjs",
+      "baseSha256": "af0dd049946497bf711a9de1b0a2956b29f50497f01d1629f4cfb8f08dafd8af",
+      "candidateSha256": "ef98417aeba3bf95adf451a5e079fe469d9f363552b39deb6b95bc3ed7b43b62",
+      "baseBytes": 13296,
+      "candidateBytes": 13341
+    },
+    {
+      "path": "ods/tests/test_pixel_connection_status.py",
+      "baseSha256": "c05ffc6861068474475157e7d3d1a741fb2e30301b4eedf20cf247d7283a24af",
+      "candidateSha256": "7d1cc42d1aee8e75811169580a70a256cc867d53134bfa89a2c36702af371cdc",
+      "baseBytes": 16713,
+      "candidateBytes": 17597
+    },
+    {
+      "path": "ods/tests/test_pixel_connection_planner.py",
+      "baseSha256": "7590dc69c504174efcedba22143b10a39a1a64e3d3683876385730ee5c660700",
+      "candidateSha256": "af33ea76190e8febd350ed8da90f2ea181750fe3299b18f488b1b7463bd418c6",
+      "baseBytes": 27506,
+      "candidateBytes": 31319
+    }
+  ],
+  "checks": [
+    {
+      "name": "git-diff-check-selected-seven-files",
+      "exitCode": 0,
+      "passed": true
+    }
+  ],
+  "testsRun": false,
+  "modelExecuted": false,
+  "providerQueried": false,
+  "installedOrFrozenFilesChanged": false,
+  "mainEditedByThisAgent": false,
+  "versionBundlePinsTrustSdkChanged": false,
+  "alignedContract": {
+    "path": "portal-count-tools.contract.json",
+    "sha256": "c114cb2db3c39e65191aa8b5ad308b57bb79ba65ad8b12b0247ecc35cd439efc"
+  },
+  "written": [
+    "Counts join only the existing gmail.read/calendar.read capabilities; OAuth scopes unchanged.",
+    "Planner numeric slices replaced with explicit groups; legacy tool order retained, counts only in read groups.",
+    "Renderer and legacy config migration enumerate the two new count IDs.",
+    "Bootstrap email/Calendar enums include count IDs.",
+    "Unexecuted regression tests cover legacy groups/order, independent read grants and renderer convergence."
+  ],
+  "pending": [
+    "Source plugin/query engine/broker B prototype has not been assembled in this clone.",
+    "Bootstrap enum-to-plugin manifest requires the actual matching B Source implementation.",
+    "Planner/catalog/renderer tests and composed Source/bootstrap integration have NOT been run.",
+    "Prompt/helper named count IDs, count-preference guides, workspace/migration copy and historical digest compatibility are NOT implemented.",
+    "Calendar timezone stays on existing agents.defaults.userTimezone; no duplicate plugin setting introduced.",
+    "No release metadata, source bundle, version41, pins, installation or model qualification included.",
+    "Root test-only English registry fix133d22053007a0721f9c25f730f05f4526765a4b is not in this fa00 clone.",
+    "Review and assemble both prototypes before any runtime use; this checkpoint is not a merge/release recommendation.",
+    "Optional whole-clone git-diff name-only scan was stopped to avoid a slow DrvFS metadata walk; patch and checks are scoped to the seven assigned files."
+  ],
+  "originalPatchSha256": "afd32f9ea79ff1c98ed4d1f123afb06e8ad9d5c05769c376936baad5cd7dadac",
+  "originalContractSha256": "2a31965b56fa803e93ee32bb556e206aebe7042db1eab096520ac1803dd7a88c",
+  "artifactFormatting": "Public artifacts use LF; empty patch context lines omit their optional space. The patch is still unapplied; git apply --check verified it against the active branch."
+}

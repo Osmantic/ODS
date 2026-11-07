@@ -1826,9 +1826,9 @@ normalized_fetch.update({
 normalized_agent_tools["deny"] = [
     item for item in normalized_agent_deny
     if item not in {
-        "web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
+        "web_search", "web_fetch", "pixel_ods_status", "pixel_ods_connections_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
         "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-        "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry",
+        "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry", "pixel_ods_notes", "pixel_ods_notify", "pixel_ods_mcp",
         "pixel_web_extract"
     }
 ]
@@ -1836,17 +1836,17 @@ normalized_also_allow = [item for item in normalized_also_allow if item != "pixe
 normalized_sandbox_allow = [item for item in normalized_sandbox_allow if item != "pixel_web_extract"]
 for extension_tool in (
     "cron", "create_goal", "get_goal", "update_goal", "update_plan",
-    "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
+    "pixel_ods_status", "pixel_ods_connections_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
     "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_artifact", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"
+    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_artifact", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry", "pixel_ods_notes", "pixel_ods_notify", "pixel_ods_mcp"
 ):
     if extension_tool not in normalized_also_allow:
         normalized_also_allow.append(extension_tool)
 for permitted_tool in (
     "cron", "create_goal", "get_goal", "update_goal", "update_plan",
-    "web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
+    "web_search", "web_fetch", "pixel_ods_status", "pixel_ods_connections_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
     "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_artifact", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"
+    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_artifact", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry", "pixel_ods_notes", "pixel_ods_notify", "pixel_ods_mcp"
 ):
     if permitted_tool not in normalized_sandbox_allow:
         normalized_sandbox_allow.append(permitted_tool)
@@ -2093,7 +2093,7 @@ _ods_pixel_refresh_plugin_registry() {
     registry="$(ods_pixel_run_as_owner "$owner" "$home" "$openclaw_bin" \
         plugins registry --refresh --json 2>/dev/null)" || return 1
     jq -e --arg root "$plugin_root" '
-        (["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_project_build", "pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] | sort) as $tools
+        (["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_connections_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_project_build", "pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry", "pixel_ods_notes", "pixel_ods_notify", "pixel_ods_mcp"] | sort) as $tools
         | .refreshed == true
         and .registry.version == 1
         and .registry.refreshReason == "manual"
@@ -2113,7 +2113,7 @@ _ods_pixel_verify_plugin_loaded() {
     local owner="$1" home="$2" openclaw_bin="$3" plugin_root="$4"
     ods_pixel_run_as_owner "$owner" "$home" "$openclaw_bin" plugins list --json 2>/dev/null \
         | jq -e --arg root "$plugin_root" '
-            ["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_project_build", "pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] as $tools
+            ["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_connections_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_project_build", "pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry", "pixel_ods_notes", "pixel_ods_notify", "pixel_ods_mcp"] as $tools
             | [
                 .plugins[]?
                 | select(
@@ -2360,7 +2360,7 @@ _ods_pixel_start_stopped_access_service() {
 
 _ods_pixel_resume_completed_release() {
     local owner="$1" home="$2" pixel_root="$3" contract_sha="$4"
-    local status resume transaction_id outcome config_sha observed
+    local status resume transaction_id outcome config_sha observed source_start_sha
     local helper="${ODS_PIXEL_ACCESS_HELPER:-/usr/local/libexec/ods-pixel-access/pixel_model_transition.py}"
     local unit="${ODS_PIXEL_ACCESS_UNIT_PATH:-/etc/systemd/system/ods-pixel-access.service}"
     local state_dir="${ODS_PIXEL_ACCESS_STATE_DIR:-/var/lib/ods-pixel-access}"
@@ -2380,11 +2380,52 @@ _ods_pixel_resume_completed_release() {
     status="$(_ods_pixel_model_transition status "$owner" "$home")" || return 1
     if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
         _ods_pixel_check_source_transaction "$owner" || return 1
-        if printf '%s' "$status" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("transaction_id")==sys.argv[1] and "release_completion" not in d else 1)' "$ODS_PIXEL_SOURCE_TRANSACTION"; then
+        resume="$(printf '%s' "$status" | python3 -c '
+import json,re,sys
+d=json.load(sys.stdin)
+if (d.get("pending") is not True or d.get("kind") != "model" or d.get("phase") not in ("held","error")
+    or d.get("transaction_id") != sys.argv[1]):
+    raise SystemExit("Pixel source update does not own the pending release; preserve its admission hold")
+if "release_completion" not in d:
+    print("not-applied")
+    raise SystemExit(0)
+c=d["release_completion"]
+if (not isinstance(c,dict) or set(c) != {"outcome","config_sha256"}
+    or c["outcome"] != "apply" or not isinstance(c["config_sha256"],str)
+    or re.fullmatch("[a-f0-9]{64}",c["config_sha256"]) is None
+    or not isinstance(d.get("start_config_sha256"),str)
+    or re.fullmatch("[a-f0-9]{64}",d["start_config_sha256"]) is None):
+    raise SystemExit("Pixel source update has an incompatible release completion; preserve its admission hold")
+print(c["config_sha256"],d["start_config_sha256"])
+' "$ODS_PIXEL_SOURCE_TRANSACTION")" || return 1
+        if [[ "$resume" == not-applied ]]; then
             # This exact source update acquired admission before Phase06 copy.
             # No release has been applied yet; continue the same staged plan.
             return 0
         fi
+        read -r config_sha source_start_sha <<< "$resume"
+        observed="$(ods_pixel_run_as_owner "$owner" "$home" sha256sum "$home/.openclaw/openclaw.json")" || return 1
+        observed="${observed%% *}"
+        # ODS's overlay can restore the exact configuration held before a
+        # vendor apply. Accept that protected baseline or the vendor's exact
+        # completion, never an arbitrary same-mode owner configuration. Other
+        # non-baseline overlays still require separate verified recovery.
+        if [[ ! "$observed" =~ ^[a-f0-9]{64}$ \
+            || ( "$observed" != "$config_sha" && "$observed" != "$source_start_sha" ) ]]; then
+            printf '%s\n' 'error: source release configuration is unbound; preserve its admission hold' >&2
+            return 1
+        fi
+        config_sha="$observed"
+        # Re-prove this exact process/config under the same protected hold.
+        # Only final source finish may release admission after all ODS work.
+        _ods_pixel_verify_current_runtime "$owner" "$home" "$pixel_root" "$ODS_PIXEL_SOURCE_TRANSACTION" || return 1
+        observed="$(ods_pixel_run_as_owner "$owner" "$home" sha256sum "$home/.openclaw/openclaw.json")" || return 1
+        if [[ "${observed%% *}" != "$config_sha" ]]; then
+            printf '%s\n' 'error: source release configuration changed during verification; preserve its admission hold' >&2
+            return 1
+        fi
+        _ods_pixel_mark_verified_installing "$owner" "$home" "$contract_sha" "$pixel_root"
+        return
     fi
     resume="$(printf '%s' "$status" | python3 -c '
 import json,re,sys
@@ -2486,7 +2527,7 @@ _ods_pixel_finish_release_transition() {
 }
 
 _ods_pixel_restart_gateway_and_verify() {
-    local owner="$1" home="$2" pixel_root="$3" attempt ready=false previous_pid current_pid gateway_port
+    local owner="$1" home="$2" pixel_root="$3" previous_pid current_pid gateway_port
     local transaction_id="${4:-}"
     [[ -z "$transaction_id" || "$transaction_id" =~ ^[a-f0-9]{64}$ ]] || return 1
     # Background model promotion does not inherit Phase 06's gateway-port
@@ -2522,26 +2563,7 @@ _ods_pixel_restart_gateway_and_verify() {
         [[ "$current_pid" == "$previous_pid" ]] || return 1
         kill -TERM "$previous_pid" || return 1
     fi
-    current_pid=""
-    for attempt in {1..60}; do
-        current_pid="$(systemctl show openclaw-gateway.service -p MainPID --value 2>/dev/null || true)"
-        if [[ "$current_pid" =~ ^[1-9][0-9]*$ \
-            && ( ! "$previous_pid" =~ ^[1-9][0-9]*$ || "$current_pid" != "$previous_pid" ) ]] \
-            && systemctl is-active --quiet openclaw-gateway.service; then
-            break
-        fi
-        sleep 1
-    done
-    [[ "$current_pid" =~ ^[1-9][0-9]*$ \
-        && ( ! "$previous_pid" =~ ^[1-9][0-9]*$ || "$current_pid" != "$previous_pid" ) ]] || return 1
-    for attempt in {1..60}; do
-        if _ods_pixel_gateway_health "$gateway_port"; then
-            ready=true
-            break
-        fi
-        (( attempt < 60 )) && sleep 2
-    done
-    [[ "$ready" == true ]] || return 1
+    _ods_pixel_wait_restarted_gateway "$previous_pid" "$gateway_port" || return 1
     # A fresh install can finish the gateway HTTP listener while OpenClaw's
     # separate CLI process is still settling its newly-created plugin registry
     # under first-boot memory and I/O pressure. The gateway itself already
@@ -2890,7 +2912,7 @@ _ods_pixel_initial_unconfigured_marker() {
     ods_pixel_run_as_owner "$owner" "$home" python3 - \
         "$home/.config/ods/pixel-managed.json" "$home/.openclaw/openclaw.json" \
         "${INSTALL_DIR:?}" "$home" "${PIXEL_SOURCE_REF:?}" "${3:-}" <<'PY'
-import json, os, pathlib, re, stat, sys
+import json, os, pathlib, re, stat, subprocess, sys
 marker = json.load(open(sys.argv[1]))
 initial = (
     set(marker) == {"schema_version", "manager", "state", "initial_active_state",
@@ -2926,7 +2948,10 @@ if not sys.argv[6]:
 manifest = json.loads((pathlib.Path(sys.argv[6]) / 'RELEASE-MANIFEST.json').read_text())
 plugins = config.get('plugins') if isinstance(config, dict) else None
 meta = config.get('meta') if isinstance(config, dict) else None
-if (set(config) != {'plugins', 'meta'} or not isinstance(plugins, dict)
+gateway = config.get('gateway') if isinstance(config, dict) else None
+has_gateway = isinstance(config, dict) and 'gateway' in config
+if (set(config) not in ({'plugins', 'meta'}, {'plugins', 'meta', 'gateway'})
+        or not isinstance(plugins, dict)
         or set(plugins) != {'entries'} or not isinstance(meta, dict)
         or set(meta) != {'lastTouchedVersion', 'lastTouchedAt'}
         or meta['lastTouchedVersion'] != manifest['openclaw']
@@ -2939,6 +2964,35 @@ if (not isinstance(entries, dict) or not entries
         or any(not isinstance(value, dict) or set(value) != {'enabled'}
                or value['enabled'] is not True for value in entries.values())):
     raise SystemExit(1)
+if has_gateway:
+    # The installer enables this endpoint before apply. It is still an inert
+    # first-install artifact only when its whole shape matches and no unit exists.
+    value = gateway
+    for key in ('http', 'endpoints', 'chatCompletions', 'enabled'):
+        if not isinstance(value, dict) or set(value) != {key}:
+            raise SystemExit(1)
+        value = value[key]
+    if value is not True:
+        raise SystemExit(1)
+    try:
+        result = subprocess.run(
+            ['/usr/bin/systemctl', 'show', 'openclaw-gateway.service',
+             '--property=LoadState', '--property=ActiveState', '--property=MainPID'],
+            capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        raise SystemExit(1)
+    if result.returncode != 0 or len(result.stdout) > 1024:
+        raise SystemExit(1)
+    fields = {}
+    for line in result.stdout.splitlines():
+        if '=' not in line:
+            raise SystemExit(1)
+        key, _, value = line.partition('=')
+        if key in fields:
+            raise SystemExit(1)
+        fields[key] = value
+    if fields != {'LoadState': 'not-found', 'ActiveState': 'inactive', 'MainPID': '0'}:
+        raise SystemExit(1)
 raise SystemExit(0)
 PY
 }
@@ -3108,16 +3162,17 @@ def write(path, content, mode, uid=0, gid=0):
         if os.path.exists(temporary): os.unlink(temporary)
 
 host = code_source / 'extensions/services/pixel-agent/host'
-for name in ('access_mode_server.py', 'unix_peer.py', 'access_mode_worker.py', 'pixel_access_mode.py', 'access_mode_config.py', 'settings_transaction.py', 'provider_transaction.py', 'model_transaction.py', 'access_release_transaction.py'):
+for name in ('access_mode_server.py', 'unix_peer.py', 'access_mode_worker.py', 'pixel_access_mode.py', 'access_mode_config.py', 'settings_transaction.py', 'provider_transaction.py', 'model_transaction.py', 'access_release_transaction.py', 'connection_transaction.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs', 'native_mcp_owner.py', 'native_mcp_oauth.mjs'):
     write(target / name, (host / name).read_bytes(), 0o644)
 write(target / 'pixel_access_bridge.py', (code_source / 'bin/pixel_access_bridge.py').read_bytes(), 0o644)
 write(target / 'pixel_gateway_service.py', (code_source / 'bin/pixel_gateway_service.py').read_bytes(), 0o644)
 write(target / 'pixel_access_client.py', (code_source / 'bin/pixel_access_client.py').read_bytes(), 0o644)
+write(target / 'pixel_connection_agent_status.py', (code_source / 'bin/pixel_connection_agent_status.py').read_bytes(), 0o644)
 write(target / 'pixel_access_reconcile.py', (code_source / 'bin/pixel_access_reconcile.py').read_bytes(), 0o644)
 write(target / 'pixel_model_transition.py', (code_source / 'bin/pixel_model_transition.py').read_bytes(), 0o644)
 write(target / 'pixel_source_upgrade.py', (code_source / 'bin/pixel_source_upgrade.py').read_bytes(), 0o644)
 write(target / 'pixel_access_protocol.py', (code_source / 'bin/pixel_access_protocol.py').read_bytes(), 0o644)
-for name in ('pixel_model_contract.py', 'pixel_model_coordinator.py'):
+for name in ('pixel_model_contract.py', 'pixel_model_coordinator.py', 'pixel_schedules.py'):
     write(target / name, (code_source / 'bin' / name).read_bytes(), 0o644)
 settings_package = target / 'pixel_settings'
 settings_package.mkdir(mode=0o755, exist_ok=True)
@@ -3137,6 +3192,16 @@ for name in ('__init__.py', 'config.py', 'store.py', 'activation_config.py',
              'managed_deployment.py', 'service_environment.py', 'service_activation.py',
              'runtime_custody.py', 'coordinator.py'):
     write(provider_package / name, (code_source / 'bin/pixel_provider' / name).read_bytes(), 0o644)
+connections_package = target / 'pixel_connections'
+connections_package.mkdir(mode=0o755, exist_ok=True)
+info = connections_package.lstat()
+if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+    raise SystemExit("Pixel connections program directory is not root protected")
+os.chmod(connections_package, 0o755, follow_symlinks=False)
+for name in ('__init__.py', 'state.py', 'status.py', 'catalog.py', 'oauth.py', 'custody.py', 'planner.py',
+             'coordinator.py', 'source_backend.py', 'lifecycle.py', 'approvals.py', 'activity.py', 'drafts.py', 'plugins.py', 'native_mcp.py',
+             'native_apps.py', 'native_enrollment.py', 'native_contract.py', 'native_public.py', 'native_access.py', 'google_app.py'):
+    write(connections_package / name, (code_source / 'bin/pixel_connections' / name).read_bytes(), 0o644)
 config_dir = pathlib.Path('/etc/ods')
 config_dir.mkdir(mode=0o755, exist_ok=True)
 info = config_dir.lstat()
@@ -3643,16 +3708,75 @@ _ods_pixel_source_checkout() {
     printf '%s\n' "$source_root"
 }
 
+_ods_pixel_gateway_deadline() {
+    python3 -I - "$@" <<'PY'
+import math, sys, time
+if len(sys.argv) not in (3, 4):
+    raise SystemExit(1)
+try:
+    value = float(sys.argv[2])
+    cap = float(sys.argv[3]) if len(sys.argv) == 4 else 300.0
+except ValueError:
+    raise SystemExit(1) from None
+if not math.isfinite(value) or not math.isfinite(cap) or not 0 < cap <= 300:
+    raise SystemExit(1)
+if sys.argv[1] == 'start' and 0 < value <= 300:
+    print(time.monotonic() + value)
+elif sys.argv[1] == 'remaining':
+    remaining = min(cap, value - time.monotonic())
+    # A rounded zero disables coreutils timeout rather than expiring it.
+    if remaining <= .001:
+        raise SystemExit(1)
+    print(f'{remaining:.6f}')
+else:
+    raise SystemExit(1)
+PY
+}
+
+_ods_pixel_wait_restarted_gateway() {
+    local previous_pid="$1" port="$2" budget="${3:-300}" deadline remaining current_pid stage=process
+    deadline="$(_ods_pixel_gateway_deadline start "$budget")" || return 1
+    while remaining="$(_ods_pixel_gateway_deadline remaining "$deadline" 5)"; do
+        stage=process
+        current_pid="$(timeout --kill-after=1 "$remaining" \
+            systemctl show openclaw-gateway.service -p MainPID --value 2>/dev/null || true)"
+        if [[ "$current_pid" =~ ^[1-9][0-9]*$ \
+            && ( ! "$previous_pid" =~ ^[1-9][0-9]*$ || "$current_pid" != "$previous_pid" ) ]]; then
+            remaining="$(_ods_pixel_gateway_deadline remaining "$deadline" 5)" || break
+            if timeout --kill-after=1 "$remaining" systemctl is-active --quiet openclaw-gateway.service; then
+                stage=endpoint
+                if _ods_pixel_gateway_health "$port" "$deadline"; then
+                    _ods_pixel_gateway_deadline remaining "$deadline" >/dev/null || break
+                    return 0
+                fi
+            fi
+        fi
+        remaining="$(_ods_pixel_gateway_deadline remaining "$deadline" 2)" || break
+        sleep "$remaining"
+    done
+    printf 'error: Pixel gateway readiness exceeded its bounded startup deadline (waiting for %s).\n' "$stage" >&2
+    return 1
+}
+
 _ods_pixel_gateway_health() {
     # Read-only discovery: prefer direct IPv6 loopback; retain IPv4-only hosts.
     # Split the existing five-second probe budget across the two candidates.
-    local port="${1:-18789}" host body
+    local port="${1:-18789}" deadline="${2:-}" host body max_time=2.5
+    local -a health_check=(jq -e '.ok == true and .status == "live"')
     [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] && (( port <= 65535 )) || return 1
     for host in '[::1]' '127.0.0.1'; do
-        if body="$(curl --noproxy '*' --fail --silent --show-error --max-time 2.5 \
-            "http://${host}:${port}/health" 2>/dev/null)" \
-            && jq -e '.ok == true and .status == "live"' >/dev/null 2>&1 <<<"$body"; then
-            return 0
+        if [[ -n "$deadline" ]]; then
+            max_time="$(_ods_pixel_gateway_deadline remaining "$deadline" 2.5)" || return 1
+        fi
+        if body="$(curl --noproxy '*' --fail --silent --show-error --max-time "$max_time" \
+            "http://${host}:${port}/health" 2>/dev/null)"; then
+            if [[ -n "$deadline" ]]; then
+                max_time="$(_ods_pixel_gateway_deadline remaining "$deadline" 5)" || return 1
+                health_check=(timeout --kill-after=1 "$max_time" jq -e '.ok == true and .status == "live"')
+            fi
+            if "${health_check[@]}" >/dev/null 2>&1 <<<"$body"; then
+                return 0
+            fi
         fi
     done
     return 1
@@ -4838,12 +4962,104 @@ finally:
 PY
 }
 
+_ods_pixel_google_custody() {
+    # The Source Broker's Google sign-in is root-only. Without usable sudo it counts
+    # as absent, so an install never turns on a source it cannot see is connected.
+    local token="${ODS_PIXEL_SOURCE_TOKEN_PATH:-/var/lib/pixel-source-broker/private/google-token.json}"
+    if [[ "${ODS_SUDO_AVAILABLE:-true}" != false ]] && ods_sudo test -f "$token"; then
+        printf '%s\n' present
+    else
+        printf '%s\n' absent
+    fi
+}
+
+_ods_pixel_contract_uses_source_broker() {
+    jq -e '.emailLimbEnabled == true or .calendarLimbEnabled == true or .socialLimbEnabled == true' \
+        "$1" >/dev/null
+}
+
+_ods_pixel_install_source_broker_kit() {
+    local owner="$1" pixel_root="$2"
+    # The access coordinator connects a Google account later without running owner
+    # code as root: it installs only this root-owned copy of the exact Pixel broker,
+    # its units and its environment template, taken here from this install's
+    # configured Pixel checkout. Nothing runs until an owner connects.
+    ods_sudo python3 -I - "$pixel_root" "$(id -u "$owner")" <<'PY'
+import os, pathlib, stat, sys, tempfile
+
+root, owner_uid = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+kit = pathlib.Path('/usr/local/libexec/ods-pixel-access/pixel_connections/source-broker-kit')
+units = ('pixel-source-broker.service', 'pixel-source-broker.timer', 'pixel-source-action@.service',
+         'pixel-source-reconcile@.service', 'pixel-source-direct.service', 'pixel-source-direct.path',
+         'pixel-source-exchange@.service', 'pixel-source-revoke.service')
+sources = {'broker.py': root / 'deploy/source-broker/broker.py',
+           'source-broker.env': root / '.generated/source-broker.env'}
+sources.update({unit: root / '.generated' / unit for unit in units})
+data = {}
+for name, source in sources.items():
+    descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as handle:
+        info = os.fstat(handle.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid not in (0, owner_uid)
+                or info.st_size > 2 * 1024 * 1024):
+            raise SystemExit(f'Unsafe Source Broker kit input: {name}')
+        data[name] = handle.read(2 * 1024 * 1024 + 1)
+# /usr/local/libexec is not present on every fresh installation. Create only
+# that missing component, after checking its existing root-owned ancestors.
+def protected_directory(directory):
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != 0 or info.st_mode & 0o022):
+        raise SystemExit('The Source Broker kit directory is not root protected')
+
+for ancestor in (pathlib.Path('/usr'), pathlib.Path('/usr/local')):
+    protected_directory(ancestor)
+libexec = kit.parent.parent.parent
+created_libexec = not os.path.lexists(libexec)
+if created_libexec:
+    libexec.mkdir(mode=0o755)
+protected_directory(libexec)
+if created_libexec:
+    os.chmod(libexec, 0o755, follow_symlinks=False)
+# Preserve this shared directory's mode when it already existed.
+for directory in (kit.parent.parent, kit.parent, kit):
+    if not os.path.lexists(directory):
+        directory.mkdir(mode=0o755)
+    protected_directory(directory)
+    os.chmod(directory, 0o755, follow_symlinks=False)
+for entry in os.scandir(kit):
+    if entry.name not in data:
+        raise SystemExit(f'Unexpected file in the Source Broker kit: {entry.name}')
+for name, content in data.items():
+    descriptor, temporary = tempfile.mkstemp(prefix='.kit-', dir=kit)
+    try:
+        os.fchmod(descriptor, 0o644)
+        os.fchown(descriptor, 0, 0)
+        with os.fdopen(descriptor, 'wb') as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, kit / name)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+PY
+}
+
+_ods_pixel_install_source_broker_if_connected() {
+    local owner="$1" home="$2" pixel_root="$3" answers="$4" pixel_log="$5"
+    # Only an owner's connected app turns a source limb on; otherwise nothing runs.
+    _ods_pixel_contract_uses_source_broker "$answers" || return 0
+    ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" source-broker --confirm >>"$pixel_log" 2>&1
+}
+
 _ods_pixel_write_onboarding() {
     local owner="$1" home="$2" answers="$3" openclaw_bin="$4" plugin_path="$5" plugin_digest="$6"
     local web_search_provider="${7:-searxng}" parallel_path="${8:-}" parallel_digest="${9:-}"
     local context="${MAX_CONTEXT:-16384}" max_tokens reasoning=default
     local gateway_alias gateway_label runtime_model model_gateway_port="${PIXEL_MODEL_RELAY_PORT:-4006}" pixel_gateway_port gateway_key="${PIXEL_MODEL_RELAY_KEY:-}"
     local gateway_key_file write_status=0
+    local connections="${ODS_PORTAL_CONNECTIONS_FILE:-/etc/ods/portal-connections.json}" google_custody=absent
     if [[ "$context" =~ ^[0-9]+$ && "$context" -ge 4096 ]]; then
         :
     else
@@ -4900,6 +5116,12 @@ _ods_pixel_write_onboarding() {
         return 1
     }
 
+    # The owner's connected apps survive an update. Root is asked about the broker's
+    # sign-in only when a connection record exists.
+    if [[ -e "$connections" || -L "$connections" ]]; then
+        google_custody="$(_ods_pixel_google_custody)"
+    fi
+
     local renderer
     renderer="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/pixel-onboarding.py" || return 1
     [[ -f "$renderer" ]] || return 1
@@ -4916,7 +5138,8 @@ _ods_pixel_write_onboarding() {
         "$openclaw_bin" "$home" "$runtime_model" "$context" "$max_tokens" "$reasoning" \
         "$gateway_alias" "$gateway_label" "$model_gateway_port" "$pixel_gateway_port" "$gateway_key_file" \
         "${SEARXNG_PORT:-8888}" "$plugin_path" "$plugin_digest" \
-        "$web_search_provider" "$parallel_path" "$parallel_digest" || write_status=$?
+        "$web_search_provider" "$parallel_path" "$parallel_digest" \
+        "$connections" "$google_custody" || write_status=$?
     ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$gateway_key_file" || write_status=1
     return "$write_status"
 }
@@ -5307,6 +5530,110 @@ PY
     ods_sudo systemctl enable ods-pixel-project.service || return 1
 }
 
+# Portal integrations: the owner's notes, ntfy notifications and MCP servers.
+# Programs are root-owned in their own libexec folder; the unit runs as the owner.
+_ods_pixel_install_integrations() {
+    local owner="$1" home="$2" source="$3" stage name
+    local target=/usr/local/libexec/ods-pixel-integrations
+    local unit=/etc/systemd/system/pixel-integrations.service
+    [[ "$owner" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || return 1
+    [[ "$home" == /* && "$home" != / && ! "$home" =~ [[:space:]\"\\%] ]] || return 1
+    # The caller verifies the actual native access mode before this step.
+    # Tool-socket roles do not isolate state from owner commands in Full Access.
+    # Never infer a grant from this filesystem diagnostic or certify isolation
+    # merely because the gateway has no explicit state bind.
+    local state="$home/.config/ods/pixel-integrations" bound home_boundary state_node bound_source
+    home_boundary="$(systemctl show openclaw-gateway.service -p ProtectHome --value)" || return 1
+    case "$home_boundary" in
+        tmpfs) ;;
+        no) ai "Portal integrations enforce tool permissions; Full Access commands can also reach owner settings and secrets." ;;
+        *) ai_bad "Could not verify the Portal integrations filesystem boundary."; return 1 ;;
+    esac
+    state_node="$state"
+    while [[ -n "$state_node" && "$state_node" != / ]]; do
+        [[ ! -L "$state_node" ]] || { ai_bad "Portal integrations state must not use a symbolic-link parent."; return 1; }
+        state_node="${state_node%/*}"
+    done
+    bound="$(systemctl show openclaw-gateway.service -p BindPaths -p BindReadOnlyPaths --value)" || return 1
+    # Unsupported systemd escaping must not silently bypass the path check.
+    [[ "$bound" != *\\* && "$bound" != *\"* ]] || return 1
+    for name in $bound; do
+        name="${name#-}"; name="${name%%:*}"
+        bound_source="$(readlink -m -- "$name")" || return 1
+        if [[ "$state/" == "${bound_source%/}/"* ]]; then
+            ai_bad "The Portal gateway can see $name, which holds the integrations owner socket."
+            return 1
+        fi
+    done
+    stage="$(mktemp -d)" || return 1
+    local text
+    text="$(<"$source/pixel-integrations.service")" || { rm -rf -- "$stage"; return 1; }
+    text="${text//__PIXEL_SERVICE_USER__/$owner}"
+    text="${text//__PIXEL_HOME__/$home}"
+    [[ "$text" != *__PIXEL_* ]] || { rm -rf -- "$stage"; return 1; }
+    printf '%s\n' "$text" >"$stage/pixel-integrations.service" || { rm -rf -- "$stage"; return 1; }
+    ods_sudo install -d -o root -g root -m 0755 "$target" || { rm -rf -- "$stage"; return 1; }
+    for name in integrations_service.py integrations_common.py integrations_notes.py integrations_mcp.py \
+        integrations_apps.py integrations_app_service.py integrations_ntfy.py integrations_recovery.py unix_peer.py; do
+        ods_sudo install -o root -g root -m 0644 "$source/$name" "$target/$name" || { rm -rf -- "$stage"; return 1; }
+    done
+    ods_sudo install -o root -g root -m 0644 "$stage/pixel-integrations.service" "$unit" || { rm -rf -- "$stage"; return 1; }
+    rm -rf -- "$stage"
+    ods_sudo systemctl daemon-reload || return 1
+    ods_sudo systemctl enable pixel-integrations.service || return 1
+    ods_sudo systemctl restart pixel-integrations.service || return 1
+    ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 - "$home/.config/ods/pixel-integrations/owner.sock" <<'PY' || return 1
+import json, socket, sys, time
+# Type=simple is active before Python imports finish and either socket binds.
+# Bound the whole readiness check, including a peer that accepts but drips data.
+timeout_seconds = 60.0
+deadline = time.monotonic() + timeout_seconds
+last_failure = 'connection-unavailable'
+healthy = False
+while time.monotonic() < deadline:
+    try:
+        with socket.socket(socket.AF_UNIX) as client:
+            def bound_timeout():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError()
+                client.settimeout(min(10.0, remaining))
+
+            bound_timeout()
+            client.connect(sys.argv[1])
+            bound_timeout()
+            client.sendall(b'{"schemaVersion":1,"action":"get"}\n')
+            raw = bytearray()
+            limit = 1 << 20
+            while len(raw) <= limit and b'\n' not in raw:
+                bound_timeout()
+                piece = client.recv(min(65536, limit + 1 - len(raw)))
+                if not piece:
+                    break
+                raw.extend(piece)
+            if not raw.endswith(b'\n') or raw.count(b'\n') != 1 or len(raw) > limit:
+                last_failure = 'invalid-reply'
+            else:
+                reply = json.loads(raw)
+                if isinstance(reply, dict) and reply.get('ok') is True and time.monotonic() < deadline:
+                    healthy = True
+                    break
+                last_failure = 'not-ready'
+    except TimeoutError:
+        last_failure = 'timeout'
+    except OSError:
+        last_failure = 'connection-unavailable'
+    except ValueError:
+        last_failure = 'invalid-reply'
+    remaining = deadline - time.monotonic()
+    if remaining > 0:
+        time.sleep(min(.2, remaining))
+if not healthy:
+    raise SystemExit('Portal integrations did not answer on the owner socket within 60 seconds '
+                     f'(last check: {last_failure}).')
+PY
+}
+
 _ods_pixel_wait_ingress() {
     local owner="$1" home="$2" attempts="${3:-60}" delay="${4:-1}" response
     [[ "$attempts" =~ ^[0-9]+$ && "$attempts" -ge 1 && "$attempts" -le 300 ]] || return 1
@@ -5483,6 +5810,8 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/plugin/context-compaction.mjs" \
         && -f "$plugin_root/plugin/model-runtime-readback.mjs" \
         && -f "$plugin_root/plugin/history-context.mjs" \
+        && -f "$plugin_root/plugin/integration-outcomes.mjs" \
+        && -f "$plugin_root/plugin/integration-review-recovery.mjs" \
         && -f "$plugin_root/host/pixel_ingress.mjs" \
         && -f "$plugin_root/host/chat_history_ledger.mjs" \
         && -f "$plugin_root/host/chat_image_store.mjs" \
@@ -5521,11 +5850,14 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-command-attempt-warning.json" \
         && -f "$plugin_root/host/openclaw-utf8-output.json" \
         && -f "$plugin_root/host/openclaw-image-envelope.json" \
+        && -f "$plugin_root/host/openclaw-plugin-tool-version.json" \
         && -f "$plugin_root/host/openclaw-context-usage.json" \
         && -f "$plugin_root/host/openclaw-no-tools-ingress.json" \
         && -f "$plugin_root/host/openclaw-yield-usage.json" \
+        && -f "$plugin_root/host/openclaw-finalize-tool-scope.json" \
         && -f "$plugin_root/host/openclaw-compaction-empty.json" \
         && -f "$plugin_root/host/openclaw-compaction-no-work.json" \
+        && -f "$plugin_root/host/openclaw-direct-tool-completion.json" \
         && -f "$plugin_root/host/openclaw-subagent-admission.json" \
         && -f "$plugin_root/host/openclaw-subagent-session.json" \
         && -f "$plugin_root/host/openclaw-hook-provenance.json" \
@@ -5734,6 +6066,14 @@ ods_pixel_install_default_agent() {
             ai_bad "Pixel's root-custodied Operations policy does not match the ODS-managed policy."
             return 1
         fi
+        if ! _ods_pixel_install_source_broker_kit "$owner" "$pixel_root" >>"$pixel_log" 2>&1; then
+            ai_bad "Pixel could not prepare the Source Broker files that connected apps use. See $pixel_log."
+            return 1
+        fi
+        if ! _ods_pixel_install_source_broker_if_connected "$owner" "$home" "$pixel_root" "$answers" "$pixel_log"; then
+            ai_bad "Pixel could not start the isolated Source Broker for your connected apps. See $pixel_log."
+            return 1
+        fi
         if [[ "${FORCE:-false}" == true ]]; then
             # Forced reinstall retires an interrupted agent sandbox while
             # the gateway is stopped, then runs the unchanged verifier.
@@ -5788,7 +6128,25 @@ ods_pixel_install_default_agent() {
             ai_bad "Pixel's root-custodied Operations policy does not match the ODS-managed policy."
             return 1
         fi
+        if ! _ods_pixel_install_source_broker_kit "$owner" "$pixel_root" >>"$pixel_log" 2>&1; then
+            ai_bad "Pixel could not prepare the Source Broker files that connected apps use. See $pixel_log."
+            return 1
+        fi
+        if ! _ods_pixel_install_source_broker_if_connected "$owner" "$home" "$pixel_root" "$answers" "$pixel_log"; then
+            ai_bad "Pixel could not start the isolated Source Broker for your connected apps. See $pixel_log."
+            return 1
+        fi
         if [[ "$same_verified_source" == true ]]; then
+            # Pixel never re-applies its active release, so the access coordinator
+            # connects and disconnects apps on the live files. One it could not
+            # finish converges here, before the same-release comparison below.
+            if ! ods_pixel_run_as_owner "$owner" "$home" python3 -I \
+                "${INSTALL_DIR:?}/bin/pixel_connections/converge.py" "$home/.openclaw/openclaw.json" \
+                "$home/.config/pixel-agent/gateway.env" "$pixel_root/.generated/gateway.env" \
+                "$pixel_root/.env" "$home/.local/share/pixel" >>"$pixel_log" 2>&1; then
+                ai_bad "Pixel could not line up Portal's connected apps with this update. See $pixel_log."
+                return 1
+            fi
             if _ods_pixel_candidate_config_matches_live "$owner" "$home" "$pixel_root/dist/openclaw.json"; then
                 same_source_resume=true
                 ai "The exact Pixel release and runtime configuration are unchanged; refreshing the verified ODS extension without reapplying the release..."
@@ -5968,9 +6326,9 @@ ods_pixel_install_default_agent() {
         "$plugin_root/host/openclaw_tool_recovery.py" \
         --openclaw-bin "$openclaw_bin" \
         --restore-foreign "$home/.openclaw/ods-runtime-patches" \
-        --known tool-recovery completion-recovery image-envelope compaction-export \
+        --known tool-recovery completion-recovery image-envelope plugin-tool-version compaction-export \
             compaction-idle compaction-resume read-range tool-result-projection \
-            diagnostic-stream-writes command-attempt-warning utf8-output compaction-budget context-usage no-tools-ingress yield-usage compaction-empty compaction-no-work subagent-admission subagent-session hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
+            diagnostic-stream-writes command-attempt-warning utf8-output direct-tool-completion compaction-budget context-usage no-tools-ingress yield-usage finalize-tool-scope compaction-empty compaction-no-work subagent-admission subagent-session hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel could not restore OpenClaw runtime patches left by another ODS build. See $pixel_log."
         return 1
@@ -5997,6 +6355,16 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/completion-recovery" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's completion recovery repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Keep loaded manifest versions bound to each concrete plugin tool. Old or
+    # unknown Source APIs remain deferred when Source and SDK upgrades differ.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --plugin-tool-version \
+        --state-dir "$home/.openclaw/ods-runtime-patches/plugin-tool-version" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's plugin tool version metadata could not verify its package bytes. See $pixel_log."
         return 1
     fi
     # Keep screenshot bytes in native image blocks. JSON-encoding them as text
@@ -6104,15 +6472,6 @@ ods_pixel_install_default_agent() {
         ai_bad "Pixel's UTF-8 output repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
-    # Honor the configured compaction budget on slow local providers.
-    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
-        "$plugin_root/host/openclaw_tool_recovery.py" \
-        --openclaw-bin "$openclaw_bin" --compaction-budget \
-        --state-dir "$home/.openclaw/ods-runtime-patches/compaction-budget" \
-        >>"$pixel_log" 2>&1; then
-        ai_bad "Pixel's compaction budget repair could not verify its package bytes. See $pixel_log."
-        return 1
-    fi
     # Keep opaque UUIDs intact without disabling credential redaction.
     if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
         "$plugin_root/host/openclaw_tool_recovery.py" \
@@ -6168,6 +6527,16 @@ ods_pixel_install_default_agent() {
         ai_bad "Pixel's no-tools ingress repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
+    # The native finalizer may only narrow this run's ordinary tool surface.
+    # Bind its candidate merge semantics before restarting the gateway.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --finalize-tool-scope \
+        --state-dir "$home/.openclaw/ods-runtime-patches/finalize-tool-scope" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's finalizer tool-scope repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
     if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
         "$plugin_root/host/openclaw_tool_recovery.py" \
         --openclaw-bin "$openclaw_bin" --yield-usage \
@@ -6192,6 +6561,28 @@ ods_pixel_install_default_agent() {
         ai_bad "Pixel's compaction-no-work repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
+    # Direct native HTTP/RPC tool calls must complete the same lifecycle hooks
+    # as an embedded agent call, including on execution errors.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --direct-tool-completion \
+        --state-dir "$home/.openclaw/ods-runtime-patches/direct-tool-completion" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's direct-tool completion repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Activate the selection pipeline last. Its new helper imports must exist
+    # before publication; every earlier helper/embedded prefix remains loadable
+    # if a later source, dependency or custody admission refuses the update.
+    # This recipe also honors the configured local-provider compaction budget.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --compaction-budget \
+        --state-dir "$home/.openclaw/ods-runtime-patches/compaction-budget" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's compaction budget repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
     # OpenClaw persists plugin descriptors separately from its live config.
     # Rebuild that registry after any reviewed extension/config update, then
     # restart once so the gateway loads both the exact descriptor contract and
@@ -6207,6 +6598,7 @@ ods_pixel_install_default_agent() {
         ai_bad "Pixel could not recreate its agent sandbox for the reviewed ODS runtime. See $pixel_log."
         return 1
     fi
+    ai "Starting Portal's gateway; this may take a few minutes..."
     if ! _ods_pixel_restart_gateway_and_verify "$owner" "$home" "$pixel_root" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel could not restart and verify its gateway after the ODS runtime update. See $pixel_log."
@@ -6229,6 +6621,10 @@ ods_pixel_install_default_agent() {
     # owner transport have passed installation health. Existing model-budget
     # reconciliation never grants this capability to an older installation.
     _ods_pixel_install_project_runtime "$owner" "$home" "$plugin_root/host" || return 1
+    if ! _ods_pixel_install_integrations "$owner" "$home" "$plugin_root/host"; then
+        ai_bad "Could not install and start the Portal integrations service."
+        return 1
+    fi
     runtime_budget_status="$(_ods_pixel_apply_runtime_budget "$owner" "$home" \
         "$home/.openclaw/openclaw.json" "$openclaw_bin" "$answers" unix /var/lib/ods-pixel-project/control.sock)" || return 1
     case "$runtime_budget_status" in

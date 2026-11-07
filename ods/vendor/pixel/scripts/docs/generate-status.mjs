@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   compareSemver,
@@ -60,9 +61,12 @@ export function buildStatus(root = repoRoot) {
   };
 }
 
-export function renderStatus(status) {
-  const currentEvidence = path.posix.join('..', status.repository.evidenceDocument);
-  const supportedEvidence = path.posix.join('..', status.latestSupportedCompatibility.evidenceDocument);
+export function renderStatus(status, root = repoRoot) {
+  const reference = (document) => existsSync(path.join(root, document))
+    ? `[${markdownEscape(document)}](${path.posix.join('..', document)})`
+    : `\`${markdownEscape(document)}\` (not included in this source export)`;
+  const currentEvidence = reference(status.repository.evidenceDocument);
+  const supportedEvidence = reference(status.latestSupportedCompatibility.evidenceDocument);
   return `---
 title: Pixel status
 doc_type: reference
@@ -83,9 +87,9 @@ This page reports repository and release-contract facts. It does **not** report 
 | Surface | Source-derived status | Evidence boundary |
 |---|---|---|
 | Repository version | \`${markdownEscape(status.repository.pixelVersion)}\` | \`VERSION\` and \`RELEASE-MANIFEST.json\` agree |
-| Repository compatibility row | **${markdownEscape(status.repository.compatibilityStatus)}** | [${markdownEscape(status.repository.evidenceDocument)}](${currentEvidence}) binds source \`${markdownEscape(status.repository.evidenceSourceCommit)}\` |
+| Repository compatibility row | **${markdownEscape(status.repository.compatibilityStatus)}** | ${currentEvidence} binds source \`${markdownEscape(status.repository.evidenceSourceCommit)}\` |
 | OpenClaw compatibility | Canonical release pin is maintained in [OPENCLAW-COMPATIBILITY.json](../OPENCLAW-COMPATIBILITY.json) | This page does not duplicate an authored release pin |
-| Latest Supported compatibility row | Pixel \`${markdownEscape(status.latestSupportedCompatibility.pixelVersion)}\` | [${markdownEscape(status.latestSupportedCompatibility.evidenceDocument)}](${supportedEvidence}) |
+| Latest Supported compatibility row | Pixel \`${markdownEscape(status.latestSupportedCompatibility.pixelVersion)}\` | ${supportedEvidence} |
 | Deep Work runtime | **${markdownEscape(status.deepWork.featureStatus)}** | \`deepWorkCapability.runtimeEnabled\` is \`${status.deepWork.runtimeEnabled}\`; source presence and admission do not imply runtime authority |
 | Documented host scope | ${status.documentedHostScope.map(markdownEscape).join('; ')} | Manifest and qualification matrix agree; this is not a fresh clean-host qualification |
 
@@ -107,7 +111,7 @@ For installed-host truth, use the documented local status and verification comma
 export function generateStatus(mode, root = repoRoot) {
   const status = buildStatus(root);
   writeGenerated('docs/status.json', JSON.stringify(status, null, 2), mode, root);
-  writeGenerated('docs/status.md', renderStatus(status), mode, root);
+  writeGenerated('docs/status.md', renderStatus(status, root), mode, root);
   return status;
 }
 

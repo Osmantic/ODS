@@ -1,4 +1,18 @@
 # Gitleaks ignore file
+# Exact historical literal localStorage index comparisons in concurrent-tab tests;
+# these are public browser storage namespace names, not authentication values.
+72a6150eeff14baa9c5cc618bff8a8367e0b1d4b:ods/extensions/services/dashboard/src/lib/pixelConversationWriter.test.js:generic-api-key:17
+72a6150eeff14baa9c5cc618bff8a8367e0b1d4b:ods/extensions/services/dashboard/src/pages/Pixel.tab-selection.test.jsx:generic-api-key:45
+992e5716c9bad77870d9de73d15a4814d44da167:ods/extensions/services/dashboard/src/lib/pixelConversations.tabs.test.js:generic-api-key:163
+# Literal previous-release version labels in pytest parameter lists, not keys.
+57ea935ade9d3b32bdff1993f1ee209a82d5ba43:ods/tests/pixel_inference/test_client.py:generic-api-key:109
+546b675bf7f9ce0361c9da721de37abf8e6f0133:ods/tests/pixel_inference/test_client.py:generic-api-key:110
+# Pytest's literal version label "previous-4.3.41" beside an access-release ID.
+# This exact historical finding is test metadata, not an issued credential.
+036075a9578e345df7f930564ce1768773ea2aa3:ods/tests/pixel_inference/test_client.py:generic-api-key:108
+# Historical loopback-only Node relay fixture: a literal synthetic key, never
+# issued or used outside this disposable test. Current test generates its key.
+9bdb0ca65e831b61b00f86d667a6fd4ddc4e1e14:ods/extensions/services/pixel-agent/tests/native_apps_relay.test.mjs:generic-api-key:27
 # Add fingerprints of known false positives here (one per line)
 # Get fingerprints from gitleaks output when a false positive is detected
 #
@@ -166,3 +180,9 @@ a4b35b934c2f627d844dfa6a6b7dbd26ea2fbc9b:ods/extensions/services/dashboard/src/l
 7b4ca0992cefbed6d5aeefdf6c111629a75ae1c3:ods/recovery/bootstrap_current/compatibility.json:generic-api-key:12
 7b4ca0992cefbed6d5aeefdf6c111629a75ae1c3:ods/recovery/bootstrap_current/compatibility.json:generic-api-key:13
 7b4ca0992cefbed6d5aeefdf6c111629a75ae1c3:ods/recovery/bootstrap_current/compatibility.json:generic-api-key:14
+
+# Public parametrized test labels for retained Source versions in this historical hunk.
+14f5b3d444be3d32b530a74da1df5df81a0e2564:ods/tests/pixel_inference/test_client.py:generic-api-key:111
+
+# Public Git commit named as the functional API checkpoint in the historical Source 4.3.45 report.
+71c21d8d12200ec9ad0c10f5efb7d9918a7409e4:ods/vendor/pixel/ODS-QUALIFICATION-4.3.45.md:generic-api-key:3

@@ -22,7 +22,7 @@ def directory_code():
     for node in tree.body:
         if isinstance(node, ast.Assign):
             name = getattr(node.targets[0], 'id', '')
-            if name in ('target', 'settings_package', 'provider_package'):
+            if name in ('target', 'settings_package', 'provider_package', 'connections_package'):
                 active = True
                 if name == 'target':
                     continue  # Supply an isolated fixture root, not /usr/local.
@@ -67,7 +67,7 @@ class ProgramModesTests(unittest.TestCase):
                 tmp_path = Path(tmp)
                 target = tmp_path / 'programs'
                 if existing:
-                    for path in (target, target / 'pixel_settings', target / 'pixel_provider'):
+                    for path in (target, target / 'pixel_settings', target / 'pixel_provider', target / 'pixel_connections'):
                         path.mkdir(mode=0o700)
                 state = tmp_path / 'private-state'
                 state.mkdir(mode=0o700)
@@ -75,13 +75,13 @@ class ProgramModesTests(unittest.TestCase):
                 secret.write_text('fixture only')
                 secret.chmod(0o600)
                 run_install(target)
-                for path in (target, target / 'pixel_settings', target / 'pixel_provider'):
+                for path in (target, target / 'pixel_settings', target / 'pixel_provider', target / 'pixel_connections'):
                     assert stat.S_IMODE(path.stat().st_mode) == 0o755
                 assert stat.S_IMODE(state.stat().st_mode) == 0o700
                 assert stat.S_IMODE(secret.stat().st_mode) == 0o600
 
     def test_unsafe_directory_is_rejected_before_chmod(self):
-        for component in ('', 'pixel_settings', 'pixel_provider'):
+        for component in ('', 'pixel_settings', 'pixel_provider', 'pixel_connections'):
             for unsafe in ('symlink', 'writable', 'owner'):
                 with self.subTest(component=component, unsafe=unsafe), tempfile.TemporaryDirectory() as tmp:
                     tmp_path = Path(tmp)

@@ -199,6 +199,7 @@ export default function PixelAccessCard({ showHeading = true, active = true }) {
       <h3 id="pixel-access-confirm-title" className="font-semibold">Confirm Full Access</h3>
       <p>Full Access turns off Portal’s sandbox and per-command approval. Portal then runs commands directly as the owner account on the agent runtime and can read, change or delete any file that account can, including outside its workspace.</p>
       <p>Web search and page fetching stay on, so text from the web can influence those commands. If the owner account can use Docker (the docker group), that is equivalent to root on that machine.</p>
+      <p>Connected apps keep working. If Google is connected, Portal could also read the Google sign-in ODS keeps on this machine and approve its own calendar changes and Gmail drafts. Calendar changes Portal makes by itself wait for your approval until you switch back to Sandbox.</p>
       <p>The gateway restarts to verify access; new requests may need to be retried during the change.</p>
       <label className="flex items-start gap-2"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />I understand and authorize Full Access.</label>
       <div className="flex gap-3">

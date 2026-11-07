@@ -1,3 +1,4 @@
+import { cronArguments } from "./cron-command-payload-guard.mjs";
 import {ownerLaneText, ownerForbidsTools} from './owner-tool-policy.mjs';
 import {validDeliveredArtifact, normalizeWorkspaceArtifact, WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE} from './workspace-artifact.mjs';
 // Pixel per-run tool-loop guard.
@@ -26,6 +27,7 @@ import { captureNativeWebSearchResult, projectNativeWebSearchResult, projectWebR
 import { SEARCH_PACING_STREAK, SEARCH_PACING_REASON, searchTerms, nearDuplicateSearch, searchLeadUrls,
   duplicateSearchReason, ownerResearchDate, staleSearchDate, staleSearchDateGuidance } from "./research-pacing.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
+import {createConnectionEvidence,GOOGLE_LOOKUP_UNVERIFIED} from './connection-evidence.mjs';
 import { englishOnly, inResponseLanguage, managedTurnOwnerWords } from "./response-language.mjs";
 import { researchRequestProblem } from "./perplexica-research.mjs";
 import { HOST_CITATION_LIMITS } from './citation-verification.mjs';
@@ -162,7 +164,7 @@ export const PRIVATE_NETWORK_LOOP_ABORT_REASON =
   "Pixel stopped this response because it requested another tool after a private-network boundary was enforced. Start a fresh message with a safe public destination or an approved ODS status capability.";
 
 export const PRIVATE_URL_REQUEST_REASON =
-  "This request contains a private URL that Pixel cannot open from this chat. Do not call or substitute any tool, including ODS status or shell tools. Reply concisely that the private page was not accessed and ask the user to provide its content or use a separately approved private-access capability.";
+  "This tool cannot open the requested private URL. Do not substitute ODS status, public web tools or shell access. A configured Portal app or MCP tool may handle its documented operation through its own host policy and approvals; its catalog is metadata, not proof of access. Otherwise state that the private page was not accessed and ask for its content or an approved private-access capability.";
 
 export const CODING_RETRY_EXHAUSTED_REASON =
   "Pixel stopped a no-progress coding repair loop after its bounded failed-verification limit. Do not call another tool in this turn. Give the user a visible summary of the verified failure, the changes attempted, and the most useful next step.";
@@ -4969,6 +4971,25 @@ export function textRequestsPrivateUrlAccess(text) {
   );
 }
 
+// Admission to the existing integrations transport, never authorization for a
+// provider action or a URL. The service resolves this closed server ID against
+// owner configuration and still checks enablement, checked tool binding, policy
+// and exact approvals. No endpoint/token/command is accepted as a transport
+// selector. Direct agent web, browser and shell protections stay independent.
+function configuredPortalProviderDispatch(target, params) {
+  if (!['pixel_ods_mcp', 'openclaw:pixel-ods:pixel_ods_mcp'].includes(target)
+      || !params || typeof params !== 'object' || Array.isArray(params)
+      || Object.keys(params).some(key => !['action', 'server', 'tool', 'arguments'].includes(key))) return false;
+  if (params.action === 'list') return Object.keys(params).length === 1;
+  if (!['call', 'prepare'].includes(params.action)
+      || typeof params.server !== 'string'
+      || !/^(?:[a-z0-9][a-z0-9-]{0,31}|app:(?:documents|photos|watch|news))$/.test(params.server)
+      || typeof params.tool !== 'string' || !params.tool.length || params.tool.length > 512
+      || /[\x00-\x20\x7f]/.test(params.tool)) return false;
+  return params.arguments === undefined || params.arguments !== null
+    && typeof params.arguments === 'object' && !Array.isArray(params.arguments);
+}
+
 // The output a call that ran keeps when the run-progress budget has stopped
 // the response (toolResultPersist): an excerpt, the notes bound to that
 // output, then the stop text. The whole result stays within the agent's
@@ -8628,6 +8649,7 @@ export function createToolLoopGuard({
       pruneRuns();
       state = {
         completionAssurance: createCompletionAssurance({englishOnly: englishOnly(responseLanguage), now}),
+        connectionEvidence: createConnectionEvidence(),
         extensionCompletionGate: undefined,
         workspaceLaneRequested: false,
         workspaceExtensionIsolated: false,
@@ -9128,18 +9150,37 @@ export function createToolLoopGuard({
     // Only refine an already-proven phantom process refusal. Real exec
     // sessions, earlier denials, correction allowances and failure fuses keep
     // their existing decisions. Fixed text preserves identical-outcome checks.
-    const decision = nativeDelegationPending === true && originalDecision?.blockReason === PHANTOM_PROCESS_REASON
+    let decision = nativeDelegationPending === true && originalDecision?.blockReason === PHANTOM_PROCESS_REASON
       ? {...originalDecision,blockReason:NATIVE_DELEGATION_WAIT_REASON} : originalDecision;
     const toolName = context?.toolName ?? event?.toolName;
     const { runId } = runIdentity(event, context);
     const callId = context?.toolCallId ?? event?.toolCallId;
+    const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
+    if (state?.createdFutureOneOffs && decision?.block !== true) {
+      const cron = cronArguments(decision?.params ?? event?.params, toolName);
+      const action = typeof cron?.action === "string" ? cron.action.trim() : undefined;
+      if (action === "add" && state.refusedNewJobForce) {
+        decision = {block: true, blockReason:
+          "The one-time task is already scheduled. Do not create a replacement task after a refused force run. Report the existing schedule. Additional task creation is available on the next owner turn."};
+      }
+      if (action === "run" && cron.runMode === "force") {
+        const primaryId = typeof cron.jobId === "string" ? cron.jobId.trim() : "";
+        const id = primaryId || (typeof cron.id === "string" ? cron.id.trim() : "");
+        if (state.createdFutureOneOffs.has(id)) {
+          state.refusedNewJobForce = true;
+          decision = {block: true, blockReason:
+            "This one-time task is already scheduled. Forcing it now can consume its scheduled run. Report its scheduled time. Use cron list or runs to inspect it."};
+        }
+      }
+    }
     // Many refusals come after rememberToolRun recorded the call. A refused
     // call never runs, so a stopped response keeps nothing of it.
     if (decision?.block === true && context?.agentId === agentId && typeof callId === 'string' && callId) {
       const pending = pendingToolRuns.get(callId);
       if (pending) pending.refused = true;
     }
-    const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
+    const connectionCall = connectionCallBinding({...event,params:decision?.params ?? event?.params},context,state);
+    if (state && connectionCall) state.connectionEvidence.prepare(connectionCall);
     // A tool now running, which the deadline stop may end (responseDeadlineDue).
     if (state?.responseDeadline && decision?.block !== true && typeof callId === 'string' && callId) {
       state.responseDeadline.tools.add(callId);
@@ -9161,6 +9202,18 @@ export function createToolLoopGuard({
       state.previewRevalidationCandidate = undefined;
     }
     return decision;
+  }
+
+  function connectionCallBinding(event,context,state) {
+    const runId = context?.runId ?? event?.runId;
+    if (!state || event?.runId && event.runId !== runId
+        || event?.toolCallId && context?.toolCallId && event.toolCallId !== context.toolCallId
+        || event?.toolName && context?.toolName && event.toolName !== context.toolName
+        || context?.sessionId && state.currentSessionId && context.sessionId !== state.currentSessionId
+        || context?.sessionKey && state.currentSessionKey && context.sessionKey !== state.currentSessionKey) return undefined;
+    return {runId,callId:context?.toolCallId ?? event?.toolCallId,
+      toolName:context?.toolName ?? event?.toolName,params:event?.params,
+      sessionId:context?.sessionId ?? state.currentSessionId,sessionKey:context?.sessionKey ?? state.currentSessionKey};
   }
 
   function decideToolCall(event, context, agentId) {
@@ -10809,7 +10862,8 @@ export function createToolLoopGuard({
       }
     }
 
-    if (state?.privateNetworkPrompt) {
+    const configuredProviderDispatch = configuredPortalProviderDispatch(selectedToolTarget, selectedParams);
+    if (state?.privateNetworkPrompt && !configuredProviderDispatch) {
       state.privateNetworkPrompt = false;
       state.privateNetworkExhausted = true;
       state.privateNetworkRequestDenied = true;
@@ -10828,7 +10882,7 @@ export function createToolLoopGuard({
         (urlTargetsNonPublicAddress(selectedParams?.url) ||
           urlTargetsNonPublicAddress(selectedParams?.targetUrl)));
     if (state?.privateNetworkExhausted &&
-        (state.privateNetworkRequestDenied || repeatsDeniedPrivateAccess)) {
+        (state.privateNetworkRequestDenied && !configuredProviderDispatch || repeatsDeniedPrivateAccess)) {
       let aborted = false;
       try {
         aborted = typeof abortRun === "function" && Boolean(abortRun(sessionId));
@@ -11939,6 +11993,22 @@ export function createToolLoopGuard({
     if (typeof runId !== "string" || !runId) return;
     recordExampleOutcome({...context, runId}, examples.check(runId), context?.toolCallId ?? event?.toolCallId);
     const state = stateFor(runId);
+    // A forced run can consume a one-off before its due time. Bind the
+    // creation-turn guard to the native receipt, never to model-supplied text.
+    const cron = cronArguments(event?.params, toolName);
+    if ((!event?.runId || event.runId === runId) && typeof cron?.action === "string" &&
+        cron.action.trim() === "add" && !toolCallFailed(event)) {
+      const receipt = toolName === "tool_call" ? toolSearchSelectedToolEvent(event, "cron", "core") : event;
+      const job = receipt?.result?.details;
+      if (!toolCallFailed(receipt) && job?.agentId === agentId && job.enabled === true &&
+          job.payload?.kind === "agentTurn" && job.schedule?.kind === "at" &&
+          Number.isFinite(job.createdAtMs) && Number.isFinite(job.state?.nextRunAtMs) &&
+          job.state.nextRunAtMs > job.createdAtMs && typeof job.id === "string" && job.id) {
+        (state.createdFutureOneOffs ??= new Set()).add(job.id);
+      }
+    }
+    const connectionCall = connectionCallBinding(event,context,state);
+    if (connectionCall) state.connectionEvidence.observe(connectionCall,event?.result,event?.error);
     state.responseDeadline?.tools.delete(context?.toolCallId ?? event?.toolCallId);
     state.completionAssurance.observe(toolName, event);
     if (state.extensionCompletionGate && !state.workspaceExtensionIsolated && !state.extensionMutationExcluded) {
@@ -14995,7 +15065,12 @@ export function createToolLoopGuard({
       };
     }
     // Evidence truth remains independent of the owner's routing mode.
-    if (extensionDiscoveryActive(state)) return extensionDiscoveryVerification(state);
+    // An optional, rejected software-catalog lookup does not turn another
+    // task into owner-required host work. Tool admission is unchanged; admitted
+    // jobs and genuine required Operations still retain their evidence checks.
+    if (extensionDiscoveryActive(state) && (state.operationsRequired ||
+        state.operationsRequiredActions.size > 0 || state.operationsSubmittedJobs.size > 0))
+      return extensionDiscoveryVerification(state);
     if (state.operationsRequired) {
       if (state.operationsInventoryOnly) {
         const inventoryText = operationsInventoryEvidenceText(state.operationsInventory);
@@ -15266,6 +15341,16 @@ export function createToolLoopGuard({
       : fileCheckFacts(checked, 1024 - head.length - (head ? 1 : 0), carried, checksOff);
     const notice = result.status === 'pending' ? undefined : [head, facts].filter(Boolean).join(' ');
     if (notice) result = {...result, notice};
+    // A failed account/source observation is not proof of absence. Do not let
+    // preview/progress composition reintroduce unverified model prose after
+    // this final evidence decision. Independent tools continue; their typed
+    // preview/artifact receipts remain deliverable, not their arbitrary prose.
+    if (state?.connectionEvidence.unresolved() && !state.clientCancelled && result.status !== 'pending') {
+      result = {...result,status:'failed',text:GOOGLE_LOOKUP_UNVERIFIED};
+      delete result.deliveryMode;
+      delete result.code;
+      delete result.suppressStaleExecWarning;
+    }
     // Joined with what an earlier pending response left there untaken.
     if (result.status === 'pending' && checkedLine && typeof state?.currentSessionKey === 'string') {
       const left = sessionFileChecks.get(state.currentSessionKey)?.checks ?? [];
@@ -15480,6 +15565,7 @@ export function createToolLoopGuard({
       return typeof ownerIntent === 'string' ? {...event, prompt: ownerIntent, messages: []} : event;
     },
     observeExampleRun,
+    discardExampleRun: runId => examples.discard(runId),
     exampleContextForRun,
     exampleNoticeForRun,
     // The owner put a Playground project's files back (project-snapshots.mjs).

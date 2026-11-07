@@ -4,7 +4,7 @@ import PortalApprovalTerminal from '../components/PortalApprovalTerminal'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import PixelConversationRecovery from '../components/PixelConversationRecovery'
 import {validSourceReview} from '../lib/pixelSourceReview'
-import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, purgeConversationImages, isConversationDeleted } from '../lib/pixelConversations'
+import { readConversations, readActiveConversation, rememberActiveConversation, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, purgeConversationImages, isConversationDeleted } from '../lib/pixelConversations'
 import {usePixelAutoScroll} from '../lib/usePixelAutoScroll'
 import {EXAMPLE_OPEN_EVENT, EXAMPLE_REFRESH_EVENT, openExampleProject} from '../lib/exampleProjects'
 import { Link } from 'react-router-dom'
@@ -36,6 +36,7 @@ import {compactCommand,CONTEXT_REQUEST_ID,CONTINUE_FAILED,historySnapshot,STOP_U
 import PortalModelSelector from '../components/PortalModelSelector'
 import PortalRuntimeIdentity from '../components/PortalRuntimeIdentity'
 import PortalReadiness from '../components/PortalReadiness'
+import ConnectedAppsNotice from '../components/ConnectedAppsNotice'
 import PortalRecovery, { PORTAL_RECOVERY_ACTIONS, portalRecoveryAction } from '../components/PortalRecovery'
 import { pixelReadinessView, PIXEL_RECOVERY_REQUIRED } from '../lib/pixelReadiness'
 import PortalAgentActivity from '../components/PortalAgentActivity'
@@ -73,6 +74,7 @@ import {
   CheckCircle2,
   Code2,
   Copy,
+  Clock3,
   Loader2,
   Plus,
   PanelRightOpen,
@@ -138,7 +140,6 @@ const MAX_TOTAL_MESSAGE_BYTES = 256 * 1024
 // Visible history is independent of the model's per-request context budget.
 const MAX_STORED_MESSAGES = 2000
 const MAX_STORED_MESSAGE_BYTES = 4 * 1024 * 1024
-const CHAT_STORAGE_KEY = 'ods.pixel.chat.v1'
 const SAFE_CHAT_ID = /^[A-Za-z0-9_-]{1,128}$/
 const STOPPED_NOTICE = 'Stopped by you. Workspace changes completed before cancellation were preserved.'
 const MODEL_SWITCH_DETAIL = 'Model switch in progress; Portal will be ready when activation completes'
@@ -578,7 +579,7 @@ function restoreRejectedDraft(source) {
 
 function loadStoredChat(selected) {
   try {
-    let stored = selected || JSON.parse(globalThis.localStorage?.getItem(CHAT_STORAGE_KEY) || 'null')
+    let stored = selected || readActiveConversation()
     if (!selected && stored?.schema === 1 && SAFE_CHAT_ID.test(stored.chatId || '') && stored.persistenceVersion !== 2) {
       // Older clients committed the library before the active pointer. Restore
       // that authority before autosave can migrate an older pointer over it.
@@ -726,6 +727,7 @@ export default function Pixel({ systemStatus = null }) {
   const [modelSupport, setModelSupport] = useState(null)
   const [runtimeIdentity, setRuntimeIdentity] = useState(null)
   const [runtimeReadiness, setRuntimeReadiness] = useState(null)
+  const [connectedApps, setConnectedApps] = useState(null)
   const [modelActivation, setModelActivation] = useState(null)
   const [modelSwitching,setModelSwitching]=useState(false)
   const [modelStatusRefresh,setModelStatusRefresh]=useState(0)
@@ -1100,6 +1102,7 @@ export default function Pixel({ systemStatus = null }) {
         if (stopped) return
         setRuntimeIdentity(data?.runtimeIdentity ?? null)
         setRuntimeReadiness(data?.readiness ?? null)
+        setConnectedApps(data?.connectedApps ?? null)
         const runtime = data?.runtime
         const runtimeKeys = runtime && typeof runtime === 'object' && !Array.isArray(runtime)
           ? Object.keys(runtime).sort().join('\n')
@@ -1914,6 +1917,7 @@ export default function Pixel({ systemStatus = null }) {
     continueRequested.current = null
     setSendHint(false)
     chatIdRef.current = makeChatId()
+    rememberActiveConversation(chatIdRef.current)
     images.replace(chatIdRef.current)
     requestIdRef.current = null
     contextStartRef.current = 0
@@ -2039,6 +2043,7 @@ export default function Pixel({ systemStatus = null }) {
       hydrating.current = true; savedView.current = null; persistenceFailed.current = false
       hydrationAction.current = chat.interrupted || chat.persistenceSnapshot.recoverySource ? 'activate' : 'normalize'
       chatIdRef.current = chat.chatId
+      rememberActiveConversation(chat.chatId)
       images.replace(chat.chatId,chat.draftImages)
       shownTeamPublications.current = shownPublicationKeys(chat)
       requestIdRef.current = chat.requestId
@@ -2088,6 +2093,17 @@ export default function Pixel({ systemStatus = null }) {
     return agent ? `/agents ${next}` : goal ? `/goal ${next}` : next
   }), [])
   const prepareComposerSend = useComposerFocus({ inputRef, disabled: composerLocked, visible: composerVisible, onType: typeIntoComposer })
+  const canScheduleDraft = !isDisabled && !restoredUnconfirmed && !images.busy && !images.items.length
+    && !command && !goalDraft && !!input.trim()
+  function scheduleFromComposer() {
+    if (!canScheduleDraft) return
+    setWorkspaceOpen(true)
+    setPreviewCollapsed(false)
+    setWorkspaceRequest({kind:'schedules', chatId:chatIdRef.current, draft:input})
+  }
+  function scheduledComposerDraft(request) {
+    setInput(current=>chatIdRef.current===request.chatId && current===request.draft?'':current)
+  }
   const sendFromComposer = () => {
     prepareComposerSend()
     if (sendBlocked) {
@@ -2229,6 +2245,9 @@ export default function Pixel({ systemStatus = null }) {
               <PixelProviderScopes chatId={chatIdRef.current} sending={sending} />
             </div></details>
           </div></details>
+          <button type="button" aria-label="Scheduled tasks" onClick={() => { setWorkspaceOpen(true); setPreviewCollapsed(false); setWorkspaceRequest({chatId:chatIdRef.current,kind:'schedules'}) }} className="inline-flex items-center gap-1.5 bg-transparent px-2.5 py-1.5 text-xs text-theme-text-secondary hover:text-theme-text">
+            <Clock3 size={14}/><span className="hidden sm:inline">Scheduled tasks</span>
+          </button>
           <button type="button" aria-label="Workspace" aria-expanded={workspaceOpen} onClick={() => { setWorkspaceOpen(value => !value); setPreviewCollapsed(false) }} className="inline-flex items-center gap-1.5 bg-transparent px-2.5 py-1.5 text-xs text-theme-text-secondary hover:text-theme-text">
             <PanelRightOpen size={14}/><span>Workspace</span>
           </button>
@@ -2281,6 +2300,7 @@ export default function Pixel({ systemStatus = null }) {
           </>}
         </p>
       )}
+      {status === 'available' && <ConnectedAppsNotice value={connectedApps} />}
       <div role="region" aria-label="Conversation messages" tabIndex={-1} onScroll={chatScroll.onScroll} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
         {conversationDeleted && <div role="status" className="mx-auto w-full max-w-5xl rounded-xl border border-theme-border px-4 py-3 text-sm">
           This conversation is being deleted or was deleted. No task was started. Your draft and saved history are preserved.
@@ -2442,6 +2462,11 @@ export default function Pixel({ systemStatus = null }) {
             }`}
           />
           <div className="pixel-composer-actions">
+          <button type="button" onClick={scheduleFromComposer} disabled={!canScheduleDraft}
+            aria-label="Schedule this draft" title={images.items.length?'Scheduled tasks accept text only':'Review this draft as a scheduled task'}
+            className="inline-flex h-11 shrink-0 items-center gap-1 rounded-xl px-2 text-sm text-theme-text hover:bg-theme-surface-hover disabled:opacity-50">
+            <Clock3 size={16}/><span className="hidden sm:inline">Schedule</span>
+          </button>
           <PixelDictation disabled={isDisabled} conversationId={chatIdRef.current} input={input} limit={MAX_INPUT_LEN} onInsert={insertComposerText}/>
           {teams.busy && teams.teams[0] ? <button type="button" onClick={()=>teams.teams[0].mode==='goal'?teams.stop(teams.teams[0].id):openAgents({teamId:teams.teams[0].id,agentId:'0'})} title={teams.teams[0].mode==='goal'?'Stop goal':'View active agent team'} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-0 text-theme-text"><Square size={16}/></button> : sending || restoredActive ? (
             <button
@@ -2514,7 +2539,7 @@ export default function Pixel({ systemStatus = null }) {
               task={[...messages].reverse().find(message=>message.role==='assistant')?.task} working={sending || restoredActive}
               agents={teams} renderApproval={content=><OperationsApprovalCard content={content}/>}
               before={[...messages].reverse().find(message=>message.publication?.siteId===currentPreview?.siteId)?.beforePublication || null}
-              title={`Interactive ${displayName} preview`} request={workspaceRequest?.chatId===chatIdRef.current?workspaceRequest:null} onRequestHandled={handleWorkspaceRequest} refresh={previewRefresh}
+              title={`Interactive ${displayName} preview`} request={workspaceRequest?.chatId===chatIdRef.current?workspaceRequest:null} onRequestHandled={handleWorkspaceRequest} onDraftScheduled={scheduledComposerDraft} refresh={previewRefresh}
               onRefresh={()=>setPreviewRefresh(value=>value+1)}
               collapsed={previewCollapsed} onCollapse={()=>setPreviewCollapsed(value=>!value)}
               expanded={workspaceExpanded} onExpand={()=>setWorkspaceExpanded(value=>!value)}

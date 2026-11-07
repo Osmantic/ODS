@@ -1,0 +1,44 @@
+[Unit]
+Description=ODS Portal integrations (notes, notifications, MCP servers)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as the owner: it reads and writes the owner's vault and starts the owner's
+# stdio MCP servers. Settings, secrets and the owner socket live in the state
+# folder under the owner's home. In Sandbox the gateway's home mount hides its
+# ordinary path; Full Access commands can reach the owner's files. The agent
+# tool endpoint under /run enforces integration permissions in both modes.
+User=__PIXEL_SERVICE_USER__
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/ods-pixel-integrations/integrations_service.py serve /run/ods-pixel-integrations/control.sock "__PIXEL_HOME__/.config/ods/pixel-integrations"
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+RuntimeDirectory=ods-pixel-integrations
+RuntimeDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Room for the owner's local MCP servers, which run as children of this service.
+MemoryMax=2G
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

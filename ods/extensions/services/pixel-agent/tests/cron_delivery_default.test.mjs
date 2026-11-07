@@ -3,7 +3,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { withPixelCronDeliveryDefault } from "../plugin/cron-delivery-default.mjs";
+import { withPixelCronDeliveryDefault, withPixelCronJobAdmission } from "../plugin/cron-delivery-default.mjs";
 
 const PIXEL = "pixel";
 
@@ -20,6 +20,69 @@ function addJob(overrides = {}, host = {}) {
 }
 
 const CTX = { agentId: PIXEL, toolName: "cron" };
+
+const policyJob=()=>({name:'explicit-policy',schedule:{kind:'at',at:'2035-01-01T00:00:00Z'},sessionTarget:'isolated',
+  payload:{kind:'agentTurn',message:'Calculate 14 + 8; no files or connections.',toolsAllow:[]},delivery:{mode:'none'}});
+const admission=(params,context=CTX,guard)=>withPixelCronJobAdmission(guard,{params},context,PIXEL);
+
+test('new detached cron jobs keep explicit none/empty tools in every canonical native form without mutation',()=>{
+  for(const target of [undefined,'isolated','current','session:agent:pixel:fixture'])for(const nested of [false,true])for(const wrapped of [false,true]) {
+    const job=policyJob();if(target===undefined)delete job.sessionTarget;else job.sessionTarget=target;
+    const args={action:'add',...(nested?{job}:job)},params=wrapped?{id:'openclaw:core:cron',args}:args;
+    const before=JSON.stringify(params),guard={params};
+    assert.equal(admission(params,{...CTX,toolName:wrapped?'tool_call':'cron'},guard),guard);
+    assert.equal(JSON.stringify(params),before);
+  }
+});
+
+test('missing/null/nonarray future tools and missing/default-inferred deliveries are refused with corrective fields',()=>{
+  for(const tools of [undefined,null,'read',[false],['']]) {
+    const job=policyJob();if(tools===undefined)delete job.payload.toolsAllow;else job.payload.toolsAllow=tools;
+    const decision=admission({action:'add',job});assert.equal(decision.block,true);assert.match(decision.blockReason,/payload.toolsAllow/);
+    assert.match(decision.blockReason,/\[\] disables all tools/);
+  }
+  for(const delivery of [undefined,null,{},Object.create({mode:'none'}), {mode:'ANNOUNCE'},{mode:'announce'},{mode:'announce',channel:'last',to:'qa'},
+    {mode:'announce',channel:' LaSt ',to:'qa'},
+    {mode:'announce',channel:'slack'},{mode:'announce',to:'qa'},{mode:'webhook'},{mode:'webhook',to:' '}]) {
+    const job=policyJob();if(delivery===undefined)delete job.delivery;else job.delivery=delivery;
+    const decision=admission({action:'add',job});assert.equal(decision.block,true);assert.match(decision.blockReason,/delivery/);
+  }
+});
+
+test('explicit delivery routes remain for native validation and declared tools remain for native creator intersection',()=>{
+  for(const delivery of [{mode:'none'},{mode:'announce',channel:'slack',to:'QA_ONLY'},
+    {mode:'webhook',to:'https://example.invalid/qa'}]) {
+    const job=policyJob();job.delivery=delivery;job.payload.toolsAllow=['read','pixel_gmail_read'];
+    const guard={params:{action:'add',job},owner:'retained'};assert.equal(admission({},CTX,guard),guard);
+    assert.deepEqual(job.payload.toolsAllow,['read','pixel_gmail_read']);
+  }
+});
+
+test('flat policy shorthands and contradictory nested/flat metadata cannot hide native defaults',()=>{
+  const job=policyJob();
+  for(const params of [
+    {action:'add',message:'Calculate 14 + 8.',toolsAllow:[],delivery:{mode:'none'}},
+    {action:'add',job:null,payload:{kind:'agentTurn',message:'m'}},
+    {action:'add',job:{data:job}},{action:'add',job:{job}},
+    {action:'add',job:{...job,'delivery ':{mode:'none'}}},
+    {action:'add',job:{...job,toolsAllow:['read']}},
+    {action:'add',job,delivery:{mode:'announce'}},
+    {action:'add',job,toolsAllow:['read']},
+    {action:'add',job:{...job,payload:{kind:'agentTurn',message:'m'}},toolsAllow:[]},
+    {action:'add',job:{name:'nested',message:'m'},kind:'systemEvent'},
+  ])assert.equal(admission(params).block,true,JSON.stringify(params));
+});
+
+test('previous blocks retain identity; other agents, other operations and native event/command payloads stay on their original paths',()=>{
+  const denied={block:true,blockReason:'original'};assert.equal(admission({action:'add'},CTX,denied),denied);
+  for(const params of [{action:'update',job:policyJob()},{action:'list'},
+    {action:'add',job:{sessionTarget:'main',payload:{kind:'systemEvent',text:'Reminder'}}},
+    {action:'add',text:'Reminder'},{action:'add',kind:'systemEvent',text:'Reminder'},
+    {action:'add',payload:{kind:'Command',argv:['true']}}]) {
+    const original={params};assert.equal(admission({},CTX,original),original);
+  }
+  const original={params:{action:'add'}};assert.equal(admission({}, {...CTX,agentId:'other'},original),original);
+});
 
 test("adds delivery none to canonical isolated agentTurn add (nested job)", () => {
   const params = addJob({
@@ -249,11 +312,28 @@ test("unrelated tools untouched", () => {
   );
 });
 
+test("retention only defaults private one-off jobs and respects explicit deletion", () => {
+  const local = { payload: { kind: "agentTurn", message: "Read the note." }, delivery: { mode: "none" } };
+  for (const overrides of [
+    { deleteAfterRun: true }, { deleteAfterRun: false }, { schedule: { kind: "every", everyMs: 60000 } },
+    { delivery: { mode: "announce", channel: "example", to: "recipient" } }, { agentId: "another-agent" },
+  ]) {
+    assert.equal(apply({ params: addJob({ ...local, ...overrides }) }, CTX), undefined);
+  }
+  const flat = { action: "add", ...local, schedule: { kind: " AT ", at: "2035-01-01T00:00:00Z" } };
+  const params = { id: "openclaw:core:cron", args: flat };
+  const result = apply({ params }, { agentId: PIXEL, toolName: "tool_call" });
+  assert.equal(result.params.args.deleteAfterRun, false);
+  assert.equal(result.params.args.delivery, local.delivery);
+  assert.equal(Object.hasOwn(flat, "deleteAfterRun"), false);
+});
+
 test("inner second dispatch is idempotent (already defaulted params pass through unchanged)", () => {
   const params = addJob({
     sessionTarget: "isolated",
     payload: { kind: "agentTurn", message: "m" },
     delivery: { mode: "none" },
+    deleteAfterRun: false,
   });
   const guard = { params };
   assert.equal(apply({ params }, CTX, guard), guard);

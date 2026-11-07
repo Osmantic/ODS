@@ -96,7 +96,7 @@ def service_snapshot(root, relative, *, private=False):
 
 
 def stage_services(*, source, ref, ods_source, candidate, destination, inspection_config):
-    """Prepare all three service snapshots together, without privileges/jobs.
+    """Prepare the complete service snapshots together, without privileges/jobs.
 
     The bundle manifest is an integrity record, not root authorization. The
     privileged installer must bind its approval to the returned manifest digest.
@@ -320,7 +320,7 @@ def validate_candidate(config, *, node, entrypoint, expected, env, cwd):
 
 def stage_bundle(*, source, ref, candidate, node, runtime, destination, services_digest=None,
                  services_bundle=None, ods_source=None):
-    """Package exactly the configured plugins and prove their relocated loader.
+    """Package configured plugins plus inert payloads required by connections.
 
     The candidate configuration is not edited. Protected publication still uses
     the installer's content-checked mapping to its final runtime destination.
@@ -362,6 +362,13 @@ def stage_bundle(*, source, ref, candidate, node, runtime, destination, services
         expected[plugin_id] = 'plugins/' + str(index)
     if set(expected) != set(allowed):
         raise ValueError('native-bundle-plugin-mapping-incomplete')
+    packaged_paths = list(paths)
+    for _directory, plugin_id in bootstrap.PIXEL_PLUGINS:
+        if plugin_id not in expected:
+            path = known.get(plugin_id)
+            if path is None or path in packaged_paths:
+                raise ValueError('native-bundle-connection-plugin-unavailable')
+            packaged_paths.append(path)
     service_manifest = None
     if services_bundle is not None:
         services_bundle = Path(services_bundle).resolve(strict=True)
@@ -373,19 +380,31 @@ def stage_bundle(*, source, ref, candidate, node, runtime, destination, services
         raise ValueError('new-native-bundle-destination-required')
     destination = destination.parent.resolve(strict=True) / destination.name
     # Never place the output inside one of its own input trees.
-    roots = [runtime, candidate, *(Path(path).resolve(strict=True) for path in paths)]
+    roots = [runtime, candidate, *(Path(path).resolve(strict=True) for path in packaged_paths)]
     if any(root == destination or root in destination.parents for root in roots):
         raise ValueError('native-bundle-destination-inside-source')
     with tempfile.TemporaryDirectory(prefix='.pixel-package-', dir=destination.parent) as temporary:
         temporary = Path(temporary)
         staged = temporary / 'bundle'
         protected_node = native_node.acquire(temporary, minimum_major=int(release['node'][2:]))
+        source_spec = importlib.util.spec_from_file_location('native_source_payload',
+            Path(__file__).with_name('pixel-native-source-broker.py'))
+        source_payload = importlib.util.module_from_spec(source_spec)
+        source_spec.loader.exec_module(source_payload)
+        python_spec = importlib.util.spec_from_file_location('native_source_python',
+            Path(__file__).with_name('pixel-native-ops-service.py'))
+        python_module = importlib.util.module_from_spec(python_spec)
+        python_spec.loader.exec_module(python_module)
+        # Same existing Apple executable discovery as native service install.
+        host_python = python_module.select_python()
+        component = source_payload.source_payloads(source, ref, host_python)
         digest = bundle.build(node=protected_node, runtime=runtime / 'node_modules/openclaw',
-            destination=staged, plugins=paths, expected_version=release['openclaw'],
+            destination=staged, plugins=packaged_paths, expected_version=release['openclaw'],
             stream_progress_fix=True, shared_runtime_repairs=True, services_digest=services_digest,
             exec_wrapper=Path(__file__).resolve().parents[3] / 'extensions/services/pixel-agent/host/cancellable-exec.sh',
             ods_source=ods_source or Path(__file__).resolve().parents[3], pixel_source_ref=ref,
-            ods_plugin_indices=[int(expected['pixel-ods'].split('/')[-1])], service_manifest=service_manifest)
+            ods_plugin_indices=[int(expected['pixel-ods'].split('/')[-1])], service_manifest=service_manifest,
+            source_component=component)
         relocated = copy.deepcopy(config)
         relocated['plugins']['load']['paths'] = [str(staged / ('plugins/' + str(i)))
                                                 for i in range(len(paths))]
@@ -399,7 +418,8 @@ def stage_bundle(*, source, ref, candidate, node, runtime, destination, services
             expected={key: str(staged / value) for key, value in expected.items()},
             env={'HOME': str(home), 'XDG_CONFIG_HOME': str(home / '.config'),
                  'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}, cwd=temporary)
-        bundle.verify(staged, expected_digest=digest)
+        manifest, _checksum = bundle.verify(staged, expected_digest=digest)
+        bundle.connection_plugins(staged, manifest)
         if private_json(candidate / 'openclaw.json') != config:
             raise ValueError('native-bundle-candidate-changed')
         if os.path.lexists(destination):
@@ -457,7 +477,15 @@ def prepare(*, source, ref, answers, node, sandbox_image, destination, runtime,
                            '--answers', str(snapshot)], cwd=checkout, env=env)
         migrate_workspace_guidance(checkout / '.generated/workspace', generated=True)
         values = generated_environment(checkout / '.env')
-        values.update(OPENCLAW_HOME=str(isolated_home / 'empty-openclaw'),
+        render_home = isolated_home / 'render-openclaw'
+        render_home.mkdir(mode=0o700)
+        if previous is not None:
+            # The native renderer reads the same private pre-update state as
+            # Linux, without preparing against or writing the live home.
+            render_config = render_home / 'openclaw.json'
+            render_config.write_text(json.dumps(previous))
+            render_config.chmod(0o600)
+        values.update(OPENCLAW_HOME=str(render_home),
                       PIXEL_SANDBOX_IMAGE=sandbox_image,
                       PIXEL_PLUGIN_PATH=paths['pixel-source-broker'],
                       PIXEL_OPS_PLUGIN_PATH=paths['pixel-operations-broker'],
@@ -508,6 +536,7 @@ def prepare(*, source, ref, answers, node, sandbox_image, destination, runtime,
             migration_contract['candidateConfigSha256'] = hashlib.sha256(config.read_bytes()).hexdigest()
             migration.verify_state_preservation(previous, config.read_bytes(), migration_contract,
                 state_dir=previous_state_dir)
+            migration.verify_context_preservation(previous, rebalanced)
             migration_record = output / 'migration.json'
             migration_record.write_text(json.dumps(migration_contract, sort_keys=True) + '\n')
             migration_record.chmod(0o600)
@@ -518,11 +547,23 @@ def prepare(*, source, ref, answers, node, sandbox_image, destination, runtime,
         shutil.copytree(checkout / '.generated/workspace', output / 'workspace')
         shutil.copyfile(checkout / '.generated/ops-policy.json', output / 'operations-policy.json')
         (output / 'operations-policy.json').chmod(0o600)
+        # Explicit owner-side producer. These are private candidate artifacts,
+        # not permission to adopt any previous preparation during Root install.
+        for name, body in (('gateway.env', (checkout / '.generated/gateway.env').read_bytes()),
+                           ('onboarding.json', (json.dumps(private_answers(answers), sort_keys=True) + '\n').encode())):
+            with (output / name).open('xb') as stream:
+                stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
+            (output / name).chmod(0o600)
+        sidefiles = {name: hashlib.sha256((output / name).read_bytes()).hexdigest()
+                     for name in ('gateway.env', 'onboarding.json')}
         # Do not export generated systemd units or a deployment record claiming
         # an active hardened service. This is an unactivated candidate only.
         (output / 'candidate.json').write_text(json.dumps({
             'schemaVersion': 1, 'pixelSourceRef': ref, 'status': 'staged',
-            'sandboxImage': sandbox_image, 'requiresServiceQualification': True}) + '\n')
+            'sandboxImage': sandbox_image, 'requiresServiceQualification': True,
+            'connectionSidefiles': sidefiles}) + '\n')
         (output / 'candidate.json').chmod(0o600)
         if os.path.lexists(destination):
             raise ValueError('native-candidate-destination-appeared')

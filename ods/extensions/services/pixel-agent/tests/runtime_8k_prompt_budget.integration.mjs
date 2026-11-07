@@ -17,7 +17,7 @@ import {createHash} from 'node:crypto';
 import {registerHooks} from 'node:module';
 import {pathToFileURL, fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {promptContractForAgent, ODS_TINY_CONVERSATION_CONTRACT} from '../plugin/prompt-contract.mjs';
+import {promptContractForAgent, ODS_TINY_CONVERSATION_CONTRACT, PORTAL_INTEGRATION_API_CONTRACT, PORTAL_INTEGRATION_TURN_CONTEXT} from '../plugin/prompt-contract.mjs';
 import {createExtensionReadTool} from '../plugin/host-observe.mjs';
 import {createPublicWebExtractTool} from '../plugin/web-extract.mjs';
 import {createAgentSkillTool} from '../plugin/agent-skills.mjs';
@@ -25,9 +25,11 @@ import {createAskUserTool} from '../plugin/ask-user.mjs';
 import {createExtensionRequestStatusTool} from '../plugin/extension-proposal.mjs';
 import {createWorkspacePreviewTool} from '../plugin/workspace-preview.mjs';
 import {createWorkspacePreviewInspectTool} from '../plugin/workspace-preview-inspect.mjs';
+import {createConnectionsStatusTool} from '../plugin/connections-status.mjs';
 import {ACTIVITY_CONTRACT} from '../plugin/activity-display.mjs';
 import {executionContext} from '../plugin/completion-assurance.mjs';
 import {executionLocationContext} from '../plugin/execution-location.mjs';
+import {reviewedNativeRevisionDependencies} from './fixtures/native-revision-dependencies.mjs';
 
 const pkg=process.env.OPENCLAW_PACKAGE_DIR;
 assert.ok(pkg,'provide the pinned reviewed OpenClaw package');
@@ -37,6 +39,7 @@ process.env.OPENCLAW_STATE_DIR=path.join(root,'state');
 process.env.OPENCLAW_CONFIG_PATH=path.join(root,'openclaw.json');
 const sha=value=>createHash('sha256').update(value).digest('hex');
 const sources=new Map();
+for(const [filename,source] of reviewedNativeRevisionDependencies(pkg))sources.set(pathToFileURL(filename).href,source);
 for(const [name,module] of [
   ['compaction-empty','proxy-Bsfwfsp-.js'],
   ['compaction-no-work','compact-DuWIsaq_.js'],
@@ -121,7 +124,8 @@ const compactContract=promptContractForAgent(
 assert.ok(compactContract?.appendSystemContext?.includes(ODS_TINY_CONVERSATION_CONTRACT.slice(0,80)),'production compact contract must be selected');
 // Include the surrounding production before_prompt_build hook, not only its
 // conversation contract. These prompts also consume the first-turn budget.
-compactContract.appendSystemContext = `${ACTIVITY_CONTRACT} ${executionLocationContext({agentId:'pixel'},'pixel')}  ${compactContract.appendSystemContext} ${executionContext()} `;
+compactContract.appendSystemContext = `${ACTIVITY_CONTRACT} ${executionLocationContext({agentId:'pixel'},'pixel')}  ${compactContract.appendSystemContext} ${PORTAL_INTEGRATION_API_CONTRACT} ${executionContext()} `;
+compactContract.appendContext = PORTAL_INTEGRATION_TURN_CONTEXT;
 
 // Production bootstrap shape: a small BOOTSTRAP.md and a small AGENTS.md,
 // bounded by the per-agent 2000/6000 budget and contextInjection 'never'.
@@ -156,8 +160,9 @@ test('8K compact-profile fresh chat reaches provider with compact contract and f
   const fixtureContext={agentId:'pixel',sessionKey:'agent:pixel:openai-user:ods-'+ 'a'.repeat(64)};
   const noExternalCall=()=>{throw new Error('No external operations in prompt-budget fixture');};
   const odsTools=[createExtensionReadTool(),createPublicWebExtractTool({guardedFetch:noExternalCall,readResponseText:noExternalCall,extractBasicHtmlContent:noExternalCall}),createAgentSkillTool(),createAskUserTool(),
-    createExtensionRequestStatusTool(fixtureContext),createWorkspacePreviewTool(),createWorkspacePreviewInspectTool()];
-  assert.ok(odsTools.every(Boolean),'all seven real ODS direct-tool definitions must be present');
+    createExtensionRequestStatusTool(fixtureContext),createWorkspacePreviewTool(),createWorkspacePreviewInspectTool(),
+    createConnectionsStatusTool({read:noExternalCall})];
+  assert.ok(odsTools.every(Boolean),'all eight real ODS working-tool definitions must be catalogued');
   const definitions=odsTools.map(({name,description,parameters})=>({name,description,parameters}));
   fs.writeFileSync(path.join(plugin,'openclaw.plugin.json'),JSON.stringify({id:'pixel-ods',activation:{onStartup:true},contracts:{tools:definitions.map(t=>t.name)},configSchema:{type:'object',properties:{}}}));
   fs.writeFileSync(path.join(plugin,'fixture-data.json'),JSON.stringify({compactContract,definitions}));
@@ -181,6 +186,13 @@ export default {id:'pixel-ods',register(api){api.on('before_prompt_build',()=>co
     config,provider:'fixture',model:'model',prompt,runId:'budget-8k-fresh',trigger:'user',timeoutMs:30000});
   const trace=JSON.stringify({requests:requests.length,error:result.meta?.error,systemChars:result.meta?.systemPromptReport?.systemPrompt?.chars,skillChars:result.meta?.systemPromptReport?.skills?.promptChars,skillCount:result.meta?.systemPromptReport?.skills?.entries?.length});
   console.log(JSON.stringify({requests:requests.length,error:result.meta?.error,contractChars:compactContract.appendSystemContext.length,systemChars:result.meta?.systemPromptReport?.systemPrompt?.chars,skillChars:result.meta?.systemPromptReport?.skills?.promptChars,skillCount:result.meta?.systemPromptReport?.skills?.entries?.length,wireTools:requests[0]?.tools?.map(t=>t.function.name),configuredContext:config.agents.defaults.contextTokens}));
+  assert.ok(requests[0]?.messages.some(m=>m.role==='user'&&typeof m.content==='string'&&m.content.includes(PORTAL_INTEGRATION_TURN_CONTEXT)),
+    'the actual current-turn integration guidance must reach the provider within the 8K budget');
+  const firstSystem = requests[0]?.messages.filter(m=>m.role==='system').map(m=>m.content).join('\n');
+  assert.equal(firstSystem.split(PORTAL_INTEGRATION_API_CONTRACT).length-1,1,
+    'actual 8K native SYSTEM receives static integration API facts once');
+  assert.ok(!requests[0].messages.some(m=>m.role==='user'&&typeof m.content==='string'&&m.content.includes(PORTAL_INTEGRATION_API_CONTRACT)),
+    'API facts are not promoted from or appended to owner data');
   // The failure mode under investigation: precheck overflow before any provider call.
   if(result.meta?.error?.kind==='context_overflow'||result.meta?.error?.kind==='compaction_failure'){
     assert.fail('8K compact profile overflowed before reaching the provider: '+trace);
@@ -204,5 +216,7 @@ export default {id:'pixel-ods',register(api){api.on('before_prompt_build',()=>co
   assert.equal(requests.length,2,'follow-up must reach the provider too');
   assert.equal(requests[1].max_tokens??requests[1].max_completion_tokens,MODEL_MAX_TOKENS);
   assert.ok(JSON.stringify(requests[1].messages).includes('two-wheeled human-powered'),'keep prior assistant context');
+  assert.equal(requests[1].messages.filter(m=>m.role==='system').map(m=>m.content).join('\n').split(PORTAL_INTEGRATION_API_CONTRACT).length-1,1,
+    'follow-up keeps one copy of the static API contract');
   if(process.env.ODS_BUDGET_EVIDENCE)fs.writeFileSync(process.env.ODS_BUDGET_EVIDENCE,JSON.stringify({context:CONTEXT_WINDOW,maxOutput:MODEL_MAX_TOKENS,reserve:RESERVE_TOKENS,contractChars:compactContract.appendSystemContext.length,requests,result,followup},null,2));
 });

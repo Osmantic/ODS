@@ -141,9 +141,10 @@ def check_native(install_dir):
     if identity == "macos":
         raise ValueError(
             "Source-only update cannot atomically update or roll back this native Pixel runtime. "
-            "Keep the existing install intact. From a reviewed newer source checkout, use "
-            "installers/macos/lib/pixel-native-update.py --install-dir EXISTING_INSTALL "
-            "--ods-source REVIEWED_ODS_SOURCE; retain its preparation and recovery journals.")
+            "Keep the existing install intact. From the reviewed checkout's ods directory, prepare the native runtime with "
+            '/usr/bin/python3 installers/macos/lib/pixel-native-update.py --install-dir EXISTING_INSTALL '
+            '--ods-source "$PWD" --prepare-only. Retain the preparation and recovery journals. '
+            "Portal integrations also require a compatible host agent, Dashboard API and Dashboard.")
 
 
 def check_rollback(install_dir, snapshot):

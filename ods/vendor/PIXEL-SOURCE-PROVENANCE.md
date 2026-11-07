@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`3d2acd8f22a53d28b36b7e6ee017bb3143dc428b`, and its SHA-256 is
-`f136282398bdcabe5590af360e5bdce6e0e89ae28e29e8376d3bd7f8a05266e9`.
+`bf6db06c5b432ec9e8a408d1cac785753693099c`, and its SHA-256 is
+`9e5bbd59f0934b615e23a6c2327b170045073fa59323c60228996a89625863d0`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -21,6 +21,309 @@ and the install/bootstrap scripts must retain executable Git modes.
 The repository owner authorized this source publication and the ODS-only
 Pixel grant. Third-party packages are not included in the Git bundle and
 retain their own notices and licenses.
+
+## ODS-maintained 4.3.46 combined Calendar candidate
+
+This combines the typed shared list/count API with the upstream all-day list
+repair. Its genuine functional checkpoint is
+`b8cb7c444699092dd027eadaa0b34f30a5e6b442`. Native calls retain typed windows,
+strict validation before source reads and the grammar-compatible ASCII date
+schema. All-day bounds use the provider calendar timezone; possible matches
+remain advisory and never become a confirmed count or certify a busy/empty
+slot. Unavailable windows keep unknown totals and uncertainty-adjusted returned
+coverage. Stored projections and source records are unchanged. See the
+[API contract](pixel/docs/calendar-read-api.md) and
+[scoped evidence](pixel/ODS-QUALIFICATION-4.3.46.md).
+
+Two independent bare repositories produced identical 4,759,666-byte bundles for tree
+`350dcbc922aacd1f60ecdf0619b367eb22765e93`. The only change from the initial 4.3.46 package
+(`80fd49e6d6f3d54185fe2415ac6b7e003c16a12a`, bundle `0e39c7fbeb48cc1c9746ea455408a33cef0a9eefe160e6cecbb1245c4a4bb6cb`)
+is the registered count test's closed field list, which now includes the all-day
+uncertainty count returned by the existing implementation. The source retains 1,347
+public blobs and 96 executable entries. Prepared clients and native authority
+retain the initial 4.3.46 identity.
+
+The two independent 4.3.45 packages have different identities and API contracts:
+
+- ODS typed-read candidate: ref `3fe50f1d75d13295bfbe964bfcd327a91df15814`,
+  bundle `5e867c52522b14445d4ccc85974ed80a9f1237fa2c2a759359f8c978e00fa273`;
+  original [evidence](pixel/ODS-QUALIFICATION-4.3.45.md) remains byte-identical.
+- Upstream all-day repair: ref `47706f6863f74ae65c83c925bd6af51395193363`,
+  bundle `8c9b197a9763c26054dc0f7d920abe11b24f6a1bfbda03abc156aa031a3a8a7c`;
+  its original evidence is retained byte-identical in the
+  [origin-qualified archive](pixel/ODS-QUALIFICATION-4.3.45-upstream-47706f68.md).
+
+Both compatibility rows and exact native authority entries remain distinct.
+Prepared clients retain both exact45 receipt identities and all older identities;
+no old release or receipt is rewritten. The separate SDK family gate requires
+exact Source46, so either ambiguous45 package defers safely.
+
+Actual locked-TypeBox Source tests passed 51 cases with no skips. The real
+normalized core/Coffee/nine-Source 32-tool surface compiled with the pinned
+llama.cpp JSON and Qwen grammar; all 36 integration controls passed, including
+the predecessor digit-escape failure, deny filtering and the existing8K cap.
+Four genuine46 native admission cases passed against the separately migrated
+26-repair SDK, with both45 variants deferred and the fixed9/8192-byte/64K gates
+unchanged. These are offline factory/grammar/contract checks, not an installed
+46 model run, a macOS physical test or an upstream promotion.
+
+The earlier exact ODS Source45 separately passed a normal Windows update,
+independent installed-state checks and one actual Portal Qwen3.5 9B Calendar
+journey after duplicated WSL mounts were cleaned up. Its correctly resolved
+owner day, fresh complete projection and content-free count are retained as
+evidence for that identity only. It neither qualifies46 nor proves mount
+amplification prevented. Physical macOS qualification remains separate.
+
+## Retained ODS-maintained 4.3.45 Calendar read candidate
+
+List and count now share deterministic typed windows, timezone-aware event
+bounds, freshness and complete-coverage handling. Native list arguments must
+use `window`; old flat instant arguments are rejected before reading Source
+data. The pure helper retains a strictly validated legacy absolute adapter.
+The date schema uses an equivalent ASCII digit pattern supported by the pinned
+grammar compiler. See [the API contract](pixel/docs/calendar-read-api.md) and
+[the scoped qualification record](pixel/ODS-QUALIFICATION-4.3.45.md).
+
+Functional checkpoints `d8b369b797` and `d56daf9cdb` passed Source tests and one
+isolated actual Qwen3.5 9B candidate run. It made one Calendar count call with
+the correct owner civil date, fresh complete coverage and count three,
+returned no event records and made no unrelated or mutating calls. The
+complete converted 32-tool surface compiled against the pinned Qwen grammar.
+Earlier failed candidates and the accidental nonpaired baseline remain
+retained; this is not an error-rate or normal installed acceptance claim.
+
+The public bundle has 1,345 blobs and 96 executable entries, vendor tree
+`f20e9082102d5ba1002c3452f3a29fe4c7840bf5`, and 4,754,651 bytes. Two independent
+empty bare repositories reproduced byte-identical bundles after first
+reproducing the exact Source44 synthetic commit. Only one parentless root is
+advertised. Private history, audit inputs and workflow files stay excluded.
+The distinct Source45 native authority retains the exact Source42/43/44 rows;
+earlier prepared-client identities remain readable without rewriting them.
+
+The public Source44 and Source45 exports both stop the full upstream checker
+at the same intentionally omitted historical audit. A separate private
+Source45 validation copy reused exactly four previously verified immutable
+Git blobs, changed only two generated audit-link labels, and passed the
+unchanged full checker and all sixteen release-generation tests. Those blobs
+and labels are excluded from the public source and bundle. No gate, historical
+hash, signing trust or source boundary was waived.
+
+Source45 is an ODS candidate snapshot. Normal installed upgrade, the separate
+SDK rollout/context gates, native Mac execution and physical qualification
+remain distinct requirements. No signed upstream or supported-host promotion
+is claimed.
+
+## Retained ODS-maintained 4.3.44 civil-date candidate
+
+The new candidate adds a structured civil date to the existing Calendar count
+window and uses the configured owner timezone for exclusive midnight bounds.
+Functional source is `dc07fa669083e61f2e781452205099ab2a2ff735`; the current
+candidate record is [`pixel/ODS-QUALIFICATION-4.3.44.md`](pixel/ODS-QUALIFICATION-4.3.44.md).
+It preserves count-only output and the existing source authority limits. The
+separate ODS native repair exposes one atomic parameter schema on the highest
+ranked Tool Search result, with a 4096-byte limit and explicit describe pointers
+for deferred schemas. No owner-keyword router or forced tool execution is added.
+
+The Source44 bundle contains 1,342 public files and 96 executable Git entries.
+Its vendor tree is `d5b97ff209a161781cf842badc54b88daa49b864`. Two independently empty
+bare repositories produced the same parentless Source commit and byte-identical
+4748386-byte bundles. The exact Source43 synthetic commit was reproduced
+first. Private history, historical LIVE-AUDIT files and workflow files remain
+excluded. The Source43 and older Mac authorities remain unchanged; a distinct
+Source44 authority binds the new bundle, tree and reviewed broker inputs.
+
+The ordinary installer selects this incoming bundled ref, stages a distinct
+4.3.44 release and preserves the existing access-mode upgrade contract. It does
+not modify the published 4.3.43 release in place. Normal installed adoption and
+the original real-owner Calendar regression still require verification. This
+candidate makes no signed upstream, supported-release or physical macOS claim.
+
+## Retained ODS-maintained 4.3.43 release-contract candidate
+
+The current ODS-maintained candidate uses internal package version 4.3.43.
+Its functional checkpoint is `728c9a6e34341a4fa727c726acbbcdecef1fc8c3`;
+the version-qualified public Source checkpoint is
+`90ad43f8be862874b666c55125f1ebb6f723018e`. See
+[`pixel/ODS-QUALIFICATION-4.3.43.md`](pixel/ODS-QUALIFICATION-4.3.43.md).
+The checker now verifies exact historical ODS qualification bytes before
+classifying them as evidence, and its Gmail query expectations match the
+existing optional configure window. Release metadata includes the two count
+tools already implemented at `cc49a94b991b99e254e0b5555e6b21740a62dc09`.
+No tool implementation, argument schema or provider authority was added.
+
+The ordinary different-ref/same-version refusal is unchanged. The candidate
+advances to 4.3.43 with exact current migration targets and an explicitly
+qualified archive family; prior 4.3.42 and unknown 4.3.44 targets are refused.
+The new qualification note was frozen before its literal checker SHA authority
+was added. All fifteen prior notes, their hashes and compatibility rows,
+including the frozen 4.0/4.1 evidence, remain unchanged. No upstream or
+supported-release promotion is claimed.
+
+The public vendor tree is `4a84cdfeba5b4f71ee476ffb76b0e04d8841c953`.
+Two independent initially empty bare repositories reproduced byte-identical
+4,746,323-byte bundles using the retained synthetic public identity, timestamp,
+root message, read-only alternates procedure and `pack.threads=1`.
+All 1,341 public blobs and their Git modes match, including 96 executable
+entrypoints. Only one parentless root commit is advertised. The old 4.3.42
+tree reproduced its exact synthetic commit before the new builds. No private
+audit files, workflow files, private Git ancestry or signing material are
+bundled; current ref/digest pins appear above.
+
+The exact public bundle/source/Git-mode verifier, actual local acquisition and
+tamper control, 56 paired installer assertions, 93 prepared-client/pin/drift
+cases, 46 controlled native acquisition/install/update/candidate cases and
+three source-custody/overlay cases passed. Current and retained 4.3.42 prepared
+receipts remain byte-identical on loading, and all previously accepted client
+identities remain in the closed set. The 15 focused Node cases, 12 strict
+version cases, three affected generation cases and existing legacy shell,
+transaction and swap controls also passed. These are offline component
+fixtures; they do not qualify physical Darwin or ordinary installed adoption.
+
+The full release-contract checker passed once for this exact Source in an
+isolated full-repository-scope copy. That scope supplied exactly four
+legitimate immutable Git blobs omitted from the public export and regenerated
+only the two historical audit-link labels required by their presence. The
+private blobs and those derived labels are excluded from the public source
+and bundle. This scope-qualified result does not claim that the intentionally
+incomplete public export alone passes the full-repository check; all previous
+FAIL artifacts remain preserved. No gate, historical hash or release boundary
+was waived.
+
+The previous 4.3.42 artifact `acc5550888fe034a9a42e90307c9f7a664726315`,
+digest `477f974f7d85c43b8e4e7a79ff3411da8ee938a9d597033c4f53323a5569d922`,
+remains an exact readable prepared-client identity and immutable historical
+artifact. A separately reviewed Native Source authority row now binds 4.3.43
+to its exact bundle, tree, three input hashes and canonical environment
+template, while retaining the unchanged 4.3.42 row. Actual current and retained
+bundle controls passed. This authorizes those payloads for offline preparation;
+it does not enable native jobs or complete the Mac connection lifecycle.
+OpenClaw, dependency and image versions/digests, signing trust and other
+runtime/provider policy are unchanged. No model, provider/account, installed
+configuration, physical Mac, fleet-readiness or publication claim is made.
+
+
+## ODS-maintained Source 4.3.42 proposal publication candidate
+
+The current ODS-maintained Source candidate uses internal package version
+4.3.42. Its functional checkpoint is
+`2341f406ee4b461e6f36e595632dac72fb1872b1`; the scoped candidate record is
+[`pixel/ODS-QUALIFICATION-4.3.42.md`](pixel/ODS-QUALIFICATION-4.3.42.md).
+Calendar and Gmail proposal publication now sets the intended broker-readable
+`0640` mode through the same exclusively opened file descriptor before writing
+the body, while retaining the gateway's private `0077` umask. Existing direct
+Calendar policy, owner approval, tool arguments and execution authority remain
+unchanged. The version advances because the existing ordinary Linux/WSL update
+refuses a different Source ref at the already active version; that strict gate
+was preserved. Current-release metadata and exact migration target bindings are
+consistent at 4.3.42; unknown next releases and wrong migration targets remain
+refused. This is a candidate, not upstream or supported-release promotion.
+
+The reviewed vendor tree is `754f9cf764a800c79a6c2e5f619dc910ff5c3c07`.
+Two independent empty bare repositories, using the retained synthetic public
+identity, timestamp, root message and documented alternates procedure with
+`pack.threads=1`, produced byte-identical bundles at the current ref/digest
+above. All 1,339 blobs and Git modes match the visible source, including
+96 executable entrypoints; only the single parentless root commit is advertised.
+Recreating the previous tree reproduced its exact synthetic commit. These
+packaging identities are reproducibility metadata, not a signature or upstream
+approval. No private source history or signing credential was used.
+
+The exact bundle/source/digest/Git-mode verifier, local bundled-source
+acquisition and tamper checks, paired installer pins, prepared-client identity
+and unchanged-receipt checks, controlled native bootstrap/update fixtures and
+source-upgrade/overlay custody controls passed. Both real exported proposal
+writers also passed from the exact new bundle checkout under `0077`; the
+existing optional SDK case remains explicitly skipped. The native component
+fixtures ran on Linux and do not qualify physical Darwin execution. The
+previous 4.3.41 artifact `fb48263c80ed86ddbfafad14cd688bec97f21704`, digest
+`d261803e5da0fb8f59712a735c80fa9656ae8160305a1b46a0db31838b62797a`,
+remains an exact readable prepared-client identity; its historical evidence
+and other prior receipts were not rewritten.
+
+The full public-export release-contract gate still fails on the missing frozen
+historical `LIVE-AUDIT-4.0.0.md`, reproduced on the prior 4.3.41 source. That
+fixed hash check was not waived or supplied with invented evidence; associated
+expected-message generation checks remain blocked behind it. This artifact
+verification does not claim that full gate passed. Ordinary installed
+Windows/WSL adoption, actual direct-broker/provider behavior, real-account
+journeys and physical Mac installation/update remain separate qualification.
+OpenClaw, dependency and image versions/hashes, trust anchors, signing and
+other policy fields are unchanged.
+
+## Prior metadata-count candidate 4.3.41
+
+The preceding Portal runtime candidate uses internal package version 4.3.41.
+Its functional checkpoint is `cc49a94b991b99e254e0b5555e6b21740a62dc09`;
+the versioned source checkpoint is `133f5f387cc45b68cd16fdd1c34981700b430b5f`.
+It adds metadata-only Gmail/Calendar counts, explicit rolling/civil windows,
+conservative coverage/timezone handling and the corresponding existing read
+permission, guide and release-copy wiring. The preparation record is
+`pixel/ODS-QUALIFICATION-4.3.41.md`. Controlled component and independent review
+checks passed. Two independent public single-root builds match, and exact
+source/digest/Git-mode verification and the exact-bundle clean-room
+plan/apply/verify/rollback fixture passed. Installed upgrade, real-model
+count behavior and the remaining provider/platform release lanes still need
+separate qualification. The preceding failed 2B/8K run remains negative evidence.
+
+## Prior attachment-summary candidate 4.3.40
+
+The preceding Portal runtime candidate uses internal package version 4.3.40.
+Its functional checkpoint is `ad8733c2ca757256c7b98ae6aec936a41d6aff74`;
+the versioned source checkpoint is `2902c181e0974ecbdbdd7fb65cbdf24c3bd70b18`.
+Email summaries exclude attachment parts and their subtrees while retaining
+declared attachment metadata. Revision 3 invalidates older summary caches and
+cursors, and every Gmail reader requires that exact projection revision before
+exposing records. Controlled MIME/cache/reader tests and independent focused
+review passed. The disclosure distinguishes summary content from metadata and
+selected cloud-model sharing; Gmail can still transport inline bytes before
+filtering, and old histories/backups are not rewritten.
+Two independent public single-root builds match. Exact source/digest/Git-mode
+verification and the exact-bundle plan/apply/verify/rollback fixture passed.
+The ordinary installed upgrade from `947387494` completed with the original
+read-only Google grant and 9B/64K model preserved, ready/verified runtime and
+healthy core containers. Installed broker/reader bytes match revision 3. The
+same natural count request then returned one Inbox summary and an exactly
+covered seven-day Calendar read through native cron; its answer distinguished
+indexed mail from unavailable mailbox totals. The scoped owner HTTP and service
+checks do not certify browser/UI, real-attachment payloads, native macOS or
+general model reliability. The preparation record is
+`pixel/ODS-QUALIFICATION-4.3.40.md`.
+
+## Prior Source-argument candidate 4.3.39
+
+The preceding Portal runtime candidate uses internal package version 4.3.39.
+Its functional checkpoint is `069b43b62b3fb589673c4d31f0b4dface6a514a4`;
+the versioned source checkpoint is `326a16832cb4ac28507dfddb53a3a763ad283745`.
+The Source handler validates its declared schema with the existing locked
+TypeBox before reading projections or creating proposals. Unknown arguments
+cannot become omitted parameters with a broader default. Five regressions fail
+on the previous index and pass on this code; the actual pinned SDK preserves
+the unknown argument until this refusal and accepts a corrected one-record call.
+Two independent public single-root builds match. Exact source/digest/Git-mode
+verification and the exact-bundle clean-room plan/apply/verify/rollback fixture
+passed. The ordinary installed upgrade from `9d9658f57` subsequently completed
+with the original read-only Google grant and model preserved, verified runtime
+and healthy core containers. One actual model request recovered from an invalid
+Gmail call through schema description and returned exactly one summary with a
+covered seven-day Calendar read. This scoped Windows/WSL result does not certify
+general model reliability, native macOS or full public release acceptance. The preparation record
+is `pixel/ODS-QUALIFICATION-4.3.39.md`.
+
+## Prior email-count candidate 4.3.38
+
+The preceding functional checkpoint is `1e40a5add3d5725372ef27ec987bd8e650e9bd5f`.
+Gmail page results now distinguish the local index, configured-query coverage
+and unknown mailbox totals. Two independent single-root builds matched; exact
+source/digest/executable-mode verification and the bundle-checkout plan/apply/
+verify exercise passed. Dependency/image pins and trust anchors are unchanged.
+The synthetic 9B model check still found an incorrect freshness statement;
+correct tool metadata is not proof of final-answer consistency. The ordinary
+installed upgrade through `2486daa6a` completed, with scoped real read evidence
+recorded in the Portal integration status; native macOS/fleet acceptance remains
+open. The reviewed comparison prompt's original spacing and unchanged
+checksum are restored; the upstream release contract still requires historical
+audit documents deliberately omitted from this public export. See
+`pixel/ODS-QUALIFICATION-4.3.38.md` for the scoped evidence and limits.
 
 The ODS lint maintenance adaptation retains import effects and exported names,
 renames only unread local bindings without dropping their right-hand sides,
@@ -250,3 +553,185 @@ above identify this candidate. The prior 4.3.32 bundle commit
 `4bf2203c56cce323490e41e36736062d4f74cf39` and digest
 `0f45a292d978bd766d19606404554a0ebdca6e1f8e0fb95d870e2f7d3ceded5b` remain historical identities in Git
 and in existing clients' retained receipts. No release signature was generated.
+
+## ODS-maintained 4.3.34 Source Broker readiness candidate
+
+This candidate prepares the Source Broker for owner-connected Google accounts:
+Calendar pagination and window coverage, per-source refresh isolation with a
+content-free `status.json`, granted-scope handling, a broker-identity sign-in
+exchange and revocation, and a `--prepare` install mode. ODS keeps every source
+limb off, so ODS installations run none of the new broker code and render the
+same `openclaw.json`. `pixel/ODS-QUALIFICATION-4.3.34.md` records the automated
+evidence and the installed upgrade qualification still required. The version
+advance preserves the strictly increasing source-upgrade gate.
+
+The public vendor tree is `18d78dbf9770cc1a639f8a4157621790eaf69b1d` at ODS source
+commit `05bf656517db1093d67e3970cafc5b42bf18b7bc`. Two independent empty bare repositories using the alternates
+procedure above produced byte-identical bundles with the retained public
+synthetic author, timestamp and root message (Git 2.53 on Windows,
+`pack.threads=1`); the same procedure first reproduced the 4.3.33 commit
+`3d2acd8f22a53d28b36b7e6ee017bb3143dc428b` from its tree, though not its bytes,
+since the packs the alternates name have changed. The bundle advertises one root
+commit and no private history. Current pins above identify this candidate. The
+prior 4.3.33 bundle commit `3d2acd8f22a53d28b36b7e6ee017bb3143dc428b` and digest
+`f136282398bdcabe5590af360e5bdce6e0e89ae28e29e8376d3bd7f8a05266e9` remain historical
+identities in Git and in existing clients' retained receipts. No release
+signature was generated and no private source history or signing credentials
+were used.
+
+The candidate was rebuilt before publication with independent-review fixes: a
+disconnected sign-in clears the last snapshot, Calendar busy checks match overlapping
+events, revocation always deletes the stored sign-in, restore refreshes before it
+verifies, `--confirm` keeps a newer sign-in already in custody, and the control UI chat
+inherits the new flags. The functional source checkpoint is
+`12225ccb390c84f4a08e60cfc25e966e6e45f08f`. The same procedure produced byte-identical
+bundles twice. This replaces the unpublished earlier candidate commit
+`0684f0791dcb56f9473d5fe4b06f9f22f028f74a`.
+
+It was rebuilt again for the owner connect flow: every release now carries the
+Source Broker plugin's locked `typebox` dependency, so a source turned on after
+install loads the plugin from the active release, and the sign-in exchange records
+only the account that Google's ID token verifies. The functional source checkpoint
+is now `096eba7f81d4bbbd588863b367fac343ecf6c86f`. Two independent builds were
+byte-identical. This replaces the unpublished candidate commit
+`cb3fe963dec251e2d2ae7639d5424bda2ddbfd85`.
+
+It was rebuilt once more so `pixel verify` accepts a broker whose first refresh
+after a source is turned on is still running. The functional source checkpoint is
+now `9a50d0522cbf97cc9fa1991c431ea8e3ef74238a`. Two independent builds were
+byte-identical. This replaces the unpublished candidate commit
+`9942dbb6f85b90dea02c5c490274f29bc3ef81ee`.
+
+## ODS-maintained 4.3.35 Gmail drafts candidate
+
+This candidate adds Gmail drafts the owner approves: a proposal-only
+`pixel_gmail_draft_propose` tool behind the answers-file key `emailDraftsEnabled`
+(off by default), and a broker actuator that creates exactly the approved,
+hash-bound snapshot in the owner's Drafts folder, once. A Message-ID fixed before
+any Gmail call lets reconciliation find an unconfirmed draft instead of creating
+another. There is no send tool. With the key left out, drafts stay off and the
+rendered configuration denies the new tool like every other inactive source tool.
+`pixel/ODS-QUALIFICATION-4.3.35.md` records the automated evidence and the
+installed upgrade qualification still required. The version advance preserves the
+strictly increasing source-upgrade gate.
+
+The public vendor tree is `e3f5d13ce68c9a0b2baf8b71b841a18dd82a7ffa`. The
+functional source checkpoint is `0194de8a3e81fc5e27f20d87c836956a5587c1d6`. Two
+independent empty bare repositories using the alternates procedure above produced
+byte-identical bundles with the retained public synthetic author, timestamp and
+root message (Git on Windows, `pack.threads=1`); the same procedure first rebuilt
+the 4.3.34 bundle from its tree `18d78dbf9770cc1a639f8a4157621790eaf69b1d` byte
+for byte. The bundle advertises one root commit and no private history. Current
+pins above identify this candidate. The prior 4.3.34 bundle commit
+`8cae7723c0098f7c8b39bdf52a54b2f3a553e97d` and digest
+`4124cb5e940123c2ee1a9d0cb48664341058fb2b91359ada7f99c43c6e9f585f` remain historical
+identities in Git and in existing clients' retained receipts. On Windows,
+`scripts/verify-pixel-bundle.py` needs `core.autocrlf=false` for its temporary
+clone (for example `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.autocrlf
+GIT_CONFIG_VALUE_0=false`), because Git for Windows checks text out with CRLF by
+default. No release signature was generated and no private source history or
+signing credentials were used.
+
+## ODS-maintained 4.3.36 native MCP preservation candidate
+
+This local candidate preserves the native OpenClaw MCP registry and explicit
+tool permissions when Pixel renders an updated configuration. It does not add
+another MCP implementation or OAuth store. The macOS preparation path renders
+against a private copy of the selected previous state and verifies that the
+registry is unchanged before activation. The functional checkpoint is
+`2ac52729f`; see
+[`pixel/ODS-QUALIFICATION-4.3.36.md`](pixel/ODS-QUALIFICATION-4.3.36.md) for evidence
+and the remaining acceptance gates. This is not a claim of fleet acceptance.
+
+The public source tree is `fe3f735f790280532b6c2229ce8b9b7fcf8621ce`.
+Two independent empty bare repositories, using the documented alternates
+procedure and `pack.threads=1`, produced byte-identical bundles with the retained
+public synthetic identity, timestamp and message. Recreating the previous tree
+also reproduced its exact synthetic commit. Only the new root commit is
+advertised; no private Git history, signing key or release signature is included.
+The current artifact is identified at the top of this document. The previous
+4.3.35 bundle commit `4e176a0d158166bad230e62c4e0d81501ca0e1b4` and digest
+`8300883de8b9e2bfd6c67d8baaddc10b8671873521dbaa794ffea6060ef4b1d2`
+remain historical identities in Git and existing clients' retained receipts.
+
+The renderer/overlay and live-planner cross-check passed through email/wiki
+connection changes with native MCP retained. A real pinned gateway test after
+re-render preserved an allowed read and refused an excluded write. Native Mac
+runtime/upgrade qualification, complete owner-account flows and the direct
+release-contract check remain as documented in the candidate record.
+
+The earlier unpublished bundle `dbf6af6e9d6758a72c30585b3baab7ee4222c3bd`
+passed the existing isolated Pixel end-to-end suite on Linux and the source-upgrade
+and dashboard reconciliation suites. Its Docker/systemd boundaries are controlled;
+these checks do not constitute native Mac or complete installed fleet qualification.
+The candidate subsequently corrected the native MCP fixture evidence in the
+qualification note, then added the declared-required-argument guard and its
+regressions at the functional checkpoint above. It replaces the unpublished
+artifacts and does not inherit a claim that the exact new bundle ran those
+suites. The then-current `57608788b03da813172323f2ab4caa463c72c63d` bundle
+checkout subsequently passed that isolated end-to-end suite in 89.20 seconds.
+The ODS package with all installer
+repairs also passed the corrected loaded-Pixel native MCP read/refused-write
+case in 30.15 seconds. Neither result qualifies real-model inference, owner
+OAuth consent or native Mac behavior. The comparison-fixture release gate described in
+the candidate record remains open and also fails on the untouched 4.3.35 bundle.
+
+The current source also derives Calendar start/end labels at read time from
+source timestamps, explicit timezones or UTC offsets. It supplies the weekday,
+handles offset date changes and repeated daylight-saving hours, and identifies
+exclusive all-day ends without changing source timestamps or persisted data.
+Invalid or floating timestamps and invalid timezones receive no invented label.
+The existing Source Broker plugin suite covers these cases, including execution
+with a different host timezone. Calendar interval schemas describe full timestamp
+bounds. No tool permission, custody or provider action changes with these labels.
+
+The earlier `449c05965b0b53f0f335fd719693caa860e05406` exact bundle checkout
+passed the isolated Linux end-to-end suite in 110.54 seconds. Both independently
+built artifacts matched, and source/commit/digest/executable-mode verification
+passed. The local 2B/8K experiments used an unpromoted compact operating context
+and read-tool surface; accurate Calendar answers there do not establish complete
+prompt-budget or model-reliability acceptance. The provider trace still shows
+output-budget clamping after catalog searches. Those experiments are not claimed
+as production behavior or as a completed model-quality gate.
+
+The current candidate additionally validates Calendar query intervals. A bound
+must name a real date and an explicit Z/UTC offset; floating times, date-only
+bounds, unknown offsets, malformed dates and reversed/empty intervals return
+an actionable error instead of using the machine timezone or widening the
+query. Equivalent offset/fractional timestamps retain the same events and
+coverage. Source timestamps, stored projections and tool permissions are
+unchanged. Both new plugin regressions failed on the preceding source and pass
+with this change, including under a different host timezone. The older bundle's
+end-to-end result above does not qualify this new artifact.
+
+The current exact bundle checkout passed the same isolated Linux end-to-end
+suite in 79.32 seconds. Independent builds matched byte for byte, and the
+source/commit/digest/executable-mode verifier passed. These checks retain the
+controlled Docker/systemd, real-account, native Mac and model-reliability limits
+documented above; no fleet or release acceptance is implied.
+
+## ODS-maintained 4.3.37 incremental Google sync candidate
+
+Functional source checkpoint `da05e4ddbb9bdefdecc154614c4d7ec33b2d9a3a`
+adds resumed Gmail/Calendar batches and status publication before historical
+scanning finishes. It retains explicit partial coverage, private cursors,
+credential/query/sanitizer bindings and Sent body restrictions. The ordinary
+held source upgrade requires increasing the candidate version from 4.3.36.
+Dependency/image pins, OpenClaw and signing trust anchors are unchanged.
+See [the candidate record](pixel/ODS-QUALIFICATION-4.3.37.md) for exact scope.
+
+The source tree is `3c1d7fdbda78ef7c7f7962d81d81762f448c0734`. Two independent
+single-root builds produced commit `f3ce6159e5608e582467c4a3e87b7052b62f7b5e`
+and SHA-256 `a0dcd0e6923960d4f4fbed2cca8dc4737af6e37d8e4a5eb3ac6b471ea9feb723`,
+matching byte for byte. The exact source/digest/Git-mode verifier passed. The
+final exact Git bundle checkout passed the existing Linux clean-room
+plan/apply/verify suite in 86.30 seconds with controlled Docker/systemd.
+
+The functional broker cohort passed 114 cases, including real loopback
+slow-response controls; source-upgrade/provider/Mac-bootstrap checks passed
+465 cases with two old-version expectations subsequently corrected and all
+90 bootstrap cases passing. Those bootstrap cases run on Linux and do not
+qualify native Mac execution. Root reconnect tests separately exercise the
+quiesced producer transition, not complete isolation of an active conversation's
+write intent across an account switch. Installed, provider, Mac, fleet and the
+preexisting comparison-fixture release gate remain separate acceptance work.

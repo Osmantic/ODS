@@ -82,7 +82,10 @@ it.each(['model','provider'])('retains confirmed B through missing runtime and s
   expect(calls('/api/pixel/chat/stream')).toHaveLength(0)
   expect(calls('/api/pixel/chat/compact')).toHaveLength(0)
   expect(stored()).toMatchObject({draft:'Preserve this draft',messages:initial})
-})
+// Several complete status hydration cycles also render the model chooser.
+// Keep their virtual polling times exact while allowing a loaded macOS runner
+// enough wall time to finish those React updates.
+},15000)
 
 it.each(['/compact','/compactar'])('runs %s as a session operation without appending a chat turn',async command=>{
   seed();let current=snapshot()
@@ -204,14 +207,14 @@ it('sends the complete retained transcript beside bounded legacy messages withou
   fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'Continue with Cedar'}})
   fireEvent.click(screen.getByTitle('Send'))
   // Rendering this deliberately large retained transcript competes with the
-  // response reveal frames on slower Windows CI runners.
-  await screen.findByText('Continued successfully',{}, {timeout:5000})
+  // response reveal frames on slower Windows and macOS CI runners.
+  await screen.findByText('Continued successfully',{}, {timeout:10000})
   const body=JSON.parse(calls('/api/pixel/chat/stream')[0][1].body)
   expect(body.messages.length).toBeLessThanOrEqual(50)
   expect(body.history_snapshot).toEqual({schemaVersion:1,messages:[...messages.map(({role,content})=>({role,content})),{role:'user',content:'Continue with Cedar'}]})
   expect(stored().messages).toHaveLength(62)
   expect(stored().messages[1].content).toEqual(messages[1].content)
-})
+},15000)
 
 it.each(['skipped','failed'])('reports %s without claiming context was compacted',async state=>{
   seed({draft:'/compact'});let current=snapshot()

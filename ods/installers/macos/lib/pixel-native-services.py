@@ -20,6 +20,24 @@ from contextlib import ExitStack
 from datetime import datetime, timezone
 
 
+LEGACY_ORDER = ('manager', 'promoter', 'operations')
+INTEGRATIONS_ORDER = LEGACY_ORDER + ('integrations',)
+
+
+def service_order(names):
+    for order in (LEGACY_ORDER, INTEGRATIONS_ORDER):
+        if set(names) == set(order):
+            return order
+    raise ValueError('complete-native-service-bindings-required')
+
+
+def snapshot_order(snapshots):
+    selected = {name for name in snapshots if name.startswith('integrations/')}
+    if selected and selected != {'integrations/' + name for name in helper('integrations-service').SOURCES}:
+        raise ValueError('complete-native-integration-sources-required')
+    return INTEGRATIONS_ORDER if selected else LEGACY_ORDER
+
+
 def helper(name):
     spec = importlib.util.spec_from_file_location('native_services_' + name.replace('-', '_'),
         Path(__file__).with_name('pixel-native-' + name + '.py'))
@@ -42,6 +60,7 @@ def _publication_plan(*, bundle, expected_digest, expected_ref, expected_config_
         raise ValueError('macos-root-required')
     snapshots = helper('config').verified_services(bundle, expected_digest=expected_digest,
         expected_ref=expected_ref, expected_config_digest=expected_config_digest)
+    order = snapshot_order(snapshots)
     root, definitions = Path(program_root), Path(definitions)
     if not root.is_absolute() or not definitions.is_absolute():
         raise ValueError('absolute-native-service-paths-required')
@@ -69,6 +88,16 @@ def _publication_plan(*, bundle, expected_digest, expected_ref, expected_config_
         policy_body=snapshots['operations/policy.json'], identity=identity, python=python,
         program_root=root / 'operations', state=state,
         definition=definitions / 'com.ods.pixel-native-operations.plist')))
+    if 'integrations' in order:
+        module = helper('integrations-service')
+        sources = {name.split('/', 1)[1]: body for name, body in snapshots.items()
+                   if name.startswith('integrations/')}
+        arguments = dict(sources=sources,
+            expected_sha256={name: hashlib.sha256(body).hexdigest() for name, body in sources.items()},
+            python=python, program_root=root / 'integrations', owner=owner,
+            definition=definitions / 'com.ods.pixel-native-integrations.plist')
+        module.render(python=python, program_root=root / 'integrations', owner=owner)
+        publishers.append(('integrations', module, arguments))
     files = list(helpers)
     for name, module, options in publishers:
         files.extend(module.publication_files(**options))
@@ -104,8 +133,8 @@ def activation_adapters(*, definitions, expected, owner, identity, python, save_
     if ((save_stop is None) != (load_stop is None)
             or save_stop is not None and (not callable(save_stop) or not callable(load_stop))):
         raise ValueError('native-service-stop-store-required')
-    names = {'manager', 'promoter', 'operations'}
-    if set(definitions) != names or set(expected) != names:
+    names = set(service_order(definitions))
+    if set(expected) != names:
         raise ValueError('complete-native-service-bindings-required')
     operations = helper('ops-service')
     installer = operations.installer_helpers()
@@ -119,7 +148,8 @@ def activation_adapters(*, definitions, expected, owner, identity, python, save_
         raise ValueError('native-service-identity-mismatch')
     custody.protected_bytes(str(python), limit=128 * 1024 * 1024)
     users = {'manager': (owner, entry.pw_uid, entry.pw_gid),
-        'promoter': ('root', 0, 0), 'operations': (broker.pw_name, broker.pw_uid, broker.pw_gid)}
+        'promoter': ('root', 0, 0), 'operations': (broker.pw_name, broker.pw_uid, broker.pw_gid),
+        'integrations': (owner, entry.pw_uid, entry.pw_gid)}
     adapters = {}
     for name in sorted(names):
         path, body = Path(definitions[name]), expected[name]
@@ -167,7 +197,7 @@ def recovery_adapters(record, *, owner, save_stop, load_stop):
                 or record['owner'] != owner or not isinstance(record['python'], str)
                 or not Path(record['python']).is_absolute()
                 or type(record['definitions']) is not dict
-                or set(record['definitions']) != {'manager', 'promoter', 'operations'}):
+                or set(record['definitions']) not in (set(LEGACY_ORDER), set(INTEGRATIONS_ORDER))):
             raise ValueError()
         definitions, expected = {}, {}
         for name, value in record['definitions'].items():
@@ -189,7 +219,7 @@ def stop_new(*, services, attempted, checkpoint, phase='services-stopped'):
     """Stop only the approved newly installed jobs, retaining recovery evidence."""
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise ValueError('macos-root-required')
-    order = ('manager', 'promoter', 'operations')
+    order = service_order(services)
     if (set(services) != set(order) or list(attempted) != list(order[:len(attempted)])
             or not callable(checkpoint)):
         raise ValueError('complete-native-service-activation-required')
@@ -239,7 +269,7 @@ def activate_new(*, services, readiness, checkpoint):
     """
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise ValueError('macos-root-required')
-    order = ('manager', 'promoter', 'operations')
+    order = service_order(services)
     if (set(services) != set(order) or set(readiness) != set(order)
             or not all(callable(readiness[name]) for name in order) or not callable(checkpoint)):
         raise ValueError('complete-native-service-activation-required')
@@ -361,7 +391,8 @@ def _operations_readiness(*, custody, state, owner_entry, broker):
 
 def readiness_checks(*, owner, identity, python,
                      program_root='/usr/local/libexec/ods-pixel-services',
-                     state='/private/var/lib/pixel-ops-broker', inspection_required=True):
+                     state='/private/var/lib/pixel-ops-broker', inspection_required=True,
+                     integrations_required=False):
     """Build non-mutating service probes for the approved initial installation.
 
     The Operations probe submits only host.os-release; it never approves a request or
@@ -407,7 +438,7 @@ def readiness_checks(*, owner, identity, python,
 
     def operations():
         # The inspector is a fixed helper, not a fourth launchd service. Keep
-        # the exact three-service activation contract and gate its final probe
+        # the exact selected activation contract and gate its final probe
         # on inspection health before admitting the gateway.
         if inspection_required:
             inspection()
@@ -431,13 +462,17 @@ def readiness_checks(*, owner, identity, python,
             raise ValueError('native-inspection-readiness-failed')
         return True
 
-    return {
+    checks = {
         'manager': lambda: client('manager', broker,
             ['client', '/private/var/lib/ods-pixel-manager/extension-manager.sock', 'list', 'all']),
         'promoter': lambda: client('promoter', owner_entry,
             ['health', '/private/var/lib/ods-pixel-artifact-promoter/promoter.sock']),
         'operations': operations,
     }
+    if integrations_required:
+        checks['integrations'] = lambda: helper('integrations-service').readiness(
+            owner=owner, python=python, program_root=root / 'integrations')
+    return checks
 
 
 def install_new(*, selection, owner, environment, workspace, port, checkpoint,
@@ -457,6 +492,7 @@ def install_new(*, selection, owner, environment, workspace, port, checkpoint,
     # Validate the selection before provisioning any system identity or state.
     if not snapshots:
         raise ValueError('empty-native-service-selection')
+    order = snapshot_order(snapshots)
     state = Path('/private/var/lib/pixel-ops-broker')
     runtime = Path('/private/var/lib/ods-pixel-manager')
     state_helper = helper('ops-state')
@@ -467,7 +503,7 @@ def install_new(*, selection, owner, environment, workspace, port, checkpoint,
         raise ValueError('new-native-service-state-required')
     ops = helper('ops-service')
     installer = ops.installer_helpers()
-    for name in ('manager', 'promoter', 'operations'):
+    for name in order:
         target = 'system/com.ods.pixel-native-' + name
         if installer._job_disabled(target):
             raise ValueError('native-service-intentionally-disabled')
@@ -491,6 +527,8 @@ def install_new(*, selection, owner, environment, workspace, port, checkpoint,
     checkpoint({'phase': 'publishing-services', 'identity': identity})
     definitions = publish(**selection, identity=identity, owner=owner,
         environment=environment, workspace=workspace, port=port, python=python)
+    if 'integrations' in order:
+        helper('integrations-service').provision(owner=owner, python=python)
     expected = {name: ops.custody.protected_bytes(str(path)) for name, path in definitions.items()}
     checkpoint({'phase': 'services-prepared', 'recovery': {
         'schemaVersion': 1, 'owner': owner, 'identity': identity, 'python': str(python),
@@ -498,6 +536,8 @@ def install_new(*, selection, owner, environment, workspace, port, checkpoint,
                         for name, path in definitions.items()}}})
     adapters = activation_adapters(definitions=definitions, expected=expected,
         owner=owner, identity=identity, python=python, save_stop=save_stop, load_stop=load_stop)
-    ready = readiness_checks(owner=owner, identity=identity, python=python)
+    ready = readiness_checks(owner=owner, identity=identity, python=python,
+        inspection_required='helpers/preview-inspection.json' in snapshots,
+        integrations_required='integrations' in order)
     activate_new(services=adapters, readiness=ready, checkpoint=checkpoint)
     return adapters

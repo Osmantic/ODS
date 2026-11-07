@@ -22,6 +22,9 @@ import tempfile
 
 
 MANIFEST = 'bundle.json'
+# A scoped verify inventories root custody and ACLs itself. Older protected
+# helpers without this declaration still require the planner's separate scan.
+NATIVE_OPERATION_VERIFIES_TREE_METADATA = True
 RELEASE_SELECTION = 'ods-release-selection.json'
 MAX_SELECTION = 2 * 1024 * 1024
 SELECTION_KIND = 'ods-pixel-expected-release-selection'
@@ -30,6 +33,10 @@ UNKNOWN_SOURCE_REASONS = {'source-unavailable', 'source-dirty', 'source-ref-mism
     'source-inputs-unmapped', 'source-bytes-mismatch', 'legacy-bundle',
     'service-source-unavailable', 'source-phase-mismatch'}
 SOURCE_SCOPE = 'recorded-bindings-only'
+INTEGRATION_PROGRAMS = ('integrations_common.py', 'integrations_mcp.py', 'integrations_notes.py',
+    'integrations_service.py', 'unix_peer.py', 'integrations_app_service.py',
+    'integrations_apps.py', 'integrations_ntfy.py', 'integrations_recovery.py')
+INTEGRATION_SERVICE_ARTIFACTS = frozenset('integrations/' + name for name in INTEGRATION_PROGRAMS)
 ODS_SERVICE_SOURCES = {
     'manager/extension_manager.py': 'extensions/services/pixel-agent/host/extension_manager.py',
     'manager/unix_peer.py': 'extensions/services/pixel-agent/host/unix_peer.py',
@@ -42,6 +49,8 @@ ODS_SERVICE_SOURCES = {
     'helpers/preview_inspection_protocol.py': 'extensions/services/pixel-agent/host/preview_inspection_protocol.py',
     'helpers/workspace_preview.py': 'extensions/services/pixel-agent/host/workspace_preview.py',
     'helpers/unix_peer.py': 'extensions/services/pixel-agent/host/unix_peer.py',
+    **{'integrations/' + name: 'extensions/services/pixel-agent/host/' + name
+       for name in INTEGRATION_PROGRAMS},
 }
 GENERATED_SERVICE_ARTIFACTS = {'operations/policy.json', 'helpers/extension-catalog.json', 'helpers/preview-inspection.json'}
 INSPECTION_SERVICE_ARTIFACTS = {'helpers/preview_inspection.py', 'helpers/preview_inspection_protocol.py',
@@ -55,6 +64,7 @@ REPAIR_ROOT = Path(__file__).resolve().parents[3] / 'extensions/services/pixel-a
 SHARED_REPAIRS = (
     ('openclaw-tool-recovery.json', 'tool-loop-detection-C0oQKkXZ.js'),
     ('openclaw-completion-recovery.json', 'agent-command-DeS125kF.js'),
+    ('openclaw-plugin-tool-version.json', 'tools-D5HS8Q_I.js'),
     ('openclaw-image-envelope.json', 'tool-search-BInRpkE3.js'),
     ('openclaw-compaction-export.json', 'embedded-agent-subscribe.handlers.compaction.runtime.js'),
     ('openclaw-compaction-idle.json', 'sessions-KE_Xmzwf.js'),
@@ -70,11 +80,13 @@ SHARED_REPAIRS = (
     ('openclaw-run-id-redaction.json', 'redact-cvFSPoXf.js'),
     ('openclaw-context-usage.json', 'attempt-execution-DnVHak5f.js'),
     ('openclaw-no-tools-ingress.json', 'openai-http-DkesJHcp.js'),
+    ('openclaw-finalize-tool-scope.json', 'lifecycle-hook-helpers-Ck-WCTzd.js'),
     ('openclaw-yield-usage.json', 'embedded-agent-CJx-nG3W.js'),
     ('openclaw-compaction-empty.json', 'proxy-Bsfwfsp-.js'),
     ('openclaw-compaction-no-work.json', 'compact-DuWIsaq_.js'),
     ('openclaw-command-attempt-warning.json', 'payloads-CC0zlj7W.js'),
     ('openclaw-utf8-output.json', 'windows-command-C7mWWxtt.js'),
+    ('openclaw-direct-tool-completion.json', 'tools-invoke-shared-dvxhZAis.js'),
     ('openclaw-compaction-budget.json', 'selection-BEwSQKM-.js'),
 )
 
@@ -83,10 +95,13 @@ class BundleError(ValueError):
     pass
 
 
+_INVALID_RELATIVE_CHARACTERS = re.compile(r'[\x00-\x1f\x7f\ud800-\udfff]')
+
+
 def _relative(value):
     if (type(value) is not str or not value or value.startswith('/')
             or any(part in ('', '.', '..') for part in value.split('/'))
-            or any(ord(c) < 32 or ord(c) == 127 or 0xD800 <= ord(c) <= 0xDFFF for c in value)):
+            or _INVALID_RELATIVE_CHARACTERS.search(value)):
         raise BundleError('invalid-bundle-path')
     return value
 
@@ -150,9 +165,11 @@ def validate_service_manifest_provenance(manifest):
     # Existing approved bundles remain readable for migration, rollback and
     # uninstall. New staging always emits the complete inspection capability;
     # partial inspection bundles are never an accepted legacy contract.
-    if isinstance(manifest, dict) and isinstance(manifest.get('files'), dict) \
-            and set(manifest['files']) == names - INSPECTION_SERVICE_ARTIFACTS:
-        names -= INSPECTION_SERVICE_ARTIFACTS
+    if isinstance(manifest, dict) and isinstance(manifest.get('files'), dict):
+        selected = set(manifest['files'])
+        legacy = names - INTEGRATION_SERVICE_ARTIFACTS
+        if selected in (legacy, legacy - INSPECTION_SERVICE_ARTIFACTS):
+            names = selected
     generated = GENERATED_SERVICE_ARTIFACTS & names
     mapped = set(ODS_SERVICE_SOURCES) & names
     if (type(manifest) is not dict or set(manifest) not in (keys, keys | {'sourceProvenance'})
@@ -456,28 +473,137 @@ def _open_file(root, relative):
         os.close(parent)
 
 
-def _file(root, relative, output=None):
+def _operation_cache(operation, root, *, metadata=False):
+    if operation is None:
+        return None
+    try:
+        from pixel_access_bridge import AccessError, _native_runtime_bundle_cache
+        from pixel_macos_custody import CustodyError, protected_tree_metadata
+    except ImportError:
+        raise BundleError('bundle-operation-unqualified') from None
+    try:
+        cache = _native_runtime_bundle_cache(operation, root)
+        if metadata:
+            protected_tree_metadata(root)
+        return cache
+    except (AccessError, CustodyError, OSError):
+        raise BundleError('bundle-operation-unqualified') from None
+
+
+def _file(root, relative, output=None, *, _operation=None):
     fd = _open_file(root, relative)
+    return _file_descriptor(fd, root, relative, output, _operation=_operation)
+
+
+def _file_descriptor(fd, root, relative, output=None, *, _operation=None, _expected=None):
     with os.fdopen(fd, 'rb') as source:
         before = os.fstat(source.fileno())
+        if (_expected is not None and
+                (before.st_dev, before.st_ino, before.st_mode, before.st_uid, before.st_gid,
+                 before.st_nlink, before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
+                (_expected.st_dev, _expected.st_ino, _expected.st_mode, _expected.st_uid, _expected.st_gid,
+                 _expected.st_nlink, _expected.st_size, _expected.st_mtime_ns, _expected.st_ctime_ns)):
+            raise BundleError('bundle-source-changed')
         if not stat.S_ISREG(before.st_mode) or before.st_mode & 0o7000:
             raise BundleError('unsupported-bundle-file')
-        checksum = hashlib.sha256()
-        for block in iter(lambda: source.read(1024 * 1024), b''):
-            checksum.update(block)
-            if output is not None:
-                output.write(block)
+        cache = _operation_cache(_operation, root)
+        signature = (before.st_dev, before.st_ino, before.st_mode, before.st_uid, before.st_gid,
+                     before.st_nlink, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        key = os.path.join(os.fspath(root), relative)
+        cached = cache.get(key) if cache is not None else None
+        if cache is not None:
+            from pixel_provider.runtime_custody import ROOT_UID, _acl
+            if before.st_uid != ROOT_UID or before.st_nlink != 1 or before.st_mode & 0o022:
+                raise BundleError('bundle-operation-unqualified')
+            _acl(source.fileno())  # A cache hit never exempts a current Darwin ACL.
+        if cached is not None and cached[0] == signature and output is None:
+            checksum = cached[1][3]
+        else:
+            hasher = hashlib.sha256()
+            for block in iter(lambda: source.read(1024 * 1024), b''):
+                hasher.update(block)
+                if output is not None:
+                    output.write(block)
+            checksum = hasher.hexdigest()
         if _signature(before) != _signature(os.fstat(source.fileno())):
             raise BundleError('bundle-source-changed')
+        if cache is not None:
+            cache[key] = signature, ['file', stat.S_IMODE(before.st_mode), before.st_size, checksum]
         # Modes are deliberately normalized; ACLs and xattrs are not imported.
         return ['file', 0o755 if before.st_mode & 0o111 else 0o644,
-                before.st_size, checksum.hexdigest()]
+                before.st_size, checksum]
 
 
-def inventory(root, *, exclude_manifest=False, normalize_modes=True):
+def _scoped_inventory(root, root_info, *, exclude_manifest, normalize_modes, operation):
+    """Inventory through held directory FDs after the complete custody proof."""
+    entries = {}
+    def visit(directory, prefix):
+        for name in sorted(os.listdir(directory)):
+            relative = _relative(prefix + name)
+            if exclude_manifest and relative == MANIFEST:
+                continue
+            info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode):
+                path = root / relative
+                target = os.readlink(path)
+                try:
+                    resolved = path.resolve(strict=True)
+                except (OSError, RuntimeError):
+                    raise BundleError('bundle-link-unavailable') from None
+                if (target.startswith('/') or resolved != root and root not in resolved.parents
+                        or any(ord(c) < 32 for c in target)):
+                    raise BundleError('bundle-link-escapes')
+                entries[relative] = ['link', target]
+            elif stat.S_ISDIR(info.st_mode):
+                if info.st_mode & 0o7000:
+                    raise BundleError('unsupported-bundle-directory')
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                try:
+                    opened = os.fstat(child)
+                    if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                        raise BundleError('bundle-source-changed')
+                    entries[relative] = ['directory', 0o755 if normalize_modes else stat.S_IMODE(info.st_mode)]
+                    if len(entries) > MAX_ENTRIES:
+                        raise BundleError('bundle-too-many-entries')
+                    visit(child, relative + '/')
+                    after = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                    if (not stat.S_ISDIR(after.st_mode)
+                            or (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino)):
+                        raise BundleError('bundle-source-changed')
+                finally:
+                    os.close(child)
+            else:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                entries[relative] = _file_descriptor(fd, root, relative, _operation=operation, _expected=info)
+                if not normalize_modes:
+                    entries[relative][1] = stat.S_IMODE(info.st_mode)
+            if len(entries) > MAX_ENTRIES:
+                raise BundleError('bundle-too-many-entries')
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (root_info.st_dev, root_info.st_ino):
+            raise BundleError('bundle-source-changed')
+        visit(fd, '')
+        after = root.lstat()
+        if (not stat.S_ISDIR(after.st_mode)
+                or (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino)):
+            raise BundleError('bundle-source-changed')
+    finally:
+        os.close(fd)
+    return entries
+
+
+def inventory(root, *, exclude_manifest=False, normalize_modes=True, _operation=None):
     root = Path(root)
-    if not stat.S_ISDIR(root.lstat().st_mode):
+    if _operation is not None:
+        _operation_cache(_operation, root, metadata=True)
+    root_info = root.lstat()
+    if not stat.S_ISDIR(root_info.st_mode):
         raise BundleError('bundle-directory-required')
+    if _operation is not None:
+        return _scoped_inventory(root, root_info, exclude_manifest=exclude_manifest,
+            normalize_modes=normalize_modes, operation=_operation)
     entries = {}
     def walk_error(error):
         raise error
@@ -503,7 +629,7 @@ def inventory(root, *, exclude_manifest=False, normalize_modes=True):
                     raise BundleError('unsupported-bundle-directory')
                 entries[relative] = ['directory', 0o755 if normalize_modes else stat.S_IMODE(info.st_mode)]
             else:
-                entries[relative] = _file(root, relative)
+                entries[relative] = _file(root, relative, _operation=_operation)
                 if not normalize_modes:
                     entries[relative][1] = stat.S_IMODE(info.st_mode)
             if len(entries) > MAX_ENTRIES:
@@ -523,6 +649,21 @@ def _copy_tree(source, target, entries):
             if os.readlink(source / relative) != record[1]:
                 raise BundleError('bundle-source-changed')
             path.symlink_to(record[1])
+            if sys.platform == 'darwin':
+                # Darwin applies the creator's umask to symlink permissions
+                # and requires read access for an owner-side readlink proof.
+                # Normalize only this newly-created link, never its target or
+                # an existing published tree. The private copy owns this name.
+                before = path.lstat()
+                if not stat.S_ISLNK(before.st_mode) or before.st_nlink != 1:
+                    raise BundleError('bundle-link-copy-changed')
+                os.chmod(path, 0o755, follow_symlinks=False)
+                after = path.lstat()
+                if (not stat.S_ISLNK(after.st_mode) or stat.S_IMODE(after.st_mode) != 0o755
+                        or (before.st_dev, before.st_ino, before.st_uid, before.st_gid, before.st_nlink) !=
+                           (after.st_dev, after.st_ino, after.st_uid, after.st_gid, after.st_nlink)
+                        or os.readlink(path) != record[1]):
+                    raise BundleError('bundle-link-copy-changed')
         else:
             with path.open('xb') as output:
                 actual = _file(source, relative, output)
@@ -535,8 +676,10 @@ def _copy_tree(source, target, entries):
         raise BundleError('bundle-copy-mismatch')
 
 
-def verify(root, *, expected_digest=None):
+def verify(root, *, expected_digest=None, _operation=None):
     root = Path(root).resolve(strict=True)
+    if _operation is not None:
+        _operation_cache(_operation, root)
     path = root / MANIFEST
     if (not stat.S_ISREG(path.lstat().st_mode) or path.stat().st_size > MAX_MANIFEST):
         raise BundleError('invalid-bundle-manifest')
@@ -554,7 +697,7 @@ def verify(root, *, expected_digest=None):
     checksum = hashlib.sha256(body).hexdigest()
     if expected_digest is not None and checksum != expected_digest:
         raise BundleError('bundle-manifest-changed')
-    if inventory(root, exclude_manifest=True, normalize_modes=False) != value['entries']:
+    if inventory(root, exclude_manifest=True, normalize_modes=False, _operation=_operation) != value['entries']:
         raise BundleError('bundle-content-changed')
     if (value['entries'].get('node', [None])[0] != 'file'
             or value['entries']['node'][1] != 0o755
@@ -565,8 +708,98 @@ def verify(root, *, expected_digest=None):
     package = json.loads((root / 'runtime/package.json').read_bytes())
     if package.get('name') != 'openclaw' or package.get('version') != value['openclawVersion']:
         raise BundleError('bundle-version-mismatch')
-    _read_release_selection(root, value['entries'])
+    selection = _read_release_selection(root, value['entries'])
+    _verify_native_source(root, value['entries'], selection, _operation=_operation)
     return value, checksum
+
+
+def connection_plugins(root, manifest):
+    """Require the fixed connection payloads without enabling their plugins.
+
+    Used by candidate preparation/admission, not by historical bundle verify.
+    An older incomplete artifact must remain readable for explicit recovery.
+    """
+    required = {'pixel-source-broker', 'pixel-operations-broker', 'pixel-frontier-broker'}
+    selected = {}
+    for relative in manifest['plugins']:
+        name = relative + '/openclaw.plugin.json'
+        entry = manifest['entries'].get(name)
+        with os.fdopen(_open_file(root, name), 'rb') as stream:
+            body = stream.read(1024 * 1024 + 1)
+        if (len(body) > 1024 * 1024 or entry is None or entry[0] != 'file'
+                or entry[2:] != [len(body), hashlib.sha256(body).hexdigest()]):
+            raise BundleError('native-connection-plugin-metadata-changed')
+        value = json.loads(body)
+        identifier = value.get('id') if type(value) is dict else None
+        if identifier in required:
+            if identifier in selected:
+                raise BundleError('native-connection-plugin-ambiguous')
+            selected[identifier] = relative
+    if set(selected) != required:
+        raise BundleError('native-connection-plugins-incomplete')
+    return selected
+
+
+def _verify_native_source(root, entries, selection, *, _operation=None):
+    if _operation is not None:
+        _operation_cache(_operation, root)
+    capability = {'ods-source', 'ods-source.json', 'native-source'}
+    present = any(name in capability or name.startswith(('ods-source/', 'native-source/')) for name in entries)
+    if not present:
+        return  # Existing bundles keep their exact absent-capability contract.
+    path = Path(__file__).with_name('pixel-native-source-broker.py')
+    spec = importlib.util.spec_from_file_location('verify_native_source', path)
+    helper = importlib.util.module_from_spec(spec)
+    if _operation is None:
+        spec.loader.exec_module(helper)
+    else:
+        from pixel_access_bridge import _native_runtime_code
+        from pixel_macos_custody import protected_bytes
+        # Same verified Root operation and fresh helper custody on every call.
+        # Only parsing is reused; all source/provenance/payload checks below run.
+        body = protected_bytes(path, limit=2 * 1024 * 1024)
+        exec(_native_runtime_code(_operation, path, body), helper.__dict__)
+    if (any(entries.get(name) != ['directory', 0o755] for name in ('ods-source', 'native-source'))
+            or entries.get('ods-source.json', [None])[0] != 'file'
+            or selection['odsSource']['state'] != 'verified-source-bindings'):
+        raise BundleError('native-source-capability-incomplete')
+    with os.fdopen(_open_file(root, 'ods-source.json'), 'rb') as handle:
+        body = handle.read(MAX_SELECTION + 1)
+    try:
+        manifest = json.loads(body, object_pairs_hook=helper._pairs)
+    except (ValueError, UnicodeError, RecursionError):
+        raise BundleError('native-source-provenance-invalid') from None
+    if (len(body) > MAX_SELECTION or _encode(manifest) != body or type(manifest) is not dict
+            or set(manifest) != {'schemaVersion', 'kind', 'commit', 'files'}
+            or type(manifest['schemaVersion']) is not int or manifest['schemaVersion'] != 1
+            or manifest['kind'] != 'ods-native-protected-source'
+            or manifest['commit'] != selection['odsSource']['commit'] or type(manifest['files']) is not dict
+            or set(manifest['files']) != set(helper.ROOT_SOURCE_FILES)):
+        raise BundleError('native-source-provenance-invalid')
+    actual = {name[len('ods-source/'):]: item for name, item in entries.items()
+              if name.startswith('ods-source/') and item[0] != 'directory'}
+    if set(actual) != set(helper.ROOT_SOURCE_FILES):
+        raise BundleError('native-source-code-set-changed')
+    for path, origin in helper.ROOT_SOURCE_FILES.items():
+        record, entry = manifest['files'][path], actual[path]
+        if (type(record) is not dict or set(record) != {'source', 'mode', 'gitBlob', 'sha256'}
+                or record['source'] != origin or record['mode'] not in ('100644', '100755')
+                or entry[0] != 'file' or entry[1] != int(record['mode'][-3:], 8)
+                or type(record['gitBlob']) is not str or not re.fullmatch('[a-f0-9]{40}', record['gitBlob'])
+                or record['sha256'] != entry[3]
+                or _artifact_source_record(root, 'ods-source/' + path, entry)[1] != record['gitBlob']):
+            raise BundleError('native-source-provenance-changed')
+    raw = {}
+    for name in helper.FILES:
+        entry = entries.get('native-source/' + name)
+        if entry is None or entry[0] != 'file' or entry[1] != (0o755 if name == 'broker.py' else 0o644):
+            raise BundleError('native-source-component-incomplete')
+        with os.fdopen(_open_file(root, 'native-source/' + name), 'rb') as handle:
+            raw[name] = handle.read(helper.LIMIT + 1)
+    if {name.split('/', 1)[1] for name in entries if name.startswith('native-source/')} != set(helper.FILES):
+        raise BundleError('native-source-component-incomplete')
+    helper.validate_payloads(raw, ref=selection['pixelSourceRevision'],
+                            python=json.loads(raw['component.json'])['hostPython'])
 
 
 def _shared_repair_contract(manifest_name, module_name):
@@ -704,7 +937,7 @@ def verify_service_binding(root, services_digest):
 def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33',
           stream_progress_fix=False, services_digest=None, exec_wrapper=None,
           shared_runtime_repairs=False, ods_source=None, pixel_source_ref=None,
-          ods_plugin_indices=(), service_manifest=None):
+          ods_plugin_indices=(), service_manifest=None, source_component=None):
     if shared_runtime_repairs and expected_version != '2026.6.33':
         raise BundleError('shared-repairs-unqualified-version')
     if services_digest is not None and (type(services_digest) is not str
@@ -726,11 +959,24 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
         if (hashlib.sha256(_encode(service_manifest)).hexdigest() != services_digest
                 or service_manifest['pixelSourceRef'] != pixel_source_ref):
             raise BundleError('selected-service-manifest-mismatch')
+    source_helper = None
+    if source_component is not None:
+        source_spec = importlib.util.spec_from_file_location('bundle_source_payload',
+            Path(__file__).with_name('pixel-native-source-broker.py'))
+        source_helper = importlib.util.module_from_spec(source_spec)
+        source_spec.loader.exec_module(source_helper)
+        source_helper.validate_payloads(source_component, ref=pixel_source_ref,
+            python=json.loads(source_component['component.json'])['hostPython'])
+        if ods_source is None:
+            raise BundleError('native-source-ods-selection-required')
     selected = None
     if ods_source is not None:
         selected = _selected_release_source(ods_source, ods_plugin_indices,
             wrapper=exec_wrapper is not None, repairs=shared_runtime_repairs,
-            expected_ref=service_source['odsSource']['commit'] if service_source else None)
+            expected_ref=service_source['odsSource']['commit'] if service_source else None,
+            source_paths=source_helper.ROOT_SOURCE_FILES.values() if source_helper else ())
+    if source_helper and selected['reason'] is not None:
+        raise BundleError('native-source-ods-selection-unqualified')
     destination = Path(destination)
     if not destination.is_absolute() or os.path.lexists(destination):
         raise BundleError('new-absolute-bundle-destination-required')
@@ -779,6 +1025,41 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
         (staged / 'plugins').chmod(0o755)
         for index, (source, entries) in enumerate(zip(plugins, snapshots[1:])):
             _copy_tree(source, staged / 'plugins' / str(index), entries)
+        if source_helper:
+            component = staged / source_helper.COMPONENT
+            component.mkdir(mode=0o755)
+            component.chmod(0o755)
+            for name, body in source_component.items():
+                with (component / name).open('xb') as output:
+                    output.write(body)
+                    output.flush()
+                    os.fsync(output.fileno())
+                (component / name).chmod(0o755 if name == 'broker.py' else 0o644)
+            bindings = {}
+            for target, origin in source_helper.ROOT_SOURCE_FILES.items():
+                relative = selected['prefix'] + origin
+                mode, oid = selected['objects'].get(relative, (None, None))
+                if mode not in ('100644', '100755'):
+                    raise BundleError('native-source-ods-input-unmapped')
+                with os.fdopen(_open_file(ods_source, origin), 'rb') as input_file:
+                    body = input_file.read(MAX_SELECTION + 1)
+                if len(body) > MAX_SELECTION or _git_blob(body) != oid:
+                    raise BundleError('native-source-ods-input-changed')
+                path = staged / 'ods-source' / target
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.parent.chmod(0o755)
+                with path.open('xb') as output:
+                    output.write(body)
+                    output.flush()
+                    os.fsync(output.fileno())
+                path.chmod(0o755 if mode == '100755' else 0o644)
+                bindings[target] = {'source': origin, 'mode': mode, 'gitBlob': oid,
+                                    'sha256': hashlib.sha256(body).hexdigest()}
+            for directory, folders, _files in os.walk(staged / 'ods-source'):
+                Path(directory).chmod(0o755)
+            (staged / 'ods-source.json').write_bytes(_encode({'schemaVersion': 1,
+                'kind': 'ods-native-protected-source', 'commit': selected['commit'], 'files': bindings}))
+            (staged / 'ods-source.json').chmod(0o644)
         if services_digest is not None:
             binding = staged / 'ods-service-binding.json'
             binding.write_bytes(_encode({'schemaVersion': 1, 'serviceBundleDigest': services_digest}))
