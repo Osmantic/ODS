@@ -5425,7 +5425,10 @@ def _recovery_main(argv):
             subprocess.SubprocessError) as error:
         # Environment/configuration errors can carry credentials in their text.
         detail, _guidance = _native_failure_diagnostic(error)
-        print('error: native-runtime-recovery-failed (' + detail + ')', file=sys.stderr)
+        deadline = (type(error) is AccessError and error.code in
+                    ('native-source-deadline-unavailable', 'operation-deadline-exceeded'))
+        print('error: native-runtime-recovery-failed (' + detail + ')'
+              + (' [bounded-source-deadline]' if deadline else ''), file=sys.stderr)
         return 1
     print(json.dumps({'operation': 'runtime-recovery', 'status': outcome,
                       'runtimeBundleDigest': args.bundle_digest if outcome == 'active' else args.current_bundle_digest}))

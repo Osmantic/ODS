@@ -128,3 +128,19 @@ def test_recovery_cli_passes_explicit_empty_stage_selection(monkeypatch, capsys)
     output = capsys.readouterr()
     assert result == 0 and json.loads(output.out)['status'] == 'active' and output.err == ''
     assert calls[0]['quarantine_empty_source_stage'] is True
+
+
+@pytest.mark.parametrize('code,marked', [('native-source-deadline-unavailable', True),
+    ('operation-deadline-exceeded', True), (PRIVATE, False)])
+def test_recovery_cli_only_marks_allowlisted_deadline_errors(monkeypatch, capsys, code, marked):
+    monkeypatch.setattr(module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(module.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(module, '_recovery_bridge', lambda **_kwargs: object())
+    def fail(*_args, **_kwargs):
+        raise AccessError(code)
+    monkeypatch.setattr(module, 'recover_install', fail)
+    result = module._recovery_main(['--owner', 'owner', '--current-bundle-digest', 'a' * 64,
+        '--bundle-digest', 'b' * 64])
+    output = capsys.readouterr()
+    assert result == 1 and output.out == '' and PRIVATE not in output.err
+    assert ('[bounded-source-deadline]' in output.err) is marked
