@@ -1,5 +1,6 @@
 """Canonical inert-code upgrade through the actual installer and publisher."""
 # ruff: noqa: E402,F401,F811
+import hashlib
 import json
 from contextlib import contextmanager
 import os
@@ -177,6 +178,95 @@ def test_explicit_empty_stage_quarantine_keeps_inodes_and_requires_live_authorit
         finish_source_caller(n, monkeypatch)
         assert json.loads((n.metadata / 'source-installer-code-only.json').read_bytes())['phase'] == 'committed'
         assert quarantine.stat().st_ino == inode
+
+
+@pytest.mark.parametrize('first_target', ['code-only'], indirect=True)
+@pytest.mark.parametrize('fault', [None, 'nonempty', 'recorded-changed', 'hold-changed',
+    'two-unrecorded', 'receipt-conflict', 'replay-receipt-changed'])
+def test_empty_unrecorded_file_is_preserved_only_with_qualified_authority(first_target, monkeypatch, fault):
+    n = first_target
+    open_file = os.open
+    created = []
+    def after_open(path, flags, *args, **kwargs):
+        fd = open_file(path, flags, *args, **kwargs)
+        parent_fd = kwargs.get('dir_fd')
+        if (flags & os.O_CREAT and isinstance(path, str) and parent_fd is not None
+                and path in {'source-kit.json', *helper.PAYLOADS}
+                and Path(os.readlink('/proc/self/fd/' + str(parent_fd))).name.startswith('.source-kit-')):
+            created.append(path)
+            if len(created) == 5:
+                os.close(fd)
+                raise OSError('interrupted after fifth file creation')
+        return fd
+    monkeypatch.setattr(os, 'open', after_open)
+    with pytest.raises(OSError, match='interrupted after fifth file creation'):
+        helper.publish_installer_code_only_kit(n.selected, transaction=n.transaction, proof=n.absence)
+    monkeypatch.setattr(os, 'open', open_file)
+    record = json.loads((n.metadata / 'source-installer-code-only.json').read_bytes())
+    candidate = n.kit.parent / record['candidate']
+    leaf = created[-1]
+    orphan = candidate / leaf
+    assert sum(value['ready'] for value in record['stagedFiles'].values()) == 4
+    assert record['stagedFiles'][leaf] == {'inode': None, 'ready': False}
+    assert orphan.read_bytes() == b''
+    orphan_inode = orphan.stat().st_ino
+    orphan_device = orphan.stat().st_dev
+    tag = hashlib.sha256(leaf.encode()).hexdigest()[:16] + '-' + format(orphan_device, 'x') + '-' + format(orphan_inode, 'x')
+    receipt = n.metadata / ('.ods-quarantined-source-file-' + record['nonce'] + '-' + tag + '.json')
+    prior = {name: ((candidate / name).read_bytes(), (candidate / name).stat().st_ino)
+        for name, image in record['stagedFiles'].items() if image['ready']}
+    if fault == 'nonempty': orphan.write_bytes(b'preserve')
+    if fault == 'recorded-changed':
+        name = next(iter(prior)); (candidate / name).write_bytes(b'changed')
+    if fault == 'two-unrecorded':
+        name = next(name for name, image in record['stagedFiles'].items()
+            if image['inode'] is None and name != leaf)
+        (candidate / name).write_bytes(b''); (candidate / name).chmod(0o600)
+    if fault == 'receipt-conflict':
+        receipt.write_bytes(b'{"different":true}'); receipt.chmod(0o600)
+    context = json.loads(n.context.read_bytes())
+    settings = n.world / 'test-access-settings.json'
+    settings.write_bytes(c._native_encoded({'fixture': 'physical-bridge-driver'})); settings.chmod(0o600)
+    monkeypatch.setitem(installer.ACCESS_FILES, 'config', settings)
+    monkeypatch.setattr(installer, '_bridge_from_recovery_plan', lambda plan, *, owner_name: n.f.bridge)
+    monkeypatch.setattr(installer, '_discover_source_installer_bridge', lambda _bridge: None)
+    calls = []
+    def held(_plan):
+        calls.append('held')
+        return 'changed' if fault == 'hold-changed' and len(calls) > 1 else 'same-hold'
+    monkeypatch.setattr(installer, '_resume_migration_hold', held)
+    def exclusive_rename(src, name, dst, target):
+        assert c._native_at_inode(dst, target) is None
+        os.rename(name, target, src_dir_fd=src, dst_dir_fd=dst)
+    monkeypatch.setattr(installer, '_sidefile_archive_rename', exclusive_rename)
+    plan = dict(source_lifecycle=context['source_lifecycle'], owner=n.f.bridge.owner,
+        upgrade_qualification=context['upgrade_qualification'])
+    rows = [dict(path=str(settings), before=settings.read_bytes(), after=settings.read_bytes())]
+    journal = SimpleNamespace(value=json.loads(n.upgrade.read_bytes()))
+    def run():
+        installer._quarantine_unrecorded_source_stage(plan, rows, journal, verify_snapshots=lambda: None)
+    if fault and fault != 'replay-receipt-changed':
+        with pytest.raises((installer.InstallError, c.CustodyError, ValueError)):
+            run()
+        assert orphan.stat().st_ino == orphan_inode
+        if fault == 'nonempty': assert orphan.read_bytes() == b'preserve'
+        if fault == 'receipt-conflict': assert receipt.read_bytes() == b'{"different":true}'
+    else:
+        run()
+        retained = list(n.metadata.glob('.ods-quarantined-source-file-*.file'))
+        assert len(retained) == 1 and retained[0].stat().st_ino == orphan_inode and retained[0].read_bytes() == b''
+        assert not orphan.exists()
+        assert {name: ((candidate / name).read_bytes(), (candidate / name).stat().st_ino) for name in prior} == prior
+        if fault == 'replay-receipt-changed':
+            changed = json.loads(receipt.read_bytes()); changed['unexpected'] = True
+            receipt.write_bytes(c._native_encoded(changed))
+            with pytest.raises(installer.InstallError, match='receipt-changed'): run()
+            assert retained[0].stat().st_ino == orphan_inode
+            return
+        run()  # A lost acknowledgement reuses only the matching protected receipt.
+        finish_source_caller(n, monkeypatch)
+        assert json.loads((n.metadata / 'source-installer-code-only.json').read_bytes())['phase'] == 'committed'
+        assert retained[0].stat().st_ino == orphan_inode
 
 
 def finish_and_first_prepare(n, monkeypatch):

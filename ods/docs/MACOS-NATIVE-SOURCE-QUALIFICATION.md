@@ -87,6 +87,17 @@ requires a schema 5 context and journal, all approved after-images, retained
 admission, original absent kit/identity proof, and fresh absence of Source state,
 metadata, identity and actors. It does not roll back a partially published Source.
 
+An explicit `recover-runtime --quarantine-empty-source-stage` operation covers
+another narrow interruption: the active installer's inert code-kit staging
+created a root-owned empty directory or one empty file before recording its
+inode. It requires the exact active journal, Source absence proof, current
+candidate selection and live admission hold. Recorded files must still match
+their qualified prefixes. A private receipt is sealed before an exclusive move
+preserves the unrecorded inode in protected quarantine; it is never adopted as
+Source code. Contents, unknown names, changed recorded files, conflicting
+receipts or a changed hold are refusals. The existing bounded publication still
+has to complete separately; quarantine alone is not Source readiness.
+
 Before stopping Core, the operation seals private context/journal copies and a
 fixed preservation manifest. Only after every service is confirmed stopped may
 it exclusively rename the two owner sidefiles and both Root receipts into the

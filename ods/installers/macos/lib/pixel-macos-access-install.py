@@ -4523,10 +4523,10 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_
 
 
 def _quarantine_unrecorded_source_stage(plan, records, journal, *, verify_snapshots):
-    """Preserve only an empty root-owned mkdir interrupted before its inode receipt.
+    """Preserve an empty root-owned staging object without an inode receipt.
 
     This explicit recovery never adopts an unrecorded object as Source code.
-    It moves the empty directory into protected quarantine after independently
+    It moves the empty directory or file into protected quarantine after independently
     rechecking the transaction, inactive Source census and the live Edge hold.
     """
     intent = plan.get('source_lifecycle')
@@ -4552,14 +4552,8 @@ def _quarantine_unrecorded_source_stage(plan, records, journal, *, verify_snapsh
         selected = custody.native_source_selection(bridge, bridge.connection_deployment())
         original = custody.native_installer_code_only_kit_authority(selected, transaction=transaction, proof=proof)
         record = original.get('record')
-        if (type(record) is not dict or record.get('phase') != 'staging'
-                or record.get('candidateInode') is not None
-                or not record.get('stagedFiles')
-                or any(value != {'inode': None, 'ready': False} for value in record['stagedFiles'].values())):
+        if type(record) is not dict or record.get('phase') != 'staging' or not record.get('stagedFiles'):
             raise InstallError('native-source-empty-stage-unqualified')
-        candidate, backup = record['candidate'], record['backup']
-        quarantine = '.ods-quarantined-source-kit-' + record['nonce']
-        receipt_name = '.ods-empty-source-stage-' + record['nonce'] + '.json'
         def guard():
             verify_snapshots()
             if _resume_migration_hold(plan) != hold:
@@ -4567,6 +4561,14 @@ def _quarantine_unrecorded_source_stage(plan, records, journal, *, verify_snapsh
             fresh = custody.native_installer_code_only_kit_authority(selected, transaction=transaction, proof=proof)
             if fresh != original:
                 raise InstallError('native-source-empty-stage-authority-changed')
+        if record.get('candidateInode') is not None:
+            _quarantine_unrecorded_source_file(selected, transaction, proof, original, guard=guard)
+            return
+        if any(value != {'inode': None, 'ready': False} for value in record['stagedFiles'].values()):
+            raise InstallError('native-source-empty-stage-unqualified')
+        candidate, backup = record['candidate'], record['backup']
+        quarantine = '.ods-quarantined-source-kit-' + record['nonce']
+        receipt_name = '.ods-empty-source-stage-' + record['nonce'] + '.json'
         with protected_directory(custody.NATIVE_META) as metadata, protected_directory(custody.NATIVE_KIT.parent) as kits:
             if ([os.fstat(kits).st_dev, os.fstat(kits).st_ino] != record['kitParent']
                     or custody._native_at_inode(kits, custody.NATIVE_KIT.name) != record['oldKit']['inode']
@@ -4639,6 +4641,148 @@ def _quarantine_unrecorded_source_stage(plan, records, journal, *, verify_snapsh
             finally:
                 os.close(fd)
         guard()
+
+
+def _quarantine_unrecorded_source_file(selected, transaction, proof, authority, *, guard):
+    """Preserve one empty file created before its inode could be journaled."""
+    from pixel_macos_custody import protected_directory
+    from pixel_connections import custody
+    from pixel_connections.native_executor import _publisher
+    record, files = authority['record'], authority['targetKit']
+    publisher, material = _publisher(selected, with_material=True)
+    if material[1] != selected.deployment.document:
+        raise InstallError('native-source-empty-file-authority-changed')
+    prefix = '.ods-quarantined-source-file-' + record['nonce'] + '-'
+    with protected_directory(custody.NATIVE_META) as metadata, protected_directory(custody.NATIVE_KIT.parent) as kits:
+        if ([os.fstat(kits).st_dev, os.fstat(kits).st_ino] != record['kitParent']
+                or custody._native_at_inode(kits, custody.NATIVE_KIT.name) != record['oldKit']['inode']
+                or custody._native_at_inode(kits, record['backup']) is not None
+                or custody._native_at_inode(kits, record['candidate']) != record['candidateInode']):
+            raise InstallError('native-source-empty-file-changed')
+        journal_raw = custody._native_json_at(metadata, 'source-installer-code-only.json')[1]
+        directory = os.open(record['candidate'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=kits)
+        try:
+            def scan():
+                info = os.fstat(directory)
+                custody._native_no_acl(directory)
+                names = set(os.listdir(directory))
+                if ([info.st_dev, info.st_ino] != record['candidateInode']
+                        or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (0, 0, 0o700)
+                        or custody._native_at_inode(kits, record['candidate']) != record['candidateInode']
+                        or names - set(files)):
+                    raise InstallError('native-source-empty-file-changed')
+                unknown = []
+                for leaf, body in files.items():
+                    image = record['stagedFiles'][leaf]
+                    present = custody._native_at_inode(directory, leaf)
+                    if image['inode'] is None:
+                        if present is not None:
+                            unknown.append((leaf, present))
+                    else:
+                        if present != image['inode']:
+                            raise InstallError('native-source-empty-file-changed')
+                        publisher._generation_prefix(custody, directory, leaf, body, image,
+                            mode=0o755 if leaf == 'broker.py' else 0o644)
+                return unknown
+            unknown = scan()
+            if len(unknown) > 1:
+                raise InstallError('native-source-empty-file-unqualified')
+            if not unknown:
+                # A lost reply after quarantine is replayable only from its
+                # independently bound, root-private receipt and retained inode.
+                receipts = [name for name in os.listdir(metadata) if name.startswith(prefix) and name.endswith('.json')]
+                if not receipts or len(receipts) > 32:
+                    raise InstallError('native-source-empty-file-receipt-required')
+                matched = 0
+                for receipt_name in receipts:
+                    raw, _inode = custody._native_root_file(metadata, receipt_name, limit=16384)
+                    receipt = json.loads(raw, object_pairs_hook=custody._native_pairs)
+                    if (type(receipt) is not dict or set(receipt) != {'schemaVersion', 'transaction',
+                            'candidateInode', 'fileName', 'fileInode', 'quarantine', 'journalSha256'}
+                            or type(receipt.get('schemaVersion')) is not int or receipt['schemaVersion'] != 1
+                            or receipt.get('transaction') != transaction
+                            or receipt.get('candidateInode') != record['candidateInode']):
+                        raise InstallError('native-source-empty-file-receipt-changed')
+                    if receipt.get('journalSha256') != hashlib.sha256(journal_raw).hexdigest():
+                        continue
+                    leaf = receipt.get('fileName')
+                    identity = receipt.get('fileInode')
+                    if (leaf not in files or record['stagedFiles'][leaf]['inode'] is not None
+                            or custody._native_at_inode(directory, leaf) is not None
+                            or not custody._native_inode(identity)):
+                        raise InstallError('native-source-empty-file-receipt-changed')
+                    tag = hashlib.sha256(leaf.encode()).hexdigest()[:16] + '-' + format(identity[0], 'x') + '-' + format(identity[1], 'x')
+                    saved = prefix + tag + '.file'
+                    if (receipt_name != prefix + tag + '.json' or receipt.get('quarantine') != saved
+                            or custody._native_at_inode(metadata, saved) != identity):
+                        raise InstallError('native-source-empty-file-receipt-changed')
+                    body, located = custody._native_root_file(metadata, saved, mode=0o600, limit=1)
+                    if body != b'' or located != identity:
+                        raise InstallError('native-source-empty-file-receipt-changed')
+                    matched += 1
+                if not matched:
+                    raise InstallError('native-source-empty-file-receipt-required')
+                guard()
+                if scan() or custody._native_json_at(metadata, 'source-installer-code-only.json')[1] != journal_raw:
+                    raise InstallError('native-source-empty-file-changed')
+                return
+            leaf, identity = unknown[0]
+            tag = hashlib.sha256(leaf.encode()).hexdigest()[:16] + '-' + format(identity[0], 'x') + '-' + format(identity[1], 'x')
+            quarantine, receipt_name = prefix + tag + '.file', prefix + tag + '.json'
+            fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                def empty():
+                    info = os.fstat(fd)
+                    custody._native_no_acl(fd)
+                    return (stat.S_ISREG(info.st_mode) and (info.st_uid, info.st_gid) == (0, 0)
+                        and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1 and info.st_size == 0
+                        and [info.st_dev, info.st_ino] == identity and custody._native_at_inode(directory, leaf) == identity)
+                if not empty():
+                    raise InstallError('native-source-empty-file-changed')
+                guard()
+                if (not empty() or scan() != unknown
+                        or custody._native_json_at(metadata, 'source-installer-code-only.json')[1] != journal_raw):
+                    raise InstallError('native-source-empty-file-changed')
+                receipt = {'schemaVersion': 1, 'transaction': transaction, 'candidateInode': record['candidateInode'],
+                    'fileName': leaf, 'fileInode': identity, 'quarantine': quarantine,
+                    'journalSha256': hashlib.sha256(journal_raw).hexdigest()}
+                try:
+                    body, receipt_inode = custody._native_root_file(metadata, receipt_name, limit=16384)
+                    if json.loads(body, object_pairs_hook=custody._native_pairs) != receipt:
+                        raise InstallError('native-source-empty-file-receipt-changed')
+                except FileNotFoundError:
+                    temporary = '.ods-empty-source-file-tmp-' + os.urandom(16).hex()
+                    out = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=metadata)
+                    try:
+                        with os.fdopen(out, 'wb') as stream:
+                            os.fchmod(stream.fileno(), 0o600)
+                            os.fchown(stream.fileno(), 0, 0)
+                            custody._native_no_acl(stream.fileno())
+                            stream.write(custody._native_encoded(receipt))
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        _sidefile_archive_rename(metadata, temporary, metadata, receipt_name)
+                        os.fsync(metadata)
+                    finally:
+                        try: os.unlink(temporary, dir_fd=metadata)
+                        except FileNotFoundError: pass
+                    body, receipt_inode = custody._native_root_file(metadata, receipt_name, limit=16384)
+                guard()
+                if (not empty() or scan() != unknown
+                        or custody._native_root_file(metadata, receipt_name, limit=16384) != (body, receipt_inode)
+                        or custody._native_json_at(metadata, 'source-installer-code-only.json')[1] != journal_raw):
+                    raise InstallError('native-source-empty-file-changed')
+                _sidefile_archive_rename(directory, leaf, metadata, quarantine)
+                os.fsync(directory)
+                os.fsync(metadata)
+                if (custody._native_at_inode(directory, leaf) is not None
+                        or custody._native_at_inode(metadata, quarantine) != identity):
+                    raise InstallError('native-source-empty-file-changed')
+            finally:
+                os.close(fd)
+        finally:
+            os.close(directory)
+    guard()
 
 
 def _resume_source_upgrade_active(plan, records, journal, *, verify_snapshots):
@@ -5396,7 +5540,7 @@ def _recovery_main(argv):
     parser.add_argument('--rollback-before-source-publication', action='store_true',
         help='Explicitly preserve first-Source private files and restore the previous runtime; requires complete Source absence')
     parser.add_argument('--quarantine-empty-source-stage', action='store_true',
-        help='Preserve a verified empty Source staging directory whose inode was not recorded')
+        help='Preserve a verified empty Source staging object whose inode was not recorded')
     args = parser.parse_args(argv)
     from pixel_access_bridge import AccessError
     from pixel_macos_custody import CustodyError
