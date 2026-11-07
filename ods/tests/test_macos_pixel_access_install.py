@@ -1153,6 +1153,34 @@ def test_upgrade_rejects_controller_binding_drift_before_policy_selection(bundle
     policy.assert_not_called()
 
 
+@pytest.mark.parametrize('fault', [None, 'old-binding', 'different-policy', 'changed-process'])
+def test_active_recovery_checks_candidate_controller_and_policy(monkeypatch, fault):
+    import copy
+    import pixel_macos_custody as custody
+    binding = {'process': {'executable': '/candidate/node'}}
+    expected = {'gateway_binding': binding, 'gateway_process': binding['process'],
+        'gateway_policy': {'fixture': 'candidate'}, 'owner': 'owner'}
+    plan = {'access_settings': expected, 'gateway_binding': binding}
+    actual = copy.deepcopy(expected)
+    if fault == 'old-binding':
+        actual['gateway_binding']['process']['executable'] = '/previous/node'
+        actual['gateway_process']['executable'] = '/previous/node'
+    elif fault == 'different-policy':
+        actual['gateway_policy']['fixture'] = 'other'
+    elif fault == 'changed-process':
+        actual['gateway_process']['executable'] = '/different/node'
+    monkeypatch.setattr(custody, 'protected_bytes', lambda _: json.dumps(actual).encode())
+    policy = Mock(return_value={'activeMode': 'sandboxed'})
+    monkeypatch.setattr(installer._policy, 'policy_state', policy)
+    if fault:
+        with pytest.raises(installer.InstallError, match='controller-binding-changed'):
+            installer._candidate_upgrade_policy_mode(plan)
+        policy.assert_not_called()
+    else:
+        assert installer._candidate_upgrade_policy_mode(plan) == 'sandboxed'
+        policy.assert_called_once_with(expected['gateway_policy'])
+
+
 @pytest.mark.parametrize('change', [None, 'launcher', 'path', 'owner'])
 def test_system_source_resolves_only_exact_protected_launcher(deployment, monkeypatch, change):
     source = Path(deployment['source_plist'])

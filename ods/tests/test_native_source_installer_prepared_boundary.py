@@ -334,9 +334,10 @@ def test_started_source_recovery_requires_live_sdk_hold_before_publisher(tmp_pat
     monkeypatch.setattr(access, '_migration_edge_request', rpc)
     services = {role: object() for role in ('gateway', 'access', 'relay')}
     monkeypatch.setattr(access, '_upgrade_services', lambda *_args: ({}, services))
-    for name in ('_verify_bundle_selection', '_upgrade_service_identity', '_upgrade_policy_mode',
+    for name in ('_verify_bundle_selection', '_upgrade_service_identity', '_candidate_upgrade_policy_mode',
                  '_ready_gateway', '_ready_access', '_ready_access_relay', '_clear_candidate_stop_witnesses'):
         monkeypatch.setattr(access, name, lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(access, '_upgrade_policy_mode', lambda *_args: pytest.fail('active recovery checked the previous controller'))
     monkeypatch.setattr(access, '_finish_source_upgrade', lambda *_args: events.append('source-publication'))
     def finish(verify):
         verify()

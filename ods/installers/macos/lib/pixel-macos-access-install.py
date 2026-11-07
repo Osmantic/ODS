@@ -1284,6 +1284,18 @@ def _upgrade_policy_mode(plan):
     return _policy.policy_state(settings.get('gateway_policy'))['activeMode']
 
 
+def _candidate_upgrade_policy_mode(plan):
+    """Verify the candidate controller after its journaled files are active."""
+    sys.path.insert(0, str(HERE.parents[2] / 'bin'))
+    from pixel_macos_custody import protected_bytes
+    settings = json.loads(protected_bytes(_destination(ACCESS_FILES['config'])))
+    if (settings != plan['access_settings']
+            or settings.get('gateway_binding') != plan['gateway_binding']
+            or settings.get('gateway_process') != plan['gateway_binding']['process']):
+        raise InstallError('runtime-upgrade-controller-binding-changed')
+    return _policy.policy_state(settings.get('gateway_policy'))['activeMode']
+
+
 def _schedule_upgrade_additions(plan, files):
     """Only a complete new family absent from the approved previous bundle.
 
@@ -4518,7 +4530,7 @@ def _resume_source_upgrade_active(plan, records, journal, *, verify_snapshots):
             _verify_new_services(dict(plan, native_services=_managed_service_record(records, 'after')['selection']))
         for service in services.values():
             _upgrade_service_identity(service)
-        _upgrade_policy_mode(plan)
+        _candidate_upgrade_policy_mode(plan)
         _ready_gateway(services['gateway'], plan['access_settings']['gateway_port'])
         _ready_access(services['access'], upgrade_guard=True)
         _ready_access_relay(services['relay'], plan, upgrade_guard=True)
@@ -5276,7 +5288,8 @@ def _recovery_main(argv):
         if not reproved:
             _reprove_recovered_access(args.owner)
     except InstallError as error:
-        print('error: ' + error.code, file=sys.stderr)
+        detail, _guidance = _native_failure_diagnostic(error)
+        print('error: ' + error.code + ' (' + detail + ')', file=sys.stderr)
         return 1
     except (AccessError, CustodyError, SourceCustodyError, _upgrade.UpgradeError, OSError, ValueError, KeyError, TypeError,
             subprocess.SubprocessError) as error:
