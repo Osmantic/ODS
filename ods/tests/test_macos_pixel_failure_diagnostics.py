@@ -1,4 +1,5 @@
 """Public failure diagnostics disclose code locations, never exception payloads."""
+import json
 from pathlib import Path
 import sys
 
@@ -110,3 +111,20 @@ def test_cli_reports_only_sanitized_wrapped_failure(monkeypatch, capsys, operati
     assert 'pixel_macos_custody.CustodyError at bin/pixel_macos_custody.py:' in output.err
     assert PRIVATE not in output.err and str(module.HERE.parents[2]) not in output.err
     assert str(Path(__file__)) not in output.err
+
+
+def test_recovery_cli_passes_explicit_empty_stage_selection(monkeypatch, capsys):
+    monkeypatch.setattr(module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(module.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(module, '_recovery_bridge', lambda **_kwargs: object())
+    calls = []
+    def recover(_bridge, **kwargs):
+        calls.append(kwargs)
+        kwargs['on_reproved']()
+        return 'active'
+    monkeypatch.setattr(module, 'recover_install', recover)
+    result = module._recovery_main(['--owner', 'owner', '--current-bundle-digest', 'a' * 64,
+        '--bundle-digest', 'b' * 64, '--quarantine-empty-source-stage'])
+    output = capsys.readouterr()
+    assert result == 0 and json.loads(output.out)['status'] == 'active' and output.err == ''
+    assert calls[0]['quarantine_empty_source_stage'] is True

@@ -2716,9 +2716,13 @@ def native_installer_code_only_kit_authority(selection, *, transaction, proof, _
     """Actual installer-purpose authority, never private Source admission."""
     from pixel_macos_custody import protected_directory
     from .native_executor import _publisher
-    doc = _native_selected(selection, _publication=True)
-    publisher = _publisher(selection)
-    _module, _doc, component, ref = publisher._material(selection)
+    # _publisher qualifies the selected deployment and then independently
+    # qualifies its complete material. Reuse that exact material here instead
+    # of traversing both protected runtime trees a second time.
+    publisher, material = _publisher(selection, with_material=True)
+    _module, doc, component, ref = material
+    if doc != selection.deployment.document:
+        raise CustodyError('native-source-installer-code-only-target-changed')
     context, context_raw = _native_installer_context(selection.bridge, transaction)
     native_installer_absence_receipt(proof, transaction=transaction, owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid'])
     if (proof['kit'] is None or not {'source-publication.json', 'source-sidefiles.json'} <= set(proof['metadata'])

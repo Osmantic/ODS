@@ -4447,7 +4447,7 @@ def _recover_before_source_publication(plan, records, journal, bridge, *, verify
 
 
 def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_reproved=None,
-                    rollback_before_source_publication=False):
+                    rollback_before_source_publication=False, quarantine_empty_source_stage=False):
     """Restore an interrupted runtime upgrade; CLI remains gated separately."""
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise InstallError('macos-root-install-required')
@@ -4456,7 +4456,12 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_
         raise InstallError('runtime-upgrade-controller-state-changed')
     if type(rollback_before_source_publication) is not bool:
         raise InstallError('native-prepublication-rollback-selection-invalid')
+    if (type(quarantine_empty_source_stage) is not bool
+            or quarantine_empty_source_stage and rollback_before_source_publication):
+        raise InstallError('native-source-empty-stage-selection-invalid')
     if not os.path.lexists(bridge.state / 'runtime-upgrade.json'):
+        if quarantine_empty_source_stage:
+            raise InstallError('native-source-empty-stage-journal-required')
         if rollback_before_source_publication:
             from pixel_connections import custody
             owner = pwd.getpwnam(owner_name)
@@ -4499,6 +4504,8 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_
                     source_bridge = _bridge_from_recovery_plan(
                         dict(plan, access_settings=json.loads(settings)), owner_name=owner_name)
                 with (source_bridge.bounded(900) if source_bridge is not bridge else nullcontext()):
+                    if quarantine_empty_source_stage:
+                        _quarantine_unrecorded_source_stage(plan, records, journal, verify_snapshots=verify)
                     if rollback_before_source_publication:
                         _recover_before_source_publication(plan, records, journal, source_bridge, verify_snapshots=verify)
                     elif journal.value['phase'] == 'active':
@@ -4508,11 +4515,130 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_
                         _recover_upgrade(plan, records, journal, verify_snapshots=verify,
                             previous_guard=_previous_upgrade_guard(records), source_bridge=source_bridge)
         else:
-            if rollback_before_source_publication:
+            if rollback_before_source_publication or quarantine_empty_source_stage:
                 raise InstallError('native-prepublication-rollback-origin-unqualified')
             _recover_upgrade(plan, records, journal, verify_snapshots=verify,
                              previous_guard=_previous_upgrade_guard(records))
     return outcome
+
+
+def _quarantine_unrecorded_source_stage(plan, records, journal, *, verify_snapshots):
+    """Preserve only an empty root-owned mkdir interrupted before its inode receipt.
+
+    This explicit recovery never adopts an unrecorded object as Source code.
+    It moves the empty directory into protected quarantine after independently
+    rechecking the transaction, inactive Source census and the live Edge hold.
+    """
+    intent = plan.get('source_lifecycle')
+    addition = journal.value.get('sourceAddition', {})
+    proof = addition.get('proof') if type(addition) is dict else None
+    if (journal.value.get('phase') != 'active' or type(intent) is not dict
+            or intent.get('mode') != 'absent' or type(proof) is not dict or proof.get('kit') is None):
+        raise InstallError('native-source-empty-stage-unqualified')
+    from pixel_macos_custody import protected_bytes, protected_directory
+    from pixel_connections import custody
+    path = str(_destination(ACCESS_FILES['config']))
+    settings = next((item['after'] for item in records if item['path'] == path), None)
+    if settings is None or protected_bytes(path) != settings:
+        raise InstallError('native-source-installer-target-binding-changed')
+    selected_plan = dict(plan, access_settings=json.loads(settings))
+    bridge = _bridge_from_recovery_plan(selected_plan, owner_name=plan['owner'].pw_name)
+    transaction = dict(kind='native-installer-upgrade', transaction=addition['contextSha256'],
+        currentDigest=plan['upgrade_qualification']['currentDigest'],
+        candidateDigest=plan['upgrade_qualification']['candidateDigest'])
+    hold = _resume_migration_hold(plan)
+    with bridge.bounded(600):
+        _discover_source_installer_bridge(bridge)
+        selected = custody.native_source_selection(bridge, bridge.connection_deployment())
+        original = custody.native_installer_code_only_kit_authority(selected, transaction=transaction, proof=proof)
+        record = original.get('record')
+        if (type(record) is not dict or record.get('phase') != 'staging'
+                or record.get('candidateInode') is not None
+                or not record.get('stagedFiles')
+                or any(value != {'inode': None, 'ready': False} for value in record['stagedFiles'].values())):
+            raise InstallError('native-source-empty-stage-unqualified')
+        candidate, backup = record['candidate'], record['backup']
+        quarantine = '.ods-quarantined-source-kit-' + record['nonce']
+        receipt_name = '.ods-empty-source-stage-' + record['nonce'] + '.json'
+        def guard():
+            verify_snapshots()
+            if _resume_migration_hold(plan) != hold:
+                raise InstallError('native-source-empty-stage-authority-changed')
+            fresh = custody.native_installer_code_only_kit_authority(selected, transaction=transaction, proof=proof)
+            if fresh != original:
+                raise InstallError('native-source-empty-stage-authority-changed')
+        with protected_directory(custody.NATIVE_META) as metadata, protected_directory(custody.NATIVE_KIT.parent) as kits:
+            if ([os.fstat(kits).st_dev, os.fstat(kits).st_ino] != record['kitParent']
+                    or custody._native_at_inode(kits, custody.NATIVE_KIT.name) != record['oldKit']['inode']
+                    or custody._native_at_inode(kits, backup) is not None):
+                raise InstallError('native-source-empty-stage-changed')
+            raw = custody._native_json_at(metadata, 'source-installer-code-only.json')[1]
+            source = custody._native_at_inode(kits, candidate)
+            saved = custody._native_at_inode(metadata, quarantine)
+            if (source is None) == (saved is None):
+                raise InstallError('native-source-empty-stage-changed')
+            directory, name, expected = (kits, candidate, source) if source is not None else (metadata, quarantine, saved)
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            try:
+                def empty():
+                    info = os.fstat(fd)
+                    custody._native_no_acl(fd)
+                    return ([info.st_dev, info.st_ino] == expected and (info.st_uid, info.st_gid) == (0, 0)
+                        and stat.S_IMODE(info.st_mode) == 0o700 and not os.listdir(fd)
+                        and custody._native_at_inode(directory, name) == expected)
+                if not empty():
+                    raise InstallError('native-source-empty-stage-changed')
+                guard()
+                if (not empty() or custody._native_json_at(metadata, 'source-installer-code-only.json')[1] != raw
+                        or custody._native_at_inode(kits, custody.NATIVE_KIT.name) != record['oldKit']['inode']
+                        or custody._native_at_inode(kits, backup) is not None):
+                    raise InstallError('native-source-empty-stage-changed')
+                receipt = {'schemaVersion': 1, 'transaction': transaction, 'candidate': candidate,
+                    'quarantine': quarantine, 'directoryInode': expected, 'parentInode': record['kitParent'],
+                    'journalSha256': hashlib.sha256(raw).hexdigest()}
+                def read_receipt():
+                    try:
+                        body, inode = custody._native_root_file(metadata, receipt_name, limit=16384)
+                    except FileNotFoundError:
+                        return None, None
+                    return json.loads(body, object_pairs_hook=custody._native_pairs), (body, inode)
+                existing, receipt_raw = read_receipt()
+                if existing is None:
+                    if source is None:
+                        raise InstallError('native-source-empty-stage-receipt-required')
+                    temporary = '.ods-empty-source-stage-tmp-' + os.urandom(16).hex()
+                    out = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                  0o600, dir_fd=metadata)
+                    try:
+                        with os.fdopen(out, 'wb') as stream:
+                            os.fchmod(stream.fileno(), 0o600)
+                            os.fchown(stream.fileno(), 0, 0)
+                            custody._native_no_acl(stream.fileno())
+                            stream.write(custody._native_encoded(receipt))
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        _sidefile_archive_rename(metadata, temporary, metadata, receipt_name)
+                        os.fsync(metadata)
+                    finally:
+                        try: os.unlink(temporary, dir_fd=metadata)
+                        except FileNotFoundError: pass
+                    existing, receipt_raw = read_receipt()
+                if existing != receipt:
+                    raise InstallError('native-source-empty-stage-receipt-changed')
+                guard()
+                if (not empty() or read_receipt()[1] != receipt_raw
+                        or custody._native_json_at(metadata, 'source-installer-code-only.json')[1] != raw):
+                    raise InstallError('native-source-empty-stage-changed')
+                if source is not None:
+                    _sidefile_archive_rename(kits, candidate, metadata, quarantine)
+                    os.fsync(kits)
+                    os.fsync(metadata)
+                    if (custody._native_at_inode(kits, candidate) is not None
+                            or custody._native_at_inode(metadata, quarantine) != expected):
+                        raise InstallError('native-source-empty-stage-changed')
+            finally:
+                os.close(fd)
+        guard()
 
 
 def _resume_source_upgrade_active(plan, records, journal, *, verify_snapshots):
@@ -5269,6 +5395,8 @@ def _recovery_main(argv):
     parser.add_argument('--bundle-digest', required=True)
     parser.add_argument('--rollback-before-source-publication', action='store_true',
         help='Explicitly preserve first-Source private files and restore the previous runtime; requires complete Source absence')
+    parser.add_argument('--quarantine-empty-source-stage', action='store_true',
+        help='Preserve a verified empty Source staging directory whose inode was not recorded')
     args = parser.parse_args(argv)
     from pixel_access_bridge import AccessError
     from pixel_macos_custody import CustodyError
@@ -5281,6 +5409,8 @@ def _recovery_main(argv):
         reproved = []
         recovery_options = ({'rollback_before_source_publication': True}
             if args.rollback_before_source_publication else {})
+        if args.quarantine_empty_source_stage:
+            recovery_options['quarantine_empty_source_stage'] = True
         outcome = recover_install(_recovery_bridge(**selection), **selection,
                                   on_reproved=lambda: reproved.append(True), **recovery_options)
         # Recovery may restore the previous runtime. Its installed policy, not

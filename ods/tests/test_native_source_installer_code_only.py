@@ -86,6 +86,99 @@ def test_code_only_actual_installer_target_retains_original_kit_and_owner_images
     assert files(n) == snapshot and n.records == {'Users': None, 'Groups': None}
 
 
+@pytest.mark.parametrize('first_target', ['code-only'], indirect=True)
+def test_code_only_directory_created_before_inode_record_is_refused_on_retry(first_target, monkeypatch):
+    n = first_target
+    mkdir = os.mkdir
+    interrupted = []
+    def after_mkdir(path, *args, **kwargs):
+        result = mkdir(path, *args, **kwargs)
+        if str(path).startswith('.source-kit-') and not interrupted:
+            interrupted.append(True)
+            raise OSError('interrupted after candidate mkdir')
+        return result
+    monkeypatch.setattr(os, 'mkdir', after_mkdir)
+    with pytest.raises(OSError, match='interrupted after candidate mkdir'):
+        helper.publish_installer_code_only_kit(n.selected, transaction=n.transaction, proof=n.absence)
+    monkeypatch.setattr(os, 'mkdir', mkdir)
+    record = json.loads((n.metadata / 'source-installer-code-only.json').read_bytes())
+    candidate = n.kit.parent / record['candidate']
+    assert interrupted and record['phase'] == 'staging' and record['candidateInode'] is None
+    assert candidate.is_dir() and not list(candidate.iterdir())
+    snapshot = files(n)
+    with pytest.raises(c.CustodyError, match='native-source-installer-code-only-prefix-changed'):
+        helper.publish_installer_code_only_kit(n.selected, transaction=n.transaction, proof=n.absence)
+    assert files(n) == snapshot
+
+
+@pytest.mark.parametrize('first_target', ['code-only'], indirect=True)
+@pytest.mark.parametrize('fault', [None, 'nonempty', 'hold-changed', 'snapshot-changed', 'receipt-conflict'])
+def test_explicit_empty_stage_quarantine_keeps_inodes_and_requires_live_authority(first_target, monkeypatch, fault):
+    n = first_target
+    mkdir = os.mkdir
+    interrupted = []
+    def after_mkdir(path, *args, **kwargs):
+        result = mkdir(path, *args, **kwargs)
+        if str(path).startswith('.source-kit-') and not interrupted:
+            interrupted.append(True)
+            raise OSError('interrupted after candidate mkdir')
+        return result
+    monkeypatch.setattr(os, 'mkdir', after_mkdir)
+    with pytest.raises(OSError, match='interrupted after candidate mkdir'):
+        helper.publish_installer_code_only_kit(n.selected, transaction=n.transaction, proof=n.absence)
+    monkeypatch.setattr(os, 'mkdir', mkdir)
+    record = json.loads((n.metadata / 'source-installer-code-only.json').read_bytes())
+    candidate = n.kit.parent / record['candidate']
+    inode, old_kit = candidate.stat().st_ino, n.kit.stat().st_ino
+    if fault == 'nonempty': (candidate / 'unexpected').write_text('preserve')
+    receipt = n.metadata / ('.ods-empty-source-stage-' + record['nonce'] + '.json')
+    if fault == 'receipt-conflict':
+        receipt.write_bytes(b'{"different":true}')
+        receipt.chmod(0o600)
+    context = json.loads(n.context.read_bytes())
+    settings = n.world / 'test-access-settings.json'
+    settings.write_bytes(c._native_encoded({'fixture': 'physical-bridge-driver'}))
+    settings.chmod(0o600)
+    monkeypatch.setitem(installer.ACCESS_FILES, 'config', settings)
+    monkeypatch.setattr(installer, '_bridge_from_recovery_plan', lambda plan, *, owner_name: n.f.bridge)
+    monkeypatch.setattr(installer, '_discover_source_installer_bridge', lambda _bridge: None)
+    calls = []
+    def held(_plan):
+        calls.append('held')
+        return 'changed' if fault == 'hold-changed' and len(calls) > 1 else 'same-hold'
+    monkeypatch.setattr(installer, '_resume_migration_hold', held)
+    def exclusive_rename(src, name, dst, target):
+        assert c._native_at_inode(dst, target) is None
+        os.rename(name, target, src_dir_fd=src, dst_dir_fd=dst)
+    monkeypatch.setattr(installer, '_sidefile_archive_rename', exclusive_rename)
+    plan = dict(source_lifecycle=context['source_lifecycle'], owner=n.f.bridge.owner,
+        upgrade_qualification=context['upgrade_qualification'])
+    rows = [dict(path=str(settings), before=settings.read_bytes(), after=settings.read_bytes())]
+    journal = SimpleNamespace(value=json.loads(n.upgrade.read_bytes()))
+    quarantine = n.metadata / ('.ods-quarantined-source-kit-' + record['nonce'])
+    def verify():
+        if fault == 'snapshot-changed':
+            raise installer.InstallError('native-source-empty-stage-snapshot-changed')
+    def run():
+        installer._quarantine_unrecorded_source_stage(plan, rows, journal, verify_snapshots=verify)
+    if fault:
+        with pytest.raises(installer.InstallError, match='native-source-empty-stage-'):
+            run()
+        assert candidate.stat().st_ino == inode and not quarantine.exists()
+        if fault == 'nonempty': assert (candidate / 'unexpected').read_text() == 'preserve'
+        if fault == 'receipt-conflict': assert receipt.read_bytes() == b'{"different":true}'
+    else:
+        run()
+        assert not candidate.exists() and quarantine.stat().st_ino == inode
+        assert json.loads(receipt.read_bytes())['directoryInode'][1] == inode
+        assert n.kit.stat().st_ino == old_kit
+        run()  # A lost reply never renames or removes the retained object.
+        assert quarantine.stat().st_ino == inode
+        finish_source_caller(n, monkeypatch)
+        assert json.loads((n.metadata / 'source-installer-code-only.json').read_bytes())['phase'] == 'committed'
+        assert quarantine.stat().st_ino == inode
+
+
 def finish_and_first_prepare(n, monkeypatch):
     finish_source_caller(n, monkeypatch)
     journal = installer._upgrade.RecoveryJournal(n.upgrade, json.loads(n.upgrade.read_bytes()))
