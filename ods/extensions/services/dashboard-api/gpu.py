@@ -13,12 +13,17 @@ from host_metrics import apple_host_metrics, linux_scope, windows_host_metrics
 from env_values import parse_env_value
 from models import GPUInfo, IndividualGPU
 from host_agent_client import AgentClientError, request_json as request_agent_json
+from runtime_profile import RUNTIME_PROFILE
 
 logger = logging.getLogger(__name__)
 
 
 def run_command(cmd: list[str], timeout: int = 5) -> tuple[bool, str]:
     """Run a shell command and return (success, output)."""
+    if not RUNTIME_PROFILE.child_processes:
+        # Every GPU probe goes through here; a windowless Desktop process
+        # must not start nvidia-smi and flash a console every poll.
+        return False, f"not measured in the {RUNTIME_PROFILE.name} profile"
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return result.returncode == 0, result.stdout.strip()
