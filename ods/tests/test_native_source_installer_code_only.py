@@ -217,16 +217,20 @@ def test_empty_unrecorded_file_is_preserved_only_with_qualified_authority(first_
         for name, image in record['stagedFiles'].items() if image['ready']}
     if fault == 'nonempty': orphan.write_bytes(b'preserve')
     if fault == 'recorded-changed':
-        name = next(iter(prior)); (candidate / name).write_bytes(b'changed')
+        name = next(iter(prior))
+        (candidate / name).write_bytes(b'changed')
     if fault == 'two-unrecorded':
         name = next(name for name, image in record['stagedFiles'].items()
             if image['inode'] is None and name != leaf)
-        (candidate / name).write_bytes(b''); (candidate / name).chmod(0o600)
+        (candidate / name).write_bytes(b'')
+        (candidate / name).chmod(0o600)
     if fault == 'receipt-conflict':
-        receipt.write_bytes(b'{"different":true}'); receipt.chmod(0o600)
+        receipt.write_bytes(b'{"different":true}')
+        receipt.chmod(0o600)
     context = json.loads(n.context.read_bytes())
     settings = n.world / 'test-access-settings.json'
-    settings.write_bytes(c._native_encoded({'fixture': 'physical-bridge-driver'})); settings.chmod(0o600)
+    settings.write_bytes(c._native_encoded({'fixture': 'physical-bridge-driver'}))
+    settings.chmod(0o600)
     monkeypatch.setitem(installer.ACCESS_FILES, 'config', settings)
     monkeypatch.setattr(installer, '_bridge_from_recovery_plan', lambda plan, *, owner_name: n.f.bridge)
     monkeypatch.setattr(installer, '_discover_source_installer_bridge', lambda _bridge: None)
@@ -258,7 +262,8 @@ def test_empty_unrecorded_file_is_preserved_only_with_qualified_authority(first_
         assert not orphan.exists()
         assert {name: ((candidate / name).read_bytes(), (candidate / name).stat().st_ino) for name in prior} == prior
         if fault == 'replay-receipt-changed':
-            changed = json.loads(receipt.read_bytes()); changed['unexpected'] = True
+            changed = json.loads(receipt.read_bytes())
+            changed['unexpected'] = True
             receipt.write_bytes(c._native_encoded(changed))
             with pytest.raises(installer.InstallError, match='receipt-changed'): run()
             assert retained[0].stat().st_ino == orphan_inode
