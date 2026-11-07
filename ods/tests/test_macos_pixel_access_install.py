@@ -1181,6 +1181,23 @@ def test_active_recovery_checks_candidate_controller_and_policy(monkeypatch, fau
         policy.assert_called_once_with(expected['gateway_policy'])
 
 
+def test_active_recovery_uses_new_binding_after_runtime_replacement(monkeypatch):
+    import pixel_macos_custody as custody
+    old = {'process': {'executable': '/previous/node'}}
+    new = {'process': {'executable': '/candidate/node'}}
+    settings = {'owner': 'owner', 'install_dir': '/ods', 'gateway_binding': new,
+        'gateway_process': new['process'], 'gateway_policy': {'fixture': 'candidate'}}
+    plan = {'owner': SimpleNamespace(pw_name='owner', pw_uid=501, pw_gid=20),
+        'source_bytes': plistlib.dumps({}), 'source_process': old['process'],
+        'gateway_binding': new, 'access_settings': settings}
+    monkeypatch.setattr(installer._launchd, 'binding', lambda *_args, **_kwargs: old)
+    monkeypatch.setattr(custody, 'protected_bytes', lambda _: json.dumps(settings).encode())
+    monkeypatch.setattr(installer._policy, 'policy_state', lambda _: {'activeMode': 'sandboxed'})
+    with pytest.raises(installer.InstallError, match='controller-binding-changed'):
+        installer._upgrade_policy_mode(plan)
+    assert installer._candidate_upgrade_policy_mode(plan) == 'sandboxed'
+
+
 @pytest.mark.parametrize('change', [None, 'launcher', 'path', 'owner'])
 def test_system_source_resolves_only_exact_protected_launcher(deployment, monkeypatch, change):
     source = Path(deployment['source_plist'])
