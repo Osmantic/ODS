@@ -2712,8 +2712,10 @@ def _native_installer_code_only_record(metadata, transaction, proof):
     return record, raw
 
 
-def native_installer_code_only_kit_authority(selection, *, transaction, proof, _completed=False):
+def native_installer_code_only_kit_authority(selection, *, transaction, proof, _completed=False, _with_publisher=False):
     """Actual installer-purpose authority, never private Source admission."""
+    if type(_with_publisher) is not bool:
+        raise CustodyError('native-source-installer-code-only-target-changed')
     from pixel_macos_custody import protected_directory
     from .native_executor import _publisher
     # _publisher qualifies the selected deployment and then independently
@@ -2811,10 +2813,11 @@ def native_installer_code_only_kit_authority(selection, *, transaction, proof, _
                 or _native_root_file(metadata, _native_installer_journal_name(metadata, transaction, completed=_completed), limit=32 * 1024 * 1024)[0] != journal_raw
                 or _native_installer_context(selection.bridge, transaction)[1] != context_raw):
             raise CustodyError('native-source-installer-code-only-authority-changed')
-        return {'authority': {'transaction': dict(transaction), 'proof': proof}, 'record': record,
+        result = {'authority': {'transaction': dict(transaction), 'proof': proof}, 'record': record,
             'oldKit': proof['kit'], 'kitParent': kit_parent, 'targetKit': files,
             'publication': before['publication'], 'sidefiles': before['sidefiles'], 'witness': witness,
             'history': native_installer_history(selection)}
+        return (result, publisher) if _with_publisher else result
 
 
 def _native_installer_code_only_prefix(publisher, metadata, kits, plan, record):
@@ -2897,9 +2900,10 @@ def _native_installer_code_only_prefix(publisher, metadata, kits, plan, record):
 
 def native_installer_code_only_kit_plan(selection, *, transaction, proof, _completed=False):
     from pixel_macos_custody import protected_directory
-    from .native_executor import _publisher
-    plan = native_installer_code_only_kit_authority(selection, transaction=transaction, proof=proof, _completed=_completed)
-    publisher = _publisher(selection)
+    plan, publisher = native_installer_code_only_kit_authority(selection, transaction=transaction, proof=proof,
+        _completed=_completed, _with_publisher=True)
+    # Recheck the protected selection after authority and before prefix reads.
+    _native_selected(selection, _publication=True)
     with protected_directory(NATIVE_META) as metadata, protected_directory(NATIVE_KIT.parent) as kits:
         record, raw = _native_installer_code_only_record(metadata, transaction, proof)
         if record is None:
