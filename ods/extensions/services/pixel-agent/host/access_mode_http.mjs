@@ -1,7 +1,7 @@
 // Owner-run loopback transport for Docker Desktop; authority stays in the UDS controller.
 import http from 'node:http';
 import {fileURLToPath} from 'node:url';
-import {handleAccessMode, handleModelControl, handleSchedules, readAccessOwnerKey} from './access_mode_relay.mjs';
+import {handleAccessMode, handleConnections, handleModelControl, handleSchedules, readAccessOwnerKey} from './access_mode_relay.mjs';
 
 export function accessPort(value = '18790') {
   if (typeof value !== 'string' || !/^[1-9][0-9]{0,4}$/.test(value)
@@ -23,7 +23,7 @@ export function createAccessServer({ownerKey, request} = {}) {
     if (req.headers.origin !== undefined || req.headers['sec-fetch-site'] !== undefined) {
       return reply(403, 'owner-required');
     }
-    if (!['/v1/access-mode', '/v1/model-control', '/v1/schedules'].includes(req.url)) {
+    if (!['/v1/access-mode', '/v1/model-control', '/v1/schedules', '/v1/connections'].includes(req.url)) {
       return reply(404, 'not-found');
     }
     if (req.method === 'GET' && (req.headers['transfer-encoding'] !== undefined
@@ -32,7 +32,8 @@ export function createAccessServer({ownerKey, request} = {}) {
     }
     try {
       const handler = req.url === '/v1/access-mode' ? handleAccessMode
-        : req.url === '/v1/schedules' ? handleSchedules : handleModelControl;
+        : req.url === '/v1/schedules' ? handleSchedules
+        : req.url === '/v1/connections' ? handleConnections : handleModelControl;
       await handler(req, res, {ownerKey, request});
     } catch {
       if (!res.headersSent) reply(503, 'access-service-unavailable');

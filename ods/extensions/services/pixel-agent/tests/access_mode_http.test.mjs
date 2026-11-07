@@ -25,6 +25,33 @@ test('native transport requires a key and a bounded literal port', () => {
   }
 });
 
+test('native HTTP connections route enforces owner authentication and forwards only valid requests', async t => {
+  const calls = [];
+  const server = createAccessServer({ownerKey, request: async (payload, options) => {
+    calls.push({payload, options});
+    return {status: 200, body: {available: true}};
+  }});
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  });
+  const url = `http://127.0.0.1:${server.address().port}/v1/connections`;
+  const headers = {authorization: 'Bearer ' + ownerKey, 'content-type': 'application/json'};
+  assert.equal((await fetch(url, {headers: {...headers, authorization: 'Bearer ' + 'c'.repeat(64)}})).status, 403);
+  assert.equal((await fetch(url, {headers: {...headers, origin: 'http://generated.localhost'}})).status, 403);
+  assert.equal((await fetch(url + '?path=/etc', {headers})).status, 404);
+  assert.equal((await fetch(url, {method: 'POST', headers, body: JSON.stringify({operation: 'exec', request: {}})})).status, 400);
+  assert.equal(calls.length, 0);
+  assert.equal((await fetch(url, {headers})).status, 200);
+  assert.deepEqual(calls[0].payload, {operation: 'connection-status'});
+  const response = await fetch(url, {method: 'POST', headers,
+    body: JSON.stringify({operation: 'connection-app-status', request: {}})});
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls[1].payload, {operation: 'connection-app-status', request: {}});
+  assert.equal(calls.length, 2);
+});
+
 test('HTTP to real Unix socket preserves owner authority and model control protocol', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ods-access-'));
   const socketPath = path.join(directory, 'control.sock');
@@ -132,7 +159,8 @@ test('native schedules retain owner auth, large framed results and no lost-reply
     items: [1].map(timestamp => ({timestamp, status: 'ok', summary: 'A'.repeat(90000),
       summaryTruncated: false, durationMs: 1}))};
   const controller = net.createServer(socket => {
-    socket.on('error', error => assert.equal(error.code, 'ECONNRESET')); // Intentional overbound reply is closed by the client.
+    // An intentionally closed client may surface as either reset or broken pipe.
+    socket.on('error', error => assert(['ECONNRESET', 'EPIPE'].includes(error.code)));
     let raw = '';
     socket.on('data', chunk => {
       raw += chunk;
