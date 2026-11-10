@@ -1,6 +1,6 @@
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import { ArrowLeft, ChevronLeft, ChevronRight, Grid2X2, LifeBuoy, Search, Sparkles, Settings } from 'lucide-react'
+import { ArrowLeft, BookOpen, ChevronLeft, ChevronRight, Grid2X2, LifeBuoy, Search, Sparkles, Settings } from 'lucide-react'
 import { getSidebarExternalLinks, getSidebarNavItems } from '../plugins/registry'
 import { usePortalIdentity } from '../contexts/PortalIdentityContext'
 import { fallbackServiceUrl } from '../lib/serviceUrls'
@@ -81,6 +81,7 @@ export default function Sidebar({ status, collapsed, onToggle }) {
       {pixelMode && !collapsed && <div className="pixel-sidebar-sections">
         <PixelHandoffApproval label="Approvals" />
       </div>}
+      <NavLink to="/docs" className={({ isActive }) => `pixel-nav-item ${isActive ? 'is-active' : ''}`} title="Documentation" aria-label="Documentation"><BookOpen size={16} /><span>Documentation</span></NavLink>
       <a className="pixel-nav-item" href={ODS_HELP_DISCORD_URL} target="_blank" rel="noopener noreferrer" title="Get help on Discord" aria-label="Get help on Discord"><LifeBuoy size={16} /><span>Get help</span></a>
     </nav>
     <footer className="pixel-sidebar-footer"><NavLink to="/settings?section=profile" className="sidebar-profile-link" aria-label="Edit your profile" title="Edit your profile"><UserAvatar profile={profile}/><div className="sidebar-profile-copy"><strong>{profile.name || 'Your profile'}</strong><small>{status?.version ? `ODS ${status.version}` : 'Local workspace'}</small></div><MetalMetricIcon icon={Settings} size={14}/></NavLink></footer>

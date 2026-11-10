@@ -10,6 +10,7 @@ import {
   UserPlus,
   CreditCard,
   Code,
+  BookOpen,
 } from 'lucide-react'
 import { isRemoteInference } from '../lib/inferenceMode'
 
@@ -25,6 +26,7 @@ const Usage = lazy(() => import('../pages/Usage'))
 const Pixel = lazy(() => import('../pages/Pixel'))
 const PixelSettings = lazy(() => import('../pages/PixelSettings'))
 const OpenCodeApp = lazy(() => import('../pages/OpenCodeApp'))
+const Docs = lazy(() => import('../pages/Docs'))
 
 export const coreRoutes = [
   { id: 'home', path: '/', label: 'Home', icon: Cloud, component: Pixel, getProps: ({ status }) => ({ systemStatus: status }), sidebar: false },
@@ -126,6 +128,16 @@ export const coreRoutes = [
     getProps: ({ status }) => ({ systemStatus: status }),
     sidebar: false,
     order: 0.5,
+  },
+  {
+    id: 'docs',
+    path: '/docs',
+    label: 'Documentation',
+    icon: BookOpen,
+    component: Docs,
+    getProps: () => ({}),
+    sidebar: false,
+    order: 5,
   },
   {
     id: 'invites',

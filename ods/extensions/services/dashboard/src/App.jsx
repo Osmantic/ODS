@@ -22,6 +22,7 @@ const ODSTalk = lazy(() => import('./pages/ODSTalk'))
 const SettingsModal = lazy(() => import('./components/SettingsModal'))
 const Pixel = lazy(() => import('./pages/Pixel'))
 const PixelSettings = lazy(() => import('./pages/PixelSettings'))
+const Docs = lazy(() => import('./pages/Docs'))
 
 function getStorageValue(storage, key) {
   try {
@@ -52,6 +53,7 @@ function App() {
   useEffect(() => { setPanelCollapsed(false) }, [panelLocation.pathname])
   const isTalkHost = typeof window !== 'undefined' && window.location.hostname.startsWith('talk.')
   const isTalkPath = isTalkHost || location.pathname.startsWith('/talk')
+  const isDocsPath = location.pathname.startsWith('/docs')
 
   // Auto-mint a ods-session cookie on load so the install owner can
   // reach cookie-gated services (Hermes, future ones) without redeeming
@@ -92,6 +94,20 @@ function App() {
           </div>
         }>
           <ODSTalk />
+        </Suspense>
+      </div>
+    )
+  }
+
+  if (isDocsPath) {
+    return (
+      <div className="min-h-screen bg-theme-bg text-theme-text">
+        <Suspense fallback={
+          <div className="min-h-screen flex items-center justify-center">
+            <div className="text-sm text-theme-text-muted">Loading documentation...</div>
+          </div>
+        }>
+          <Docs />
         </Suspense>
       </div>
     )
