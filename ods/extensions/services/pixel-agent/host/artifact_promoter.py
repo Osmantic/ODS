@@ -657,7 +657,7 @@ def serve(
         or not workspace.is_absolute()
         or workspace == pathlib.Path("/")
         or len(str(workspace)) > 1024
-        or re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", owner) is None
+        or re.fullmatch(r"[a-z_][a-z0-9_.-]{0,31}", owner) is None
     ):
         raise PromotionError("invalid promotion service configuration")
     owner_entry = pwd.getpwnam(owner)

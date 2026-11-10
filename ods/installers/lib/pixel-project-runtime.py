@@ -46,7 +46,7 @@ def validate_config(value):
                 or not 1 <= limits['maxJobs'] <= 8):
             raise ValueError('invalid project storage policy')
     owner = pwd.getpwuid(value['ownerUid'])
-    if (not re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_-]*', owner.pw_name)
+    if (not re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_.-]*', owner.pw_name)
             or value['workspace'] != str(Path(owner.pw_dir) / '.openclaw/workspace-pixel')
             or any(c in value['workspace'] for c in '\n\r\x00')):
         raise ValueError('invalid project owner workspace')

@@ -3992,7 +3992,7 @@ import os, pathlib, re, stat, sys, tempfile
 
 source_path, output_path = map(pathlib.Path, sys.argv[1:3])
 owner, install_dir, port = sys.argv[3:6]
-if re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", owner) is None:
+if re.fullmatch(r"[a-z_][a-z0-9_.-]{0,31}", owner) is None:
     raise SystemExit("unsafe Pixel manager service user")
 if not port.isdigit() or not 1 <= int(port) <= 65535:
     raise SystemExit("unsafe ODS dashboard port")
@@ -4053,7 +4053,7 @@ import os, pathlib, re, stat, sys, tempfile
 
 source_path, output_path = map(pathlib.Path, sys.argv[1:3])
 owner, workspace = sys.argv[3:5]
-if re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", owner) is None:
+if re.fullmatch(r"[a-z_][a-z0-9_.-]{0,31}", owner) is None:
     raise SystemExit("unsafe Pixel artifact promoter owner")
 if (not workspace.startswith("/") or workspace == "/" or len(workspace) > 1024
         or any(character in workspace for character in '\n\r\0"\\%')):
@@ -4112,7 +4112,7 @@ import os, pathlib, re, stat, sys, tempfile
 
 source_path, output_path = map(pathlib.Path, sys.argv[1:3])
 owner, workspace, port = sys.argv[3:6]
-if re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", owner) is None:
+if re.fullmatch(r"[a-z_][a-z0-9_.-]{0,31}", owner) is None:
     raise SystemExit("unsafe Pixel workspace preview owner")
 if (not workspace.startswith("/") or workspace == "/" or len(workspace) > 1024
         or any(character in workspace for character in '\n\r\0"\\%')):

@@ -93,6 +93,19 @@ class PreviewOwnerTests(unittest.TestCase):
             self.assertEqual(preview.preview_owner_uid('pixel-owner'), 1234)
             lookup.assert_called_once_with('pixel-owner')
 
+    def test_named_dotted_owner_uses_account_database(self):
+        with patch.object(preview.pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=501)) as lookup:
+            self.assertEqual(preview.preview_owner_uid('first.last'), 501)
+            lookup.assert_called_once_with('first.last')
+
+    def test_unsafe_named_owner_rejected_before_account_lookup(self):
+        for owner in ('.', '..', '.first', '-first', 'first/last', '../first', 'first last',
+                      'first\nlast', 'first"last', "first'last"):
+            with self.subTest(owner=owner), patch.object(preview.pwd, 'getpwnam') as lookup:
+                with self.assertRaises(preview.PreviewError):
+                    preview.preview_owner_uid(owner)
+                lookup.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
