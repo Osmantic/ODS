@@ -703,7 +703,7 @@ def _no_actors(selection, custody, metadata, *, _generation=False):
         if len(processes) > 1024 * 1024:
             raise ValueError('native-source-process-observation-unavailable')
         for line in processes.splitlines():
-            match = re.fullmatch(r'\s*([1-9][0-9]*)\s+([0-9]+)\s*', line)
+            match = re.fullmatch(r'\s*([1-9][0-9]*)\s+(-?[0-9]+)\s*', line)
             if not match:
                 raise ValueError('native-source-process-observation-unavailable')
             if int(match[2]) == identity['id']:
@@ -1461,7 +1461,7 @@ def _environment_no_actors(selection, custody, metadata):
     witness = _no_actors(selection, custody, metadata, _generation=True)
     # An empty/truncated/duplicate process census is unknown, never absence.
     raw = selection.bridge.command(['/bin/ps', '-axo', 'pid=,uid='], timeout=10)
-    rows = [re.fullmatch(r'\s*([1-9][0-9]*)\s+([0-9]+)\s*', row) for row in raw.splitlines()]
+    rows = [re.fullmatch(r'\s*([1-9][0-9]*)\s+(-?[0-9]+)\s*', row) for row in raw.splitlines()]
     if (not rows or len(raw) > 1024 * 1024 or any(row is None for row in rows)
             or len({row[1] for row in rows}) != len(rows)
             or any(int(row[2]) == witness['brokerUid'] for row in rows)):

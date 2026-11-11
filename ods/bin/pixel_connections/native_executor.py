@@ -568,7 +568,7 @@ def _stopped(selection, value, doc, public, label, job):
         _fail('execution-process-list-unavailable')
     seen = set()
     for line in raw.splitlines():
-        row = re.fullmatch(r'\s*([1-9][0-9]*)\s+([0-9]+)\s*', line)
+        row = re.fullmatch(r'\s*([1-9][0-9]*)\s+(-?[0-9]+)\s*', line)
         if row is None:
             _fail('execution-process-list-unavailable')
         if int(row[1]) in seen:

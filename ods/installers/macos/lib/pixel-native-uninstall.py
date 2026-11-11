@@ -565,7 +565,7 @@ def _source_operations_absent(witness):
         account.verify_record(account.read_record(kind), account.expected_attributes(identity, kind), complete=True)
     seen = set()
     for line in native._command(['/bin/ps', '-axo', 'pid=,uid=']).splitlines():
-        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+([0-9]+)\s*', line)
+        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+(-?[0-9]+)\s*', line)
         if match is None or int(match[1]) in seen:
             raise ValueError('native-source-retirement-operations-census-unavailable')
         seen.add(int(match[1]))

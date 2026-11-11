@@ -101,6 +101,20 @@ def test_absence_inventory_never_uses_missing_source_data_to_waive_custody(absen
     assert (n.metadata / 'source-identity.json').read_bytes() == before
 
 
+def test_absence_inventory_accepts_a_macos_nobody_process(absent, monkeypatch):
+    # macOS `ps` prints the nobody account as uid -2 (for example /usr/libexec/dhcp6d).
+    # Such a row is an ordinary unrelated process, not an unreadable census.
+    n = absent
+    original = n.f.bridge.command
+    def with_nobody(argv, timeout=10):
+        if argv == ['/bin/ps', '-axo', 'pid=,uid=']:
+            return '1 0\n42 1000\n17200    -2\n'
+        return original(argv, timeout=timeout)
+    monkeypatch.setattr(n.f.bridge, 'command', with_nobody)
+    kit, files, identity, witness = c._native_installer_absence_state(n.f.bridge)
+    assert identity['kind'] == 'retained' and witness['brokerProcesses'] == 0
+
+
 @pytest.fixture
 def withdrawal(executor, monkeypatch):
     n = executor

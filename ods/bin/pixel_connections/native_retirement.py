@@ -762,7 +762,7 @@ def _core_no_actors(witness):
     processes = _command(['/bin/ps', '-axo', 'pid=,uid='])
     seen = set()
     for line in processes.splitlines():
-        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+([0-9]+)\s*', line)
+        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+(-?[0-9]+)\s*', line)
         if match is None or int(match[1]) in seen: _fail('census-unavailable')
         seen.add(int(match[1]))
         if broker is not None and int(match[2]) == broker: _fail('actors-present')

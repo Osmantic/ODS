@@ -3515,7 +3515,7 @@ def _archive_sidefiles_no_source(bridge, archive_name):
     processes = bridge.command(['/bin/ps', '-axo', 'pid=,uid='], timeout=10)
     seen = set()
     for line in processes.splitlines():
-        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+([0-9]+)\s*', line)
+        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+(-?[0-9]+)\s*', line)
         if match is None or int(match[1]) in seen:
             raise InstallError('native-sidefiles-archive-census-unavailable')
         seen.add(int(match[1]))
@@ -4382,7 +4382,7 @@ def _prepublication_source_absence(bridge, candidate, owner):
     processes = bridge.command(['/bin/ps', '-axo', 'pid=,uid='], timeout=10)
     seen = set()
     for line in processes.splitlines():
-        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+([0-9]+)\s*', line)
+        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+(-?[0-9]+)\s*', line)
         if match is None or int(match[1]) in seen:
             raise InstallError('native-prepublication-census-unavailable')
         seen.add(int(match[1]))

@@ -2311,7 +2311,7 @@ def _native_installer_absence_state(bridge, *, qualified_runtime=None, _installe
         raise CustodyError('native-source-installer-process-unavailable')
     seen = set()
     for line in processes.splitlines():
-        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+([0-9]+)\s*', line)
+        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+(-?[0-9]+)\s*', line)
         if match is None or int(match[1]) in seen or uid is not None and int(match[2]) == uid:
             raise CustodyError('native-source-installer-process-preserved')
         seen.add(int(match[1]))
