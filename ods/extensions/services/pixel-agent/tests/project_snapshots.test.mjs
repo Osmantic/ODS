@@ -14,6 +14,7 @@ import {nativeIntegrationHookState} from './native-integration-hook-state.mjs';
 
 import {createProjectRestoreRoute, createProjectSnapshots, helperRunner, projectsNamed, SNAPSHOT_DIRECTORY}
   from '../plugin/project-snapshots.mjs';
+import {withSleepReminderBlock} from '../plugin/sleep-reminder-guard.mjs';
 
 const temporary = [];
 const scratch = prefix => { const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); temporary.push(folder); return folder; };
@@ -561,7 +562,7 @@ test('the plugin entry waits for the copy in before_tool_call, after the final d
     goalProgress: {before() {}}, bundleAdmission: {before() {}}, artifactAdmission: {before() {}}, taskActivity: {before() {}},
     projectRunControl: {before() {}}, delegationDelivery: {blocked() {}, before() {}, hasPendingChildren() { return false; }},
     withPixelCronDeliveryDefault: decision => decision, withPixelSubagentWorkspace: decision => decision,
-    withCronCommandPayloadBlock: decision => decision, getSessionEntry: () => undefined, resolveStorePath: () => undefined,
+    withCronCommandPayloadBlock: decision => decision, withSleepReminderBlock, getSessionEntry: () => undefined, resolveStorePath: () => undefined,
     resolveUserPath: value => value, resolveAgentWorkspaceDir: () => '/w',
     projectSnapshots: {before: (...args) => { seen.push(args); return new Promise(resolve => { release = resolve; }); }},
   });

@@ -1,6 +1,7 @@
 """Shared pieces of Portal integrations: errors, limits and the owner-only state files."""
 import base64
 import ctypes
+import datetime
 import email.message
 import errno
 import hashlib
@@ -20,6 +21,7 @@ import time
 import urllib.error
 import uuid
 import urllib.request
+import zoneinfo
 
 SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 64 * 1024
@@ -579,6 +581,22 @@ def default_apps():
                      "digest": {"enabled": False, "time": "07:00", "timezone": "UTC"}}}
 
 
+def local_zone(environ=os.environ, localtime="/etc/localtime"):
+    """This computer's time zone with its daylight-saving rules: TZ when set, else the system's.
+
+    A fixed offset (datetime.now().astimezone()) is today's: a reminder or a date after a
+    daylight-saving change would be an hour off.
+    """
+    name = environ.get("TZ", "").lstrip(":")
+    if name:
+        return zoneinfo.ZoneInfo(name)
+    try:
+        with open(localtime, "rb") as file:
+            return zoneinfo.ZoneInfo.from_file(file, key="localtime")
+    except FileNotFoundError:
+        return datetime.timezone.utc  # No zone set up (a bare container): UTC, as the C library assumes.
+
+
 def default_config():
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -590,6 +608,12 @@ def default_config():
         "mcp": {"servers": []},
         "apps": default_apps(),
     }
+
+
+def default_telegram():
+    """The Telegram bridge's state before the owner sets it up (integrations_telegram.py)."""
+    return {"enabled": False, "ownerId": "", "apiRoot": "https://api.telegram.org", "bot": "", "offset": 0, "conversation": 1,
+            "questions": None, "lastError": "", "lastMessageAt": 0, "refused": [], "refusedLoggedAt": 0}
 
 
 def upgrade_config(config):
@@ -671,7 +695,7 @@ class Store:
         self._write("config.json", value)
 
     def secrets(self):
-        return {"ntfyPassword": "", "mcp": {}, "mcpEnv": {}, "apps": {}, **self._read("secrets.json", {})}
+        return {"ntfyPassword": "", "mcp": {}, "mcpEnv": {}, "apps": {}, "telegramToken": "", **self._read("secrets.json", {})}
 
     def save_secrets(self, value):
         self._write("secrets.json", value)
@@ -731,6 +755,18 @@ class Store:
 
     def save_digest_sent(self, value):
         self._write("digest-sent.json", value)
+
+    def memory(self):
+        return {"enabled": True, "askFirst": True, "items": [], "pending": [], "quietChats": [], **self._read("memory.json", {})}
+
+    def save_memory(self, value):
+        self._write("memory.json", value)
+
+    def telegram(self):
+        return {**default_telegram(), **self._read("telegram.json", {})}
+
+    def save_telegram(self, value):
+        self._write("telegram.json", value)
 
     def log(self, action, target, outcome):
         path = self.root / "activity.jsonl"

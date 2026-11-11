@@ -129,3 +129,45 @@ def test_digest_recovery_is_an_exact_owner_request_not_an_automatic_replay(clien
         assert client.post('/api/pixel/integrations/retry-digest', headers=AUTH, json=invalid).status_code == 400
     assert client.post('/api/pixel/integrations/retry-digest', json=payload).status_code == 401
     agent.assert_not_awaited()
+
+
+def test_memory_actions_relay_their_exact_fields(client, agent):
+    agent.return_value = {'settings': {'revision': 3}, 'approvals': [], 'activity': [],
+                          'memory': {'enabled': True, 'askFirst': True, 'items': [], 'pending': []}}
+    requests = {
+        'memory-settings': {'enabled': False, 'askFirst': True},
+        'memory-edit': {'id': 'abc', 'text': 'The owner is vegetarian.'},
+        'memory-delete': {'id': 'abc'},
+        'memory-clear': {},
+        'memory-decide': {'id': 'abc', 'decision': 'save'},
+    }
+    for action, payload in requests.items():
+        assert client.post(f'/api/pixel/integrations/{action}', headers=AUTH, json=payload).json()['memory']['enabled'] is True
+        agent.assert_awaited_with('POST', f'/v1/pixel/integrations/{action}', payload=payload, timeout=30)
+    assert client.post('/api/pixel/integrations/memory-edit', headers=AUTH, json={'id': 'abc'}).status_code == 400
+    assert client.post('/api/pixel/integrations/memory-clear', headers=AUTH, json={'items': []}).status_code == 400
+
+
+def test_a_chat_is_named_to_the_service_as_the_gateway_names_its_session(client, agent):
+    agent.return_value = {'settings': {'revision': 3}, 'approvals': [], 'activity': [], 'memory': {}}
+    client.post('/api/pixel/integrations/memory-chat', headers=AUTH, json={'chatId': 'chat-1', 'remember': False})
+    # The Portal ingress names a chat's session "ods-" + sha256(chat id) (pixel_ingress.mjs computeSessionUser).
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/memory-chat', timeout=30, payload={
+        'session': 'ods-' + __import__('hashlib').sha256(b'chat-1').hexdigest(), 'remember': False})
+    assert client.post('/api/pixel/integrations/memory-chat', headers=AUTH, json={'chatId': '../x', 'remember': False}).status_code == 400
+    assert client.post('/api/pixel/integrations/memory-chat', headers=AUTH, json={'chatId': 'chat-1'}).status_code == 400
+
+
+def test_telegram_settings_relay_with_the_token_only_when_typed(client, agent):
+    agent.return_value = {'settings': {'revision': 3}, 'approvals': [], 'activity': [], 'notice': 'Telegram saved.',
+                          'telegram': {'enabled': True, 'ownerId': '123456789', 'hasToken': True}}
+    settings = {'enabled': True, 'ownerId': '123456789', 'apiRoot': 'https://api.telegram.org'}
+    assert client.post('/api/pixel/integrations/telegram-save', headers=AUTH, json=settings).json()['notice'] == 'Telegram saved.'
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/telegram-save', payload=settings, timeout=30)
+    with_token = {**settings, 'token': '123456789:AAH' + 'x' * 32}
+    client.post('/api/pixel/integrations/telegram-save', headers=AUTH, json=with_token)
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/telegram-save', payload=with_token, timeout=30)
+    client.post('/api/pixel/integrations/telegram-test', headers=AUTH, json={})
+    agent.assert_awaited_with('POST', '/v1/pixel/integrations/telegram-test', payload={}, timeout=140)
+    assert client.post('/api/pixel/integrations/telegram-save', headers=AUTH, json={'enabled': True}).status_code == 400
+    assert client.post('/api/pixel/integrations/telegram-save', headers=AUTH, json={**settings, 'chat': 1}).status_code == 400

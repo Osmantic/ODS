@@ -7,6 +7,7 @@ import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
 import {withCronCommandPayloadBlock} from '../plugin/cron-command-payload-guard.mjs';
+import {SLEEP_REMINDER_REASON, withSleepReminderBlock} from '../plugin/sleep-reminder-guard.mjs';
 import {withPixelSubagentWorkspace} from '../plugin/subagent-workspace.mjs';
 import {nativeIntegrationHookState} from './native-integration-hook-state.mjs';
 
@@ -45,7 +46,7 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
     },
     goalProgress: {before() {}, update() {}, finish() {}},
     conversationImageLifecycle,
-    bundleAdmission, artifactAdmission, projectRunControl, projectSnapshots: {before() {}, end() {}}, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, withCronCommandPayloadBlock,
+    bundleAdmission, artifactAdmission, projectRunControl, projectSnapshots: {before() {}, end() {}}, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, withCronCommandPayloadBlock, withSleepReminderBlock,
     delegationDelivery:{end(){lifecycleCalls.push('delegation');},blocked(){},before(){},after(){},admission(){},hasPendingChildren(){return false;},...delivery},
     withPixelSubagentWorkspace, resolveUserPath: value=>value,
     resolveAgentWorkspaceDir:config=>config?.agents?.list?.find(agent=>agent.id==='pixel')?.workspace,
@@ -218,4 +219,21 @@ test('project job binding follows actual admission and cannot survive denied or 
     callbacks.after_tool_call(event,ctx);
     assert.throws(()=>projectRunControl.bind('project',args,ctx,()=>{}),/not bound/);
   }
+});
+
+test('a reminder faked with a background sleep is refused before admission (#7794)', async () => {
+  const {callbacks, calls, activity} = hooks();
+  const sleepEvent = {toolCallId: 'exec-1', toolName: 'exec', params: {command: '(sleep 120 && echo "Time to stretch!") &'}};
+  const result = await callbacks.before_tool_call(sleepEvent, {agentId: 'pixel', runId: 'remind', toolName: 'exec'});
+  assert.deepEqual(result, {block: true, blockReason: SLEEP_REMINDER_REASON});
+  assert.deepEqual(calls, ['guard']);
+  assert.deepEqual(activity, ['blocked']);
+});
+
+test('a short wait while a server starts still runs', async () => {
+  const {callbacks, calls} = hooks();
+  const result = await callbacks.before_tool_call({toolCallId: 'exec-2', toolName: 'exec', params: {command: 'npm start > server.log 2>&1 & sleep 2 && curl -s localhost:3000'}},
+    {agentId: 'pixel', runId: 'serve', toolName: 'exec'});
+  assert.notEqual(result?.block, true);
+  assert.deepEqual(calls, ['guard', 'admit']);
 });

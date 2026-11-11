@@ -9024,7 +9024,8 @@ def _start_enable_retry(handler, service_id: str, lock: threading.Lock) -> None:
 # Private owner folder; native macOS also authenticates each exact owner request.
 PIXEL_INTEGRATIONS_SOCKET = str(Path.home() / ".config/ods/pixel-integrations/owner.sock")
 PIXEL_INTEGRATIONS_ACTIONS = ("save", "test-notification", "discover", "test", "test-app", "watch-list", "send-digest", "retry-digest",
-                              "restart", "decide", "approval-detail", "clear-activity")
+                              "restart", "decide", "approval-detail", "clear-activity", "memory-settings", "memory-edit",
+                              "memory-delete", "memory-clear", "memory-decide", "memory-chat", "telegram-save", "telegram-test")
 
 
 def _pixel_integrations_request(payload: dict) -> dict:

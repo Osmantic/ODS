@@ -508,6 +508,29 @@ describe('Pixel', () => {
     expect(screen.queryByText('Qual estilo?\nClean')).toBeNull()
   })
 
+  it('shows Portal\'s answer above a memory card, and only the card when the text just repeats it', async () => {
+    const questions=[{id:'memory_save',question:'Remember this about you? "The owner is vegetarian."',options:['Save',"Don't save",'Always save without asking']}]
+    fetch.mockResolvedValueOnce(response({available:true}))
+    fetch.mockResolvedValueOnce(sseResponse([
+      JSON.stringify({choices:[{delta:{content:'Try a chickpea curry tonight.'}}]}),
+      JSON.stringify({pixel_questions:{schemaVersion:1,questions},choices:[{delta:{},finish_reason:'stop'}]}),'[DONE]']))
+    render(<Pixel/>)
+    await screen.findByText('Available')
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:"I'm vegetarian, suggest a dinner"}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await screen.findByRole('radio',{name:/^Save/})
+    expect(await screen.findByText('Try a chickpea curry tonight.')).toBeInTheDocument()
+    // A clarification's text is its card written out: only the card shows.
+    const asked=[{id:'style',question:'Qual estilo?',options:['Clean','Colorido']}]
+    fetch.mockResolvedValueOnce(sseResponse([
+      JSON.stringify({choices:[{delta:{content:'1. Qual estilo?\n- Clean\n- Colorido'}}]}),
+      JSON.stringify({pixel_questions:{schemaVersion:1,questions:asked},choices:[{delta:{},finish_reason:'stop'}]}),'[DONE]']))
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'Make me a poster'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await screen.findByRole('radio',{name:/Clean/})
+    expect(screen.queryByText(/1\. Qual estilo\?/)).toBeNull()
+  })
+
   it('renders agent tables and task lists while keeping unsafe content inert', async () => {
     const content = [
       '**Files in log-lab:**',

@@ -7,6 +7,7 @@ import {createToolLoopGuard,PHANTOM_PROCESS_REASON,FREE_CORRECTIONS_PER_KIND} fr
 import {RUN_PROGRESS_LIMITS,RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
 import {PROGRESS_FINALIZATION_INSTRUCTION} from '../plugin/progress-finalization.mjs';
 import {nativeIntegrationHookState} from './native-integration-hook-state.mjs';
+import {withSleepReminderBlock} from '../plugin/sleep-reminder-guard.mjs';
 const user='ods-'+'a'.repeat(64),id='chatcmpl_11111111-2222-4333-8444-555555555555';
 const owner={agentId:'pixel',runId:id,sessionId:'owner-session',sessionKey:'agent:pixel:openai-user:'+user,trigger:'user'};
 const child='agent:pixel:subagent:22222222-2222-4333-8444-555555555555',childRun='33333333-2222-4333-8444-555555555555';
@@ -19,7 +20,7 @@ function fixture(){
  const start=source.indexOf('    api.on("before_tool_call", async (event, context) => {'),end=source.indexOf('    api.on("after_tool_call"',start);assert.ok(start>=0&&end>start);
  let before;
  vm.runInNewContext(source.slice(start,end),{...nativeIntegrationHookState(),api:{on:(_name,callback)=>{before=callback;},config:{}},AGENT_ID:'pixel',toolLoopGuard:guard,delegationDelivery:registry,
-  accessRuntime:{isProbe:()=>false,beforeTool:()=>undefined},withPixelCronDeliveryDefault:decision=>decision,withPixelSubagentWorkspace:decision=>decision,withCronCommandPayloadBlock:decision=>decision,
+  accessRuntime:{isProbe:()=>false,beforeTool:()=>undefined},withPixelCronDeliveryDefault:decision=>decision,withPixelSubagentWorkspace:decision=>decision,withCronCommandPayloadBlock:decision=>decision,withSleepReminderBlock,
   resolveUserPath:()=>{},resolveAgentWorkspaceDir:()=>{},
   goalProgress:{before:()=>undefined},bundleAdmission:{before:()=>{}},artifactAdmission:{before:()=>{}},projectRunControl:{before:()=>{}},taskActivity:{before:()=>{}},projectSnapshots:{before:()=>{},end:()=>{}}});
  function spawn({key=child,runId=childRun,native=true,accepted=true}={}){

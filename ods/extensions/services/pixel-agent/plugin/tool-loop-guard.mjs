@@ -5189,7 +5189,7 @@ function unwrapCurrentUserText(text) {
   return normalized.slice(first + CURRENT_MESSAGE_WRAPPER.length).trimStart();
 }
 
-function currentUserText(messages, prompt = undefined) {
+export function currentUserText(messages, prompt = undefined) {
   if (typeof prompt === "string" && prompt) return unwrapCurrentUserText(prompt);
   if (!Array.isArray(messages)) return "";
   const userMessage = [...messages]
@@ -9301,6 +9301,11 @@ export function createToolLoopGuard({
       return {block:true,blockReason:'Your team role is read-only. Do not create, edit, execute commands, publish, or operate services. Review the supplied evidence using read/search tools if needed, then return your findings as text. The Builder owns implementation and test execution.'};
     }
     if (state?.ownerQuestions) return {block:true, blockReason:'Waiting for the owner to answer the clarification questions. End this turn without further tools; never choose answers for the owner.'};
+    // The memory card already asks the owner; a question of the model's own about the same fact
+    // would take its place (e2e: "Save the fact that…? Yes, save it / Don't save it").
+    if (state?.memoryQuestions && delegatedName === 'pixel_ods_ask_user') {
+      return {block:true, blockReason:'The owner already has a card below your reply asking whether to remember that fact. Do not ask about it again; answer the owner\'s message in plain text.'};
+    }
     if (state?.progressBudget.exhausted) {
       return { block: true, blockReason: RUN_PROGRESS_STOP_REASON };
     }
@@ -12032,11 +12037,19 @@ export function createToolLoopGuard({
           state.extensionCompletionGate.observedInstallStatus)
         state.extensionReadOnlyRecovery.completedStatusCalls += 1;
     }
-    const questionResult = toolName === 'pixel_ods_ask_user' ? event
-      : toolName === 'tool_call' ? toolSearchSelectedToolEvent(event, 'pixel_ods_ask_user', 'pixel-ods') : undefined;
-    if (!state.ownerQuestions && questionResult?.result?.details?.status === 'awaiting_user' && !failedToolOutcome(questionResult)) {
-      state.ownerQuestions = parseQuestions(questionResult.result.details.questions);
-      rememberPendingClarification(state, runId);
+    // The owner's choice card: a clarification question, or a fact Portal asks to remember.
+    const [questionTool, questionResult] = ['pixel_ods_ask_user', 'pixel_ods_notes'].map(name => [name, toolName === name ? event
+      : toolName === 'tool_call' ? toolSearchSelectedToolEvent(event, name, 'pixel-ods') : undefined]).find(([, found]) => found) ?? [];
+    if (questionResult?.result?.details?.status === 'awaiting_user' && !failedToolOutcome(questionResult)) {
+      if (questionTool === 'pixel_ods_notes') {
+        // A memory card is no clarification: its answer goes to the memory service
+        // (integration-memory.mjs), and the reply it sits beside is still the answer to the
+        // owner's message. It joins that reply at delivery (memoryCardDelivery).
+        state.memoryQuestions ??= parseQuestions(questionResult.result.details.questions);
+      } else if (!state.ownerQuestions) {
+        state.ownerQuestions = parseQuestions(questionResult.result.details.questions);
+        rememberPendingClarification(state, runId);
+      }
     }
     const toolCallId = context?.toolCallId ?? event?.toolCallId;
     event = {...event, params: canonicalWorkspaceParams(toolName, event?.params, state.configuredWorkspaceRoot)};
@@ -15286,7 +15299,24 @@ export function createToolLoopGuard({
     // to reserving the next publication, not to finishing the current one.
     return !reason || reason === 'publication-attempt-limit' ? runs.get(scope.runId) : undefined;
   }
+  // A memory card travels with a plain reply as a pending card whose text is that reply, so the
+  // chat (and Telegram) shows the answer with the card below it. A reply that carries anything else
+  // (files, a receipt, a failure, a notice, a clarification) goes as it is; the fact still waits for
+  // the owner in Settings.
+  function memoryCardDelivery(state, result) {
+    if (!state?.memoryQuestions || state.ownerQuestions || state.clientCancelled || result.status !== 'none' ||
+        Object.keys(result).some(key => key !== 'status')) return result;
+    const reply = typeof state.finalReplyText === 'string'
+      ? state.finalReplyText.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim() : '';
+    return {status: 'pending', text: (reply || questionsText(state.memoryQuestions)).slice(0, MAX_INGRESS_VERIFICATION_TEXT),
+      questions: state.memoryQuestions};
+  }
+
   function deliveryVerificationForRun(runId) {
+    return memoryCardDelivery(runs.get(runId), deliveryVerificationForRunWithoutMemoryCard(runId));
+  }
+
+  function deliveryVerificationForRunWithoutMemoryCard(runId) {
     const state=runs.get(runId);
     // What Portal's checks of the changed files still find as the response
     // ends (changed-file-checks.mjs): host facts under the answer, after the

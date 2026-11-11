@@ -16,6 +16,10 @@ Portal can use the owner's own services. Each is off until the owner sets it up 
   get a notification when it changes.
 - **News (FreshRSS):** the unread stories, and a daily digest sent to the phone.
 - **Scheduled tasks:** a notification when one finishes or fails.
+- **Reminders:** "remind me in 10 minutes" sends a notification at that time.
+- **Memory:** Portal remembers facts and preferences the owner tells it, after
+  asking, and uses them in later chats.
+- **Telegram:** chat with Portal from Telegram through the owner's own bot.
 
 To defer work from chat, type the instructions and choose **Schedule** beside Send.
 Give the task a name, choose when it should run, then select **Schedule task**.
@@ -38,8 +42,10 @@ Portal gateway (pixel-ods plugin) ──────────► control.sock
                                                                     ├─ vault folder
                                                                     ├─ ntfy
                                                                     ├─ MCP servers
-                                                                    └─ apps (Paperless-ngx, Immich,
-                                                                       changedetection.io, FreshRSS)
+                                                                    ├─ apps (Paperless-ngx, Immich,
+                                                                    │  changedetection.io, FreshRSS)
+                                                                    ├─ memory.json
+                                                                    └─ Telegram ◄──► Portal ingress
 ```
 
 `pixel-integrations.service` runs as the owner and does every integration action.
@@ -54,11 +60,13 @@ owner requests from agent requests. A uid check could not do that.
 
 - **Agent socket:** `/run/ods-pixel-integrations/control.sock`. It accepts only
   agent actions: search and read notes, write notes, notify, list and call MCP
-  tools, use the apps, and report a finished scheduled task.
+  tools, use the apps, report a finished scheduled task, plan and send a
+  reminder, and propose, read and answer memories.
 - **Owner socket:** `~/.config/ods/pixel-integrations/owner.sock`. It accepts
   only owner actions: read settings, save, test notification, check tools, test a
   server, test an app, restart a local server, review the exact pending action,
-  approve or decline, and clear the activity list.
+  approve or decline, clear the activity list, change memory, and set up and
+  test Telegram.
   In Sandbox, the gateway's home mount hides this folder from ordinary paths;
   the installer refuses a bind that exposes it, including a canonical alias.
   This is not a different-user security boundary.
@@ -300,6 +308,76 @@ and the current notification destination. The owner may explicitly retry that
 same message after acknowledging that it might already have arrived. Changed
 settings require a fresh review; a used retry cannot be submitted twice. This
 owner action never fetches or silently adds other stories to the saved message.
+## Reminders
+
+Reminders, memory and Telegram run where their programs are installed beside the
+service (Linux and WSL). The native macOS integration programs are a fixed,
+separately qualified set without them, so on a Mac Portal says reminders are not
+available yet and Settings shows no Memory or Telegram.
+
+`pixel_ods_notify` takes `inMinutes` (such as 10) or `at` (a time such as 17:30,
+or a date and time such as 2026-11-04T09:00, in the host's time zone unless it
+gives an offset). The service checks it and works out when it is due, from 1
+minute to a year ahead, and refuses when ntfy is not set up. The plugin
+schedules it as a one-off OpenClaw cron job whose description carries the
+reminder. When the job starts, the service sends it through ntfy as
+"Reminder: …", whatever the owner chose for scheduled-task notices. The job's
+own agent turn does nothing; it ends after its run, so a retried run does not
+send the reminder again, and its finish sends no scheduled-task notice.
+
+Before this, asked for a reminder, Portal ran `(sleep 120 && echo …) &` in its
+sandbox, which never reached the owner (#7794). An exec command that sleeps for
+a minute or more, sleeps 20 seconds or more beside a background `&`, or sleeps
+in a detached command (`nohup`, `setsid`, `disown`, `at now`) is now refused
+with a pointer to `pixel_ods_notify`. Short waits, such as
+`npm start & sleep 2 && curl …`, still run.
+
+## Memory
+
+Portal remembers short facts about the owner: their diet, the people they
+mention, how they like answers. `pixel_ods_notes` action `remember` proposes
+one, as one short sentence (up to 240 characters). By default the chat then
+shows a card: **Save**, **Don't save**, or **Always save without asking**. The
+plugin reads the owner's answer from the next turn and passes it to the
+service, so saving never depends on the model. With "save without asking", a
+fact is kept at once.
+
+Before each turn of a Portal chat, the plugin adds the saved facts (newest,
+up to 2,000 characters) beside the owner's message, as data rather than
+instructions, and a one-line hint about `remember`. Facts come only from what
+the owner tells Portal: the model proposes them, and the owner confirms.
+
+Settings → Portal integrations → Memory turns memory off, switches asking off
+or on, answers facts still waiting, and edits or deletes facts or forgets them
+all. A chat's ••• menu has **Don't remember this chat**: the service then
+refuses facts from that chat and adds none to its turns. dashboard-api names the
+chat to the service as the gateway does (`ods-` + SHA-256 of the chat id), so
+the service never sees chat ids. The facts live in `memory.json` beside the
+other integrations files, outside Portal's sandbox. Portal can propose, read
+and answer but not change settings, edit, delete or decide for the owner. Up to
+200 facts and 20 waiting ones are kept.
+
+## Telegram
+
+The owner makes a bot with @BotFather and gives Settings its token and their
+numeric Telegram user ID (@userinfobot shows it). The service long-polls the
+bot: outbound only, nothing listens for Telegram. The owner's text messages to
+the bot in a private chat go to Portal through the same ingress socket as the
+dashboard's chat, as one Portal chat that Portal keeps itself (each message is
+sent alone); Portal's answer goes back, split into Telegram-sized pieces, with
+"typing…" shown meanwhile. Messages from anyone else, and from groups, are
+dropped before Portal sees them; Settings says that someone else wrote. A
+question card (such as a memory to save) arrives as numbered choices, and a
+number answers it. `/new` starts a new conversation and `/start` explains the
+bot. Approvals still happen in Settings.
+
+The token stays with the other secrets and is sent only when typed. A new token
+reads that bot from its first message. A Telegram problem (a refused token,
+another program reading the same bot) shows once in Settings and is retried
+every 30 seconds. **Advanced** takes another Telegram Bot API address, for a
+self-hosted Bot API server; the tests use it for a stand-in Telegram. Telegram
+carries these messages on its servers, so Settings says to keep private matters
+to the dashboard.
 
 ## Setting up
 
@@ -330,6 +408,14 @@ can read any folder the owner can.
 - *FreshRSS:* your user name, and an API password from Settings → Profile. Allow
   API access under Settings → Authentication.
 
+**Telegram:**
+
+1. In Telegram, message @BotFather, send `/newbot` and follow its steps. It gives
+   a bot token.
+2. Message @userinfobot to see your Telegram user ID.
+3. In ODS, paste both, turn Telegram on and press **Save Telegram**, then **Test**.
+4. Message your bot.
+
 ## Limits
 
 - Linux, including Windows through WSL2, which runs the same installer code.
@@ -354,3 +440,11 @@ can read any folder the owner can.
 - Up to 20 MCP servers, and up to 200 tools per server.
 - Scheduled tasks can also end by calling `pixel_ods_notify` with their own message.
 - Up to 10 results per document or photo search, and up to 100 watched pages.
+- Reminders use the host's time zone for a time without an offset, and its
+  offset at the moment the reminder is set (a change of daylight saving time
+  before it is due is not followed). A reminder set while ntfy is off is refused.
+- Memory can be answered on the card, in Settings, or not at all; a fact left
+  waiting stays waiting. Up to 200 saved facts and 20 waiting ones.
+- Telegram reads text messages only, one at a time: a second message waits for
+  Portal's answer to the first. The service keeps the conversation's last 20
+  messages for Telegram, and one bot answers one owner.

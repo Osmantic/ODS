@@ -33,7 +33,7 @@ export const browserTimezone = () => Intl.DateTimeFormat().resolvedOptions().tim
 export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
 
 // Where an ntfy "Open approvals" button takes the owner: this Settings page, where they still sign in.
-export const approvalLinkFor = origin => `${origin}/settings?section=portal-integrations`
+export const approvalLinkFor = origin => `${origin}/settings?section=portal-integrations&view=approvals`
 
 export function draftFrom(settings) {
   const { enabled, url, topic, username, notifyApprovals, approvalLink, scheduledTasks } = settings.notifications

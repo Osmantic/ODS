@@ -1,4 +1,5 @@
-"""Owner integrations for Portal: an Obsidian vault, ntfy notifications, MCP servers and apps.
+"""Owner integrations for Portal: an Obsidian vault, ntfy notifications, MCP servers, apps,
+Portal's memory of the owner, chat from Telegram and reminders.
 
 One local service holds integration settings and secrets. Requests are one JSON line over
 separate owner and agent Unix endpoints; the listener determines the role, not request
@@ -15,6 +16,7 @@ files and reach the owner endpoint outside this tool path. Mount hiding alone is
 absolute same-UID security boundary. Off/ask/allow are policies of the integration tools,
 not a claim that broader owner-account access cannot bypass them.
 """
+import collections
 import json
 import hmac
 import os
@@ -46,6 +48,20 @@ from integrations_recovery import REFERENCE_FIELD, RecoveryReviewOnly, review_on
 from integrations_ntfy import send_notification  # noqa: E402
 from integrations_mcp import LocalServer, LocalServers, McpSession, SESSION_TIMEOUT, describe_tool  # noqa: E402
 
+# Memory and Telegram ship where their programs are installed beside this service (Linux and WSL).
+# The native macOS integration programs are a fixed, separately qualified set without them
+# (pixel-runtime-bundle.py), so there the service starts without them and Settings hides them.
+_HERE = pathlib.Path(__file__).resolve().parent
+EXTRAS = all((_HERE / name).is_file() for name in ("integrations_memory.py", "integrations_telegram.py"))
+if EXTRAS:
+    import integrations_memory as memory  # noqa: E402
+    import integrations_telegram as telegram  # noqa: E402
+    EXTRA_ACTIONS = (memory.MemoryActions, telegram.TelegramActions)
+    EXTRA_OWNER_ACTIONS = memory.OWNER_ACTIONS | telegram.OWNER_ACTIONS
+else:
+    memory = telegram = None
+    EXTRA_ACTIONS, EXTRA_OWNER_ACTIONS = (), frozenset()
+
 MAX_SERVERS = 20
 MAX_ENV = 20
 APPROVAL_SECONDS = 24 * 3600
@@ -54,7 +70,7 @@ SERVER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 TOPIC = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 OWNER_ACTIONS = {"get", "save", "test-notification", "discover", "test", "test-app", "watch-list", "send-digest", "retry-digest", "restart",
-                 "decide", "approval-detail", "clear-activity"}
+                 "decide", "approval-detail", "clear-activity"} | EXTRA_OWNER_ACTIONS
 TASK_MODES = ("off", "failures", "all")
 WATCH_SECONDS = 120
 REQUEST_SECONDS = 130
@@ -204,7 +220,7 @@ class _AdmittedLocalServers:
 
 
 
-class Integrations(RecoveryReviewOnly, AppActions):
+class Integrations(RecoveryReviewOnly, AppActions, *EXTRA_ACTIONS):
     _recovery_server_context = staticmethod(server_context)
 
     def __init__(self, store, local_servers=None):
@@ -221,6 +237,7 @@ class Integrations(RecoveryReviewOnly, AppActions):
         self.digest_sent_at = 0
         self.digest_failing = False
         self.failing_tasks = set()
+        self.reminders_sent = collections.deque(maxlen=500)  # Reminder jobs already sent, so a retried run stays quiet.
         self.discovery_path = None
 
     def publish_discovery(self):
@@ -348,6 +365,11 @@ class Integrations(RecoveryReviewOnly, AppActions):
         elif action == "clear-activity":
             with self.store.lock:
                 self.store.clear_activity()
+        elif EXTRAS and action in memory.OWNER_ACTIONS:
+            self.memory_owner(action, request)
+        elif EXTRAS and action in telegram.OWNER_ACTIONS:
+            notice = self.telegram_owner(action, request)
+            return {**self.view(), "notice": notice}
         return self.view()
 
     def view(self):
@@ -365,9 +387,14 @@ class Integrations(RecoveryReviewOnly, AppActions):
         for item in activity:
             for field in ('target', 'outcome'):
                 item[field] = redact_secrets(item[field], secrets)
-        return {"settings": public_config(config, secrets), "approvals": waiting,
-                "activity": activity, "processes": redact_secrets(processes, secrets),
-                "digestRecovery": self.digest_recovery()}
+        result = {"settings": public_config(config, secrets), "approvals": waiting,
+                  "activity": activity, "processes": redact_secrets(processes, secrets),
+                  "digestRecovery": self.digest_recovery()}
+        if EXTRAS:
+            with self.store.lock:
+                remembered = self.store.memory()
+            result.update(memory=memory.public(remembered), telegram=self.telegram_view())
+        return result
 
     def _log(self, action, target, outcome):
         with self.store.lock:
@@ -734,6 +761,14 @@ class Integrations(RecoveryReviewOnly, AppActions):
             return self.task_finished(config, request)
         if action in {"digest-plan", "digest-job-record", "digest-job-clear"}:
             return self.digest_control(action, request)
+        if action == "reminder-plan":
+            return self.plan_reminder(config, request)
+        if action == "reminder-due":
+            return self.reminder_due(config, request)
+        if action in ("memory-context", "memory-propose", "memory-answer"):
+            if not EXTRAS:
+                raise IntegrationError("memory-unavailable", "Portal's memory is not available on this computer yet.")
+            return self.memory_agent(action, request)
         raise IntegrationError("invalid-request", "Unknown integration action.")
 
 
@@ -1080,6 +1115,15 @@ def watch_or_exit(service, stop, seconds=WATCH_SECONDS, exit=os._exit):
         exit(1)
 
 
+def telegram_or_exit(service, stop, exit=os._exit):
+    """Answer the owner on Telegram; any error but a Telegram or Portal failure ends the service, as for watching."""
+    try:
+        telegram.telegram_loop(service, stop)
+    except BaseException:
+        traceback.print_exc()
+        exit(1)
+
+
 class RunningIntegrations(list):
     """Listeners and their shutdown custody; list-compatible with Linux callers."""
 
@@ -1110,7 +1154,7 @@ class RunningIntegrations(list):
 
 
 def start(agent_socket, state_dir):
-    """Both listeners and the page watcher, in background threads; the owner socket is STATE_DIR/owner.sock."""
+    """Both listeners, the page watcher and the Telegram bridge, in background threads; the owner socket is STATE_DIR/owner.sock."""
     if sys.platform == 'darwin':
         validate_native_state(state_dir)
     service = Integrations(Store(state_dir))
@@ -1134,6 +1178,9 @@ def start(agent_socket, state_dir):
         stop.set()
     servers.watcher = threading.Thread(target=watch_or_exit, args=(service, stop), kwargs={"exit": failed}, daemon=True)
     servers.watcher.start()
+    if EXTRAS:
+        # Outbound only: the bridge long-polls the owner's own bot while Telegram is on.
+        threading.Thread(target=telegram_or_exit, args=(service, stop), kwargs={"exit": failed}, daemon=True).start()
     return servers
 
 

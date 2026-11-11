@@ -1,11 +1,13 @@
 import net from 'node:net';
+import { noProposalTurns, chatSession, MEMORY_CHOICES, MEMORY_QUESTION_ID, memoryQuestion } from './integration-memory.mjs';
 
 // Portal tools for the owner's integrations: Obsidian, ntfy, configured apps and MCP
 // servers. Tool payloads contain no configuration token or vault root: calls go to
 // the host service, which checks the owner's settings and keeps "ask first"
 // actions waiting for the owner's approval. Results are the owner's own data or a server's
 // answer and are passed on as untrusted text.
-const SOCKET = '/run/ods-pixel-integrations/control.sock';
+// Tests that load the whole plugin point this elsewhere, so a service on the test machine never answers.
+const linuxSocket = () => process.env.ODS_PIXEL_INTEGRATIONS_SOCKET || '/run/ods-pixel-integrations/control.sock';
 const MAX_REPLY = 512 * 1024;
 const TIMEOUT_MS = 130000;
 const freezeRole = value => {
@@ -66,7 +68,7 @@ const MCP_USAGE = 'Give the arguments too. To see the servers and their tools: {
 const MCP_IDENTIFIER_SCOPE = 'Use only the server/tool IDs and argument schemas returned by this tool\'s action list; application names do not define MCP server IDs.';
 const NATIVE_TOOL_DISCOVERY = 'Native account/provider tools (including Gmail and Google Calendar, when available) are outside this MCP catalog: discover them with tool_search, use tool_describe if needed, then tool_call with the exact returned native ID. This catalog does not report their availability or records.';
 const APPROVAL_TEXT = 'This call created or found a pending request; the action has not run. Tell the owner it needs approval in Settings → Portal integrations (they may also get a notification). After they approve, call this tool again with exactly the same arguments so the service can check and use the approval; do not just repeat this notice. Approval is for one use. For any later requested action, including an identical one, call the tool again to submit that new request. In a scheduled task, do not wait: report this returned status and finish; a later run within 24 hours can check the approval with exactly the same arguments.';
-export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal, admitted} = {}) {
+export function submitIntegration(payload, {connect = net.createConnection, platform = process.platform, signal, admitted, timeoutMs = TIMEOUT_MS} = {}) {
   return new Promise((resolve, reject) => {
     if (platform !== 'linux' && platform !== 'darwin') return reject(new Error('Portal integrations are not available on this system yet.'));
     if (signal?.aborted) return reject(new Error('Cancelled.'));
@@ -75,7 +77,7 @@ export function submitIntegration(payload, {connect = net.createConnection, plat
       catch { return false; }
     };
     if (!currentAdmission()) return reject(Object.assign(new Error('Native admission is no longer current.'), {code:'integration-call-unbound'}));
-    const socket = connect({path: platform === 'darwin' ? '/private/var/lib/ods-pixel-integrations/control.sock' : SOCKET});
+    const socket = connect({path: platform === 'darwin' ? '/private/var/lib/ods-pixel-integrations/control.sock' : linuxSocket()});
     let buffer = Buffer.alloc(0), finished = false, dispatched = false;
     const finish = (error, value) => {
       if (finished) return;
@@ -89,7 +91,7 @@ export function submitIntegration(payload, {connect = net.createConnection, plat
       } else resolve(value);
     };
     const unavailable = () => finish(new Error('The integrations service is not running.'));
-    const timer = setTimeout(() => finish(new Error('The integration did not answer in time.')), TIMEOUT_MS);
+    const timer = setTimeout(() => finish(new Error('The integration did not answer in time.')), timeoutMs);
     // Before submission cancellation means no action. Once submitted, retain
     // native admission until the service settles: closing a client socket does
     // not cancel an already accepted MCP/notes/notification operation.
@@ -408,7 +410,92 @@ export function canonicalReviewDocumentId(value) {
   return BigInt(value) <= 9223372036854775807n ? value : undefined;
 }
 
-export function createIntegrationTools({submit = submitIntegration, context, outcomes, requireBound, onReviewRefused} = {}) {
+// Portal proposes a fact about the owner; unless the owner chose to save without asking, the
+// chat shows a card with the choices below Portal's reply (see integration-memory.mjs). The reply
+// itself still comes: told to wait, the small model never answered a question the owner asked
+// (e2e: "Suggest one dinner..." ended with no answer after a proposal).
+async function remember(submit, params, sessionKey, signal, shared) {
+  const session = chatSession(sessionKey);
+  if (!session) {
+    // Only the owner's own chat can show the card and holds the "don't remember" mark: a
+    // delegated helper or a scheduled task saves nothing.
+    return text('Nothing was saved: Portal remembers only what the owner says in their own Portal chat.', {status: 'done'});
+  }
+  const blocked = noProposalTurns(shared).get(session);
+  if (blocked === 'answered') {
+    return text('The owner has just answered your memory question; this reply only acknowledges it. Save nothing else now.', {status: 'done'});
+  }
+  if (blocked === 'reminder') {
+    // Pointing at the right call, so the turn still schedules what the owner asked for.
+    return text('Nothing was saved: the owner asked for a reminder, not a memory. Schedule it with one call: '
+      + 'tool_call with id "openclaw:pixel-ods:pixel_ods_notify" as described in the note on the owner\'s message.', {status: 'done'});
+  }
+  let reply;
+  try {
+    reply = await submit({action: 'memory-propose', text: str(params?.text), session}, {signal});
+  } catch (error) {
+    return text(error.message, {status: 'unavailable'}, true);
+  }
+  if (!reply?.ok) return text(reply?.message || 'The memory was not saved.', {status: 'refused', code: reply?.error}, true);
+  if (reply.status === 'known') return text(`Already remembered: ${reply.text}`, {status: 'done'});
+  if (reply.status === 'saved') return text(`Remembered: ${reply.text}`, {status: 'done'});
+  if (blocked === `card:${reply.id}`) {
+    // The same fact again, often a retried call: its card is already there.
+    return text(`The owner already has a card below your reply for "${reply.text}"; nothing is saved until they answer it. Answer their message in plain text.`,
+      {status: 'done'});
+  }
+  if (blocked?.startsWith('card:')) {
+    // A reply shows one card; the next fact waits in Settings.
+    return text(`Not saved yet: "${reply.text}" waits for the owner in Settings → Portal integrations → Memory; mention that, not a card.`,
+      {status: 'done'});
+  }
+  noProposalTurns(shared).set(session, `card:${reply.id}`);
+  const questions = [{id: MEMORY_QUESTION_ID, question: memoryQuestion(reply.text), options: Object.keys(MEMORY_CHOICES)}];
+  // "Not saved yet" first: told only that a card is shown, the small model told the owner the fact was saved (e2e).
+  return text(`Not saved yet: ${questions[0].question}\n\nThe owner decides on a card shown below your reply; never answer it for them, and never say it is saved. Now answer the owner's message, using other tools only if it needs them.`,
+    {status: 'awaiting_user', questions});
+}
+
+// A reminder: the service checks it and works out when it is due, then the gateway's scheduler
+// gets a one-off job for it; the service sends it through ntfy when that job starts.
+async function remind(submit, scheduleReminder, params, signal) {
+  let reply;
+  try {
+    reply = await submit({action: 'reminder-plan', title: str(params?.title), message: str(params?.message),
+      inMinutes: params?.inMinutes, at: params?.at === undefined ? undefined : str(params.at)}, {signal});
+  } catch (error) {
+    return text(error.message, {status: 'unavailable'}, true);
+  }
+  if (!reply?.ok) return text(reply?.message || 'The reminder could not be set.', {status: 'refused', code: reply?.error}, true);
+  try {
+    await scheduleReminder(reply.plan);
+  } catch (error) {
+    return text(`The reminder was not set: ${error.message}`, {status: 'unavailable'}, true);
+  }
+  return text(`Reminder set for ${reply.plan.when}: "${reply.plan.text}". It will reach the owner's phone then; nothing else is needed.`,
+    {status: 'done', reminderAt: reply.plan.atMs});
+}
+
+const noScheduler = () => Promise.reject(new Error('Reminders are not available here.'));
+
+// isDigestRun(sessionKey): whether this session is a run of the daily news digest
+// (integration-tasks.mjs). That run reads feeds anyone can write, with nobody watching: it may
+// read the digest and nothing else, so a story cannot steer it to the owner's other apps.
+const DIGEST_ONLY = 'The daily news digest run may only read the digest: tool_call with id "pixel_ods_mcp" and args '
+  + '{"action": "call", "server": "app:news", "tool": "digest", "arguments": {}}.';
+const notDigestRun = async () => false;
+const isDigestRead = params => params?.action === 'call' && params?.server === 'app:news' && params?.tool === 'digest';
+
+// A response held to the native review path may only review: it proposes no memory and sets no reminder.
+const reviewOnly = (requireBound, context) => {
+  try { return requireBound !== undefined && requireBound(context) === true; } catch { return true; }
+};
+const REVIEW_ONLY_TEXT = 'Nothing was proposed or scheduled: this response may only review.';
+
+export function createIntegrationTools({submit = submitIntegration, context, outcomes, requireBound, onReviewRefused,
+  scheduleReminder = noScheduler, isDigestRun = notDigestRun, shared = globalThis, sessionKey} = {}) {
+  // The chat a call came from: the native runtime context names it (sessionKey alone serves callers without one).
+  const chatKey = context?.sessionKey ?? sessionKey;
   // Factory context comes from the native runtime, never model arguments. Each
   // isolated cron run has its own session identity; keep its read snapshot apart
   // from an interactive digest or another task. This metadata grants no action.
@@ -469,28 +556,41 @@ export function createIntegrationTools({submit = submitIntegration, context, out
   return [
     {
       name: 'pixel_ods_notes',
-      description: "Markdown notes in the owner's Obsidian vault; Paperless docs/PDFs use pixel_ods_mcp action list. search finds notes; read opens a path from search. prepare creates an approval request to append text or create a note, using path/text/mode. It never writes or uses an approval, even Allowed; Off refuses. Search/read do not create requests. To fulfill the owner's preparation request, use prepare after any required read confirms its conditions. Announcing preparation creates nothing. request_approval is an Ask-only approval proposal for scheduled edits; it may notify the owner but never writes or spends a grant. Allowed saves use write. write actually saves under policy, only when the owner asks to save. Append adds only new text; existing note contents stay in place. Create uses the new note's full body. Each save/retry needs a normal call, including identical arguments; only typed receipts establish pending/done/refused. Portal approval IDs have no lookup or decision tool.",
+      description: "Markdown notes in the owner's Obsidian vault, and Portal's memory of the owner; Paperless docs/PDFs use pixel_ods_mcp action list. action remember keeps a lasting fact about the owner or a preference they stated (text, one short sentence such as \"The owner is vegetarian.\"); the owner confirms it in the chat. search finds notes; read opens a path from search. prepare creates an approval request to append text or create a note, using path/text/mode. It never writes or uses an approval, even Allowed; Off refuses. Search/read do not create requests. To fulfill the owner's preparation request, use prepare after any required read confirms its conditions. Announcing preparation creates nothing. request_approval is an Ask-only approval proposal for scheduled edits; it may notify the owner but never writes or spends a grant. Allowed saves use write. write actually saves under policy, only when the owner asks to save. Append adds only new text; existing note contents stay in place. Create uses the new note's full body. Each save/retry needs a normal call, including identical arguments; only typed receipts establish pending/done/refused. Portal approval IDs have no lookup or decision tool.",
       parameters: {type: 'object', additionalProperties: false, required: ['action'],
-        properties: {action: {type: 'string', enum: ['search', 'read', 'write', 'prepare', 'request_approval'], description: 'search/read retrieve notes; prepare creates a silent approval request without writing; request_approval makes an Ask-only proposal that may notify; write saves under the configured permissions.'},
+        properties: {action: {type: 'string', enum: ['search', 'read', 'write', 'prepare', 'request_approval', 'remember'], description: 'search/read retrieve notes; prepare creates a silent approval request without writing; request_approval makes an Ask-only proposal that may notify; write saves under the configured permissions; remember proposes a fact about the owner for Portal\'s memory.'},
           query: {type: 'string', description: 'For search: words to look for, such as "lease deposit".'},
           path: {type: 'string', description: 'For read, write, prepare or request_approval: the note path inside the vault.'},
-          text: {type: 'string', description: 'For append, only the new text to add; never copy the existing note contents into text. For create, the full body of the new note. When the owner supplies exact text, use only that text verbatim, preserving punctuation, whitespace and line breaks. Do not add headings, dates, bullets, templates or any other content unless requested.'},
+          text: {type: 'string', description: 'For remember: the fact, one short sentence. For append, only the new text to add; never copy the existing note contents into text. For create, the full body of the new note. When the owner supplies exact text, use only that text verbatim, preserving punctuation, whitespace and line breaks. Do not add headings, dates, bullets, templates or any other content unless requested.'},
           mode: {type: 'string', enum: ['append', 'create'], description: 'append adds text after the existing contents without replacing them; create makes a new note from text.'}}},
       execute: (_id, params, signal) => {
+        if (params?.action === 'remember') {
+          if (reviewOnly(requireBound, context)) return Promise.resolve(text(REVIEW_ONLY_TEXT, {status: 'blocked', code: 'integration-call-unbound'}, true));
+          return remember(submit, params, chatKey, signal, shared);
+        }
         const request = integrationRequest('pixel_ods_notes', params, context);
         return request ? dispatch(_id, 'pixel_ods_notes', params, request, signal, notesText)
-          : Promise.resolve(text('Use action search, read, write, prepare or request_approval with its exact arguments.', {status: 'invalid'}, true));
+          : Promise.resolve(text('Use action search, read, write, prepare, request_approval or remember with its exact arguments.', {status: 'invalid'}, true));
       },
     },
     {
       name: 'pixel_ods_notify',
-      description: "Send a notification to the owner's phone or computer through ntfy configured in Settings → Portal integrations. This is a native notification connection, separate from custom MCP servers; it does not require an ntfy MCP server. Use when the owner asks to be notified, or at the end of a scheduled task that should tell them its result. Call for each new requested notification; describing it does not send it. Only a successful result confirms delivery to the configured ntfy server, not receipt on a physical device.",
+      description: "Send a notification to the owner's phone or computer through ntfy configured in Settings → Portal integrations, now or later. This is a native notification connection, separate from custom MCP servers; it does not require an ntfy MCP server. Use when the owner asks to be notified, at the end of a scheduled task that should tell them its result, and for reminders: to remind the owner later (\"remind me in 10 minutes to stretch\"), give inMinutes or at and Portal schedules it; it reaches their phone at that time. Never wait with sleep or a background command, since nothing of this turn keeps running. Call for each new requested notification; describing it does not send it. Only a successful result confirms delivery to the configured ntfy server, not receipt on a physical device.",
       parameters: {type: 'object', additionalProperties: false, required: ['message'],
-        properties: {title: {type: 'string'}, message: {type: 'string'},
-          priority: {type: 'string', enum: ['low', 'default', 'high']}}},
+        properties: {title: {type: 'string'}, message: {type: 'string', description: 'The text the owner gets, such as "Stretch".'},
+          priority: {type: 'string', enum: ['low', 'default', 'high']},
+          inMinutes: {type: 'number', description: 'For a reminder: send it this many minutes from now, such as 10.'},
+          at: {type: 'string', description: 'For a reminder: send it at this local time, such as 17:30, or date and time, such as 2026-11-04T09:00.'}}},
       execute: (_id, params, signal) => {
-        const payload = integrationRequest('pixel_ods_notify', params, context);
-        return dispatch(_id, 'pixel_ods_notify', params, payload, signal, () => 'Notification sent.');
+        // A small model fills every field: null or "" is no reminder time (the service reads them so too).
+        const given = value => value !== undefined && value !== null && value !== '';
+        if (given(params?.inMinutes) || given(params?.at)) {
+          if (reviewOnly(requireBound, context)) return Promise.resolve(text(REVIEW_ONLY_TEXT, {status: 'blocked', code: 'integration-call-unbound'}, true));
+          return remind(submit, scheduleReminder, params, signal);
+        }
+        const {inMinutes: _inMinutes, at: _at, ...notice} = params ?? {};
+        const payload = integrationRequest('pixel_ods_notify', notice, context);
+        return dispatch(_id, 'pixel_ods_notify', notice, payload, signal, () => 'Notification sent.');
       },
     },
     {
@@ -501,7 +601,15 @@ export function createIntegrationTools({submit = submitIntegration, context, out
           server: {type: 'string', description: 'For call or prepare: an existing server ID returned by this tool\'s action list only.'},
           tool: {type: 'string', description: 'For call or prepare: the exact tool name returned for that server by action list.'},
           arguments: {type: 'object', description: 'For call or prepare: the exact tool arguments as an object.'}}},
-      execute: (_id, params, signal) => {
+      execute: async (_id, params, signal) => {
+        // The arguments as called: the digest-run check below waits, and the native admission was made
+        // for these exact bytes, whatever the caller changes meanwhile.
+        params = params === undefined ? params : structuredClone(params);
+        if (await isDigestRun(chatKey)) {
+          if (!isDigestRead(params)) return text(DIGEST_ONLY, {status: 'refused', code: 'digest-only'}, true);
+          // The digest takes no arguments; in its run, none reach the service.
+          params = {action: 'call', server: 'app:news', tool: 'digest', arguments: {}};
+        }
         if (params?.action === 'list') return dispatch(_id, 'pixel_ods_mcp', params, {action: 'mcp-tools'}, signal, toolsText);
         // A small model sometimes sends no arguments at all; show it the exact shape to retry with.
         if (params?.action !== 'call' && params?.action !== 'prepare') return Promise.resolve(text(MCP_USAGE, {status: 'invalid'}, true));

@@ -8,6 +8,7 @@ removing a page watch follows the owner's choice, ask first or allowed.
 """
 import datetime
 import html
+import ipaddress
 import json
 import math
 import re
@@ -17,7 +18,7 @@ import urllib.parse
 import urllib.request
 import zoneinfo
 
-from integrations_common import APP_URLS, IntegrationError, NETWORK_TIMEOUT, clip, safe_urlopen
+from integrations_common import APP_URLS, IntegrationError, NETWORK_TIMEOUT, clip, local_zone, safe_urlopen
 
 APPS = tuple(APP_URLS)
 NAMES = {"documents": "Paperless-ngx", "photos": "Immich", "watch": "changedetection.io", "news": "FreshRSS"}
@@ -31,6 +32,7 @@ MAX_BRIEF_STORIES = 15
 # delivery journal has an explicit fail-closed capacity rather than truncation.
 MAX_SENT_STORIES = 10 * MAX_NEWS_ITEMS
 MAX_WATCHES = 100
+MAX_WATCH_QUERY = 300  # Enough for a product page; not for a document's worth of data.
 # ntfy turns a longer message into a file attachment (4,096 bytes); stay under it.
 MAX_NOTICE_BYTES = 3900
 DIGEST_NAME = "Daily news digest"
@@ -260,6 +262,24 @@ def best_place(place, known):
     return None
 
 
+def _utc(moment):
+    return moment.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
+
+
+def taken_between(after, before, zone):
+    """Immich's date filters for whole days in the owner's time zone.
+
+    Immich compares them with the moment a photo was taken (UTC), so a day starts and ends at
+    the owner's local midnight, not UTC's.
+    """
+    filters = {}
+    if after:
+        filters["takenAfter"] = _utc(datetime.datetime.fromisoformat(f"{after}T00:00:00").replace(tzinfo=zone))
+    if before:
+        filters["takenBefore"] = _utc(datetime.datetime.fromisoformat(f"{before}T23:59:59.999").replace(tzinfo=zone))
+    return filters
+
+
 def photos_search(settings, key, *, query="", place="", after="", before="", allow_query_fallback=True):
     query, place = " ".join(str(query or "").split())[:200], " ".join(str(place or "").split())[:100]
     for value in (after, before):
@@ -276,10 +296,7 @@ def photos_search(settings, key, *, query="", place="", after="", before="", all
         if found is None:
             return {"results": [], "mode": "details", "more": False, "note": f"No photos are from a place named {place}."}
         filters[found[0]] = found[1]
-    if after:
-        filters["takenAfter"] = f"{after}T00:00:00.000Z"
-    if before:
-        filters["takenBefore"] = f"{before}T23:59:59.999Z"
+    filters.update(taken_between(after, before, local_zone()))
     narrowed = bool(place or after or before)
     reply, mode, note = None, "description", ""
     if query and describes_photos(settings, key):
@@ -377,7 +394,28 @@ def watch_price(settings, key, uuid):
     return price
 
 
+LOCAL_NAMES = (".local", ".localhost", ".internal", ".lan", ".home.arpa")
+
+
+def _local_host(host):
+    """A host on this computer or the owner's own network, written as such (names are not resolved)."""
+    host = host.rstrip(".").lower()
+    if host == "localhost" or host.endswith(LOCAL_NAMES) or "." not in host:
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return not address.is_global
+
+
 def valid_watch_url(url):
+    """A public web page Portal may ask changedetection.io to fetch.
+
+    Portal can be steered by what it reads, so it may not point the watcher at this computer or the
+    owner's network, hide a user and password in the address, or carry a long query of data out.
+    The owner adds such a watch in changedetection.io itself.
+    """
     url = str(url or "").strip()
     try:
         parsed = urllib.parse.urlsplit(url)
@@ -388,6 +426,13 @@ def valid_watch_url(url):
     if (len(url) > 2000 or not valid
             or any(char.isspace() or ord(char) < 32 for char in url)):
         raise IntegrationError("invalid-request", "Give the page's full web address, starting with https://.")
+    if parsed.username is not None or parsed.password is not None:
+        raise IntegrationError("invalid-request", "Give the page's address without a user name or password.")
+    if _local_host(parsed.hostname):
+        raise IntegrationError("watch-local", "Portal watches public web pages only. The owner can add a page on this "
+                               "computer or their own network in changedetection.io.")
+    if len(parsed.query) > MAX_WATCH_QUERY:
+        raise IntegrationError("invalid-request", f"Give the page's address with a query of up to {MAX_WATCH_QUERY} characters.")
     return url
 
 

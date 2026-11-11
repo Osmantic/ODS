@@ -62,7 +62,7 @@ it('uses the native task flow: create, read result, pause, remove, return to sav
   fireEvent.click(screen.getByRole('button',{name:'Schedule task'}))
   fireEvent.click(await screen.findByRole('button',{name:/Morning agenda.*Daily/}))
   expect(await screen.findByText('One synthetic meeting at 09:00.')).toBeVisible()
-  expect(screen.getByRole('link',{name:'review requests in ODS Settings'})).toHaveAttribute('href','/settings?section=portal-integrations')
+  expect(screen.getByRole('link',{name:'review requests in ODS Settings'})).toHaveAttribute('href','/settings?section=portal-integrations&view=approvals')
   fireEvent.click(screen.getByRole('link',{name:'review requests in ODS Settings'}))
   fireEvent.click(await screen.findByRole('link',{name:'Close settings'}))
   expect(screen.getByText('One synthetic meeting at 09:00.')).toBeVisible()

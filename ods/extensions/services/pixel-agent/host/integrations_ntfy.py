@@ -37,7 +37,8 @@ def send_notification(config, secrets, title, message, priority="default", link=
         raise IntegrationError("notifications-off", "Notifications are not set up. The owner can connect ntfy in Settings → Portal integrations.")
     if not isinstance(message, str) or not message.strip() or len(message) > 4000:
         raise IntegrationError("invalid-notification", "Give a message of up to 4,000 characters.")
-    title = (title if isinstance(title, str) and title.strip() else "Portal").strip()[:200]
+    # One line: a line break in a header is refused by http.client (a watched page's or a job's name may hold one).
+    title = " ".join(title.split())[:200] if isinstance(title, str) and title.strip() else "Portal"
     request = urllib.request.Request(f"{settings['url']}/{settings['topic']}", data=message.strip().encode(), method="POST")
     request.add_header("Title", header_text(title))
     request.add_header("Priority", priority if priority in ("min", "low", "default", "high", "urgent") else "default")

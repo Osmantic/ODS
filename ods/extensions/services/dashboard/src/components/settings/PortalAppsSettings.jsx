@@ -79,11 +79,14 @@ function WatchOptions({ app, saved, busy, revision, onChange, onLoadWatches }) {
   </>
 }
 
-function NewsOptions({ app, busy, onChange }) {
-  const setDigest = patch => onChange({ digest: { ...app.digest, timezone: browserTimezone(), ...patch } })
+// The digest runs in this browser's time zone once the owner turns it on or sets its time;
+// turned off, it keeps the saved zone, so on and then off again is no unsaved change.
+function NewsOptions({ app, saved, busy, onChange }) {
+  const setDigest = (patch, timezone = browserTimezone()) => onChange({ digest: { ...app.digest, timezone, ...patch } })
+  const turnDigest = enabled => setDigest({ enabled }, enabled ? browserTimezone() : saved?.digest?.timezone ?? app.digest.timezone)
   return <>
     <div className="space-y-2 md:col-span-2">
-      <Toggle checked={app.digest.enabled} disabled={busy} onChange={enabled => setDigest({ enabled })}>Send me a daily news digest</Toggle>
+      <Toggle checked={app.digest.enabled} disabled={busy} onChange={turnDigest}>Send me a daily news digest</Toggle>
       <label className="block text-sm">Digest time ({app.digest.timezone})
         <input className={inputStyle} type="time" value={app.digest.time} disabled={busy || !app.digest.enabled} onChange={event => setDigest({ time: event.target.value })} /></label>
       <p className="text-xs text-theme-text-muted">Each day at this time Portal sends a short brief of your new unread stories through ntfy, up to 15 of them, grouped by feed. Each story comes in one digest only. It is a scheduled task, kept in step with this setting.</p>
@@ -121,10 +124,11 @@ function DigestRecovery({ attempts, busy, dirty, revision, onRetry }) {
   </section>
 }
 
-function AppCard({ id, app, saved, secret, busy, dirty, result, revision, notifications, digestRecovery, onChange, onSecret, onTest, onSendDigest, onRetryDigest, onLoadWatches }) {
+function AppCard({ plain = false, id, app, saved, secret, busy, dirty, result, revision, notifications, digestRecovery, onChange, onSecret, onTest, onSendDigest, onRetryDigest, onLoadWatches }) {
   const hasKey = Boolean(secret || saved?.hasKey)
   const meta = APPS[id]
-  return <li className="rounded-lg border border-theme-border p-4 space-y-3" aria-label={meta.title}>
+  // plain: the only app in its view, so no card inside the view's card.
+  return <li className={plain ? 'space-y-3' : 'rounded-lg border border-theme-border p-4 space-y-3'} aria-label={meta.title}>
     <div className="min-w-0">
       <h4 className="text-base font-semibold">{meta.title} <span className="text-sm font-normal text-theme-text-muted">· {meta.product}</span></h4>
       <p className="text-sm text-theme-text-muted">{meta.about}</p>
@@ -132,33 +136,36 @@ function AppCard({ id, app, saved, secret, busy, dirty, result, revision, notifi
     <Toggle checked={app.enabled} disabled={busy} onChange={enabled => onChange({ enabled })}>{meta.toggle}</Toggle>
     <div className="grid gap-3 md:grid-cols-2">
       <label className="text-sm md:col-span-2">{meta.product} address<input className={inputStyle} value={app.url} disabled={busy} spellCheck={false} onChange={event => onChange({ url: event.target.value })} /></label>
+      {plain && <p className="-mt-2 text-xs text-theme-text-muted md:col-span-2">Filled in with where the ODS extension catalog installs it.</p>}
       {id === 'news' && <label className="text-sm md:col-span-2">FreshRSS user<input className={inputStyle} value={app.username} disabled={busy} autoComplete="off" spellCheck={false} onChange={event => onChange({ username: event.target.value })} /></label>}
       <label className="text-sm md:col-span-2">{meta.secret}
         <input className={inputStyle} type="password" autoComplete="off" value={secret} disabled={busy}
           placeholder={saved?.hasKey ? 'Saved. Type to replace.' : ''} onChange={event => onSecret(event.target.value)} /></label>
       <p className="text-xs text-theme-text-muted md:col-span-2">{meta.where}</p>
       {id === 'watch' && <WatchOptions app={app} saved={saved} busy={busy} revision={revision} onChange={onChange} onLoadWatches={onLoadWatches} />}
-      {id === 'news' && <NewsOptions app={app} busy={busy} onChange={onChange} />}
+      {id === 'news' && <NewsOptions app={app} saved={saved} busy={busy} onChange={onChange} />}
     </div>
     <div className="flex flex-wrap gap-2">
       <button className={buttonStyle} disabled={busy || !hasKey} onClick={onTest}>Test {meta.product}</button>
       {id === 'news' && <button className={buttonStyle} disabled={busy || !hasKey || !app.enabled || !notifications}
         onClick={onSendDigest}>Send a digest now</button>}
     </div>
-    {id === 'news' && !notifications && <p className="text-xs text-theme-text-muted">Turn on notifications through ntfy above to get the digest on your phone.</p>}
+    {id === 'news' && !notifications && <p className="text-xs text-theme-text-muted">Turn on notifications in the ntfy integration to get the digest on your phone.</p>}
     {result && <p role={result.ok ? 'status' : 'alert'} className={`text-sm break-words ${result.ok ? 'text-theme-text-muted' : 'text-red-400'}`}>{result.message}</p>}
     {id === 'news' && <DigestRecovery attempts={digestRecovery} busy={busy} dirty={dirty} revision={revision} onRetry={onRetryDigest} />}
   </li>
 }
 
-export default function PortalAppsSettings({ apps, saved, typed, busy, dirty, result, revision, notifications, digestRecovery, onChange, onSecret, onTest, onSendDigest, onRetryDigest, onLoadWatches }) {
-  return <section className="rounded-xl border border-theme-border bg-theme-card p-5 space-y-4" aria-labelledby="integrations-apps">
-    <div>
+// ids: the apps to show; the integrations hub opens one app at a time.
+export default function PortalAppsSettings({ ids = Object.keys(APPS), apps, saved, typed, busy, dirty, result, revision, notifications, digestRecovery, onChange, onSecret, onTest, onSendDigest, onRetryDigest, onLoadWatches }) {
+  const single = ids.length === 1
+  return <section className="rounded-xl border border-theme-border bg-theme-card p-5 space-y-4" {...(single ? { 'aria-label': APPS[ids[0]].title } : { 'aria-labelledby': 'integrations-apps' })}>
+    {!single && <div>
       <h3 id="integrations-apps" className="font-semibold">Your apps</h3>
       <p className="text-sm text-theme-text-muted">Apps running on this computer, such as the ones in the ODS extension catalog. The addresses below are where the catalog installs them.</p>
-    </div>
+    </div>}
     <ul className="space-y-3">
-      {Object.keys(APPS).map(id => <AppCard key={id} id={id} app={apps[id]} saved={saved[id]} secret={typed[id] || ''} busy={busy}
+      {ids.map(id => <AppCard key={id} plain={single} id={id} app={apps[id]} saved={saved[id]} secret={typed[id] || ''} busy={busy}
         result={result?.app === id ? result : null} revision={revision} notifications={notifications} dirty={dirty} digestRecovery={digestRecovery}
         onChange={patch => onChange(id, patch)} onSecret={value => onSecret(id, value)} onTest={() => onTest(id)}
         onSendDigest={onSendDigest} onRetryDigest={onRetryDigest} onLoadWatches={onLoadWatches} />)}

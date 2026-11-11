@@ -4,6 +4,7 @@ if sys.platform == "win32":
     raise SkipTest("Requires Unix sockets; run under Linux/WSL")
 
 import email.header
+import http.client
 import http.server
 import json
 import pathlib
@@ -14,6 +15,7 @@ import time
 import unittest
 import unittest.mock
 import urllib.parse
+import zoneinfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "host"))
 import integrations_apps as apps  # noqa: E402
@@ -826,6 +828,9 @@ class AppTests(unittest.TestCase):
                                    "photos": "Immich answered as Owner. Searching by place and date works. To also search by what is "
                                              "in a photo, turn on Smart Search in Immich under Administration → Settings → Machine Learning.",
                                    "watch": "changedetection.io answered: 0 watched pages.", "news": "FreshRSS answered: 2 feeds."})
+        # The view that comes back already holds what the action did.
+        self.assertEqual(self.owner("test-app", app="news")["activity"][0]["action"], "app-test")
+        self.assertEqual(self.owner("send-digest")["activity"][0]["target"], apps.DIGEST_NAME)
         with self.assertRaisesRegex(service.IntegrationError, "Unknown app"):
             self.owner("test-app", app="mail")
         self.save(self.settings(enabled=False), secrets={"apps": {"photos": ""}})
@@ -1300,6 +1305,114 @@ class AppTests(unittest.TestCase):
             with self.assertRaisesRegex(service.IntegrationError, "full web address"):
                 self.app("watch", "add", url=bad)
         self.assertEqual(FakeChanges.watches, {})
+
+    def test_raising_a_price_limit_above_the_price_notifies_at_the_next_look(self):
+        self.save(self.settings(changes="allow"))
+        self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=40)
+        FakeChanges.prices["w1"] = 45
+        self.service.check_watches()
+        self.assertEqual(FakeNtfy.sent, [])
+        self.assertEqual(self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=50)["done"],
+                         "Price limit for Kettle is now 50")
+        # The page did not change, yet the price is read again against the new limit, and told once.
+        self.service.check_watches()
+        self.service.check_watches()
+        self.assertEqual([note["message"] for note in FakeNtfy.sent], ["Kettle is now 45, at or under your limit of 50."])
+
+    def test_a_price_limit_changed_during_a_look_stays(self):
+        self.save(self.settings(changes="allow"))
+        self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=50)
+        FakeChanges.prices["w1"] = 60
+        original, changed = self.service._price, []
+
+        def slow_price(*arguments):
+            if not changed:  # Portal lowers the limit while the look reads the price.
+                changed.append(self.app("watch", "add", url="https://shop.example/kettle", title="Kettle", below=40)["done"])
+            return original(*arguments)
+        self.service._price = slow_price
+        self.service.check_watches()
+        self.assertEqual(changed, ["Price limit for Kettle is now 40"])
+        self.assertEqual(self.store.watch_state()["w1"]["below"], 40.0)
+        self.service._price = original
+        FakeChanges.prices["w1"] = 39
+        FakeChanges.watches["w1"]["last_changed"] += 10
+        self.service.check_watches()
+        self.assertEqual([note["message"] for note in FakeNtfy.sent], ["Kettle is now 39, at or under your limit of 40."])
+
+    def test_a_line_break_in_a_watched_page_s_name_still_notifies(self):
+        self.save(self.settings())
+        FakeChanges.watches["x1"] = {"url": "https://shop.example/shoes", "title": "Shoes\nSale", "last_changed": 5}
+        self.service.check_watches()
+        FakeChanges.watches["x1"]["last_changed"] = 6
+        self.service.check_watches()
+        self.assertEqual(FakeNtfy.sent[-1]["title"], "Page changed: Shoes Sale")
+        self.save(self.settings(changes="allow"))
+        added = self.app("watch", "add", url="https://shop.example/hat", title="Hat\r\nSale")
+        self.assertEqual(added["done"], "Watch Hat Sale at https://shop.example/hat")
+
+    def test_an_answer_cut_short_is_an_unreachable_app_not_a_crash(self):
+        self.save(self.settings())
+        for problem in (http.client.IncompleteRead(b"{"), http.client.BadStatusLine("junk"), http.client.LineTooLong("header")):
+            with unittest.mock.patch.object(apps, "open_direct", side_effect=problem):
+                with self.assertRaises(service.IntegrationError) as caught:
+                    apps.watches(self.store.config()["apps"]["watch"], "watch-key")
+                self.assertEqual(caught.exception.code, "app-unreachable")
+            with unittest.mock.patch.object(ntfy, "open_direct", side_effect=problem):
+                with self.assertRaises(service.IntegrationError) as caught:
+                    ntfy.send_notification(self.store.config(), self.store.secrets(), "Title", "Message")
+                self.assertEqual(caught.exception.code, "notification-failed")
+
+    def test_photo_days_follow_the_owner_s_time_zone(self):
+        utc = zoneinfo.ZoneInfo("UTC")
+        self.assertEqual(apps.taken_between("2026-06-01", "2026-06-02", utc),
+                         {"takenAfter": "2026-06-01T00:00:00.000Z", "takenBefore": "2026-06-02T23:59:59.999Z"})
+        sydney = zoneinfo.ZoneInfo("Australia/Sydney")  # UTC+10 in June.
+        self.assertEqual(apps.taken_between("2026-06-01", "2026-06-01", sydney),
+                         {"takenAfter": "2026-05-31T14:00:00.000Z", "takenBefore": "2026-06-01T13:59:59.999Z"})
+        # The day summer time ends in Lisbon starts at UTC+1 and ends at UTC+0.
+        lisbon = zoneinfo.ZoneInfo("Europe/Lisbon")
+        self.assertEqual(apps.taken_between("2026-10-25", "2026-10-25", lisbon),
+                         {"takenAfter": "2026-10-24T23:00:00.000Z", "takenBefore": "2026-10-25T23:59:59.999Z"})
+        self.assertEqual(apps.taken_between("", "", lisbon), {})
+
+    def test_changedetection_is_asked_without_holding_the_settings_lock(self):
+        self.save(self.settings(changes="allow"))
+        original, free = apps.add_watch, []
+
+        def add_watch(*arguments):
+            # Another thread (the owner's Settings, an approval) can take the lock meanwhile.
+            def take():
+                taken = self.store.lock.acquire(timeout=2)
+                if taken:
+                    self.store.lock.release()
+                free.append(taken)
+            other = threading.Thread(target=take)
+            other.start()
+            other.join()
+            return original(*arguments)
+        with unittest.mock.patch.object(apps, "add_watch", side_effect=add_watch):
+            self.app("watch", "add", url="https://shop.example/page", title="Shop")
+        self.assertEqual(free, [True])
+        self.assertIn("w1", self.store.watch_state())
+
+    def test_portal_watches_public_pages_only_and_the_approval_shows_the_address(self):
+        self.save(self.settings())  # Watch changes ask first.
+        for url in ("http://localhost:8080/", "http://127.0.0.1/admin", "http://192.168.1.1/", "http://10.0.0.5/x",
+                    "http://169.254.169.254/latest/meta-data/", "http://[::1]/", "http://router/", "http://nas.local/",
+                    "http://printer.lan/", "http://box.home.arpa/", "http://172.16.0.1/", "http://100.64.0.1/"):
+            with self.assertRaises(service.IntegrationError, msg=url) as caught:
+                self.app("watch", "add", url=url, title="Kindle price")
+            self.assertEqual(caught.exception.code, "watch-local", url)
+        for url, reason in (("https://owner:secret@shop.example/", "without a user name"),
+                            ("https://shop.example/?d=" + "x" * 400, "query of up to 300")):
+            with self.assertRaisesRegex(service.IntegrationError, reason):
+                self.app("watch", "add", url=url)
+        self.assertEqual(self.owner("get")["approvals"], [], "nothing refused reaches the owner")
+        # A public page waits for the owner, and the card shows where the watcher will go, not only the title.
+        self.app("watch", "add", url="https://evil.example/kindle?ref=1", title="Kindle price")
+        self.assertEqual(len(self.owner("get")["approvals"]), 1)
+        summary = self.owner("get")["approvals"][0]["summary"]
+        self.assertEqual(summary, "Watch Kindle price at https://evil.example/kindle?ref=1")
 
     def test_prices_to_read_is_a_pure_choice(self):
         listing = {"page": {"last_changed": 9}, "new": {"last_changed": 0}, "same": {"last_changed": 5}, "moved": {"last_changed": 7}}

@@ -1,11 +1,12 @@
 """The owner's apps for the integrations service: what Portal asks of them, page watching,
-and notifications for finished scheduled tasks. Mixed into the service's Integrations class,
-which provides store, _approval, failing_tasks and the digest_* run memory.
+notifications for finished scheduled tasks, and reminders. Mixed into the service's Integrations
+class, which provides store, _approval, failing_tasks, reminders_sent and the digest_* run memory.
 
 Portal reaches the apps through its MCP tool, where each app the owner turned on is listed as
 a built-in server (documents, photos, watch, news) next to the owner's MCP servers. The
 gateway's plugin may declare only a few tools, so the apps add none of their own.
 """
+import pathlib
 import re
 import time
 import uuid as uuid_module
@@ -13,8 +14,17 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import integrations_apps as apps
-from integrations_common import IntegrationError, digest, watch_context, redact_secrets, app_context
+from integrations_common import IntegrationError, digest, watch_context, redact_secrets, app_context, local_zone
 from integrations_ntfy import send_notification
+
+# Reminders ship where their program is installed beside this one. The native macOS integration
+# programs are a fixed, separately qualified set without it (pixel-runtime-bundle.py), so there
+# Portal says reminders are not available instead of the service failing to start.
+if (pathlib.Path(__file__).resolve().parent / "integrations_reminders.py").is_file():
+    import integrations_reminders as reminders
+else:
+    reminders = None
+REMINDERS_UNAVAILABLE = "Reminders are not available on this computer yet."
 
 APP_ACTIONS = {"documents-search": "documents", "documents-read": "documents", "photos-search": "photos",
                "watch-list": "watch", "watch-add": "watch", "watch-remove": "watch", "news-unread": "news", "news-digest": "news"}
@@ -647,7 +657,7 @@ class AppActions:
             already_matches = False
             if tool == "add":
                 url = apps.valid_watch_url(request.get("url"))
-                title = str(request.get("title") or "").strip()[:200]
+                title = " ".join(str(request.get("title") or "").split())[:200]
                 below = None if request.get("below") in (None, "") else apps.price_limit(request.get("below"))
                 watch_id = next((identity for identity, watch in listing.items() if watch.get("url") == url), None)
                 target = listing.get(watch_id) if watch_id else None
@@ -704,7 +714,7 @@ class AppActions:
             listing = apps.watches(settings, key)
             if action == "watch-add":
                 url = apps.valid_watch_url(request.get("url"))
-                title = str(request.get("title") or "").strip()[:200]
+                title = " ".join(str(request.get("title") or "").split())[:200]
                 below = None if request.get("below") in (None, "") else apps.price_limit(request.get("below"))
                 uuid = next((item for item, watch in listing.items() if watch.get("url") == url), None)
                 target = listing.get(uuid) if uuid else None
@@ -777,6 +787,8 @@ class AppActions:
         if entry["below"] is None:
             raise AppActions._page_watched(name)
         entry["below"] = below
+        # Priced again at the next look, against the new limit: a price already under it is told then.
+        entry["lastPrice"] = None
         return f"Price limit for {name} is now {below:g}"
 
     def check_watches(self):
@@ -831,6 +843,8 @@ class AppActions:
                 or type(started) not in (int, float) or not 0 < started <= 9007199254740991
                 or event.get("status") not in ("ok", "error")):
             return {"notified": False, "reason": "unverified-event"}
+        if reminders and reminders.is_reminder(event.get("description")):
+            return {"notified": False}  # Sent when its job started; its own run is only a formality.
         with self.task_notice_lock:
             with self.store.lock:
                 config = self.store.config()
@@ -862,6 +876,40 @@ class AppActions:
             if notice is None:
                 return {"notified": False}
             return {"notified": self._tell(config, notice["title"], notice["message"], notice["priority"])}
+
+    def plan_reminder(self, config, request):
+        """Check a reminder Portal wants to set; the plugin schedules the job this returns."""
+        if reminders is None:
+            raise IntegrationError("reminders-unavailable", REMINDERS_UNAVAILABLE)
+        if not config["notifications"]["enabled"]:
+            raise IntegrationError("notifications-off", "Reminders reach the owner through ntfy notifications, which are not set up. "
+                                   "The owner can connect ntfy in Settings → Portal integrations.")
+        # In the host's zone with its daylight-saving rules, so "09:00" after a change is still 09:00.
+        plan = reminders.plan(datetime.now(local_zone()), request.get("title"), request.get("message"),
+                              request.get("inMinutes"), request.get("at"))
+        self._log("reminder-set", plan["name"], plan["when"])
+        return {"plan": plan}
+
+    def reminder_due(self, config, event):
+        """A reminder's job started: send it, once per job, whatever the owner chose for scheduled tasks."""
+        if reminders is None:
+            raise IntegrationError("reminders-unavailable", REMINDERS_UNAVAILABLE)
+        if not reminders.is_reminder(event.get("description")):
+            raise IntegrationError("invalid-request", "That scheduled task is not a reminder.")
+        job = event.get("jobId")
+        if not isinstance(job, str) or not 0 < len(job) <= 200 or re.search(r"[\x00-\x1f\x7f]", job):
+            raise IntegrationError("invalid-request", "That reminder has no job identity.")
+        with self.task_notice_lock:
+            if job in self.reminders_sent:
+                return {"notified": False}  # OpenClaw retried the job's run.
+            title, message = reminders.notice(event.get("name"), event["description"])
+            if not config["notifications"]["enabled"]:
+                self._log("reminder", title, "not sent: notifications are off")
+                return {"notified": False}
+            sent = self._tell(config, title, message)
+            if sent:
+                self.reminders_sent.append(job)
+            return {"notified": sent}
 
     def _send_digest(self, config, event):
         """Model prose is used only with a read receipt for this exact native run."""
