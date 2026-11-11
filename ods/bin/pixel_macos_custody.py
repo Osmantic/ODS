@@ -351,6 +351,7 @@ INTEGRATION_ADDITIONS = frozenset({
     '/Library/LaunchDaemons/com.ods.pixel-native-integrations.plist'})
 SCHEDULE_ADDITIONS = frozenset('/usr/local/libexec/ods-pixel-access/' + name for name in (
     'pixel_schedules.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs'))
+GUARD_ADDITIONS = frozenset({'/usr/local/libexec/ods-pixel-access/pixel_source_upgrade.py'})
 
 
 def _rename_addition_directory(directory, source, target):
@@ -436,7 +437,7 @@ def protected_inspection_bytes(filename, *, limit=8 * 1024 * 1024):
     try:
         return protected_bytes(filename, limit=limit)
     except CustodyError:
-        if value not in INSPECTION_ADDITIONS | INTEGRATION_ADDITIONS | SCHEDULE_ADDITIONS:
+        if value not in INSPECTION_ADDITIONS | INTEGRATION_ADDITIONS | SCHEDULE_ADDITIONS | GUARD_ADDITIONS:
             raise
         parent, name = value.rsplit('/', 1)
         with _addition_directory(parent) as directory:
@@ -461,7 +462,7 @@ def replace_protected_inspection_bytes(filename, *, expected, replacement, mode,
         return replace_protected_bytes(filename, expected=expected, replacement=replacement, mode=mode, gid=gid)
     value = os.fspath(filename)
     body = replacement if expected is None else expected
-    if (value not in INSPECTION_ADDITIONS | INTEGRATION_ADDITIONS | SCHEDULE_ADDITIONS
+    if (value not in INSPECTION_ADDITIONS | INTEGRATION_ADDITIONS | SCHEDULE_ADDITIONS | GUARD_ADDITIONS
             or type(body) is not bytes or len(body) > 8 * 1024 * 1024
             or type(mode) is not int or mode != 0o644 or type(gid) is not int or gid != 0
             or (expected is None and replacement is None)):

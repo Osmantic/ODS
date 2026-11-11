@@ -2070,7 +2070,7 @@ def _native_bound_sidefile_archive_authority(value, context_raw, journal_raw, bo
     try:
         owner, selection = context['owner'], context['runtime_bundle']
         proof = journal['sourceAddition']['proof']
-        if (journal['schemaVersion'] != 5 or journal['phase'] != 'active'
+        if (journal['schemaVersion'] not in (5, 6) or journal['phase'] != 'active'
                 or type(owner) is not dict or set(owner) != {'name', 'uid', 'gid', 'home'}
                 or any(type(owner[key]) is not int for key in ('uid', 'gid'))
                 or (owner['uid'], owner['gid']) != (value['owner']['uid'], value['owner']['gid'])
@@ -3346,6 +3346,10 @@ def _native_installer_schedule_additions():
         'pixel_schedules.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs'))
 
 
+def _native_installer_guard_additions():
+    return frozenset({'/usr/local/libexec/ods-pixel-access/pixel_source_upgrade.py'})
+
+
 def _native_installer_journal_name(metadata, transaction, *, completed=False, _history=False):
     if _history:
         # Only the fixed data-history reader selects this route. It grants no
@@ -3402,7 +3406,7 @@ def _native_installer_journal_bytes(raw, transaction, context, *, _completed=Fal
     try:
         value = json.loads(raw.decode(), object_pairs_hook=_native_pairs)
         if (type(value) is not dict or set(value) != {'schemaVersion', 'currentDigest', 'candidateDigest', 'phase', 'files', 'sourceAddition'}
-                or type(value['schemaVersion']) is not int or value['schemaVersion'] not in (4, 5)
+                or type(value['schemaVersion']) is not int or value['schemaVersion'] not in (4, 5, 6)
                 or (value['currentDigest'], value['candidateDigest']) != (transaction['currentDigest'], transaction['candidateDigest'])
                 or type(value['phase']) is not str or value['phase'] not in {'prepared', 'replacing-files', 'active',
                     'rolling-back', 'restored', 'recovery-required',
@@ -3448,12 +3452,19 @@ def _native_installer_journal_bytes(raw, transaction, context, *, _completed=Fal
         legacy_absent = {item['path'] for item in records if item['before'] is None and item['path'] not in family}
         schedules = _native_installer_schedule_additions()
         schedule_absent = legacy_absent & schedules
-        if (value['schemaVersion'] == 5 and schedule_absent != schedules
-                or value['schemaVersion'] == 4 and schedule_absent):
+        guards = _native_installer_guard_additions()
+        guard_absent = legacy_absent & guards
+        # Journal6 adds the complete guard family, with or without the complete
+        # schedule family; Journal5 adds only the schedule family.
+        if (schedule_absent and schedule_absent != schedules or guard_absent and guard_absent != guards
+                or value['schemaVersion'] == 6 and not guard_absent
+                or value['schemaVersion'] == 5 and (schedule_absent != schedules or guard_absent)
+                or value['schemaVersion'] == 4 and (schedule_absent or guard_absent)):
             raise ValueError()
-        if any(item['path'] in schedule_absent and (item['mode'], item['gid']) != (0o644, 0) for item in records):
+        if any(item['path'] in schedule_absent | guard_absent and (item['mode'], item['gid']) != (0o644, 0)
+               for item in records):
             raise ValueError()
-        legacy_absent -= schedules
+        legacy_absent -= schedules | guards
         if (legacy_absent and legacy_absent not in (inspection, integration, inspection | integration)
                 or any(item['path'] in legacy_absent and (item['mode'], item['gid']) != (0o644, 0) for item in records)):
             raise ValueError()
@@ -3531,7 +3542,8 @@ def _native_installer_code_absent(path):
 def _native_installer_live_images(records):
     from pixel_macos_custody import protected_bytes, CustodyError as FileCustodyError
     inspection, integration = _native_installer_legacy_additions()
-    additions = native_installer_source_family() | inspection | integration | _native_installer_schedule_additions()
+    additions = (native_installer_source_family() | inspection | integration
+                 | _native_installer_schedule_additions() | _native_installer_guard_additions())
     for item in records:
         path = Path(item['path'])
         try:

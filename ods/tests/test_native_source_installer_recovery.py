@@ -343,6 +343,46 @@ def test_independent_source_reader_accepts_only_closed_schedule_schema_five(monk
         assert decoded == value and images == records and body == raw
 
 
+@pytest.mark.parametrize('schedules', [False, True])
+@pytest.mark.parametrize('fault', [None, 'existing-member', 'foreign', 'mode', 'gid', 'downgrade',
+    'partial-schedules', 'source-family'])
+def test_independent_source_reader_accepts_only_closed_guard_schema_six(monkeypatch, schedules, fault):
+    from pixel_connections import custody
+    records = source_images()
+    addition, _receipt = withdrawal_authority(records)
+    records += [dict(path=path, before=None, after=b'guard code', mode=0o644, gid=0)
+                for path in sorted(upgrade.GUARD_ADDITIONS)]
+    if schedules:
+        records += [dict(path=path, before=None, after=b'schedule code', mode=0o644, gid=0)
+                    for path in sorted(upgrade.SCHEDULE_ADDITIONS)]
+    value = upgrade.encode_recovery(records, source_addition=addition, **selection(records))
+    assert value['schemaVersion'] == 6
+    assert custody._native_installer_guard_additions() == upgrade.GUARD_ADDITIONS
+    guard = next(item for item in value['files'] if item['path'] in upgrade.GUARD_ADDITIONS)
+    if fault == 'existing-member':
+        guard['before'], guard['beforeSha256'] = guard['after'], guard['afterSha256']
+    elif fault == 'foreign': guard['path'] = '/usr/local/libexec/ods-pixel-access/foreign.py'
+    elif fault == 'mode': guard['mode'] = 0o600
+    elif fault == 'gid': guard['gid'] = 20
+    elif fault == 'downgrade': value['schemaVersion'] = 5 if schedules else 4
+    elif fault == 'partial-schedules':
+        schedule = [item for item in value['files'] if item['path'] in upgrade.SCHEDULE_ADDITIONS]
+        if schedule: value['files'].remove(schedule[0])
+        else: value['files'].append(dict(guard, path=sorted(upgrade.SCHEDULE_ADDITIONS)[0]))
+    elif fault == 'source-family': value['sourceAddition']['familySha256'] = 'e' * 64
+    raw = json.dumps(value).encode()
+    monkeypatch.setattr(custody, '_native_root_file', lambda *_a, **_kw: (raw, (1, 2)))
+    context = dict(source_lifecycle=dict(mode='withdrawal', familySha256=upgrade.source_family_hash(records)),
+                   owner=dict(uid=501, gid=20))
+    transaction = dict(kind='native-installer-upgrade', transaction='c' * 64,
+                       currentDigest=CURRENT, candidateDigest=CANDIDATE)
+    if fault:
+        with pytest.raises(custody.CustodyError): custody._native_installer_journal(123, transaction, context)
+    else:
+        decoded, images, body = custody._native_installer_journal(123, transaction, context)
+        assert decoded == value and images == records and body == raw
+
+
 def owned_images(tmp_path):
     records = source_images()
     files = {r['path']: tmp_path / 'code' / str(index) for index, r in enumerate(records)}

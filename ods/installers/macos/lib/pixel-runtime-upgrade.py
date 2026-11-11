@@ -192,6 +192,9 @@ def retire_restored_attempt(*, current_digest, candidate_digest, snapshots,
 
 SCHEDULE_ADDITIONS = frozenset('/usr/local/libexec/ods-pixel-access/' + name for name in (
     'pixel_schedules.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs'))
+# The controller's Source admission guard. Its own family: older controllers
+# lack it with or without the schedule family above.
+GUARD_ADDITIONS = frozenset({'/usr/local/libexec/ods-pixel-access/pixel_source_upgrade.py'})
 
 
 INSPECTION_ADDITIONS = frozenset('/usr/local/libexec/ods-pixel-services/helpers/' + name for name in (
@@ -311,6 +314,7 @@ def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths,
             or len({item['path'] for item in records}) != len(records)
             or {item['path'] for item in records} != set(allowed_paths)):
         raise UpgradeError('runtime-upgrade-file-set-invalid')
+    code_additions = INSPECTION_ADDITIONS | INTEGRATION_ADDITIONS | SCHEDULE_ADDITIONS | GUARD_ADDITIONS
     encoded = []
     for item in records:
         path = item['path']
@@ -324,7 +328,7 @@ def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths,
         for key in ('before', 'after'):
             body = item[key]
             source_absent = source_addition is not None and path in SOURCE_ADDITIONS
-            if key == 'before' and body is None and (path in INSPECTION_ADDITIONS | INTEGRATION_ADDITIONS | SCHEDULE_ADDITIONS or source_absent):
+            if key == 'before' and body is None and (path in code_additions or source_absent):
                 expected_mode = 0o600 if source_absent and path == SOURCE_PRIVATE_RECEIPT else 0o644
                 if item['mode'] != expected_mode or item['gid'] != 0:
                     raise UpgradeError('runtime-upgrade-record-invalid')
@@ -340,8 +344,13 @@ def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths,
     schedule_absent = absent & SCHEDULE_ADDITIONS
     if schedule_absent and schedule_absent != SCHEDULE_ADDITIONS:
         raise UpgradeError('runtime-upgrade-schedule-additions-incomplete')
-    legacy_absent -= SCHEDULE_ADDITIONS
-    version = (5 if schedule_absent else 4 if source_addition is not None
+    guard_absent = absent & GUARD_ADDITIONS
+    if guard_absent and guard_absent != GUARD_ADDITIONS:
+        raise UpgradeError('runtime-upgrade-guard-additions-incomplete')
+    legacy_absent -= SCHEDULE_ADDITIONS | GUARD_ADDITIONS
+    # A new absent family gets a new version, so older readers refuse it.
+    # Version 6 may also carry the schedule family; version 5 never the guard.
+    version = (6 if guard_absent else 5 if schedule_absent else 4 if source_addition is not None
                else 3 if absent & INTEGRATION_ADDITIONS else 2 if absent else 1)
     if legacy_absent and legacy_absent not in (INSPECTION_ADDITIONS, INTEGRATION_ADDITIONS,
                                 INSPECTION_ADDITIONS | INTEGRATION_ADDITIONS):
@@ -359,12 +368,12 @@ def encode_recovery(records, *, current_digest, candidate_digest, allowed_paths,
 def decode_recovery(value, *, current_digest, candidate_digest, allowed_paths):
     try:
         source = type(value) is dict and (value.get('schemaVersion') == 4
-            or value.get('schemaVersion') == 5 and 'sourceAddition' in value)
+            or value.get('schemaVersion') in (5, 6) and 'sourceAddition' in value)
         fields = {'schemaVersion', 'currentDigest', 'candidateDigest', 'phase', 'files'}
         if source:
             fields.add('sourceAddition')
         if (type(value) is not dict or set(value) != fields
-                or type(value['schemaVersion']) is not int or value['schemaVersion'] not in (1, 2, 3, 4, 5)
+                or type(value['schemaVersion']) is not int or value['schemaVersion'] not in (1, 2, 3, 4, 5, 6)
                 or value['currentDigest'] != current_digest or value['candidateDigest'] != candidate_digest
                 or value['phase'] not in PHASES or type(value['files']) is not list):
             raise ValueError()
@@ -374,7 +383,7 @@ def decode_recovery(value, *, current_digest, candidate_digest, allowed_paths):
                 raise ValueError()
             record = {key: item[key] for key in ('path', 'mode', 'gid')}
             for key in ('before', 'after'):
-                if key == 'before' and value['schemaVersion'] in (2, 3, 4, 5) and item[key] is None:
+                if key == 'before' and value['schemaVersion'] in (2, 3, 4, 5, 6) and item[key] is None:
                     if item[key + 'Sha256'] is not None:
                         raise ValueError()
                     record[key] = None
@@ -439,7 +448,7 @@ class RecoveryJournal:
         No snapshot, target, context, family, nonce or prior intent is replaced.
         """
         from pixel_access_bridge import atomic_json, private_json
-        if (self.value.get('schemaVersion') not in (4, 5) or self.value.get('phase') != 'prepared'
+        if (self.value.get('schemaVersion') not in (4, 5, 6) or self.value.get('phase') != 'prepared'
                 or not callable(verify_withdrawal)
                 or self.value.get('sourceAddition', {}).get('proof', {}).get('kind') !=
                    'ods-native-source-installer-withdrawal-intent'):

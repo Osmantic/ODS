@@ -36,7 +36,7 @@ def write(path, body):
     return {'inode': [info.st_dev, info.st_ino], 'sha256': sha(body), 'size': len(body)}
 
 
-def make_archive(n, monkeypatch, *, real_code=False):
+def make_archive(n, monkeypatch, *, real_code=False, guard=False):
     uid, gid = n.f.bridge.owner.pw_uid, n.f.bridge.owner.pw_gid
     assert uid > 0 and gid > 0
     config = n.world / 'old-config'
@@ -46,9 +46,11 @@ def make_archive(n, monkeypatch, *, real_code=False):
     family = c.native_installer_source_family()
     monkeypatch.setattr(upgrade, 'SOURCE_ADDITIONS', family)
     monkeypatch.setattr(upgrade, 'SOURCE_PRIVATE_RECEIPT', str(c.NATIVE_META / 'source-runtime-installation.json'))
+    # guard: a main-shaped origin, which also lacks the controller's admission guard.
+    legacy = c._native_installer_schedule_additions() | (c._native_installer_guard_additions() if guard else set())
     records = [dict(path=path, before=None, after=('code:' + path).encode(),
         mode=0o600 if path == str(c.NATIVE_META / 'source-runtime-installation.json') else 0o644, gid=0)
-        for path in sorted(family | c._native_installer_schedule_additions())]
+        for path in sorted(family | legacy)]
     if real_code:
         # Representative public code bytes, never private installed config or
         # token data. Frozen before-images remain invented legacy fixtures.
@@ -133,9 +135,9 @@ def read(a):
     return c.native_sidefile_archives(owner_uid=a.uid, owner_gid=a.gid)
 
 
-def make_bound_archive(n, monkeypatch):
+def make_bound_archive(n, monkeypatch, *, guard=False):
     """A second, ready-but-unpublished attempt retains the first exact capsule."""
-    previous = make_archive(n, monkeypatch)
+    previous = make_archive(n, monkeypatch, guard=guard)
     n.owners[tuple(previous.manifest['parent']['inode'])] = (previous.uid, previous.gid)
     candidate = 'c' * 64
     context = copy.deepcopy(previous.context)
@@ -157,7 +159,7 @@ def make_bound_archive(n, monkeypatch):
     addition['proof']['candidateDigest'] = candidate
     journal = upgrade.encode_recovery(records, current_digest=CURRENT, candidate_digest=candidate,
         allowed_paths={row['path'] for row in records}, source_addition=addition)
-    assert journal['schemaVersion'] == 5
+    assert journal['schemaVersion'] == (6 if guard else 5)
     journal['phase'] = 'active'
     archive = n.metadata / (c._SIDEFILE_ARCHIVE_PREFIX + candidate)
     archive.mkdir(mode=0o700)
@@ -369,6 +371,26 @@ def test_bound_ready_archive_preserves_both_attempts_without_live_source(absent,
     for image in a.manifest['authority'].values():
         (a.n.metadata / image['sourceName']).rename(a.n.world / image['sourceName'])
     assert read(a) == view
+
+
+@pytest.mark.parametrize('fault', [None, 'schema-five'])
+def test_bound_ready_archive_reads_a_main_shaped_guard_journal_only_as_schema_six(absent, monkeypatch, fault):
+    a = make_bound_archive(absent, monkeypatch, guard=True)
+    assert c._native_installer_guard_additions() <= {row['path'] for row in a.records if row['before'] is None}
+    if fault:
+        journal = dict(copy.deepcopy(a.journal), schemaVersion=5)
+        a.manifest['authority']['journal'].update(write(a.path / 'journal.json', c._native_encoded(journal)))
+        save_manifest(a)
+        before = snapshot(a)
+        with pytest.raises((c.CustodyError, OSError, ValueError)):
+            read(a)
+        assert snapshot(a) == before
+        return
+    before = snapshot(a)
+    view = read(a)
+    assert set(view['archives']) == {a.path.name, a.previous.path.name}
+    assert view['archives'][a.path.name]['manifest'] == a.manifest
+    assert snapshot(a) == before
 
 
 @pytest.mark.parametrize('fault', ['uid', 'gid', 'mode', 'inode', 'acl', 'hardlink', 'symlink', 'extra',

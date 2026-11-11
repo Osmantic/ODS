@@ -89,6 +89,35 @@ def test_prepared_legacy_journal_proves_real_missing_images_without_publication(
     assert (path.read_bytes(), path.stat().st_ino) == before
 
 
+@pytest.mark.parametrize('declared', [True, False])
+def test_main_shaped_journal_proves_the_absent_admission_guard_only_as_a_declared_family(images, monkeypatch, declared):
+    n = images
+    guard = n.root / 'program' / 'pixel_source_upgrade.py'
+    monkeypatch.setattr(upgrade, 'GUARD_ADDITIONS', frozenset({str(guard)}))
+    monkeypatch.setattr(source, '_native_installer_guard_additions',
+                        lambda: frozenset({str(guard)}) if declared else frozenset())
+    rows = n.records + [dict(path=str(guard), before=None, after=b'candidate guard', mode=0o644, gid=0)]
+    addition = binding([row for row in rows if row['path'] in n.family])
+    value = upgrade.encode_recovery(rows, source_addition=addition, **selection(rows))
+    assert value['schemaVersion'] == 6 and value['phase'] == 'prepared'
+    path = n.root / 'runtime-upgrade.json'
+    upgrade.RecoveryJournal.create(path, value)
+    _journal, records = upgrade.RecoveryJournal.load(path, **selection(rows))
+    if not declared:
+        # The protected reader's custody error is never absence for an undeclared path.
+        with pytest.raises(mac.CustodyError, match='^macos-custody-file-unavailable$'):
+            source._native_installer_live_images(records)
+        return
+    source._native_installer_live_images(records)
+    assert not guard.exists()
+    guard.write_bytes(b'candidate guard')
+    guard.chmod(0o644)
+    source._native_installer_live_images(records)
+    guard.write_bytes(b'unknown guard')
+    with pytest.raises(source.CustodyError, match='file-image-changed'):
+        source._native_installer_live_images(records)
+
+
 @pytest.mark.parametrize('fault', ['unknown', 'existing-before', 'symlink', 'parent-symlink',
     'directory', 'hardlink', 'file-mode', 'parent-mode', 'file-acl', 'parent-acl', 'permission', 'io',
     'read-permission', 'read-io', 'body'])

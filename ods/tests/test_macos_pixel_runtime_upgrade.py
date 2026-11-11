@@ -43,6 +43,32 @@ def test_schedule_family_has_closed_recovery_schema(other, fault):
         assert upgrade.decode_recovery(json.loads(json.dumps(value)), **options) == records
 
 
+@pytest.mark.parametrize('schedules', ['absent', 'present', 'partial'])
+@pytest.mark.parametrize('fault', [None, 'foreign', 'mode', 'gid', 'downgrade'])
+def test_guard_family_has_its_own_closed_recovery_schema(schedules, fault):
+    # Main lacks guard and schedules; earlier scheduler builds lack only the guard.
+    records = [dict(path=p, before=None, after=b'candidate guard', mode=0o644, gid=0)
+               for p in sorted(upgrade.GUARD_ADDITIONS)]
+    if fault == 'foreign': records[0]['path'] = '/usr/local/libexec/ods-pixel-access/foreign.py'
+    elif fault == 'mode': records[0]['mode'] = 0o600
+    elif fault == 'gid': records[0]['gid'] = 20
+    records += [dict(path=p, before=b'installed schedule' if schedules == 'present' else None,
+                     after=b'candidate schedule', mode=0o644, gid=0) for p in sorted(upgrade.SCHEDULE_ADDITIONS)]
+    if schedules == 'partial': records[-1]['before'] = b'installed schedule'
+    options = dict(current_digest='a' * 64, candidate_digest='b' * 64,
+                   allowed_paths={item['path'] for item in records})
+    if fault in ('foreign', 'mode', 'gid') or schedules == 'partial':
+        with pytest.raises(upgrade.UpgradeError): upgrade.encode_recovery(records, **options)
+        return
+    value = upgrade.encode_recovery(records, **options)
+    assert value['schemaVersion'] == 6
+    if fault:
+        value['schemaVersion'] = 5
+        with pytest.raises(upgrade.UpgradeError): upgrade.decode_recovery(value, **options)
+    else:
+        assert upgrade.decode_recovery(json.loads(json.dumps(value)), **options) == records
+
+
 @pytest.mark.parametrize('family', [upgrade.INSPECTION_ADDITIONS, upgrade.SCHEDULE_ADDITIONS])
 @pytest.mark.parametrize('fault', [None, 'partial', 'foreign', 'after-absent', 'mode', 'gid', 'v1-null', 'digest'])
 def test_inspection_additions_have_explicit_bounded_recovery_schema(family, fault):

@@ -27,7 +27,7 @@ import pixel_access_bridge as bridge_module
 
 
 @pytest.fixture
-def active(absent, monkeypatch):
+def active(absent, monkeypatch, request):
     n = absent
     monkeypatch.setattr(bridge_module, '_native_source_clock_ns', lambda: time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW))
     monkeypatch.setattr(n.f.bridge, 'state', n.metadata, raising=False)
@@ -40,7 +40,14 @@ def active(absent, monkeypatch):
     schedules = frozenset(str(n.world / 'schedule' / name) for name in ('pixel_schedules.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs'))
     monkeypatch.setattr(c, '_native_installer_schedule_additions', lambda: schedules)
     monkeypatch.setattr(upgrade, 'SCHEDULE_ADDITIONS', schedules)
-    a = make_bound_archive(n, monkeypatch)
+    # 'guard': a main-shaped origin, whose controller also lacks the admission guard.
+    guard = getattr(request, 'param', None) == 'guard'
+    if guard:
+        guards = frozenset({str(n.world / 'schedule' / 'pixel_source_upgrade.py')})
+        monkeypatch.setattr(c, '_native_installer_guard_additions', lambda: guards)
+        for module in (upgrade, access._upgrade, mac):
+            monkeypatch.setattr(module, 'GUARD_ADDITIONS', guards)
+    a = make_bound_archive(n, monkeypatch, guard=guard)
     parent = Path(a.manifest['parent']['path'])
     n.owners[tuple(inode(parent))] = (a.uid, a.gid)
     for name, image in a.manifest['files'].items():
@@ -270,6 +277,7 @@ def test_explicit_selection_refuses_before_stop_or_capsule_when_live_authority_i
     assert not a.path.exists() and (a.n.metadata / 'source-sidefiles.json').exists()
 
 
+@pytest.mark.parametrize('active', ['schedules', 'guard'], indirect=True)
 @pytest.mark.parametrize('interruption', ['partial-move', 'restored'])
 def test_recover_install_replays_sealed_active_authority_through_real_journal_and_file_cas(active, monkeypatch, interruption):
     """Full selection/sequencer/FD archive/Source reader; launchd/bundle adapters.
@@ -350,6 +358,8 @@ def test_recover_install_replays_sealed_active_authority_through_real_journal_an
     assert (a.path / 'journal.json').read_bytes() == a.authority['journal']
     assert recover() == 'restored'
     assert_preserved(a)
+    # Every journaled addition, the guard included for a main-shaped origin, is absent again.
+    assert all(access._source_snapshot_read(row['path'], limit=8 * 1024 * 1024) == row['before'] for row in a.records)
     assert not journal.path.exists() and set(states.values()) == {'previous'}
     archived = json.loads((a.n.metadata / ('runtime-upgrade-' + a.candidate + '.completed.json')).read_bytes())
     assert archived == dict(a.journal, phase='restored')

@@ -17,7 +17,8 @@ def test_migration_filesystem_families_match_the_recovery_codec():
     spec = importlib.util.spec_from_file_location('custody_upgrade_contract', path)
     upgrade = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(upgrade)
-    for family, count in (('INSPECTION_ADDITIONS', 5), ('INTEGRATION_ADDITIONS', 10), ('SCHEDULE_ADDITIONS', 3)):
+    for family, count in (('INSPECTION_ADDITIONS', 5), ('INTEGRATION_ADDITIONS', 10), ('SCHEDULE_ADDITIONS', 3),
+                          ('GUARD_ADDITIONS', 1)):
         assert getattr(custody, family) == getattr(upgrade, family)
         assert len(getattr(custody, family)) == count
 
@@ -112,7 +113,7 @@ def test_directory_fsync_failure_is_reported_after_replacement(target, monkeypat
     assert list(target.parent.iterdir()) == [target]
 
 
-@pytest.fixture(params=['INSPECTION_ADDITIONS', 'INTEGRATION_ADDITIONS', 'SCHEDULE_ADDITIONS'])
+@pytest.fixture(params=['INSPECTION_ADDITIONS', 'INTEGRATION_ADDITIONS', 'SCHEDULE_ADDITIONS', 'GUARD_ADDITIONS'])
 def inspection_target(target, monkeypatch, request):
     from types import SimpleNamespace
     target.unlink()
