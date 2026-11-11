@@ -131,8 +131,8 @@ test('the tools match the declared names and keep schemas small enough for the m
   // read/write tools, which made a workspace file and was reported as the owner's note. The notes tool
   // claims the owner's note paths and says the workspace tools cannot reach the vault.
   const notes = tools.find(item => item.name === 'pixel_ods_notes').description;
-  assert.match(notes, /"my note".*note path such as Projects\/Plan\.md, use this tool/);
-  assert.match(notes, /read\/write\/edit reach only Portal's workspace, never the vault/);
+  assert.match(notes, /"my note" or a note path such as Projects\/Plan\.md, use this tool \(its write action saves\)/);
+  assert.match(notes, /Portal's own read, write and edit tools reach only its workspace, never the vault/);
 });
 
 test('explicit approval requests cannot fall back to an executable write', async () => {
