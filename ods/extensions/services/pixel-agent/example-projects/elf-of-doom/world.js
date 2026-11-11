@@ -83,10 +83,11 @@ const WOLF_HP_SCALE = 3;
 // covers pack hounds and the hound boss Skarnax alike, same convention as WOLF_HP_SCALE.
 const WOLF_SPD_SCALE = .85;
 // The two cave trolls (Vhelmor, Druskral) were asked to feel tanky and to get scarier once hurt.
-// One HP dial next to the wolf precedent, keyed on kind "troll": the boss spawn multiplies it in,
-// and the regen / enraged-behaviour side lives in ui.js behind the same kind test plus boss.
+// The +30% health dial that went with that — a kind-keyed constant at the boss spawn site in
+// engine.js — has since been removed at the owner's request, so BOSS_STATS.troll.hp is again the
+// trolls' whole health story. The regen / enraged-movement / enraged-swing side is untouched and
+// still lives in ui.js behind the boss + kind "troll" test.
 // Both BOSS_STATS.troll entries are trolls and no regular enemy is, so nothing else is affected.
-const TROLL_HP_SCALE = 1.3;   // +30% health for the troll bosses
 // +50% XP required to reach each level. Multiplies the XP gate itself, not the curve's growth
 // rate, so every threshold (including the initial one) is uniformly 1.5x further away.
 const XP_REQUIREMENT_SCALE = 1.5;
@@ -164,6 +165,27 @@ const FINAL_BOSS_KIND = "hollowcrown";
 // Rukhmak's special power: he calls his reinforcements twice as often as any other boss. Keyed on
 // kind rather than realm, so it follows him wherever he is posted.
 const CAPTAIN_BOSS_KIND = "captain";
+// Rukhmak's other two powers, both keyed on the same kind test so they follow him wherever he is
+// posted, and both inert for every other boss:
+//   CAPTAIN_HP_SCALE   — +35% health, multiplied in at the boss spawn site in engine.js next to the
+//                        wolf precedent (the troll health dial was already removed at the owner's
+//                        request, so "captain" is now the only boss carrying one).
+//   CAPTAIN_REIN_MUL   — his reinforcement waves are 1.5x the size any other boss's would be.
+//   CAPTAIN_REIN_HEAL  — and each arriving wave heals him this fraction of his FULL health, clamped
+//                        at maxHp so it can never push him past full (see captainReinHeal below).
+// The wave size stays one expression multiplied by this dial rather than a second hand-written
+// ceiling, so the loop scaling and the crowd cap keep working exactly as they did.
+const CAPTAIN_HP_SCALE = 1.35;
+const CAPTAIN_REIN_MUL = 1.5;
+const CAPTAIN_REIN_HEAL = 1 / 3;
+// The heal itself, as one place to read the clamp from: a fixed fraction of maxHp — not of the
+// health he happens to have left, which would make the reward shrink as he weakens — added to his
+// current hp and floored at maxHp. maxHp is used rather than a cap argument that could be omitted,
+// and Math.min keeps an at-full captain exactly at full instead of overshooting into a bar over 100%.
+function captainReinHeal(e) {
+  if (!e || !e.boss || e.kind !== CAPTAIN_BOSS_KIND) return 0;
+  return Math.min(e.maxHp, e.hp + e.maxHp * CAPTAIN_REIN_HEAL) - e.hp;
+}
 // Rukhmak's numbers, for readers of the constant block: 30 s in loop 1, 15 s from loop 2 on. They
 // are not declared as constants because the function below derives them from the general rule, and
 // a second copy of each value here could only drift from it, not guard it.

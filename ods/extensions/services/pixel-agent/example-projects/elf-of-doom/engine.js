@@ -215,14 +215,28 @@ function spawnWave() {
 // the boss and its escort rather than replacing them - the crowd is what caused the frame stalls.
 // The banner keeps naming the caller, since "twice as often" is only readable to the player if the
 // call is announced distinctly for the boss doing it.
-function spawnReinforceWave(isFinal, callerName) {
+//
+// `caller` is the boss actually calling, when the caller is known. It drives two captain-only
+// effects — his waves are CAPTAIN_REIN_MUL larger and they heal him — and is deliberately read from
+// the passed boss rather than from a kind string, so a captain wave and a crown wave cannot be
+// confused. Callers that pass nothing (the escort/realm paths) keep the shipped behaviour exactly.
+function spawnReinforceWave(isFinal, callerName, caller) {
   const z = ZONES[realmIndex(G.zone)];
   // Same treatment as a normal wave: loop scaling lands outside the ceiling, and the boss clock
   // itself is never accelerated past realm 6 — the reinforcement just arrives in bigger packs.
   const lp = loopNumber(G.zone), rawCount = loopCountMul(lp);
-  const n = Math.min(14, (6 + G.zone + (G.waveNum || 1) + randi(0, 2)) * 1.5 * ROSTER_SCALE | 0) * rawCount | 0;
+  // The captain's bigger wave multiplies the whole computed pack, the same side-of-the-cap position
+  // the loop term occupies, so it scales his pack rather than redefining the ceiling everyone else
+  // is measured against. |0 keeps the count an integer after the x1.5.
+  const captain = !!(caller && caller.boss && caller.kind === CAPTAIN_BOSS_KIND);
+  const base = Math.min(14, (6 + G.zone + (G.waveNum || 1) + randi(0, 2)) * 1.5 * ROSTER_SCALE | 0) * rawCount;
+  const n = (captain ? base * CAPTAIN_REIN_MUL : base) | 0;
   const hpMul = loopHpMul(lp, countCapLoop(loopCountMul));
   for (let i = 0; i < n; i++) spawnEnemy(pick(z.enemies), hpMul);
+  // Rukhmak's heal: applied once per arriving wave, after the spawns, and only for him. The heal
+  // amount and its never-above-full clamp both come from captainReinHeal in world.js, so the value
+  // the probes assert against is the same expression the game runs.
+  if (captain) caller.hp = caller.hp + captainReinHeal(caller);
   announce(isFinal ? "The Hollow Crown calls for aid!"
     : callerName ? callerName + " calls for aid!" : "Reinforcements!",
     "More brutes pour into the hall");
@@ -266,8 +280,16 @@ function spawnBoss() {
   // that, which compounded three curves into one number (1.5x^2 * 2x^3 by loop 4). Bosses and their
   // escorts stay in roughly the same league because both about double per loop.
   const lp = loopNumber(G.zone);
-  const bossHp = bs.hp * 2 * BOSS_HP_SCALE * (z.boss.kind === "fenris" ? WOLF_HP_SCALE : 1)
-    * (z.boss.kind === "troll" ? TROLL_HP_SCALE : 1)   // +30% for Vhelmor and Druskral
+  // The troll bosses' +30% health dial was removed at the owner's request: Vhelmor and Druskral are
+  // back to the plain BOSS_STATS.troll pool. Their regen, enraged movement and enraged swing-rate
+  // dials in ui.js are unchanged.
+  //
+  // The captain carries the kind dial now: Rukhmak is +35% per the owner's request, keyed on kind
+  // for the same reason the wolf dial is — it follows him wherever he is posted. Everyone else's
+  // term is 1, so no other boss's number moves.
+  const bossHp = bs.hp * 2 * BOSS_HP_SCALE
+    * (z.boss.kind === "fenris" ? WOLF_HP_SCALE : 1)
+    * (z.boss.kind === CAPTAIN_BOSS_KIND ? CAPTAIN_HP_SCALE : 1)
     * loopBossHpMul(lp);
   const e = {
     kind: z.boss.kind, boss: true, name: z.boss.name,
