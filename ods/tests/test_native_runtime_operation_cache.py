@@ -525,9 +525,10 @@ def old_publisher_authority(n, monkeypatch):
 def test_old_publisher_code_hit_requalifies_immutable_proof_and_new_globals(code_loaders, monkeypatch):
     n, trace = code_loaders
     path, authority = old_publisher_authority(n, monkeypatch)
-    actual_tree, proofs = runtime.tree_manifest, []
+    actual_tree, proofs, caches = runtime.tree_manifest, [], []
     def tree(root, *args, **kwargs):
         proofs.append(Path(root))
+        caches.append(args[0] if args else kwargs.get('cache'))
         return actual_tree(root, *args, **kwargs)
     monkeypatch.setattr(runtime, 'tree_manifest', tree)
     with n.f.bridge._native_runtime_operation():
@@ -540,6 +541,8 @@ def test_old_publisher_code_hit_requalifies_immutable_proof_and_new_globals(code
         assert second.__loader__ is second.__spec__.loader and second.__package__ == second.__spec__.parent
         assert trace.compiles.count(str(path)) == 1
         assert trace.reads.count(path) > before[0] and len(proofs) > before[1] and len(n.acl_reads) > before[2]
+        lease = n.f.bridge._native_runtime_lease()
+        assert caches and all(cache is lease.custody._cache for cache in caches)
         authority['proof']['runtime']['custodySha256'] = '0' * 64
         with pytest.raises(source.CustodyError, match='old-runtime-unqualified'):
             source._native_installer_old_publisher(authority, _bridge=n.f.bridge)

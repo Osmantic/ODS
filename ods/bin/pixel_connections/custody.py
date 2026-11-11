@@ -2246,8 +2246,11 @@ def _native_sidefile_archive_names(view):
     return {_SIDEFILE_ARCHIVES, *view['archives']} if view['ledger'] is not None else set()
 
 
-def _native_installer_absence_state(bridge, *, qualified_runtime=None, _installer_publication=None, _installer_code_only=None):
+def _native_installer_absence_state(bridge, *, qualified_runtime=None, _installer_publication=None, _installer_code_only=None,
+                                   _with_history=False):
     """Fixed file-only Source absence/identity inventory; no file is removed."""
+    if type(_with_history) is not bool:
+        raise CustodyError('native-source-installer-history-invalid')
     from pixel_macos_custody import protected_directory
     owner = _native_installer_census_owner(bridge)
     for path in (NATIVE_STATE, NATIVE_ENV, NATIVE_LEGACY_ENV, NATIVE_LOGS):
@@ -2258,12 +2261,16 @@ def _native_installer_absence_state(bridge, *, qualified_runtime=None, _installe
         names = {name for name in os.listdir(metadata) if name.startswith(('source-', '.source-', 'native-source-', '.native-source-'))}
         archived = native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
         extra = _native_sidefile_archive_names(archived)
+        history = {'metadata': set(extra), 'kits': set()}
         if _installer_code_only is not None:
             extra |= _native_installer_code_only_names(_installer_code_only)['metadata']
         if 'source-installer-history.json' in names:
             retained = _native_installer_history_records(bridge)
-            extra |= {'source-installer-history.json', *(item['name'] for item in retained),
+            retained_names = {'source-installer-history.json', *(item['name'] for item in retained),
                 *(name for item in retained for name in item['metadata'])}
+            extra |= retained_names
+            history['metadata'] |= retained_names
+            history['kits'] |= {name for item in retained for name in item['kits']}
         if 'source-installer-code-only.json' in names and 'source-installer-code-only.json' not in extra:
             selected = native_current_source_selection(bridge)
             extra |= native_installer_code_only_history(selected)['metadata']
@@ -2363,7 +2370,8 @@ def _native_installer_absence_state(bridge, *, qualified_runtime=None, _installe
     if (current_owner.pw_name, current_owner.pw_uid, current_owner.pw_gid, current_owner.pw_dir) != (
             owner.pw_name, owner.pw_uid, owner.pw_gid, owner.pw_dir):
         raise CustodyError('native-source-installer-owner-changed')
-    return kit, images, identity_view, witness
+    state = (kit, images, identity_view, witness)
+    return (state, history) if _with_history else state
 
 
 def _native_installer_code_only_names(record):
@@ -2776,7 +2784,7 @@ def native_installer_code_only_kit_authority(selection, *, transaction, proof, _
                 or old_publication['witness']['brokerUid'] is not None
                     and old_publication['witness']['brokerUid'] != proof['identity'].get('record', {}).get('id')):
             raise CustodyError('native-source-installer-code-only-publication-invalid')
-        state = _native_installer_absence_state(selection.bridge, _installer_code_only=record)
+        state, history = _native_installer_absence_state(selection.bridge, _installer_code_only=record, _with_history=True)
         if state[2] != proof['identity'] or state[1].get('source-identity.json') != proof['metadata'].get('source-identity.json'):
             raise CustodyError('native-source-installer-code-only-identity-changed')
         if any(state[1].get(name) != image for name, image in proof['metadata'].items()
@@ -2809,14 +2817,15 @@ def native_installer_code_only_kit_authority(selection, *, transaction, proof, _
                 or record['kitSha256'] != hashlib.sha256(files['source-kit.json']).hexdigest() or record['kitParent'] != kit_parent
                 or _native_encoded(record['sidefiles']['after']) != before['sidefiles']['after']):
             raise CustodyError('native-source-installer-code-only-target-changed')
-        if (_native_json_at(metadata, 'source-installer-code-only.json')[1] != record_raw
+        if (_native_selected(selection, _publication=True) != doc
+                or _native_json_at(metadata, 'source-installer-code-only.json')[1] != record_raw
                 or _native_root_file(metadata, _native_installer_journal_name(metadata, transaction, completed=_completed), limit=32 * 1024 * 1024)[0] != journal_raw
                 or _native_installer_context(selection.bridge, transaction)[1] != context_raw):
             raise CustodyError('native-source-installer-code-only-authority-changed')
         result = {'authority': {'transaction': dict(transaction), 'proof': proof}, 'record': record,
             'oldKit': proof['kit'], 'kitParent': kit_parent, 'targetKit': files,
             'publication': before['publication'], 'sidefiles': before['sidefiles'], 'witness': witness,
-            'history': native_installer_history(selection)}
+            'history': history}
         return (result, publisher) if _with_publisher else result
 
 
@@ -3555,6 +3564,9 @@ def _native_installer_old_publisher(authority, *, _bridge=None):
     import importlib.util
     from pixel_provider.runtime_custody import digest, tree_manifest
     from pixel_macos_custody import protected_bytes
+    from pixel_access_bridge import LaunchdAccessBridge, _native_runtime_code
+    operation = LaunchdAccessBridge._native_runtime_lease(_bridge) if _bridge is not None else None
+    cache = operation.custody._cache if operation is not None else None
     records = {item['path']: item for item in authority['files']}
     try:
         descriptor = json.loads(records[str(NATIVE_RUNTIME_DESCRIPTOR)]['before'], object_pairs_hook=_native_pairs)
@@ -3568,7 +3580,7 @@ def _native_installer_old_publisher(authority, *, _bridge=None):
                 or digest([descriptor, manifest]) != authority['proof']['runtime']['custodySha256']
                 or descriptor['runtimeRoot'] != str(NATIVE_RUNTIMES / authority['transaction']['currentDigest'] / 'runtime')
                 or type(manifest) is not dict or set(manifest) != {'runtime', 'source', 'node', 'launcher', 'hostPython'}
-                or tree_manifest(descriptor['sourceRoot']) != manifest['source']):
+                or tree_manifest(descriptor['sourceRoot'], cache) != manifest['source']):
             raise ValueError()
         path = Path(descriptor['sourceRoot']) / 'installers/macos/lib/pixel-native-source-broker.py'
         body = protected_bytes(path, limit=2 * 1024 * 1024)
@@ -3576,8 +3588,6 @@ def _native_installer_old_publisher(authority, *, _bridge=None):
         raise CustodyError('native-source-installer-old-runtime-unqualified') from None
     spec = importlib.util.spec_from_file_location('qualified_native_source_installer_old_publisher', path)
     module = importlib.util.module_from_spec(spec)
-    from pixel_access_bridge import LaunchdAccessBridge, _native_runtime_code
-    operation = LaunchdAccessBridge._native_runtime_lease(_bridge) if _bridge is not None else None
     if operation is None:
         spec.loader.exec_module(module)
     else:
