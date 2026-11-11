@@ -241,8 +241,9 @@ function steerAround(e, baseAng, spd, dt) {
 // Vhelmor and Druskral recover 1% of max health per second, or 2% once enraged, so a fight has to
 // be committed to rather than chipped at from safety. Keyed on boss + kind "troll": regular enemies
 // never enter this (no kind "troll" exists outside BOSS_STATS), and the other three bosses keep
-// their current numbers. The +30% health that comes with them is a separate dial, TROLL_HP_SCALE in
-// world.js, applied at the boss spawn site.
+// their current numbers. The separate +30% health dial that once came with them (a kind-keyed
+// constant at the boss spawn site in engine.js) was removed at the owner's request; these behaviour
+// dials were kept.
 const TROLL_REGEN = .01;    // fraction of maxHp per second, unenraged
 const TROLL_REGEN_ENRAGED = .02;
 const TROLL_ENRAGE_SPD_MUL = 1.25;   // on top of the boss enrage's own 1.2

@@ -83,10 +83,11 @@ const WOLF_HP_SCALE = 3;
 // covers pack hounds and the hound boss Skarnax alike, same convention as WOLF_HP_SCALE.
 const WOLF_SPD_SCALE = .85;
 // The two cave trolls (Vhelmor, Druskral) were asked to feel tanky and to get scarier once hurt.
-// One HP dial next to the wolf precedent, keyed on kind "troll": the boss spawn multiplies it in,
-// and the regen / enraged-behaviour side lives in ui.js behind the same kind test plus boss.
+// The +30% health dial that went with that — a kind-keyed constant at the boss spawn site in
+// engine.js — has since been removed at the owner's request, so BOSS_STATS.troll.hp is again the
+// trolls' whole health story. The regen / enraged-movement / enraged-swing side is untouched and
+// still lives in ui.js behind the boss + kind "troll" test.
 // Both BOSS_STATS.troll entries are trolls and no regular enemy is, so nothing else is affected.
-const TROLL_HP_SCALE = 1.3;   // +30% health for the troll bosses
 // +50% XP required to reach each level. Multiplies the XP gate itself, not the curve's growth
 // rate, so every threshold (including the initial one) is uniformly 1.5x further away.
 const XP_REQUIREMENT_SCALE = 1.5;

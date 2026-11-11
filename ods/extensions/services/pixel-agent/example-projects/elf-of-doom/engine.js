@@ -266,8 +266,10 @@ function spawnBoss() {
   // that, which compounded three curves into one number (1.5x^2 * 2x^3 by loop 4). Bosses and their
   // escorts stay in roughly the same league because both about double per loop.
   const lp = loopNumber(G.zone);
+  // The troll bosses' +30% health dial was removed at the owner's request: Vhelmor and Druskral are
+  // back to the plain BOSS_STATS.troll pool. Their regen, enraged movement and enraged swing-rate
+  // dials in ui.js are unchanged.
   const bossHp = bs.hp * 2 * BOSS_HP_SCALE * (z.boss.kind === "fenris" ? WOLF_HP_SCALE : 1)
-    * (z.boss.kind === "troll" ? TROLL_HP_SCALE : 1)   // +30% for Vhelmor and Druskral
     * loopBossHpMul(lp);
   const e = {
     kind: z.boss.kind, boss: true, name: z.boss.name,

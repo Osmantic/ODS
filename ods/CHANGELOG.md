@@ -310,9 +310,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Elf of Doom's bosses each bring their own threat, and the endless loops
   grow in a new way. A spider's web now also stops Shasan shooting for as long
   as it slows him, shown as silk wrapped around him. Xath-Rokka, the Dread
-  Weaver, spits four webs in a wide fan. The two trolls have 30% more health
-  and regenerate 1% of it a second, and once enraged they regenerate 2%, move
-  faster and swing more often. Rukhmak calls his reinforcements twice as often
+  Weaver, spits four webs in a wide fan. The two trolls regenerate 1% of their
+  health a second, and once enraged they regenerate 2%, move faster and swing
+  more often. Rukhmak calls his reinforcements twice as often
   as the other bosses. The Hollow Crown spits the four-web fan and turns into
   a light-blue ghost a few times a minute, untouchable and regenerating while
   it lasts. Each new loop adds 25% more enemies (up to four times the first
