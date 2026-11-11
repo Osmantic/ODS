@@ -53,7 +53,7 @@ import { createMemoryHooks } from "./integration-memory.mjs";
 import {integrationCapabilitiesContext} from './integration-capabilities.mjs';
 import { createIntegrationOutcomes } from "./integration-outcomes.mjs";
 import { createIntegrationReviewRecovery } from "./integration-review-recovery.mjs";
-import { createTaskHooks, reminderHint } from "./integration-tasks.mjs";
+import { createTaskHooks, notesHint, reminderHint } from "./integration-tasks.mjs";
 import { createPendingClarifications } from "./pending-clarification.mjs";
 import {
   appsToolText,
@@ -515,6 +515,7 @@ export default definePluginEntry({
       const exampleContext = toolLoopGuard.exampleContextForRun(context?.runId ?? event?.runId);
       const ownerText = currentUserText(ownerEvent?.messages, ownerEvent?.prompt);
       const reminder = accessRuntime.isProbe(context) ? '' : reminderHint(ownerText);
+      const notes = accessRuntime.isProbe(context) ? '' : notesHint(ownerText);
       // Probes and review-only turns get no owner memory: they propose none (integrations.mjs).
       const memory = accessRuntime.isProbe(context) || integrationReviewRecovery.isReviewOnly(context, event) ? {}
         : await memoryHooks.promptContext(ownerText, context?.sessionKey, {reminder: Boolean(reminder), runId: context?.runId ?? event?.runId});
@@ -538,7 +539,7 @@ export default definePluginEntry({
       const appendContext = [goalProgress.active(context?.runId ?? event?.runId) ? goalContract : '', languageNote,
         toolLoopGuard.clarificationContextForRun(context?.runId ?? event?.runId) ??
           toolLoopGuard.clarificationContextForRun(delegationDelivery.ownerRunFor(context)),
-        integrationTurnContext, memory.answer, memory.hint, reminder].filter(Boolean).join('\n\n');
+        integrationTurnContext, memory.answer, memory.hint, reminder, notes].filter(Boolean).join('\n\n');
       // Ordinary workspace work only: Operations, exact downloads and managed
       // extension requests refuse update_plan, and read-only roles cannot edit.
       const longTask = toolLoopGuard.longTaskEligible(context?.runId ?? event?.runId)

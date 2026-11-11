@@ -68,6 +68,16 @@ const REMINDER_CALL = 'To remind the owner later, make one call: tool_call with 
 const REMINDER_END = ' It schedules the reminder and it reaches their phone then. No search is needed first. Never use sleep for this.';
 export const REMINDER_HINT = REMINDER_CALL + '{"message": "<the reminder>", "inMinutes": <minutes from now>}, '
   + 'or {"message": "<the reminder>", "at": "<HH:MM>"} for a time of day.' + REMINDER_END;
+// The owner's note, not Portal's workspace. With read/write/edit beside the notes tool, a small local
+// model (fleet tower3, Qwen3.5-27B) wrote "Projects/Fleet log.md" into its own workspace and told the
+// owner it had changed their note; the tool description alone left 1 run in 5 doing it.
+const MENTIONS_OWNER_NOTE = /\b(?:my|the owner's)\s+(?:obsidian\s+)?(?:note|notes|vault)\b|\bminhas?\s+notas\b|\bminha\s+nota\b/i;
+export const NOTES_HINT = "For the owner's notes use pixel_ods_notes (search, read, write); Portal's own read, write "
+  + "and edit tools change only its workspace, never the owner's note.";
+export function notesHint(text) {
+  return typeof text === 'string' && MENTIONS_OWNER_NOTE.test(text) ? NOTES_HINT : '';
+}
+
 export function reminderHint(text) {
   if (typeof text !== 'string' || !ASKS_REMINDER.test(text) || (ASKS_RECALL.test(text) && !SAYS_WHEN.test(text))) return '';
   const delay = text.match(DELAY);

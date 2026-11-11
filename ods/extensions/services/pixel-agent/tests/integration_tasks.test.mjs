@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createTaskHooks, cronJobOfSession, DIGEST_DESCRIPTION, REMINDER_HINT, REMINDER_MARK, reminderHint, reminderJob } from '../plugin/integration-tasks.mjs';
+import { createTaskHooks, cronJobOfSession, DIGEST_DESCRIPTION, NOTES_HINT, notesHint, REMINDER_HINT, REMINDER_MARK, reminderHint, reminderJob } from '../plugin/integration-tasks.mjs';
 import { createIntegrationTools } from '../plugin/integrations.mjs';
 const NONCE = 'a'.repeat(32);
 const BASE = {enabled:true,name:'Daily news digest',description:'Created by Portal integrations for the daily news digest. [ODS managed:'+NONCE+']',expr:'30 6 * * *',tz:'Europe/Lisbon',message:'Read the news digest.',timeoutSeconds:600,tools:['pixel_ods_mcp']};
@@ -185,6 +185,17 @@ test('a reminder set from another instance of the plugin finds the scheduler the
   assert.equal(cron.calls.filter(([kind]) => kind === 'add').length, 1);
   // Separate processes, or tests, keep separate slots.
   await assert.rejects(createTaskHooks({submit, timers, shared: {}}).scheduleReminder(REMINDER_PLAN), /not ready/);
+});
+
+test('a turn about the owner\'s note is told the note is not in Portal\'s workspace', () => {
+  for (const text of ['Please add this exact line to the end of my note "Projects/Fleet log.md": done.',
+    'Can you check my notes: how long do I bake it?', 'Search my Obsidian notes for the lease', 'what is in my vault?',
+    'Adicione isto à minha nota Projetos/Plano.md', 'Procure nas minhas notas'])
+    assert.equal(notesHint(text), NOTES_HINT, text);
+  for (const text of ['Write notes.md in the project folder', 'Take a note of this', 'What is a sticky note?', undefined])
+    assert.equal(notesHint(text), '', String(text));
+  assert.match(NOTES_HINT, /pixel_ods_notes/);
+  assert.match(NOTES_HINT, /read, write and edit tools change only its workspace, never the owner's note/);
 });
 
 test('a turn asking for a reminder is told which tool sets one', () => {

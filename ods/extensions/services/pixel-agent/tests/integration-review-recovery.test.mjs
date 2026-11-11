@@ -8,7 +8,7 @@ import {createIntegrationReviewRecovery} from '../plugin/integration-review-reco
 import {defaultAgentId} from '../plugin/stop-synthesis.mjs';
 import {createIntegrationOutcomes} from '../plugin/integration-outcomes.mjs';
 import {createToolLoopGuard,currentUserText} from '../plugin/tool-loop-guard.mjs';
-import {reminderHint} from '../plugin/integration-tasks.mjs';
+import {notesHint, reminderHint} from '../plugin/integration-tasks.mjs';
 import {createGoalProgress} from '../plugin/goal-progress.mjs';
 import {createIntegrationTools,integrationRequest,NATIVE_REVIEW_ROLE,nativeReviewOperation} from '../plugin/integrations.mjs';
 import {integrationCapabilitiesContext} from '../plugin/integration-capabilities.mjs';
@@ -367,7 +367,7 @@ test('actual index lifecycle hooks suppress workful helpers even with event-only
     longTaskContract:noop,ACTIVITY_CONTRACT:'',executionLocationContext:noop,executionContext:noop,
     conversationImageLifecycle:{observe:noop},managedRuntime:true,
     // #8389's owner memory and reminder hints read the owner's text in this hook; memory context is not a workful helper.
-    currentUserText,reminderHint,memoryHooks:{promptContext:async()=>({})},
+    currentUserText,reminderHint,notesHint,memoryHooks:{promptContext:async()=>({})},
   });
   const nativeEvent={...event(),prompt:OWNER};
   await callbacks.before_prompt_build(nativeEvent,{});
