@@ -189,7 +189,7 @@ export async function promptHookAlone({language, goal = false, clarificationNote
       file:capabilitySnapshotFile ?? fileURLToPath(new URL('./fixtures/absent-capability-snapshot.json',import.meta.url))}),
     extensionRepositoryContext: async () => '', managedTeamRole, ACTIVITY_CONTRACT, GOAL_CONTRACT,
     executionLocationContext: () => '', executionContext,
-    memoryHooks: {promptContext: async () => ({})}, currentUserText, reminderHint: () => '',
+    memoryHooks: {promptContext: async () => ({})}, currentUserText, reminderHint: () => '', notesHint: () => '',
   });
   return callback({prompt, messages}, {agentId, runId: 'run'});
 }
