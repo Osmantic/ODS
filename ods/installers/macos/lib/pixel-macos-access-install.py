@@ -4573,21 +4573,45 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_
     return outcome
 
 
+def _unrecorded_source_stage(original, *, first_kit):
+    """The fixed staging journal of one qualified inert kit; never an adoption.
+
+    A retained code-only kit records its parent and old kit. The first kit has
+    no old kit; its candidate is staged in the current protected kit parent.
+    """
+    if first_kit:
+        record = original.get('publication')
+        if type(record) is not dict or record.get('old') is not None or record.get('bindings') != {}:
+            raise InstallError('native-source-empty-stage-unqualified')
+        return dict(first_kit=True, record=record, files=original['files'], journal='source-publication.json',
+            parent=None, live=None)
+    record = original.get('record')
+    if type(record) is not dict:
+        raise InstallError('native-source-empty-stage-unqualified')
+    return dict(first_kit=False, record=record, files=original['targetKit'], journal='source-installer-code-only.json',
+        parent=record['kitParent'], live=record['oldKit']['inode'])
+
+
 def _quarantine_unrecorded_source_stage(plan, records, journal, *, verify_snapshots):
     """Preserve an empty root-owned staging object without an inode receipt.
 
     This explicit recovery never adopts an unrecorded object as Source code.
     It moves the empty directory or file into protected quarantine after independently
     rechecking the transaction, inactive Source census and the live Edge hold.
+    It covers the first inert kit and a retained code-only kit, each through
+    its own staging journal and authority.
     """
     intent = plan.get('source_lifecycle')
     addition = journal.value.get('sourceAddition', {})
     proof = addition.get('proof') if type(addition) is dict else None
     if (journal.value.get('phase') != 'active' or type(intent) is not dict
-            or intent.get('mode') != 'absent' or type(proof) is not dict or proof.get('kit') is None):
+            or intent.get('mode') != 'absent' or type(proof) is not dict or 'kit' not in proof):
         raise InstallError('native-source-empty-stage-unqualified')
+    first_kit = proof['kit'] is None
     from pixel_macos_custody import protected_bytes, protected_directory
     from pixel_connections import custody
+    authority = (custody.native_installer_absent_kit_authority if first_kit
+                 else custody.native_installer_code_only_kit_authority)
     path = str(_destination(ACCESS_FILES['config']))
     settings = next((item['after'] for item in records if item['path'] == path), None)
     if settings is None or protected_bytes(path) != settings:
@@ -4601,19 +4625,20 @@ def _quarantine_unrecorded_source_stage(plan, records, journal, *, verify_snapsh
     with bridge.bounded(600):
         _discover_source_installer_bridge(bridge)
         selected = custody.native_source_selection(bridge, bridge.connection_deployment())
-        original = custody.native_installer_code_only_kit_authority(selected, transaction=transaction, proof=proof)
-        record = original.get('record')
-        if type(record) is not dict or record.get('phase') != 'staging' or not record.get('stagedFiles'):
+        original = authority(selected, transaction=transaction, proof=proof)
+        stage = _unrecorded_source_stage(original, first_kit=first_kit)
+        record = stage['record']
+        if record.get('phase') != 'staging' or not record.get('stagedFiles'):
             raise InstallError('native-source-empty-stage-unqualified')
         def guard():
             verify_snapshots()
             if _resume_migration_hold(plan) != hold:
                 raise InstallError('native-source-empty-stage-authority-changed')
-            fresh = custody.native_installer_code_only_kit_authority(selected, transaction=transaction, proof=proof)
+            fresh = authority(selected, transaction=transaction, proof=proof)
             if fresh != original:
                 raise InstallError('native-source-empty-stage-authority-changed')
         if record.get('candidateInode') is not None:
-            _quarantine_unrecorded_source_file(selected, transaction, proof, original, guard=guard)
+            _quarantine_unrecorded_source_file(selected, transaction, proof, stage, guard=guard)
             return
         if any(value != {'inode': None, 'ready': False} for value in record['stagedFiles'].values()):
             raise InstallError('native-source-empty-stage-unqualified')
@@ -4621,11 +4646,15 @@ def _quarantine_unrecorded_source_stage(plan, records, journal, *, verify_snapsh
         quarantine = '.ods-quarantined-source-kit-' + record['nonce']
         receipt_name = '.ods-empty-source-stage-' + record['nonce'] + '.json'
         with protected_directory(custody.NATIVE_META) as metadata, protected_directory(custody.NATIVE_KIT.parent) as kits:
-            if ([os.fstat(kits).st_dev, os.fstat(kits).st_ino] != record['kitParent']
-                    or custody._native_at_inode(kits, custody.NATIVE_KIT.name) != record['oldKit']['inode']
-                    or custody._native_at_inode(kits, backup) is not None):
+            parent = [os.fstat(kits).st_dev, os.fstat(kits).st_ino]
+            if (stage['parent'] is not None and parent != stage['parent']
+                    or custody._native_at_inode(kits, custody.NATIVE_KIT.name) != stage['live']
+                    or custody._native_at_inode(kits, backup) is not None
+                    # Like the first-kit plan, no other staged kit may be present.
+                    or stage['first_kit'] and any(name.startswith('.source-kit-') and name != candidate
+                                                  for name in os.listdir(kits))):
                 raise InstallError('native-source-empty-stage-changed')
-            raw = custody._native_json_at(metadata, 'source-installer-code-only.json')[1]
+            raw = custody._native_json_at(metadata, stage['journal'])[1]
             source = custody._native_at_inode(kits, candidate)
             saved = custody._native_at_inode(metadata, quarantine)
             if (source is None) == (saved is None):
@@ -4642,12 +4671,12 @@ def _quarantine_unrecorded_source_stage(plan, records, journal, *, verify_snapsh
                 if not empty():
                     raise InstallError('native-source-empty-stage-changed')
                 guard()
-                if (not empty() or custody._native_json_at(metadata, 'source-installer-code-only.json')[1] != raw
-                        or custody._native_at_inode(kits, custody.NATIVE_KIT.name) != record['oldKit']['inode']
+                if (not empty() or custody._native_json_at(metadata, stage['journal'])[1] != raw
+                        or custody._native_at_inode(kits, custody.NATIVE_KIT.name) != stage['live']
                         or custody._native_at_inode(kits, backup) is not None):
                     raise InstallError('native-source-empty-stage-changed')
                 receipt = {'schemaVersion': 1, 'transaction': transaction, 'candidate': candidate,
-                    'quarantine': quarantine, 'directoryInode': expected, 'parentInode': record['kitParent'],
+                    'quarantine': quarantine, 'directoryInode': expected, 'parentInode': parent,
                     'journalSha256': hashlib.sha256(raw).hexdigest()}
                 def read_receipt():
                     try:
@@ -4680,7 +4709,7 @@ def _quarantine_unrecorded_source_stage(plan, records, journal, *, verify_snapsh
                     raise InstallError('native-source-empty-stage-receipt-changed')
                 guard()
                 if (not empty() or read_receipt()[1] != receipt_raw
-                        or custody._native_json_at(metadata, 'source-installer-code-only.json')[1] != raw):
+                        or custody._native_json_at(metadata, stage['journal'])[1] != raw):
                     raise InstallError('native-source-empty-stage-changed')
                 if source is not None:
                     _sidefile_archive_rename(kits, candidate, metadata, quarantine)
@@ -4694,23 +4723,25 @@ def _quarantine_unrecorded_source_stage(plan, records, journal, *, verify_snapsh
         guard()
 
 
-def _quarantine_unrecorded_source_file(selected, transaction, proof, authority, *, guard):
+def _quarantine_unrecorded_source_file(selected, transaction, proof, stage, *, guard):
     """Preserve one empty file created before its inode could be journaled."""
     from pixel_macos_custody import protected_directory
     from pixel_connections import custody
     from pixel_connections.native_executor import _publisher
-    record, files = authority['record'], authority['targetKit']
+    record, files = stage['record'], stage['files']
     publisher, material = _publisher(selected, with_material=True)
     if material[1] != selected.deployment.document:
         raise InstallError('native-source-empty-file-authority-changed')
     prefix = '.ods-quarantined-source-file-' + record['nonce'] + '-'
     with protected_directory(custody.NATIVE_META) as metadata, protected_directory(custody.NATIVE_KIT.parent) as kits:
-        if ([os.fstat(kits).st_dev, os.fstat(kits).st_ino] != record['kitParent']
-                or custody._native_at_inode(kits, custody.NATIVE_KIT.name) != record['oldKit']['inode']
+        if (stage['parent'] is not None and [os.fstat(kits).st_dev, os.fstat(kits).st_ino] != stage['parent']
+                or custody._native_at_inode(kits, custody.NATIVE_KIT.name) != stage['live']
                 or custody._native_at_inode(kits, record['backup']) is not None
-                or custody._native_at_inode(kits, record['candidate']) != record['candidateInode']):
+                or custody._native_at_inode(kits, record['candidate']) != record['candidateInode']
+                or stage['first_kit'] and any(name.startswith('.source-kit-') and name != record['candidate']
+                                              for name in os.listdir(kits))):
             raise InstallError('native-source-empty-file-changed')
-        journal_raw = custody._native_json_at(metadata, 'source-installer-code-only.json')[1]
+        journal_raw = custody._native_json_at(metadata, stage['journal'])[1]
         directory = os.open(record['candidate'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=kits)
         try:
             def scan():
@@ -4774,7 +4805,7 @@ def _quarantine_unrecorded_source_file(selected, transaction, proof, authority, 
                 if not matched:
                     raise InstallError('native-source-empty-file-receipt-required')
                 guard()
-                if scan() or custody._native_json_at(metadata, 'source-installer-code-only.json')[1] != journal_raw:
+                if scan() or custody._native_json_at(metadata, stage['journal'])[1] != journal_raw:
                     raise InstallError('native-source-empty-file-changed')
                 return
             leaf, identity = unknown[0]
@@ -4792,7 +4823,7 @@ def _quarantine_unrecorded_source_file(selected, transaction, proof, authority, 
                     raise InstallError('native-source-empty-file-changed')
                 guard()
                 if (not empty() or scan() != unknown
-                        or custody._native_json_at(metadata, 'source-installer-code-only.json')[1] != journal_raw):
+                        or custody._native_json_at(metadata, stage['journal'])[1] != journal_raw):
                     raise InstallError('native-source-empty-file-changed')
                 receipt = {'schemaVersion': 1, 'transaction': transaction, 'candidateInode': record['candidateInode'],
                     'fileName': leaf, 'fileInode': identity, 'quarantine': quarantine,
@@ -4821,7 +4852,7 @@ def _quarantine_unrecorded_source_file(selected, transaction, proof, authority, 
                 guard()
                 if (not empty() or scan() != unknown
                         or custody._native_root_file(metadata, receipt_name, limit=16384) != (body, receipt_inode)
-                        or custody._native_json_at(metadata, 'source-installer-code-only.json')[1] != journal_raw):
+                        or custody._native_json_at(metadata, stage['journal'])[1] != journal_raw):
                     raise InstallError('native-source-empty-file-changed')
                 _sidefile_archive_rename(directory, leaf, metadata, quarantine)
                 os.fsync(directory)

@@ -509,6 +509,32 @@ does not include the later stop-witness correction, and does not resolve the
 physical failure above. The corrected revision requires its own CI and live
 recovery evidence.
 
+A fleet update of the composed candidate `a3a1f2164` on an M4 Mac mini (16 GB,
+macOS 26.2, colima Docker) published runtime
+`28fad3b8f5ba2d1a27a033e847ac4746fb27c18cdb5baf187b498e155e358ae8`, started all
+seven candidate jobs and wrote journal phase `active` at 22:56:48. Source
+completion stopped with `native-joint-migration-failed
+(pixel_access_bridge.AccessError at bin/pixel_access_bridge.py:113)` at
+22:59:48, 180 seconds later; the enclosing 900-second transaction still had
+more than nine minutes. A read-only Root inspection found the active schema 6
+journal with 115 records, the held Edge admission and a `staging` first-kit
+publication. Its candidate directory was created at 22:59:34, before its inode
+was recorded. An ordinary resume refuses that prefix with
+`native-source-installer-first-kit-prefix-changed`, and the empty-stage
+quarantine accepted only code-only kits.
+
+Read-only Root timings of the same proofs on that Mac measured 4.6 seconds per
+deployment qualification and 3.6 seconds per bundle proof with the shipped
+34,651-entry runtime. Counted with the Linux driver, a production-equivalent
+first-kit finish makes 278 deployment and 110 bundle proofs, about 1,400-1,700
+seconds on that Mac. The first-kit authority now reuses its publisher's proof,
+as the code-only authority already did, and its plan rechecks the selection
+once more. That lowers the counts to 173 and 48, about 800-970 seconds. Every
+guard still re-proves the deployment, bundle and records. The finish bound is
+now 3,600 seconds, inside a 4,500-second transaction and a 5,400-second
+protected child; the next update's code-only kit is estimated at 1,400-1,700
+seconds. The empty-stage quarantine now also covers the first kit.
+
 Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
 notifications and reboot acceptance remain pending. The Mac has not been
 restarted for this qualification. With explicit owner approval, a separate local

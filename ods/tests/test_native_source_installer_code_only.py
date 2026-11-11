@@ -275,6 +275,148 @@ def test_empty_unrecorded_file_is_preserved_only_with_qualified_authority(first_
         assert retained[0].stat().st_ino == orphan_inode
 
 
+def quarantine_caller(n, monkeypatch, *, hold_changes=False):
+    """The explicit recovery operation over the actual journal; OS rename/discovery are drivers."""
+    context = json.loads(n.context.read_bytes())
+    settings = n.world / 'test-access-settings.json'
+    settings.write_bytes(c._native_encoded({'fixture': 'physical-bridge-driver'}))
+    settings.chmod(0o600)
+    monkeypatch.setitem(installer.ACCESS_FILES, 'config', settings)
+    monkeypatch.setattr(installer, '_bridge_from_recovery_plan', lambda plan, *, owner_name: n.f.bridge)
+    monkeypatch.setattr(installer, '_discover_source_installer_bridge', lambda _bridge: None)
+    calls = []
+    def held(_plan):
+        calls.append('held')
+        return 'changed' if hold_changes and len(calls) > 1 else 'same-hold'
+    monkeypatch.setattr(installer, '_resume_migration_hold', held)
+    def exclusive_rename(src, name, dst, target):
+        assert c._native_at_inode(dst, target) is None
+        os.rename(name, target, src_dir_fd=src, dst_dir_fd=dst)
+    monkeypatch.setattr(installer, '_sidefile_archive_rename', exclusive_rename)
+    plan = dict(source_lifecycle=context['source_lifecycle'], owner=n.f.bridge.owner,
+        upgrade_qualification=context['upgrade_qualification'])
+    rows = [dict(path=str(settings), before=settings.read_bytes(), after=settings.read_bytes())]
+    journal = SimpleNamespace(value=json.loads(n.upgrade.read_bytes()))
+    return lambda: installer._quarantine_unrecorded_source_stage(plan, rows, journal, verify_snapshots=lambda: None)
+
+
+@pytest.mark.parametrize('first_target', [None], indirect=True)
+@pytest.mark.parametrize('fault', [None, 'nonempty', 'unknown-stage', 'hold-changed', 'receipt-conflict'])
+def test_first_kit_directory_left_by_expired_finish_is_quarantined_then_published(first_target, monkeypatch, fault):
+    """The physical Mac state: an expired finish created the first candidate, unjournaled."""
+    n = first_target
+    assert n.absence['kit'] is None
+    mkdir = os.mkdir
+    interrupted = []
+    def after_mkdir(path, *args, **kwargs):
+        result = mkdir(path, *args, **kwargs)
+        if str(path).startswith('.source-kit-') and not interrupted:
+            interrupted.append(True)
+            raise access_bridge.AccessError('operation-deadline-exceeded')
+        return result
+    monkeypatch.setattr(os, 'mkdir', after_mkdir)
+    with pytest.raises(access_bridge.AccessError, match='operation-deadline-exceeded'):
+        finish_source_caller(n, monkeypatch)
+    monkeypatch.setattr(os, 'mkdir', mkdir)
+    record = json.loads((n.metadata / 'source-publication.json').read_bytes())
+    candidate = n.kit.parent / record['candidate']
+    assert interrupted and record['phase'] == 'staging' and record['candidateInode'] is None
+    assert record['old'] is None and candidate.is_dir() and not list(candidate.iterdir()) and not n.kit.exists()
+    snapshot = files(n)
+    # Resuming the same finish refuses the unjournaled prefix, as on the Mac.
+    with pytest.raises(c.CustodyError, match='native-source-installer-first-kit-prefix-changed'):
+        finish_source_caller(n, monkeypatch)
+    assert files(n) == snapshot
+    inode = candidate.stat().st_ino
+    if fault == 'nonempty': (candidate / 'unexpected').write_text('preserve')
+    if fault == 'unknown-stage': (n.kit.parent / '.source-kit-unknown').mkdir(mode=0o700)
+    receipt = n.metadata / ('.ods-empty-source-stage-' + record['nonce'] + '.json')
+    if fault == 'receipt-conflict':
+        receipt.write_bytes(b'{"different":true}')
+        receipt.chmod(0o600)
+    quarantine = n.metadata / ('.ods-quarantined-source-kit-' + record['nonce'])
+    run = quarantine_caller(n, monkeypatch, hold_changes=fault == 'hold-changed')
+    if fault:
+        expected = {'nonempty': 'changed', 'unknown-stage': 'changed', 'hold-changed': 'authority-changed',
+            'receipt-conflict': 'receipt-changed'}[fault]
+        with pytest.raises(installer.InstallError, match='^native-source-empty-stage-' + expected + '$'):
+            run()
+        assert candidate.stat().st_ino == inode and not quarantine.exists()
+        if fault == 'nonempty': assert (candidate / 'unexpected').read_text() == 'preserve'
+        if fault == 'receipt-conflict': assert receipt.read_bytes() == b'{"different":true}'
+        return
+    run()
+    assert not candidate.exists() and quarantine.stat().st_ino == inode
+    sealed = json.loads(receipt.read_bytes())
+    assert sealed['directoryInode'][1] == inode and sealed['candidate'] == record['candidate']
+    assert sealed['journalSha256'] == hashlib.sha256((n.metadata / 'source-publication.json').read_bytes()).hexdigest()
+    run()  # A lost reply never renames or removes the retained object.
+    assert quarantine.stat().st_ino == inode
+    finish_source_caller(n, monkeypatch)
+    final = json.loads((n.metadata / 'source-publication.json').read_bytes())
+    assert final['phase'] == 'prepared-no-jobs' and final['nonce'] == record['nonce']
+    assert final['candidateInode'] == [n.kit.stat().st_dev, n.kit.stat().st_ino] and n.kit.stat().st_ino != inode
+    assert quarantine.stat().st_ino == inode and not list(quarantine.iterdir())
+    assert not c.NATIVE_STATE.exists() and not (n.metadata / 'source-identity.json').exists()
+
+
+@pytest.mark.parametrize('first_target', [None], indirect=True)
+@pytest.mark.parametrize('fault', [None, 'nonempty', 'two-unrecorded'])
+def test_first_kit_unjournaled_empty_file_is_quarantined_then_published(first_target, monkeypatch, fault):
+    n = first_target
+    open_file = os.open
+    created = []
+    def after_open(path, flags, *args, **kwargs):
+        fd = open_file(path, flags, *args, **kwargs)
+        parent_fd = kwargs.get('dir_fd')
+        if (flags & os.O_CREAT and isinstance(path, str) and parent_fd is not None
+                and path in {'source-kit.json', *helper.PAYLOADS}
+                and Path(os.readlink('/proc/self/fd/' + str(parent_fd))).name.startswith('.source-kit-')):
+            created.append(path)
+            if len(created) == 5:
+                os.close(fd)
+                raise access_bridge.AccessError('operation-deadline-exceeded')
+        return fd
+    monkeypatch.setattr(os, 'open', after_open)
+    with pytest.raises(access_bridge.AccessError, match='operation-deadline-exceeded'):
+        finish_source_caller(n, monkeypatch)
+    monkeypatch.setattr(os, 'open', open_file)
+    record = json.loads((n.metadata / 'source-publication.json').read_bytes())
+    candidate = n.kit.parent / record['candidate']
+    leaf = created[-1]
+    orphan = candidate / leaf
+    assert sum(value['ready'] for value in record['stagedFiles'].values()) == 4
+    assert record['stagedFiles'][leaf] == {'inode': None, 'ready': False} and orphan.read_bytes() == b''
+    orphan_inode = orphan.stat().st_ino
+    with pytest.raises(ValueError, match='native-source-generation-prefix-changed'):
+        finish_source_caller(n, monkeypatch)
+    prior = {name: ((candidate / name).read_bytes(), (candidate / name).stat().st_ino)
+        for name, image in record['stagedFiles'].items() if image['ready']}
+    if fault == 'nonempty': orphan.write_bytes(b'preserve')
+    if fault == 'two-unrecorded':
+        name = next(name for name, image in record['stagedFiles'].items() if image['inode'] is None and name != leaf)
+        (candidate / name).write_bytes(b'')
+        (candidate / name).chmod(0o600)
+    run = quarantine_caller(n, monkeypatch)
+    if fault:
+        expected = {'nonempty': 'changed', 'two-unrecorded': 'unqualified'}[fault]
+        with pytest.raises(installer.InstallError, match='^native-source-empty-file-' + expected + '$'):
+            run()
+        assert orphan.stat().st_ino == orphan_inode
+        if fault == 'nonempty': assert orphan.read_bytes() == b'preserve'
+        return
+    run()
+    retained = list(n.metadata.glob('.ods-quarantined-source-file-' + record['nonce'] + '-*.file'))
+    assert len(retained) == 1 and retained[0].stat().st_ino == orphan_inode and retained[0].read_bytes() == b''
+    assert not orphan.exists()
+    assert {name: ((candidate / name).read_bytes(), (candidate / name).stat().st_ino) for name in prior} == prior
+    run()  # A lost acknowledgement reuses only the matching protected receipt.
+    finish_source_caller(n, monkeypatch)
+    final = json.loads((n.metadata / 'source-publication.json').read_bytes())
+    assert final['phase'] == 'prepared-no-jobs' and final['candidateInode'] == record['candidateInode']
+    assert retained[0].stat().st_ino == orphan_inode
+
+
 # Physical cost of one protected proof on the M4 Mac mini fleet host (2026-11-11),
 # with the shipped 34,651-entry runtime: a deployment qualification (4.6 s) and
 # its bundle/material qualification (3.6 s). The driver's publisher stand-in omits
