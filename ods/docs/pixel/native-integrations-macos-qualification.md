@@ -535,6 +535,30 @@ now 3,600 seconds, inside a 4,500-second transaction and a 5,400-second
 protected child; the next update's code-only kit is estimated at 1,400-1,700
 seconds. The empty-stage quarantine now also covers the first kit.
 
+After the in-place update to `4d798e834` completed on that Mac (runtime
+`34c8b94ae1ea6065e80038ded8050ca1bce3af35b15dc360f6287771e6984d77`, committed
+code-only kit, no Source state), Settings > Connected apps and the scheduler
+answered 503. Two separate causes were found. The update had left
+`ods-pixel-edge` on the image of the base installation (`891f722ab`): the
+native update refreshes only the `dashboard-api` and `dashboard` images, and
+that Edge has no `/v1/connections` or `/v1/schedules` route. Inside the
+container both answered 404, and the host relay turned that into 503 within
+0.2 seconds, before any Root work. Separately, a direct request to the Root
+controller took 91 seconds and answered `operation-deadline-exceeded` while the
+integration journeys ran. Read-only Root timings of the same status read,
+without the lock, measured 38.6-39.9 seconds idle: six deployment and four
+bundle proofs. The code-only history loaded its publisher, which proves the
+selection and its complete material, and then asked that publisher for the
+material again. It now reuses that proof; measured the same way, the read
+takes 31.7-32.1 seconds with five deployment and three bundle proofs. The
+status view's proof and the history's proof stay independent, and
+`initial_boot_images` keeps its own. The Root bound stays 90 seconds, about 2.8
+times the idle cost; under the journeys' load the old read was at least 2.3
+times slower than idle. With Source state present (after a Google sign-in) the
+same read makes 33 deployment proofs in the Linux driver before it reads any
+broker projection, about 150 seconds on that Mac, so it cannot fit this bound.
+Refreshing the Edge of an updated Mac is not yet part of the native update.
+
 Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
 notifications and reboot acceptance remain pending. The Mac has not been
 restarted for this qualification. With explicit owner approval, a separate local
