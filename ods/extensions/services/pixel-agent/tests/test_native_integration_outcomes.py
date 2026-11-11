@@ -81,7 +81,7 @@ class NativeOutcomeTests(unittest.TestCase):
         (plugin / 'index.js').write_text(WRAPPER)
         events, socket_path = world.home / 'events.jsonl', world.home / 'owned.sock'
         (plugin / 'fixture.json').write_text(json.dumps({'socket':str(socket_path),'events':str(events)}))
-        submissions, effects, reads = [], [], []
+        submissions, effects, reads, memory = [], [], [], []
         backend_state = {'unknown':True,'pending':False}
 
         class Backend(socketserver.StreamRequestHandler):
@@ -90,6 +90,10 @@ class NativeOutcomeTests(unittest.TestCase):
                 submissions.append(value)
                 if value.get('action') == 'digest-plan':
                     reply = {'ok':True,'plan':{'enabled':False}}
+                elif value.get('action') in ('memory-context','memory-answer'):
+                    # The owner's memory around each chat turn (integration-memory.mjs), not a tool's read.
+                    memory.append(value)
+                    reply = {'ok':True,'text':'','enabled':False,'quiet':False}
                 elif value.get('action') == 'mcp-call' and backend_state['pending']:
                     reply = {'ok':True,'status':'approval-required','approvalId':'owned_fixture_pending',
                              'summary':'Owned invented action needs approval'}

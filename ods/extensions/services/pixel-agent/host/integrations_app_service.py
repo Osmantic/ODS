@@ -819,6 +819,10 @@ class AppActions:
             current = self.store.watch_state(context)
             fresh = {uuid: entry for uuid, entry in current.items() if uuid not in listing and entry.get("lastChanged") is None}
             seen = {uuid: entry for uuid, entry in kept.items() if uuid in current or uuid not in state}
+            for uuid, entry in seen.items():
+                # A price limit changed meanwhile stays, priced again at the next look.
+                if uuid in current and current[uuid].get("below") != (state.get(uuid) or {}).get("below"):
+                    seen[uuid] = {**entry, "below": current[uuid].get("below"), "lastPrice": current[uuid].get("lastPrice")}
             self._assert_watch_context(config, key)
             self.store.save_watch_state({**fresh, **seen}, context)
         for notice in notices:

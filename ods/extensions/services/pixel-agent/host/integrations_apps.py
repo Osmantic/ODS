@@ -419,13 +419,14 @@ def valid_watch_url(url):
     url = str(url or "").strip()
     try:
         parsed = urllib.parse.urlsplit(url)
-        valid = parsed.scheme in ("http", "https") and parsed.hostname and not parsed.username and not parsed.password
+        valid = parsed.scheme in ("http", "https") and parsed.hostname
         parsed.port
     except ValueError:
         valid = False
     if (len(url) > 2000 or not valid
             or any(char.isspace() or ord(char) < 32 for char in url)):
         raise IntegrationError("invalid-request", "Give the page's full web address, starting with https://.")
+    # Any user part, even an empty one ("https://@shop.example/"): credentials never ride in a watch address.
     if parsed.username is not None or parsed.password is not None:
         raise IntegrationError("invalid-request", "Give the page's address without a user name or password.")
     if _local_host(parsed.hostname):

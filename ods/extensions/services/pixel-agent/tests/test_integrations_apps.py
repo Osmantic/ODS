@@ -6,6 +6,7 @@ if sys.platform == "win32":
 import email.header
 import http.client
 import http.server
+import socketserver
 import json
 import pathlib
 import re
@@ -18,6 +19,19 @@ import urllib.parse
 import zoneinfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "host"))
+
+
+def _broken_answer(answer):
+    """A handler that reads one request (its headers and body), then answers with these exact bytes."""
+    class Broken(socketserver.StreamRequestHandler):
+        def handle(self):
+            length = 0
+            while (line := self.rfile.readline(65537)) not in (b"\r\n", b"\n", b""):
+                if line.lower().startswith(b"content-length:"):
+                    length = int(line.split(b":", 1)[1])
+            self.rfile.read(length)
+            self.wfile.write(answer)
+    return Broken
 import integrations_apps as apps  # noqa: E402
 import integrations_ntfy as ntfy  # noqa: E402
 import integrations_service as service  # noqa: E402
@@ -1348,19 +1362,28 @@ class AppTests(unittest.TestCase):
         self.assertEqual(FakeNtfy.sent[-1]["title"], "Page changed: Shoes Sale")
         self.save(self.settings(changes="allow"))
         added = self.app("watch", "add", url="https://shop.example/hat", title="Hat\r\nSale")
-        self.assertEqual(added["done"], "Watch Hat Sale at https://shop.example/hat")
+        self.assertEqual(added["done"], "Watch Hat Sale (https://shop.example/hat)")
 
     def test_an_answer_cut_short_is_an_unreachable_app_not_a_crash(self):
-        self.save(self.settings())
-        for problem in (http.client.IncompleteRead(b"{"), http.client.BadStatusLine("junk"), http.client.LineTooLong("header")):
-            with unittest.mock.patch.object(apps, "open_direct", side_effect=problem):
-                with self.assertRaises(service.IntegrationError) as caught:
-                    apps.watches(self.store.config()["apps"]["watch"], "watch-key")
-                self.assertEqual(caught.exception.code, "app-unreachable")
-            with unittest.mock.patch.object(ntfy, "open_direct", side_effect=problem):
-                with self.assertRaises(service.IntegrationError) as caught:
-                    ntfy.send_notification(self.store.config(), self.store.secrets(), "Title", "Message")
-                self.assertEqual(caught.exception.code, "notification-failed")
+        # A server that answers once with broken bytes: cut short, a junk status line, an endless header.
+        broken = (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 50\r\n\r\n{",
+                  b"junk\r\n\r\n", b"HTTP/1.1 200 OK\r\nX-Long: " + b"a" * 70000 + b"\r\n\r\n")
+        for answer in broken:
+            server = socketserver.TCPServer(("127.0.0.1", 0), _broken_answer(answer))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            address = f"http://127.0.0.1:{server.server_address[1]}"
+            with self.assertRaises(service.IntegrationError) as caught:
+                apps.watches({"enabled": True, "url": address, "changes": "ask"}, "watch-key")
+            # A read that cannot be used: refused, with no partial answer taken as data.
+            self.assertEqual(caught.exception.code, "integration-protocol", answer[:20])
+            config = self.store.config()
+            config["notifications"].update(enabled=True, url=address)
+            with self.assertRaises(service.IntegrationError) as caught:
+                ntfy.send_notification(config, self.store.secrets(), "Title", "Message")
+            # The message was already sent: a broken reply cannot prove it was not delivered.
+            self.assertEqual(caught.exception.code, "notification-outcome-unknown", answer[:20])
 
     def test_photo_days_follow_the_owner_s_time_zone(self):
         utc = zoneinfo.ZoneInfo("UTC")
@@ -1412,7 +1435,7 @@ class AppTests(unittest.TestCase):
         self.app("watch", "add", url="https://evil.example/kindle?ref=1", title="Kindle price")
         self.assertEqual(len(self.owner("get")["approvals"]), 1)
         summary = self.owner("get")["approvals"][0]["summary"]
-        self.assertEqual(summary, "Watch Kindle price at https://evil.example/kindle?ref=1")
+        self.assertEqual(summary, "Watch Kindle price (https://evil.example/kindle?ref=1)")
 
     def test_prices_to_read_is_a_pure_choice(self):
         listing = {"page": {"last_changed": 9}, "new": {"last_changed": 0}, "same": {"last_changed": 5}, "moved": {"last_changed": 7}}
