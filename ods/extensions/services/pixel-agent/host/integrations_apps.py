@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.request
 import zoneinfo
 
-from integrations_common import APP_URLS, IntegrationError, NETWORK_TIMEOUT, clip, local_zone, safe_urlopen
+from integrations_common import APP_URLS, IntegrationError, NETWORK_TIMEOUT, clip, safe_urlopen
 
 APPS = tuple(APP_URLS)
 NAMES = {"documents": "Paperless-ngx", "photos": "Immich", "watch": "changedetection.io", "news": "FreshRSS"}
@@ -296,7 +296,7 @@ def photos_search(settings, key, *, query="", place="", after="", before="", all
         if found is None:
             return {"results": [], "mode": "details", "more": False, "note": f"No photos are from a place named {place}."}
         filters[found[0]] = found[1]
-    filters.update(taken_between(after, before, local_zone()))
+    filters.update(taken_between(after, before, datetime.timezone.utc))  # The catalog's inclusive UTC days.
     narrowed = bool(place or after or before)
     reply, mode, note = None, "description", ""
     if query and describes_photos(settings, key):
@@ -428,7 +428,7 @@ def valid_watch_url(url):
         raise IntegrationError("invalid-request", "Give the page's full web address, starting with https://.")
     # Any user part, even an empty one ("https://@shop.example/"): credentials never ride in a watch address.
     if parsed.username is not None or parsed.password is not None:
-        raise IntegrationError("invalid-request", "Give the page's address without a user name or password.")
+        raise IntegrationError("invalid-request", "Give the page's full web address without a user name or password.")
     if _local_host(parsed.hostname):
         raise IntegrationError("watch-local", "Portal watches public web pages only. The owner can add a page on this "
                                "computer or their own network in changedetection.io.")

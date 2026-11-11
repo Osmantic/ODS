@@ -1365,10 +1365,13 @@ class AppTests(unittest.TestCase):
         self.assertEqual(added["done"], "Watch Hat Sale (https://shop.example/hat)")
 
     def test_an_answer_cut_short_is_an_unreachable_app_not_a_crash(self):
-        # A server that answers once with broken bytes: cut short, a junk status line, an endless header.
-        broken = (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 50\r\n\r\n{",
-                  b"junk\r\n\r\n", b"HTTP/1.1 200 OK\r\nX-Long: " + b"a" * 70000 + b"\r\n\r\n")
-        for answer in broken:
+        # A server that answers once with broken bytes. Cut short after a 200: the app's JSON cannot be
+        # read (app-protocol), while ntfy's 200 already says the message was taken. A junk status line or an
+        # endless header: nothing can be read, and a notification may or may not have arrived.
+        broken = ((b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 50\r\n\r\n{", "app-protocol", None),
+                  (b"junk\r\n\r\n", "integration-protocol", "notification-outcome-unknown"),
+                  (b"HTTP/1.1 200 OK\r\nX-Long: " + b"a" * 70000 + b"\r\n\r\n", "integration-protocol", "notification-outcome-unknown"))
+        for answer, app_code, notice_code in broken:
             server = socketserver.TCPServer(("127.0.0.1", 0), _broken_answer(answer))
             threading.Thread(target=server.serve_forever, daemon=True).start()
             self.addCleanup(server.server_close)
@@ -1377,13 +1380,16 @@ class AppTests(unittest.TestCase):
             with self.assertRaises(service.IntegrationError) as caught:
                 apps.watches({"enabled": True, "url": address, "changes": "ask"}, "watch-key")
             # A read that cannot be used: refused, with no partial answer taken as data.
-            self.assertEqual(caught.exception.code, "integration-protocol", answer[:20])
+            self.assertEqual(caught.exception.code, app_code, answer[:20])
             config = self.store.config()
             config["notifications"].update(enabled=True, url=address)
+            if notice_code is None:
+                self.assertEqual(ntfy.send_notification(config, self.store.secrets(), "Title", "Message"), "Title")
+                continue
             with self.assertRaises(service.IntegrationError) as caught:
                 ntfy.send_notification(config, self.store.secrets(), "Title", "Message")
             # The message was already sent: a broken reply cannot prove it was not delivered.
-            self.assertEqual(caught.exception.code, "notification-outcome-unknown", answer[:20])
+            self.assertEqual(caught.exception.code, notice_code, answer[:20])
 
     def test_photo_days_follow_the_owner_s_time_zone(self):
         utc = zoneinfo.ZoneInfo("UTC")
