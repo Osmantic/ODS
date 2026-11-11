@@ -107,6 +107,50 @@ def test_actual_factory_selects_fresh_canonical_stop_and_replays_same_receipt(wo
     assert candidate['access'].load_stop() == receipt
 
 
+@pytest.mark.parametrize('fault', [None, 'absent', 'unpaired-candidate', 'file-drift', 'loaded-definition'])
+def test_unstarted_recovery_accepts_only_original_live_equivalent_contracts(world, monkeypatch, fault):
+    previous, candidate = world.build()
+    assert all(access._observe_upgrade_service(previous[role], candidate[role]) == 'candidate'
+        for role in previous)
+    records = world.records[:len(previous)]  # Actual factory's protected plist images.
+    monkeypatch.setattr(access, '_edge_hold_journal', lambda _plan: world.state / 'edge-hold.json')
+    monkeypatch.setattr(access, '_verify_recovery_runtime', lambda _plan: None)
+    monkeypatch.setattr(access, '_source_snapshot_read', lambda path, **_kwargs:
+        world.copies[str(path)].read_bytes())
+    monkeypatch.setattr(access, '_upgrade_policy_mode', lambda _plan: 'sandboxed')
+    for name in ('_ready_gateway', '_ready_access', '_ready_access_relay',
+            '_finish_source_upgrade', '_clear_candidate_stop_witnesses'):
+        monkeypatch.setattr(access, name, lambda *_args, **_kwargs: None)
+    phases = []
+    journal = SimpleNamespace(value={'phase': 'prepared'}, phase=phases.append,
+        finish=lambda verify: verify())
+    if fault == 'absent':
+        world.live[previous['access'].target]['loaded'] = False
+    elif fault == 'unpaired-candidate':
+        del candidate['access']._upgrade_stop_peer
+        monkeypatch.setattr(access, '_observe_upgrade_service', lambda *_args: 'candidate')
+    elif fault == 'file-drift':
+        world.copies[str(world.paths['access'])].write_bytes(b'changed')
+    elif fault == 'loaded-definition':
+        def changed(*_args, **_kwargs):
+            raise access.InstallError('launchd-loaded-definition-mismatch')
+        monkeypatch.setattr(custody, 'verify_loaded_launchd_definition', changed)
+        previous, candidate = world.build()
+    before = {path: path.read_bytes() for path in world.copies.values()}
+    def run():
+        return access._recover_unstarted_upgrade(dict(world.plan, access_settings={'gateway_port': 18789}),
+            records, journal, previous, candidate, verify_snapshots=lambda: None, previous_guard=True)
+    if fault:
+        with pytest.raises(access.InstallError): run()
+        assert phases == []
+    else:
+        assert run() is True
+        assert phases == ['restored']
+        assert all(item['loaded'] for item in world.live.values())
+    assert world.events == []  # No bootout/bootstrap, including on refusal.
+    assert {path: path.read_bytes() for path in world.copies.values()} == before
+
+
 @pytest.mark.parametrize('version', ['previous', 'candidate'])
 @pytest.mark.parametrize('method', ['upgrade', 'reload'])
 def test_either_bootstrap_invalidates_both_witnesses_before_later_instance(world, version, method):

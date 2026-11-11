@@ -2708,8 +2708,19 @@ def _recover_unstarted_upgrade(plan, records, journal, previous, candidate, *, v
                 # state, not a missing process that recovery may fabricate.
                 service.verify_definition()
                 service.assert_stopped()
-            elif _observe_upgrade_service(service, candidate[role]) != 'previous':
-                raise InstallError('runtime-upgrade-original-service-required')
+            else:
+                target = candidate[role]
+                observed = _observe_upgrade_service(service, target)
+                if (observed == 'candidate' and getattr(service, '_upgrade_stop_peer', None) is target
+                        and getattr(target, '_upgrade_stop_peer', None) is service):
+                    # The factory linked byte-identical definitions and process
+                    # contracts. Canonical stop-slot selection prefers candidate,
+                    # even before staging. Re-prove the original live contract;
+                    # this path neither starts/stops it nor adopts a stop witness.
+                    service.verify_definition()
+                    _upgrade_service_identity(service)
+                elif observed != 'previous':
+                    raise InstallError('runtime-upgrade-original-service-required')
         _upgrade_policy_mode(plan)
         _ready_gateway(previous['gateway'], plan['access_settings']['gateway_port'])
         _ready_access(previous['access'], upgrade_guard=previous_guard)
