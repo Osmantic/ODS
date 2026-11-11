@@ -40,6 +40,10 @@ HEX = re.compile(r"^[a-f0-9]{64}$")
 RELOAD_READY_SECONDS = 30
 EXCHANGE_INTERRUPTED = "sign-in-exchange-interrupted"
 GOOGLE_DRAIN_SECONDS = 20
+# Opening Settings reads provider, settings and connection status, and each read
+# holds the root lock for a moment. An owner's plugin click waits this long for
+# admission instead of being refused; the change itself still runs once.
+PLUGIN_LOCK_WAIT_SECONDS = 30
 # Scopes that satisfy a capability, as the Source Broker reads them.
 GRANTED_BY = {
     "calendar.read": frozenset({catalog.CALENDAR_READ_SCOPE, catalog.CALENDAR_WRITE_SCOPE,
@@ -1706,7 +1710,7 @@ def plugin_change(bridge, request: Any) -> dict[str, Any]:
     """
     source = _source_backend(bridge)
     request = _plugin_request(request)
-    with bridge.bounded(300), bridge.locked():
+    with bridge.bounded(300), bridge.locked(wait_seconds=PLUGIN_LOCK_WAIT_SECONDS):
         bridge.discover()
         _guard_native_enrollment(bridge)
         pending = bridge.pending()
