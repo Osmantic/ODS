@@ -3040,13 +3040,19 @@ def native_code_only_status_absence(selection):
     return first
 
 
-def native_installer_absent_kit_authority(selection, *, transaction, proof, _completed=False):
+def native_installer_absent_kit_authority(selection, *, transaction, proof, _completed=False, _with_publisher=False):
     """Actual first-kit purpose; creates no identity, private state or actor."""
+    if type(_with_publisher) is not bool:
+        raise CustodyError('native-source-installer-first-kit-target-changed')
     from pixel_macos_custody import protected_directory
     from .native_executor import _publisher
-    doc = _native_selected(selection, _publication=True)
-    publisher = _publisher(selection)
-    _module, _doc, component, ref = publisher._material(selection)
+    # As in the code-only twin: _publisher qualifies the selected deployment and
+    # then independently qualifies its complete material. Reuse that exact proof
+    # instead of qualifying the deployment and both runtime trees twice more.
+    publisher, material = _publisher(selection, with_material=True)
+    _module, doc, component, ref = material
+    if doc != selection.deployment.document:
+        raise CustodyError('native-source-installer-first-kit-target-changed')
     context, context_raw = _native_installer_context(selection.bridge, transaction)
     native_installer_absence_receipt(proof, transaction=transaction, owner_uid=doc['ownerUid'], owner_gid=doc['ownerGid'])
     if (proof['kit'] is not None or 'source-publication.json' in proof['metadata']
@@ -3114,15 +3120,17 @@ def native_installer_absent_kit_authority(selection, *, transaction, proof, _com
                 or _native_root_file(metadata, _native_installer_journal_name(metadata, transaction, completed=_completed), limit=32 * 1024 * 1024)[0] != raw
                 or _native_installer_context(selection.bridge, transaction)[1] != context_raw):
             raise CustodyError('native-source-installer-first-kit-authority-changed')
-        return {'transaction': dict(transaction), 'proof': proof, 'publication': publication,
+        result = {'transaction': dict(transaction), 'proof': proof, 'publication': publication,
             'files': files, 'kit': state[0], 'witness': state[3]}
+        return (result, publisher) if _with_publisher else result
 
 
 def native_installer_absent_kit_plan(selection, *, transaction, proof, _completed=False):
     from pixel_macos_custody import protected_directory
-    from .native_executor import _publisher
-    authority = native_installer_absent_kit_authority(selection, transaction=transaction, proof=proof, _completed=_completed)
-    publisher = _publisher(selection)
+    authority, publisher = native_installer_absent_kit_authority(selection, transaction=transaction, proof=proof,
+        _completed=_completed, _with_publisher=True)
+    # Recheck the protected selection after authority and before prefix reads.
+    _native_selected(selection, _publication=True)
     record, files = authority['publication'], authority['files']
     with protected_directory(NATIVE_KIT.parent) as parent:
         known = {NATIVE_KIT.name}
