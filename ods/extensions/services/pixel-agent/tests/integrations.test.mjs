@@ -127,6 +127,12 @@ test('the tools match the declared names and keep schemas small enough for the m
   }
   // The owner's apps add no tools of their own; the model finds them in the MCP tool.
   assert.match(tools.find(item => item.name === 'pixel_ods_mcp').description, /documents.*photos.*watched web pages.*news/);
+  // Fleet tower3 (27B, 2026-11-11): "add this line to my note Projects/Fleet log.md" went to the sandbox
+  // read/write tools, which made a workspace file and was reported as the owner's note. The notes tool
+  // claims the owner's note paths and says the workspace tools cannot reach the vault.
+  const notes = tools.find(item => item.name === 'pixel_ods_notes').description;
+  assert.match(notes, /"my note".*note path such as Projects\/Plan\.md, use this tool/);
+  assert.match(notes, /read\/write\/edit reach only Portal's workspace, never the vault/);
 });
 
 test('explicit approval requests cannot fall back to an executable write', async () => {
