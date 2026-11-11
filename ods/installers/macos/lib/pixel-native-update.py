@@ -33,6 +33,9 @@ SANDBOX_GUIDANCE = {
 }
 SANDBOX_ERRORS = frozenset(SANDBOX_GUIDANCE)
 HELP = 'Need help? https://discord.gg/4ntNp9MAwC'
+# Protected activation runs as the installer's protected CLI child; it must not
+# be killed before that child's own PROTECTED_CLI_SECONDS (5,400) bound.
+ACTIVATION_TIMEOUT_SECONDS = 5400
 
 
 def helper(name):
@@ -224,7 +227,7 @@ def update(*, install_dir, ods_source, prepare_only=False, prompt_for_sudo=False
                 'clients': 'prepared' if clients is not None else 'installed-source'}
         if clients is not None:
             owner_clients().validate_pre_activation(work / 'clients')
-        subprocess.run(command, check=True, timeout=1800)
+        subprocess.run(command, check=True, timeout=ACTIVATION_TIMEOUT_SECONDS)
         outcome = helper('pixel-native-finalize').finalize_update(preparation)
         outcome['portalIdentityMigration'] = migrate_public_identity(
             source=source, preparation=preparation, node=node)

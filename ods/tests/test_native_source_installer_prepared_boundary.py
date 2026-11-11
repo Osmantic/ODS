@@ -207,7 +207,7 @@ def test_final_installer_boundary_binds_actual_started_target_before_finishing(t
     events = []
     @contextmanager
     def bounded(seconds):
-        assert seconds == 180
+        assert seconds == access.SOURCE_FINISH_SECONDS
         events.append('bounded-target-bridge')
         yield
     bridge = SimpleNamespace(bounded=bounded, connection_deployment=lambda: 'actual-target-deployment')

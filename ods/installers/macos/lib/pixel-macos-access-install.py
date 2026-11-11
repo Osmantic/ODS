@@ -88,6 +88,16 @@ ACCESS_FILES = {
     "key": _launchd.ACCESS_KEY,
     "plist": _launchd.ACCESS_PLIST,
 }
+# Every Source publication guard re-proves the protected deployment and bundle,
+# walking each complete runtime tree again (measured at 4.6 and 3.6 seconds on an
+# M4 Mac mini with the shipped 34,651-entry runtime). From those proof counts the
+# first inert kit takes about 800-970 seconds there and the next update's
+# code-only kit about 1,400-1,700. The earlier 180-second bound expired
+# mid-staging. The enclosing locked transaction keeps its previous 900 seconds
+# for all other work, and the protected CLI child must outlive it.
+SOURCE_FINISH_SECONDS = 3600
+SOURCE_TRANSACTION_SECONDS = SOURCE_FINISH_SECONDS + 900
+PROTECTED_CLI_SECONDS = SOURCE_TRANSACTION_SECONDS + 900
 
 
 class InstallError(ValueError):
@@ -2526,7 +2536,7 @@ def _finish_source_upgrade(plan, records, journal):
     transaction = dict(kind='native-installer-upgrade', transaction=addition['contextSha256'],
         currentDigest=plan['upgrade_qualification']['currentDigest'],
         candidateDigest=plan['upgrade_qualification']['candidateDigest'])
-    with bridge.bounded(180):
+    with bridge.bounded(SOURCE_FINISH_SECONDS):
         _discover_source_installer_bridge(bridge)
         if intent['mode'] == 'absent' and phase == 'restored':
             custody.native_verify_installer_absence(bridge, addition['proof'], transaction=transaction)
@@ -4529,7 +4539,7 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_
                     raise InstallError('runtime-upgrade-rollback-file-drift')
         verify()
         if plan.get('source_lifecycle') is not None:
-            with bridge.bounded(900):
+            with bridge.bounded(SOURCE_TRANSACTION_SECONDS):
                 source_bridge = bridge
                 if journal.value['phase'] == 'prepared':
                     # The recovery bridge is an inert lock holder bound to the
@@ -4544,7 +4554,7 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_
                         raise InstallError('native-source-installer-target-binding-changed')
                     source_bridge = _bridge_from_recovery_plan(
                         dict(plan, access_settings=json.loads(settings)), owner_name=owner_name)
-                with (source_bridge.bounded(900) if source_bridge is not bridge else nullcontext()):
+                with (source_bridge.bounded(SOURCE_TRANSACTION_SECONDS) if source_bridge is not bridge else nullcontext()):
                     if quarantine_empty_source_stage:
                         _quarantine_unrecorded_source_stage(plan, records, journal, verify_snapshots=verify)
                     if rollback_before_source_publication:
@@ -5204,7 +5214,7 @@ def _execute_upgrade_install(plan, source):
         settings_data_dir=settings.get('settings_data_dir'), gateway_policy=settings['gateway_policy'])
     # Snapshot and staging share one lock. Do not nest prepared_upgrade's lock:
     # it is the same nonblocking flock used by live controller mutations.
-    with (bridge.bounded(900) if plan.get('source_lifecycle') is not None else nullcontext()), bridge.locked():
+    with (bridge.bounded(SOURCE_TRANSACTION_SECONDS) if plan.get('source_lifecycle') is not None else nullcontext()), bridge.locked():
         if any(os.path.lexists(bridge.state / name) for name in
                ('transition.json', 'policy-activation.json', 'runtime-upgrade.json')):
             raise InstallError('runtime-upgrade-pending-recovery')
@@ -5982,7 +5992,7 @@ def _protected_cli(argv):
             or Path(support['entry']) != Path(support['root']) / entry.ENTRY):
         raise InstallError('native-installer-support-publication-invalid')
     return subprocess.run([support['python'], '-I', '-B', support['entry'], '--peer', 'access-install',
-        '--', *arguments], check=False, timeout=1800).returncode
+        '--', *arguments], check=False, timeout=PROTECTED_CLI_SECONDS).returncode
 
 
 if __name__ == "__main__":

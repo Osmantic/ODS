@@ -19,6 +19,7 @@ from test_native_source_installer_first_kit import (first_target, material, nati
 from test_native_source_installer_withdrawal import files
 from test_macos_pixel_access_install import installer
 from pixel_connections import custody as c, source_backend, native_executor
+import pixel_access_bridge as access_bridge
 import pixel_macos_custody as mac
 
 
@@ -272,6 +273,43 @@ def test_empty_unrecorded_file_is_preserved_only_with_qualified_authority(first_
         finish_source_caller(n, monkeypatch)
         assert json.loads((n.metadata / 'source-installer-code-only.json').read_bytes())['phase'] == 'committed'
         assert retained[0].stat().st_ino == orphan_inode
+
+
+# Physical cost of one protected proof on the M4 Mac mini fleet host (2026-11-11),
+# with the shipped 34,651-entry runtime: a deployment qualification (4.6 s) and
+# its bundle/material qualification (3.6 s). The driver's publisher stand-in omits
+# the production publisher's own selection proof, which is added back here.
+M4_DEPLOYMENT_SECONDS, M4_BUNDLE_SECONDS = 4.6, 3.6
+
+
+@pytest.mark.parametrize('first_target', [None, 'code-only'], indirect=True)
+def test_finish_bound_keeps_twice_the_measured_physical_proof_cost(first_target, monkeypatch):
+    n = first_target
+    counts = dict(deployment=0, bundle=0, publisher=0)
+    deployment, material, publisher = access_bridge.LaunchdAccessBridge.connection_deployment, helper._material, native_executor._publisher
+    def counted_deployment(self):
+        counts['deployment'] += 1
+        return deployment(self)
+    def counted_material(selection):
+        counts['bundle'] += 1
+        return material(selection)
+    def counted_publisher(*args, **kwargs):
+        counts['publisher'] += 1
+        return publisher(*args, **kwargs)
+    monkeypatch.setattr(access_bridge.LaunchdAccessBridge, 'connection_deployment', counted_deployment)
+    monkeypatch.setattr(helper, '_material', counted_material)
+    monkeypatch.setattr(native_executor, '_publisher', counted_publisher)
+    requested, bounded = [], n.f.bridge.bounded
+    def recorded(seconds):
+        requested.append(seconds)
+        return bounded(seconds)
+    monkeypatch.setattr(n.f.bridge, 'bounded', recorded, raising=False)
+    finish_source_caller(n, monkeypatch)
+    assert requested[0] == installer.SOURCE_FINISH_SECONDS
+    estimate = ((counts['deployment'] + counts['publisher']) * M4_DEPLOYMENT_SECONDS
+                + counts['bundle'] * M4_BUNDLE_SECONDS)
+    assert 2 * estimate <= installer.SOURCE_FINISH_SECONDS, (counts, estimate)
+    assert installer.SOURCE_TRANSACTION_SECONDS >= installer.SOURCE_FINISH_SECONDS + 900
 
 
 def finish_and_first_prepare(n, monkeypatch):

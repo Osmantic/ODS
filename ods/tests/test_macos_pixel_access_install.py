@@ -3340,7 +3340,7 @@ def test_prepared_schema_five_legacy_recovery_preserves_six_running_services(tmp
     monkeypatch.setattr(bridge_module.LaunchdAccessBridge, 'recovery_locked', locked)
     @contextmanager
     def bounded(_self, seconds):
-        assert held and seconds == 900
+        assert held and seconds == installer.SOURCE_TRANSACTION_SECONDS
         yield
     monkeypatch.setattr(bridge_module.LaunchdAccessBridge, 'bounded', bounded)
     def load(**_kwargs):

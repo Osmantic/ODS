@@ -27,7 +27,7 @@ def test_active_recovery_keeps_resume_default_and_requires_explicit_rollback(mon
         finally: held.pop()
     @contextmanager
     def bounded(self, seconds):
-        assert held == ['lock'] and seconds == 900
+        assert held == ['lock'] and seconds == access.SOURCE_TRANSACTION_SECONDS
         held.append('bounded')
         try: yield
         finally: held.pop()
