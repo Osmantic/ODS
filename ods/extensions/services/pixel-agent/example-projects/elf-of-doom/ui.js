@@ -874,8 +874,11 @@ function update(dt) {
         // The caller's name is only passed for the boss whose calls are distinctive enough to name —
         // Rukhmak, whose whole shtick is frequency. Other bosses keep the shipped generic banner
         // verbatim, so their reinforcement text is untouched too, not just their clock.
+        // The boss object itself is passed through as well, because for Rukhmak the wave is not only
+        // announced differently — it is bigger and it heals him. Both effects are keyed on that
+        // object's kind inside spawnReinforceWave, so the clock branch stays a pure clock.
         spawnReinforceWave(kind === FINAL_BOSS_KIND,
-          kind === CAPTAIN_BOSS_KIND ? G.boss.name : null);
+          kind === CAPTAIN_BOSS_KIND ? G.boss.name : null, G.boss);
       }
     }
   } else if (G.wave === "cleared") {

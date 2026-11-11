@@ -312,8 +312,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   as it slows him, shown as silk wrapped around him. Xath-Rokka, the Dread
   Weaver, spits four webs in a wide fan. The two trolls regenerate 1% of their
   health a second, and once enraged they regenerate 2%, move faster and swing
-  more often. Rukhmak calls his reinforcements twice as often
-  as the other bosses. The Hollow Crown spits the four-web fan and turns into
+  more often. Rukhmak has 35% more health and calls his reinforcements twice
+  as often as the other bosses, in waves half again as large that each heal
+  him a third of his health. The Hollow Crown spits the four-web fan and
+  turns into
   a light-blue ghost a few times a minute, untouchable and regenerating while
   it lasts. Each new loop adds 25% more enemies (up to four times the first
   loop's count), 35% more enemy health (100% once the count stops growing),
