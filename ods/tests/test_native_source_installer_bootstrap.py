@@ -3,6 +3,7 @@
 The capsule's publisher/import/cold-discovery qualification is separate. These
 controls exercise the actual parent argument routing without launching a peer.
 """
+import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -41,8 +42,19 @@ def test_root_cli_enters_isolated_fixed_peer_preserving_original_install_directo
     original = list(arguments)
     assert access._protected_cli(arguments) == 7
     assert calls == [(['/qualified/python', '-I', '-B', staged['entry'], '--peer', 'access-install',
-        '--', *original, *extra], dict(check=False, timeout=1800))]
+        '--', *original, *extra], dict(check=False, timeout=access.PROTECTED_CLI_SECONDS))]
     assert arguments == original
+
+
+def test_protected_activation_bounds_nest_inside_their_process_timeouts():
+    # The finish is nested in the locked Source transaction; both must expire
+    # before the protected CLI child and the owner's activation subprocess.
+    assert access.SOURCE_TRANSACTION_SECONDS >= access.SOURCE_FINISH_SECONDS + 900
+    assert access.PROTECTED_CLI_SECONDS >= access.SOURCE_TRANSACTION_SECONDS + 900
+    spec = importlib.util.spec_from_file_location('bootstrap_native_update', access.HERE / 'pixel-native-update.py')
+    update = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(update)
+    assert update.ACTIVATION_TIMEOUT_SECONDS >= access.PROTECTED_CLI_SECONDS
 
 
 @pytest.mark.parametrize('arguments', [[], ['--help'], ['migrate-native', '--verify-preparation']])

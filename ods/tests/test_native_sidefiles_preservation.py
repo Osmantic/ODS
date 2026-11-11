@@ -424,7 +424,7 @@ def test_archive_cli_stages_the_full_protected_installer_closure(monkeypatch):
         '--bundle-digest', CANDIDATE, '--expected-receipt-inode', '12:34', '--expected-gateway-inode', '12:56']
     def run(argv, **kwargs):
         assert argv == [python, '-I', '-B', str(root / entry.ENTRY), '--peer', 'access-install', '--', *args]
-        assert kwargs == {'check': False, 'timeout': 1800}
+        assert kwargs == {'check': False, 'timeout': installer.PROTECTED_CLI_SECONDS}
         calls.append('protected-peer')
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(installer.subprocess, 'run', run)

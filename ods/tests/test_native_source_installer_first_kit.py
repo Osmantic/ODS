@@ -281,6 +281,54 @@ def test_first_kit_refuses_changed_actual_authority_or_owner_images_before_publi
     assert not (n.metadata / 'source-publication.json').exists()
 
 
+def test_first_kit_authority_reuses_its_publisher_proof_and_plan_rechecks_selection(first_target, monkeypatch):
+    """One guard qualifies the deployment and both runtime trees once, then rechecks."""
+    n = first_target
+    calls = []
+    publisher, material, selected = ex._publisher, helper._material, c._native_selected
+    def counted_publisher(selection=None, **kwargs):
+        calls.append(('publisher', kwargs.get('with_material', False)))
+        return publisher(selection, **kwargs)
+    def counted_material(selection):
+        calls.append('material')
+        return material(selection)
+    def counted_selected(selection, **kwargs):
+        calls.append('selected')
+        return selected(selection, **kwargs)
+    monkeypatch.setattr(ex, '_publisher', counted_publisher)
+    monkeypatch.setattr(helper, '_material', counted_material)
+    monkeypatch.setattr(c, '_native_selected', counted_selected)
+    authority = c.native_installer_absent_kit_authority(n.selected, transaction=n.transaction, proof=n.absence)
+    # The driver's publisher stands in for the protected import; its material is
+    # the one complete selection and bundle proof this authority consumes.
+    assert calls == [('publisher', True), 'material', 'selected']
+    assert authority['publication'] is None and authority['kit'] is None
+    calls.clear()
+    assert c.native_installer_absent_kit_plan(n.selected, transaction=n.transaction, proof=n.absence) == authority
+    assert calls == [('publisher', True), 'material', 'selected', 'selected']
+    with pytest.raises(c.CustodyError, match='first-kit-target-changed'):
+        c.native_installer_absent_kit_authority(n.selected, transaction=n.transaction, proof=n.absence,
+            _with_publisher='yes')
+    # A deployment change after the authority is still refused by the plan's
+    # own fresh selection proof, before any prefix is read.
+    authority_done, real_authority = [], c.native_installer_absent_kit_authority
+    def tracked_authority(*args, **kwargs):
+        result = real_authority(*args, **kwargs)
+        authority_done.append(True)
+        return result
+    def changed_after_authority(selection, **kwargs):
+        if authority_done:
+            raise c.CustodyError('native-source-deployment-changed')
+        return counted_selected(selection, **kwargs)
+    calls.clear()
+    monkeypatch.setattr(c, 'native_installer_absent_kit_authority', tracked_authority)
+    monkeypatch.setattr(c, '_native_selected', changed_after_authority)
+    before = files(n)
+    with pytest.raises(c.CustodyError, match='native-source-deployment-changed'):
+        c.native_installer_absent_kit_plan(n.selected, transaction=n.transaction, proof=n.absence)
+    assert calls == [('publisher', True), 'material', 'selected'] and files(n) == before
+
+
 @pytest.mark.parametrize('where', ['kit-rename', 'committed-receipt'])
 def test_first_kit_lost_ack_preserves_active_and_resumes_exact_inodes(first_target, monkeypatch, where):
     n = first_target
