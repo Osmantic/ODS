@@ -369,6 +369,11 @@ def serve(handler):
 
 class AppTests(unittest.TestCase):
     def setUp(self):
+        # A photo day is a whole day on the host's clock: pin that clock, so the expected bounds hold
+        # on every host (a test that needs another zone patches it again).
+        clock = unittest.mock.patch.object(apps, "local_zone", return_value=zoneinfo.ZoneInfo("UTC"))
+        clock.start()
+        self.addCleanup(clock.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.store = Store(pathlib.Path(self.temporary.name) / "state")
@@ -1403,6 +1408,18 @@ class AppTests(unittest.TestCase):
         self.assertEqual(apps.taken_between("2026-10-25", "2026-10-25", lisbon),
                          {"takenAfter": "2026-10-24T23:00:00.000Z", "takenBefore": "2026-10-25T23:59:59.999Z"})
         self.assertEqual(apps.taken_between("", "", lisbon), {})
+
+    def test_a_photo_day_is_a_whole_day_on_the_host_s_clock(self):
+        self.save(self.settings())
+        server = next(item for item in self.agent("mcp-tools")["servers"] if item["id"] == "app:photos")
+        tool = next(item for item in server["tools"] if item["name"] == "search")
+        # What the model is told: the dates it gives are the host's calendar days.
+        self.assertIn("inclusive calendar dates in the host's time zone", tool["description"])
+        self.assertNotIn("UTC", json.dumps(tool))
+        with unittest.mock.patch.object(apps, "local_zone", return_value=zoneinfo.ZoneInfo("America/New_York")):
+            self.app("photos", "search", after="2026-01-10", before="2026-01-10")
+        self.assertEqual({key: FakeImmich.searches[-1][1][key] for key in ("takenAfter", "takenBefore")},
+                         {"takenAfter": "2026-01-10T05:00:00.000Z", "takenBefore": "2026-01-11T04:59:59.999Z"})
 
     def test_changedetection_is_asked_without_holding_the_settings_lock(self):
         self.save(self.settings(changes="allow"))

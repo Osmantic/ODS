@@ -39,12 +39,12 @@ APP_TOOLS = {
     },
     "photos": {
         "search": ("photos-search", "Find the owner's photos by what is in them (query), where (place: a city or country) "
-                   "or when (after and before: inclusive UTC calendar dates, YYYY-MM-DD, not timestamps). "
+                   "or when (after and before: inclusive calendar dates in the host's time zone, YYYY-MM-DD, not timestamps). "
                    "For a single day, use the same date for both bounds. Returns links that open the photos.",
                    {"query": TEXT, "place": TEXT,
-                    "after": {**PHOTO_DAY, "description": "First UTC calendar day, inclusive, as YYYY-MM-DD. "
+                    "after": {**PHOTO_DAY, "description": "First calendar day in the host's time zone, inclusive, as YYYY-MM-DD. "
                               "Empty or omitted leaves this bound open. For one day, use the same date in after and before."},
-                    "before": {**PHOTO_DAY, "description": "Last UTC calendar day, inclusive, as YYYY-MM-DD. "
+                    "before": {**PHOTO_DAY, "description": "Last calendar day in the host's time zone, inclusive, as YYYY-MM-DD. "
                                "Empty or omitted leaves this bound open. For one day, use the same date in after and before."}}),
     },
     "watch": {

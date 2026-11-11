@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.request
 import zoneinfo
 
-from integrations_common import APP_URLS, IntegrationError, NETWORK_TIMEOUT, clip, safe_urlopen
+from integrations_common import APP_URLS, IntegrationError, NETWORK_TIMEOUT, clip, local_zone, safe_urlopen
 
 APPS = tuple(APP_URLS)
 NAMES = {"documents": "Paperless-ngx", "photos": "Immich", "watch": "changedetection.io", "news": "FreshRSS"}
@@ -296,7 +296,7 @@ def photos_search(settings, key, *, query="", place="", after="", before="", all
         if found is None:
             return {"results": [], "mode": "details", "more": False, "note": f"No photos are from a place named {place}."}
         filters[found[0]] = found[1]
-    filters.update(taken_between(after, before, datetime.timezone.utc))  # The catalog's inclusive UTC days.
+    filters.update(taken_between(after, before, local_zone()))  # Whole days on the host's clock, as the catalog says.
     narrowed = bool(place or after or before)
     reply, mode, note = None, "description", ""
     if query and describes_photos(settings, key):
