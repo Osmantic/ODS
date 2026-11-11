@@ -454,6 +454,48 @@ def test_finish_bound_keeps_twice_the_measured_physical_proof_cost(first_target,
     assert installer.SOURCE_TRANSACTION_SECONDS >= installer.SOURCE_FINISH_SECONDS + 900
 
 
+def finished_update(n, monkeypatch):
+    """The fleet Mac's state after a completed native update: a kit, no Source state."""
+    finish_source_caller(n, monkeypatch)
+    journal = installer._upgrade.RecoveryJournal(n.upgrade, json.loads(n.upgrade.read_bytes()))
+    terminal = helper.verify_installer_code_only_kit if n.absence['kit'] is not None else helper.verify_installer_absent_kit
+    journal.finish(lambda: terminal(n.selected, transaction=n.transaction, proof=n.absence))
+    assert not n.upgrade.exists() and not c.NATIVE_STATE.exists()
+
+
+def count_publisher_proofs(monkeypatch):
+    """Record each publisher load, complete material proof and selection proof, in order."""
+    calls = []
+    publisher, material, selected = native_executor._publisher, helper._material, c._native_selected
+    def counted_publisher(*args, **kwargs):
+        calls.append('publisher:current' if kwargs.get('_current_bridge') is not None else 'publisher')
+        return publisher(*args, **kwargs)
+    def counted_material(selection):
+        calls.append('material')
+        return material(selection)
+    def counted_selected(selection, **kwargs):
+        calls.append('selected')
+        return selected(selection, **kwargs)
+    monkeypatch.setattr(native_executor, '_publisher', counted_publisher)
+    monkeypatch.setattr(helper, '_material', counted_material)
+    monkeypatch.setattr(c, '_native_selected', counted_selected)
+    return calls
+
+
+@pytest.mark.parametrize('first_target', ['code-only'], indirect=True)
+def test_code_only_history_qualifies_its_publisher_material_once(first_target, monkeypatch):
+    """As in the code-only and first-kit authorities: the publisher's own material, never a second one."""
+    n = first_target
+    finished_update(n, monkeypatch)
+    calls = count_publisher_proofs(monkeypatch)
+    before = files(n)
+    history = c.native_installer_code_only_history(n.selected)
+    assert 'source-installer-code-only.json' in history['metadata'] and files(n) == before
+    # One publisher and its material (whose authority proves the selection),
+    # then only initial_boot_images' own material proof.
+    assert calls == ['publisher', 'material', 'selected', 'material', 'selected']
+
+
 def finish_and_first_prepare(n, monkeypatch):
     finish_source_caller(n, monkeypatch)
     journal = installer._upgrade.RecoveryJournal(n.upgrade, json.loads(n.upgrade.read_bytes()))

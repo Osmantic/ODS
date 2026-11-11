@@ -2931,8 +2931,11 @@ def native_installer_code_only_history(selection):
     with protected_directory(NATIVE_META) as metadata:
         if _native_at_inode(metadata, 'source-installer-code-only.json') is None:
             return native_installer_history(selection)
-    publisher = _publisher(selection)
-    _module, doc, component, ref = publisher._material(selection)
+    # As in the code-only and first-kit authorities: _publisher qualifies
+    # the selected deployment and then independently qualifies its complete
+    # material. Reuse that exact proof instead of qualifying both trees again.
+    publisher, material = _publisher(selection, with_material=True)
+    _module, doc, component, ref = material
     with protected_directory(NATIVE_META) as metadata, protected_directory(NATIVE_KIT.parent) as kits:
         record, raw = _native_json_at(metadata, 'source-installer-code-only.json')
         if record is None:
