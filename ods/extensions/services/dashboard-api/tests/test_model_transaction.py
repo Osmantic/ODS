@@ -191,6 +191,45 @@ def test_a_refused_apply_stays_uncertain_and_recoverable(controller,monkeypatch,
     assert not host._pixel_model_recovery_status()['pending']
 
 
+def test_a_transition_busy_apply_is_a_definite_refusal_the_caller_rolls_back(controller,monkeypatch):
+    # Laptop fleet run 2026-11-11: a remote route enabled right after an update met the
+    # controller's post-update transition (409 transition-busy). Treated as uncertain, the
+    # apply left the journal at "applying" while the controller still held the previous
+    # contract, so neither the caller's rollback nor recovery could release Portal.
+    _,state,calls,call=controller
+    env={'PIXEL_OPENWEBUI_KEY':'configured'}
+    tx=host._begin_pixel_model_transaction(env)
+    def busy(operation,request=None,*,config):
+        if operation=='model-apply':
+            calls.append(operation)
+            raise host._PixelModelTransactionRejected('busy',code='transition-busy')
+        return call(operation,request,config=config)
+    monkeypatch.setattr(host,'_runtime_model_control',busy)
+    with pytest.raises(host._PixelModelTransactionRejected) as refused:tx.apply(NEW)
+    assert not isinstance(refused.value,host._PixelModelTransactionUncertain)
+    journal=json.loads(host._pixel_model_journal_path().read_text())
+    assert journal['phase']=='held' and journal['target'] is None and state['contract']==OLD
+    tx.verify_held()
+    tx.finish('rollback')
+    assert state['contract']==OLD and state['outcome']=='rollback'
+    assert not host._pixel_model_recovery_status()['pending']
+    assert calls.count('model-apply')==1
+
+
+def test_a_transition_busy_apply_stays_uncertain_when_status_no_longer_shows_the_hold(controller,monkeypatch):
+    _,state,calls,call=controller
+    tx=host._begin_pixel_model_transaction({'PIXEL_OPENWEBUI_KEY':'configured'})
+    def busy_after_apply(operation,request=None,*,config):
+        if operation=='model-apply':
+            state.update(status='applied',contract=copy.deepcopy(request['target']))
+            raise host._PixelModelTransactionRejected('busy',code='transition-busy')
+        return call(operation,request,config=config)
+    monkeypatch.setattr(host,'_runtime_model_control',busy_after_apply)
+    with pytest.raises(host._PixelModelTransactionUncertain):tx.apply(NEW)
+    journal=json.loads(host._pixel_model_journal_path().read_text())
+    assert journal['phase']=='applying' and journal['target']==NEW
+
+
 @pytest.mark.parametrize('partial',[False,True])
 def test_begin_409_is_resolved_by_fresh_native_state_not_status_code(controller,monkeypatch,partial):
     _,state,calls,call=controller
