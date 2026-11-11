@@ -131,7 +131,7 @@ export const ODS_SANDBOX_RUNTIME_CONTRACT =
 // The preview runtime supplement applies to both context sizes, not the historic core.
 export const CONNECTED_RECORDS_CONTRACT =
   "Google: pixel_ods_connections_status gives saved sign-in, read permissions and sync health. Discover Gmail/Calendar tools with tool_search; describe/call returned IDs. " +
-  "Knowledge wiki: discover wiki_search/wiki_get to read, wiki_apply to save (op create_synthesis; what the owner tells you has sourceIds [\"owner-chat\"]). Obsidian vault access is separate. Extension catalogs list software. " +
+  "Knowledge wiki: discover wiki_search/wiki_get to read, wiki_apply to save (create_synthesis; owner facts: sourceIds [\"owner-chat\"]).Obsidian vault access is separate. Extension catalogs list software. " +
   "Missing tools mean unavailable capability, not disconnected accounts. Use count tools for counts, record tools for contents; report partial coverage. " +
   "Recent sync is not a new Google sign-in check. Never install, reconnect or expose private data to public search without owner request. Never invent a missing source time zone.";
 const CONNECTED_RECORDS_TINY_CONTRACT = CONNECTED_RECORDS_CONTRACT;
