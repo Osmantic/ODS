@@ -125,12 +125,20 @@ retained data, not authority to run Source or enable a connection.
 | Installer history ledger | 64 explicit entries |
 | Pending-initial boot history | 16 explicit transactions |
 | Failed-sidefile preservation history reader | 16 explicit archives |
+| Active retained inert-kit installer publication | 900 seconds, intersected with the enclosing installer deadline |
 | Read-only OS census output | 1 MiB per command, bounded command deadline |
 
 Exceeding a bound preserves the records and refuses the operation. No filename
 prefix or capacity failure grants permission to delete or prune Source history.
 Source-bearing archives use a distinct receipt schema and are excluded from
 legacy completed-retirement pruning.
+
+Only the active installer replacement of an already retained inert kit uses
+the existing installer budget. Its per-mutation custody, receipt, inode,
+inactive-actor and independent completion checks still run. First-kit absence,
+restored-target verification and private-generation rebind keep their existing
+180-second sub-deadlines. This allowance does not change Portal query limits or
+authorize a Source job; admission remains held until all completion proofs pass.
 
 ## Evidence and remaining platform gate
 

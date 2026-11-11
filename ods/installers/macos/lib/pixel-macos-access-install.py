@@ -2507,7 +2507,13 @@ def _finish_source_upgrade(plan, records, journal):
     transaction = dict(kind='native-installer-upgrade', transaction=addition['contextSha256'],
         currentDigest=plan['upgrade_qualification']['currentDigest'],
         candidateDigest=plan['upgrade_qualification']['candidateDigest'])
-    with bridge.bounded(180):
+    # Retained inert code crosses multiple independently guarded inode and
+    # publication boundaries. Give it the installer's existing bounded budget,
+    # rather than a request-sized sub-deadline that can expire before the first
+    # inode intent is saved. bounded() still intersects the enclosing deadline;
+    # no private generation or ordinary Source operation gets this allowance.
+    code_only = intent['mode'] == 'absent' and phase == 'active' and addition['proof']['kit'] is not None
+    with bridge.bounded(900 if code_only else 180):
         _discover_source_installer_bridge(bridge)
         if intent['mode'] == 'absent' and phase == 'restored':
             custody.native_verify_installer_absence(bridge, addition['proof'], transaction=transaction)

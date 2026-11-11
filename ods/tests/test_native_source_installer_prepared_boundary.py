@@ -257,6 +257,77 @@ def test_final_installer_boundary_binds_actual_started_target_before_finishing(t
     assert journal.value['phase'] == phase  # This proof cannot finish the installer itself.
 
 
+@pytest.mark.parametrize('retained', [False, True])
+@pytest.mark.parametrize('phase', ['active', 'restored'])
+@pytest.mark.parametrize('parent_budget', [30, 900])
+@pytest.mark.parametrize('fault', [None, 'expired', 'unconfirmed-kit'])
+def test_inert_publication_budget_keeps_parent_deadline_and_independent_proof(
+        tmp_path, monkeypatch, retained, phase, parent_budget, fault):
+    import pixel_access_bridge as bridge_module
+    import pixel_macos_custody as mac_custody
+    from pixel_connections import custody, native_executor
+    records = source_images()
+    plan = context_plan(records)
+    addition = binding(records)
+    addition['proof']['kit'] = {} if retained else None
+    journal = SimpleNamespace(value=dict(schemaVersion=4, phase=phase, sourceAddition=addition))
+    original_journal = copy.deepcopy(journal.value)
+    settings = tmp_path / 'installed-settings.json'
+    settings.write_bytes(b'{"owner":"invented-owner"}')
+    records.append(dict(path=str(settings), before=settings.read_bytes(), after=settings.read_bytes()))
+    monkeypatch.setitem(access.ACCESS_FILES, 'config', settings)
+    monkeypatch.setattr(mac_custody, 'protected_bytes', lambda path, **_kw: Path(path).read_bytes())
+    adapter = object.__new__(bridge_module.LaunchdAccessBridge)
+    adapter.connection_deployment = lambda: 'invented-deployment'
+    monkeypatch.setattr(access, '_bridge_from_recovery_plan', lambda *_a, **_kw: adapter)
+    monkeypatch.setattr(access, '_discover_source_installer_bridge', lambda _b: None)
+    selected = object()
+    monkeypatch.setattr(custody, 'native_source_selection', lambda *_a: selected)
+    monkeypatch.setattr(custody, '_native_selected', lambda *_a, **_kw: {'bundleSha256': CANDIDATE})
+    clock, events = [100.0], []
+    monkeypatch.setattr(bridge_module.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(bridge_module, '_native_source_clock_ns', lambda: int(clock[0] * 10**9))
+    allowance = 900 if retained and phase == 'active' else 180
+    ceiling = 100 + min(allowance, parent_budget)
+
+    def publish(_selected, *, transaction, proof):
+        assert _selected is (selected if phase == 'active' else adapter) and proof == addition['proof']
+        assert bridge_module._DEADLINE.get() == ceiling
+        assert adapter._native_source_deadline_ns() == int(ceiling * 10**9)
+        events.append('publish' if phase == 'active' else 'restore-proof')
+        elapsed = 200 if retained and phase == 'active' and parent_budget == 900 else 10
+        clock[0] = ceiling + 1 if fault == 'expired' else clock[0] + elapsed
+        bridge_module.remaining(1)
+        return dict(status='prepared-no-jobs', transaction=transaction, kitSha256='1' * 64)
+
+    def verify(_selected, *, transaction, proof):
+        assert _selected is selected and proof == addition['proof']
+        events.append('independent-proof')
+        return dict(status='prepared-no-jobs', transaction=transaction,
+            kitSha256=('2' if fault == 'unconfirmed-kit' else '1') * 64)
+
+    publisher = SimpleNamespace(publish_installer_absent_kit=publish, verify_installer_absent_kit=verify,
+        publish_installer_code_only_kit=publish, verify_installer_code_only_kit=verify)
+    monkeypatch.setattr(native_executor, '_publisher', lambda _s: publisher)
+    monkeypatch.setattr(custody, 'native_verify_installer_absence',
+        lambda actual, proof, **kwargs: publish(actual, proof=proof, **kwargs))
+    # A short enclosing operation remains short; a late normal result is never
+    # completion authority, and a mismatched independent proof still refuses.
+    with adapter.bounded(parent_budget):
+        if fault == 'expired':
+            with pytest.raises(bridge_module.AccessError, match='deadline'):
+                access._finish_source_upgrade(plan, records, journal)
+            clock[0] = ceiling - 1  # Permit the parent fixture to exit normally.
+        elif fault == 'unconfirmed-kit' and phase == 'active':
+            with pytest.raises(access.InstallError, match='first-kit-not-qualified'):
+                access._finish_source_upgrade(plan, records, journal)
+        else:
+            access._finish_source_upgrade(plan, records, journal)
+            assert events == (['publish', 'independent-proof'] if phase == 'active' else ['restore-proof'])
+    assert journal.value == original_journal
+    assert settings.read_bytes() == b'{"owner":"invented-owner"}'
+
+
 @pytest.mark.parametrize('phase', ['held', 'releasing'])
 @pytest.mark.parametrize('fault', [None, 'source-refusal', 'source-journal-drift'])
 def test_source_completed_proof_runs_only_under_fresh_hold_and_preserves_generic_release_proof(tmp_path, monkeypatch, phase, fault):
