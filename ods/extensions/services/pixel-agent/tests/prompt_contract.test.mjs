@@ -129,6 +129,9 @@ test('connected capabilities are a stable model contract, independent of request
     const plain=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:'Hello'},options);
     assert.ok(plain.appendSystemContext.includes(CONNECTED_RECORDS_CONTRACT));
     assert.match(plain.appendSystemContext, /Knowledge wiki:.*?wiki_search.*?wiki_get.*?wiki_apply/);
+    // The locked isolated vault has no sources and create_synthesis refuses an empty
+    // sourceIds list, so a fact the owner states cites the owner's chat.
+    assert.match(CONNECTED_RECORDS_CONTRACT, /wiki_apply to save \(op create_synthesis; what the owner tells you has sourceIds \["owner-chat"\]\)/);
     for(const prompt of ['meu email est\u00e1 conectado?','Is my Gmail connected?',
       'Is the diary available to you?','Search my Knowledge wiki.','Read my Gmail.','Count Calendar events.',
       'Translate this email without using tools.','What software can I install?']) {

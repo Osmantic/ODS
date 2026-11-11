@@ -91,6 +91,11 @@ line-by-line review of the whole engine.
   (`~/.openclaw/workspace-pixel`), which is the only host folder the sandbox
   mounts.
 - **Isolated mode:** nothing is imported from memory or from local paths.
+  - So the vault starts with no sources, and Portal cannot ingest one: ingest is an
+    operator method. `wiki_apply`'s `create_synthesis` refuses an empty `sourceIds`
+    list, so Portal's contract (`prompt-contract.mjs`) has it file what the owner
+    tells it with `sourceIds: ["owner-chat"]`. The owner's chat is that fact's
+    source. Without that line a careful model refuses to save anything.
 - **Obsidian:** Obsidian-friendly Markdown, with the Obsidian app integration off.
 
 ## Residual risk, accepted
