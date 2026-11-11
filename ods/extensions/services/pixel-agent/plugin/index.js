@@ -515,7 +515,9 @@ export default definePluginEntry({
       const exampleContext = toolLoopGuard.exampleContextForRun(context?.runId ?? event?.runId);
       const ownerText = currentUserText(ownerEvent?.messages, ownerEvent?.prompt);
       const reminder = accessRuntime.isProbe(context) ? '' : reminderHint(ownerText);
-      const memory = accessRuntime.isProbe(context) ? {} : await memoryHooks.promptContext(ownerText, context?.sessionKey, {reminder: Boolean(reminder), runId: context?.runId ?? event?.runId});
+      // Probes and review-only turns get no owner memory: they propose none (integrations.mjs).
+      const memory = accessRuntime.isProbe(context) || integrationReviewRecovery.isReviewOnly(context, event) ? {}
+        : await memoryHooks.promptContext(ownerText, context?.sessionKey, {reminder: Boolean(reminder), runId: context?.runId ?? event?.runId});
       const prependContext = [contract?.prependContext,cancelContext,deliveryContext,exampleContext,memory.facts].filter(Boolean).join('\n\n');
       // Beside the owner turn (OpenClaw appendContext), also model-only. A
       // child's announce continuation of a clarification answer carries that

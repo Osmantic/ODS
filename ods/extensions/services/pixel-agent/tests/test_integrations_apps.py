@@ -6,6 +6,7 @@ if sys.platform == "win32":
 import email.header
 import http.client
 import http.server
+import socketserver
 import json
 import pathlib
 import re
@@ -18,6 +19,19 @@ import urllib.parse
 import zoneinfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "host"))
+
+
+def _broken_answer(answer):
+    """A handler that reads one request (its headers and body), then answers with these exact bytes."""
+    class Broken(socketserver.StreamRequestHandler):
+        def handle(self):
+            length = 0
+            while (line := self.rfile.readline(65537)) not in (b"\r\n", b"\n", b""):
+                if line.lower().startswith(b"content-length:"):
+                    length = int(line.split(b":", 1)[1])
+            self.rfile.read(length)
+            self.wfile.write(answer)
+    return Broken
 import integrations_apps as apps  # noqa: E402
 import integrations_ntfy as ntfy  # noqa: E402
 import integrations_service as service  # noqa: E402
@@ -355,6 +369,11 @@ def serve(handler):
 
 class AppTests(unittest.TestCase):
     def setUp(self):
+        # A photo day is a whole day on the host's clock: pin that clock, so the expected bounds hold
+        # on every host (a test that needs another zone patches it again).
+        clock = unittest.mock.patch.object(apps, "local_zone", return_value=zoneinfo.ZoneInfo("UTC"))
+        clock.start()
+        self.addCleanup(clock.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.store = Store(pathlib.Path(self.temporary.name) / "state")
@@ -1348,19 +1367,34 @@ class AppTests(unittest.TestCase):
         self.assertEqual(FakeNtfy.sent[-1]["title"], "Page changed: Shoes Sale")
         self.save(self.settings(changes="allow"))
         added = self.app("watch", "add", url="https://shop.example/hat", title="Hat\r\nSale")
-        self.assertEqual(added["done"], "Watch Hat Sale at https://shop.example/hat")
+        self.assertEqual(added["done"], "Watch Hat Sale (https://shop.example/hat)")
 
     def test_an_answer_cut_short_is_an_unreachable_app_not_a_crash(self):
-        self.save(self.settings())
-        for problem in (http.client.IncompleteRead(b"{"), http.client.BadStatusLine("junk"), http.client.LineTooLong("header")):
-            with unittest.mock.patch.object(apps, "open_direct", side_effect=problem):
-                with self.assertRaises(service.IntegrationError) as caught:
-                    apps.watches(self.store.config()["apps"]["watch"], "watch-key")
-                self.assertEqual(caught.exception.code, "app-unreachable")
-            with unittest.mock.patch.object(ntfy, "open_direct", side_effect=problem):
-                with self.assertRaises(service.IntegrationError) as caught:
-                    ntfy.send_notification(self.store.config(), self.store.secrets(), "Title", "Message")
-                self.assertEqual(caught.exception.code, "notification-failed")
+        # A server that answers once with broken bytes. Cut short after a 200: the app's JSON cannot be
+        # read (app-protocol), while ntfy's 200 already says the message was taken. A junk status line or an
+        # endless header: nothing can be read, and a notification may or may not have arrived.
+        broken = ((b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 50\r\n\r\n{", "app-protocol", None),
+                  (b"junk\r\n\r\n", "integration-protocol", "notification-outcome-unknown"),
+                  (b"HTTP/1.1 200 OK\r\nX-Long: " + b"a" * 70000 + b"\r\n\r\n", "integration-protocol", "notification-outcome-unknown"))
+        for answer, app_code, notice_code in broken:
+            server = socketserver.TCPServer(("127.0.0.1", 0), _broken_answer(answer))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            address = f"http://127.0.0.1:{server.server_address[1]}"
+            with self.assertRaises(service.IntegrationError) as caught:
+                apps.watches({"enabled": True, "url": address, "changes": "ask"}, "watch-key")
+            # A read that cannot be used: refused, with no partial answer taken as data.
+            self.assertEqual(caught.exception.code, app_code, answer[:20])
+            config = self.store.config()
+            config["notifications"].update(enabled=True, url=address)
+            if notice_code is None:
+                self.assertEqual(ntfy.send_notification(config, self.store.secrets(), "Title", "Message"), "Title")
+                continue
+            with self.assertRaises(service.IntegrationError) as caught:
+                ntfy.send_notification(config, self.store.secrets(), "Title", "Message")
+            # The message was already sent: a broken reply cannot prove it was not delivered.
+            self.assertEqual(caught.exception.code, notice_code, answer[:20])
 
     def test_photo_days_follow_the_owner_s_time_zone(self):
         utc = zoneinfo.ZoneInfo("UTC")
@@ -1374,6 +1408,18 @@ class AppTests(unittest.TestCase):
         self.assertEqual(apps.taken_between("2026-10-25", "2026-10-25", lisbon),
                          {"takenAfter": "2026-10-24T23:00:00.000Z", "takenBefore": "2026-10-25T23:59:59.999Z"})
         self.assertEqual(apps.taken_between("", "", lisbon), {})
+
+    def test_a_photo_day_is_a_whole_day_on_the_host_s_clock(self):
+        self.save(self.settings())
+        server = next(item for item in self.agent("mcp-tools")["servers"] if item["id"] == "app:photos")
+        tool = next(item for item in server["tools"] if item["name"] == "search")
+        # What the model is told: the dates it gives are the host's calendar days.
+        self.assertIn("inclusive calendar dates in the host's time zone", tool["description"])
+        self.assertNotIn("UTC", json.dumps(tool))
+        with unittest.mock.patch.object(apps, "local_zone", return_value=zoneinfo.ZoneInfo("America/New_York")):
+            self.app("photos", "search", after="2026-01-10", before="2026-01-10")
+        self.assertEqual({key: FakeImmich.searches[-1][1][key] for key in ("takenAfter", "takenBefore")},
+                         {"takenAfter": "2026-01-10T05:00:00.000Z", "takenBefore": "2026-01-11T04:59:59.999Z"})
 
     def test_changedetection_is_asked_without_holding_the_settings_lock(self):
         self.save(self.settings(changes="allow"))
@@ -1412,7 +1458,7 @@ class AppTests(unittest.TestCase):
         self.app("watch", "add", url="https://evil.example/kindle?ref=1", title="Kindle price")
         self.assertEqual(len(self.owner("get")["approvals"]), 1)
         summary = self.owner("get")["approvals"][0]["summary"]
-        self.assertEqual(summary, "Watch Kindle price at https://evil.example/kindle?ref=1")
+        self.assertEqual(summary, "Watch Kindle price (https://evil.example/kindle?ref=1)")
 
     def test_prices_to_read_is_a_pure_choice(self):
         listing = {"page": {"last_changed": 9}, "new": {"last_changed": 0}, "same": {"last_changed": 5}, "moved": {"last_changed": 7}}

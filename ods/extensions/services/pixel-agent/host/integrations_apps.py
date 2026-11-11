@@ -296,7 +296,7 @@ def photos_search(settings, key, *, query="", place="", after="", before="", all
         if found is None:
             return {"results": [], "mode": "details", "more": False, "note": f"No photos are from a place named {place}."}
         filters[found[0]] = found[1]
-    filters.update(taken_between(after, before, local_zone()))
+    filters.update(taken_between(after, before, local_zone()))  # Whole days on the host's clock, as the catalog says.
     narrowed = bool(place or after or before)
     reply, mode, note = None, "description", ""
     if query and describes_photos(settings, key):
@@ -419,15 +419,16 @@ def valid_watch_url(url):
     url = str(url or "").strip()
     try:
         parsed = urllib.parse.urlsplit(url)
-        valid = parsed.scheme in ("http", "https") and parsed.hostname and not parsed.username and not parsed.password
+        valid = parsed.scheme in ("http", "https") and parsed.hostname
         parsed.port
     except ValueError:
         valid = False
     if (len(url) > 2000 or not valid
             or any(char.isspace() or ord(char) < 32 for char in url)):
         raise IntegrationError("invalid-request", "Give the page's full web address, starting with https://.")
+    # Any user part, even an empty one ("https://@shop.example/"): credentials never ride in a watch address.
     if parsed.username is not None or parsed.password is not None:
-        raise IntegrationError("invalid-request", "Give the page's address without a user name or password.")
+        raise IntegrationError("invalid-request", "Give the page's full web address without a user name or password.")
     if _local_host(parsed.hostname):
         raise IntegrationError("watch-local", "Portal watches public web pages only. The owner can add a page on this "
                                "computer or their own network in changedetection.io.")
