@@ -180,6 +180,10 @@ def test_second_installer_rollover_lost_ack_keeps_one_frozen_inode(second_prepar
 @pytest.mark.parametrize('fault', ['context', 'old-publication', 'early-code', 'active-phase'])
 def test_second_installer_rollover_unknown_origin_preserves_current_record(second_prepared, fault):
     n = second_prepared
+    # A successful earlier inspection in the same operation must not hide drift.
+    before_inspection = files(n)
+    assert c.native_installer_history_plan(n.selected, transaction=n.transaction)['entry'] is not None
+    assert files(n) == before_inspection
     if fault == 'context':
         n.context.write_bytes(n.context.read_bytes() + b' ')
     elif fault == 'old-publication':

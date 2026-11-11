@@ -2265,7 +2265,7 @@ def _native_installer_absence_state(bridge, *, qualified_runtime=None, _installe
             extra |= {'source-installer-history.json', *(item['name'] for item in retained),
                 *(name for item in retained for name in item['metadata'])}
         if 'source-installer-code-only.json' in names and 'source-installer-code-only.json' not in extra:
-            selected = native_source_selection(bridge, bridge.connection_deployment())
+            selected = native_current_source_selection(bridge)
             extra |= native_installer_code_only_history(selected)['metadata']
         if names - (_INSTALLER_SOURCE_CODE | {'source-identity.json'} | extra):
             raise CustodyError('native-source-installer-metadata-preserved')
@@ -2584,8 +2584,8 @@ def native_installer_history_plan(selection, *, transaction):
     """Admit metadata rollover only before the actual installer replaces code."""
     from pixel_macos_custody import protected_directory
     from .native_executor import _publisher
-    publisher = _publisher(selection)
-    _module, doc, _component, ref = publisher._material(selection)
+    publisher, material = _publisher(selection, with_material=True)
+    _module, doc, _component, ref = material
     if not _native_installer_transaction_value(transaction) or doc['bundleSha256'] != transaction['currentDigest']:
         raise CustodyError('native-source-installer-history-old-runtime-required')
     try:
@@ -2931,8 +2931,8 @@ def native_installer_code_only_history(selection):
     with protected_directory(NATIVE_META) as metadata:
         if _native_at_inode(metadata, 'source-installer-code-only.json') is None:
             return native_installer_history(selection)
-    publisher = _publisher(selection)
-    _module, doc, component, ref = publisher._material(selection)
+    publisher, material = _publisher(selection, with_material=True)
+    _module, doc, component, ref = material
     with protected_directory(NATIVE_META) as metadata, protected_directory(NATIVE_KIT.parent) as kits:
         record, raw = _native_json_at(metadata, 'source-installer-code-only.json')
         if record is None:
@@ -3182,7 +3182,10 @@ def _native_installer_runtime(bridge, current_digest, state):
     if descriptor != manifest:
         raise CustodyError('native-source-installer-partial-runtime-preserved')
     if descriptor:
-        runtime, checksum = RuntimeCustody(bridge).inspect()
+        from pixel_access_bridge import LaunchdAccessBridge
+        lease = LaunchdAccessBridge._native_runtime_lease(bridge)
+        qualifier = lease.custody if lease is not None else RuntimeCustody(bridge)
+        runtime, checksum = RuntimeCustody.inspect(qualifier)
         if Path(runtime['runtimeRoot']) != root / 'runtime':
             raise CustodyError('native-source-installer-old-runtime-changed')
         return runtime, checksum
