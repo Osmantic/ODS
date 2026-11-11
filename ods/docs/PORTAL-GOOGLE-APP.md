@@ -173,11 +173,24 @@ and [OAuth policies](https://developers.google.com/identity/protocols/oauth2/pol
 The code does not register or pay for an application, certify verification,
 bypass an unverified-app screen or guarantee a provider will accept a client.
 
-A reviewed release/deployment process must provision the client with appropriate
-source custody; Root ownership alone is not proof of publisher provenance. This
-foundation neither provisions nor deletes that operator-managed application
-configuration. It contains no per-user tokens. Personal sign-ins remain owned
-by the broker's separate cleanup lifecycle.
+The standard installer can provision a release client after maintainer review.
+The reviewed source pins its stable release tag, SHA-256 digest, Google project,
+Desktop client ID, and exact permitted scopes in `google_app.RELEASE_CLIENT`.
+The pin is currently disabled. A source checkout without a pin does not attempt
+a download. The release default lives alongside the operator configuration in
+`/etc/ods` (canonical `/private/etc/ods` on macOS). A local operator file takes
+priority. Personal tokens remain in the broker's separate store.
+
+Before enabling the pin, record Google's branding and scope approvals and
+confirm the intended release packaging as part of the review. Use only the
+approved Desktop registration. Stage its canonical envelope using
+`google_app.release_payload` with the downloaded Google JSON and record only
+its hash and public identifiers in the source review. Keep the actual envelope
+outside Git. The [signed release process](SIGNED_SOURCE_RELEASES.md) verifies
+the bytes and adds them to the draft candidate. Qualify managed consent, a read
+operation, the separately enabled write features, and disconnect on clean
+Windows/WSL and native macOS installs. Use synthetic email and calendar data.
+Check ordinary download and consent again after release publication.
 
 Controlled-provider HTTP journeys exercise both managed and legacy sign-in,
 including callback rejection, one exchange, activation and withdrawal. They

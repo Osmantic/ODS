@@ -5579,6 +5579,11 @@ def _recovery_main(argv):
     return 0
 
 
+def _provision_google_release():
+    from pixel_connections.google_app import provision_for_install
+    provision_for_install()
+
+
 def _reprove_recovered_access(owner_name):
     from pixel_macos_custody import protected_bytes
     if sys.platform != 'darwin' or os.geteuid() != 0:
@@ -5716,6 +5721,8 @@ def _migration_main(argv):
             current_digest=args.current_bundle_digest, services_bundle=args.services_bundle,
             services_digest=args.services_digest, source_ref=args.pixel_source_ref, native_transport=transport)
         outcome = migrate_install(plan, args.source) if args.activate else 'planned'
+        if outcome == 'active':
+            _provision_google_release()
     except InstallError as error:
         print('error: ' + error.code, file=sys.stderr)
         if error.code in SANDBOX_RETIREMENT_GUIDANCE:
@@ -5818,11 +5825,14 @@ def main(argv=None):
             print(json.dumps(verify_initial_install(plan), sort_keys=True, separators=(',', ':')))
         elif args.activate_upgrade:
             outcome = upgrade_install(plan, args.source)
+            if outcome == 'active':
+                _provision_google_release()
             print(json.dumps({'operation': 'runtime-upgrade', 'status': outcome,
                               'runtimeBundleDigest': plan['runtime_bundle']['digest']},
                              sort_keys=True, separators=(',', ':')))
         elif args.install:
             install(plan, args.source)
+            _provision_google_release()
         else:
             # Environment assignments may contain credentials. Only emit the
             # nonsecret deployment identity, never the complete launchd argv.

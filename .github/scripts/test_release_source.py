@@ -1,5 +1,6 @@
 """Release archive and trust-boundary tests; no release is created or published."""
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -137,6 +138,46 @@ def test_archive_refuses_symlink_entries(repo, tmp_path):
         release.package_source(root, identity, tmp_path / 'bad-archive')
 
 
+@pytest.mark.parametrize('selection', ['disabled', 'other-tag', 'matched', 'wrong-payload', 'no-payload'])
+def test_exact_tag_only_attaches_the_reviewed_google_runtime(repo, tmp_path, monkeypatch, selection):
+    root, identity = repo
+    identity['tag'] = 'v9.0.0'
+    payload = b'synthetic exact payload, not a Google client'
+    pin = None if selection == 'disabled' else {
+        'tag': 'v9.0.1' if selection == 'other-tag' else identity['tag'],
+        'sha256': hashlib.sha256(payload).hexdigest(),
+    }
+    helper = root / 'ods/bin/pixel_connections/google_app.py'
+    helper.parent.mkdir(parents=True)
+    helper.write_text(f'RELEASE_CLIENT = {pin!r}\nraise AssertionError("must never execute archived code")\n')
+    release.git(root, 'add', '.')
+    release.git(root, 'commit', '-m', 'Review the release pin')
+    identity['commit'] = release.git(root, 'rev-parse', 'HEAD').decode().strip()
+    output = tmp_path / 'dist'
+    release.package_source(root, identity, output)
+    (output / 'source.spdx.json').write_text(json.dumps({'spdxVersion': 'SPDX-2.3', 'documentNamespace': 'fixture'}))
+    key = 'ODS_PORTAL_GOOGLE_RELEASE_PAYLOAD'
+    if selection == 'no-payload':
+        monkeypatch.delenv(key, raising=False)
+    else:
+        monkeypatch.setenv(key, 'other private bytes' if selection == 'wrong-payload' else payload.decode())
+    asset = output / 'portal-google-desktop.json'
+    if selection in ('wrong-payload', 'no-payload'):
+        with pytest.raises(ValueError, match='absent or does not match'):
+            release.finalize(output)
+        assert not asset.exists()
+        return
+    release.finalize(output)
+    manifest = json.loads((output / 'release-manifest.json').read_text())
+    assert asset.is_file() == (selection == 'matched')
+    assert (asset.name in manifest['files']) == asset.is_file()
+    if asset.is_file():
+        assert asset.read_bytes() == payload
+        assert f'{pin["sha256"]}  {asset.name}' in (output / 'SHA256SUMS').read_text()
+        with zipfile.ZipFile(next(output.glob('*.zip'))) as archive:
+            assert asset.name not in archive.namelist()
+
+
 def test_release_job_is_tag_only_pinned_and_draft_only():
     config = yaml.load((ROOT / '.github/workflows/release-provenance.yml').read_text(), Loader=yaml.BaseLoader)
     assert set(config['on']) == {'push', 'workflow_dispatch'}
@@ -179,7 +220,7 @@ def test_release_artifacts_are_attempt_bound_and_never_upload_the_extracted_sour
         assert '${{ github.run_attempt }}' in upload['with']['name']
         assert upload['with']['if-no-files-found'] == 'error'
     paths = config['jobs']['prepare']['steps'][-1]['with']['path'].splitlines()
-    assert len(paths) == 5
+    assert len(paths) == 6
     assert all(not path.endswith('/source') and not path.endswith('/*') for path in paths)
     download = config['jobs']['attest']['steps'][0]['with']
     assert download['name'] == '${{ needs.prepare.outputs.artifact }}'
@@ -187,7 +228,8 @@ def test_release_artifacts_are_attempt_bound_and_never_upload_the_extracted_sour
 
 @pytest.mark.skipif(sys.platform == 'win32' or not shutil.which('bash'), reason='Executes the Ubuntu release shell step')
 @pytest.mark.parametrize('damage', [None, 'tampered', 'wrong-commit', 'missing-bundle'])
-def test_draft_shell_checks_downloaded_evidence_before_release_create(repo, tmp_path, damage):
+@pytest.mark.parametrize('with_google', [False, True])
+def test_draft_shell_checks_downloaded_evidence_before_release_create(repo, tmp_path, damage, with_google):
     root, identity = repo
     source = tmp_path / 'artifact'
     release.package_source(root, identity, source)
@@ -195,6 +237,12 @@ def test_draft_shell_checks_downloaded_evidence_before_release_create(repo, tmp_
     if damage == 'wrong-commit':
         (source / 'source-identity.json').write_text(json.dumps(dict(identity, commit='a' * 40)))
     release.finalize(source)
+    google_asset = source / 'portal-google-desktop.json'
+    if with_google:
+        google_asset.write_bytes(b'synthetic installed-app runtime payload')
+        sums = source / 'SHA256SUMS'
+        with sums.open('a') as handle:
+            handle.write(f'{release.digest(google_asset)}  {google_asset.name}\n')
     (source / 'provenance.sigstore.jsonl').write_text('fixture only, never accepted as real provenance')
     if damage == 'tampered':
         next(source.glob('*.zip')).write_bytes(b'tampered')
@@ -229,6 +277,8 @@ else: raise AssertionError(a)
     completed = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
     assert (completed.returncode == 0) is (damage is None), completed.stderr
     assert call.exists() is (damage is None)
+    if call.exists():
+        assert (google_asset.name in json.loads(call.read_text())) is with_google
 
 
 def test_real_repository_source_can_be_packaged(tmp_path):
