@@ -155,9 +155,9 @@ def test_deployment_client_is_resolved_inside_the_existing_root_lock(managed, mo
     held = []
 
     @contextlib.contextmanager
-    def locked():
+    def locked(*, wait_seconds=0):
         assert not held, 'A managed sign-in must not acquire a nested Root lock'
-        with original_lock():
+        with original_lock(wait_seconds=wait_seconds):
             held.append(True)
             try:
                 yield

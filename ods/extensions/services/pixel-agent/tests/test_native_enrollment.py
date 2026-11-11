@@ -47,7 +47,7 @@ def owner(world, monkeypatch):
     world.lock = threading.Lock()
 
     @contextlib.contextmanager
-    def locked():
+    def locked(*, wait_seconds=0):
         bridge.state.mkdir(mode=0o700, exist_ok=True)
         assert world.lock.acquire(blocking=False), 'Root access lock must never be nested'
         try:

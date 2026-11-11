@@ -24,9 +24,9 @@ def owner(world, monkeypatch):
     observed = {'locked': False, 'guards': 0}
 
     @contextlib.contextmanager
-    def single_lock():
+    def single_lock(*, wait_seconds=0):
         assert not observed['locked'], 'The mutator must not acquire another Root lock'
-        with original_lock():
+        with original_lock(wait_seconds=wait_seconds):
             observed['locked'] = True
             try:
                 yield

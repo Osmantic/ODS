@@ -670,7 +670,8 @@ class FakeBridge(bridge.SystemdAccessBridge):
         self.native_key = "test"
 
     @contextlib.contextmanager
-    def locked(self):
+    def locked(self, *, wait_seconds=0):
+        # Like the real lock: a caller may wait for admission; this fake never contends.
         self.state.mkdir(mode=0o700, exist_ok=True)
         yield
 
