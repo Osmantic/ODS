@@ -45,6 +45,11 @@ FIXES = (
     ("behind", {"rate-limited", "network"}),
 )
 STATES = frozenset({"not-connected", "first-sync", "connected"} | {name for name, _classes in FIXES})
+# The Root bound of one native Mac status read; the Edge, host relay and
+# Dashboard wait slightly longer. On an M4 Mac mini with the shipped 34,651-entry
+# runtime, a read without Source state measured 32 s idle (five deployment and
+# three bundle proofs after an update), and at least 2.3 times longer under load.
+NATIVE_STATUS_SECONDS = 90
 
 
 class StatusError(ValueError):
@@ -427,7 +432,7 @@ def native_report(bridge, *, now: datetime | None = None) -> dict[str, Any]:
     from . import source_backend
     # Physical macOS must repeatedly qualify the installed runtime and its
     # ACLs. Keep the read bounded while allowing that proof to finish on disk.
-    with bridge.bounded(90), bridge.locked():
+    with bridge.bounded(NATIVE_STATUS_SECONDS), bridge.locked():
         bridge.discover()
         observed = source_backend.native_status_projection(bridge)
         paths = observed['paths']
