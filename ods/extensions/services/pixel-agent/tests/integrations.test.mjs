@@ -133,6 +133,11 @@ test('the tools match the declared names and keep schemas small enough for the m
   const notes = tools.find(item => item.name === 'pixel_ods_notes').description;
   assert.match(notes, /"my note" or a note path such as Projects\/Plan\.md, use this tool \(its write action saves\)/);
   assert.match(notes, /Portal's own read, write and edit tools reach only its workspace, never the vault/);
+  // The same fleet runs then called prepare (a silent request) for "add this line": under Ask first the
+  // owner's phone got no approval notice. write is the call for any owner change; prepare only on request.
+  assert.match(notes, /When the owner asks to change a note, call write under every policy/);
+  assert.match(notes, /Ask first returns an approval request and notifies the owner/);
+  assert.match(notes, /prepare is only for an owner who asks you to prepare a change without saving it/);
 });
 
 test('explicit approval requests cannot fall back to an executable write', async () => {
