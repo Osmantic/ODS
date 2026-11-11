@@ -216,15 +216,16 @@ def test_a_transition_busy_apply_is_a_definite_refusal_the_caller_rolls_back(con
     assert calls.count('model-apply')==1
 
 
-def test_a_transition_busy_apply_stays_uncertain_when_status_no_longer_shows_the_hold(controller,monkeypatch):
+def test_a_transition_busy_apply_stays_uncertain_when_status_no_longer_shows_this_hold(controller,monkeypatch):
+    # Only the exact hold proves the refusal changed nothing; another owner's hold does not.
     _,state,calls,call=controller
     tx=host._begin_pixel_model_transaction({'PIXEL_OPENWEBUI_KEY':'configured'})
-    def busy_after_apply(operation,request=None,*,config):
+    def busy_and_reowned(operation,request=None,*,config):
         if operation=='model-apply':
-            state.update(status='applied',contract=copy.deepcopy(request['target']))
+            state.update(transactionId='f'*64)
             raise host._PixelModelTransactionRejected('busy',code='transition-busy')
         return call(operation,request,config=config)
-    monkeypatch.setattr(host,'_runtime_model_control',busy_after_apply)
+    monkeypatch.setattr(host,'_runtime_model_control',busy_and_reowned)
     with pytest.raises(host._PixelModelTransactionUncertain):tx.apply(NEW)
     journal=json.loads(host._pixel_model_journal_path().read_text())
     assert journal['phase']=='applying' and journal['target']==NEW
