@@ -367,7 +367,7 @@ are the questions it doesn't answer. The full guide is
 
 ### Portal asks me to approve a change it used to make by itself
 
-**Cause:** Portal has Full Access. While it does, ODS pauses the private calendar changes Portal may make without asking, so each one waits for your approval.
+**Cause:** Portal has Full Access. While it does, ODS pauses the private calendar changes Portal may make without asking, so each one waits for your approval. Full Access also lets Portal run commands as your account, which is enough to approve its own changes, so switch back to Sandbox when you don't need it.
 
 **Fix:** approve it in **Settings, Connected apps**, or switch Portal back to Sandbox in **Portal permissions** to let it make them by itself again. If they still wait after switching back, press **Finish** on the Google card.
 

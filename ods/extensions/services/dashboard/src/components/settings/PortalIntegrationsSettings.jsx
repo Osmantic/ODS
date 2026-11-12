@@ -416,7 +416,7 @@ export default function PortalIntegrationsSettings() {
       {error && !dirty && <p role="alert" className="text-sm text-red-400 whitespace-pre-wrap break-words">{error}</p>}
       {credentialCleared && <p role="status" className="text-sm text-theme-text-muted">An integration destination changed. Re-enter any cleared credential for the new destination.</p>}
       {notice && <p role="status" className="text-sm text-theme-text-muted">{notice}</p>}
-      <p role="note" className="text-xs text-theme-text-muted">Off, Ask first and Allowed apply to these integration tools. Full Access also lets Portal use your account’s files and commands, which can reach locally stored settings and secrets. Review <Link to="/settings?section=access" className="underline">Portal access</Link> before adding credentials.</p>
+      <p role="note" className="text-xs text-theme-text-muted">Off, Ask first and Allowed apply to these integration tools. Full Access also lets Portal use your account’s files and commands, which can reach locally stored settings and secrets and approve its own Ask first requests. Review <Link to="/settings?section=access" className="underline">Portal access</Link> before adding credentials.</p>
     </section>
 
     {!open && <Hub tiles={tiles} view={view} edited={marked} onOpen={openView} />}

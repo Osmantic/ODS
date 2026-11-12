@@ -134,6 +134,11 @@ stops them the moment you turn Full Access on, and Portal asks for your approval
 instead. They start again when you switch Portal back to Sandbox. Your choice
 stays on the card throughout.
 
+Approval is not a safeguard against Portal itself while it has Full Access:
+Portal then runs commands as your account, and that is enough to approve its
+own calendar changes and Gmail drafts. Whatever it changes during Full Access
+stays changed after you switch back to Sandbox.
+
 **Changes Portal made by itself**, under the Google card, lists this week's,
 newest first. **Undo** removes an event Portal added, or moves an event back to
 where it was. ODS undoes a change only while the event is exactly as Portal left

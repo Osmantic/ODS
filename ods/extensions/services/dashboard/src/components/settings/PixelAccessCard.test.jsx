@@ -246,4 +246,6 @@ it('names connected apps in the Full Access confirmation', async () => {
   const dialog = screen.getByRole('dialog', {name: 'Confirm Full Access'})
   expect(dialog).toHaveTextContent('Connected apps keep working. If Google is connected, Portal could also read the Google sign-in')
   expect(dialog).toHaveTextContent('Calendar changes Portal makes by itself wait for your approval until you switch back to Sandbox.')
+  expect(dialog).toHaveTextContent('Portal could also approve its own Ask first requests for its integrations')
+  expect(dialog).toHaveTextContent('Whatever Portal changes while it has Full Access stays changed after you switch back to Sandbox.')
 })

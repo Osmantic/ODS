@@ -183,7 +183,9 @@ it('warns on the card while Full Access is on', async () => {
     'GET /api/pixel/access-mode': [200, {configured_mode: 'full-access'}]})
   render(<ConnectedApps />)
   const note = await screen.findByText(/Full Access is on. Connected apps keep working/)
-  expect(note).toHaveTextContent('approving its own calendar changes')
+  expect(note).toHaveTextContent('approving its own calendar changes, Gmail drafts and Ask first requests')
+  // Approving needs only the owner's account; Docker (root) is what reaching the Google sign-in needs.
+  expect(note).toHaveTextContent('If that account can use Docker, Portal can also act as root on this machine, which includes reading the Google sign-in')
   expect(note).not.toHaveTextContent('by itself')
 })
 
