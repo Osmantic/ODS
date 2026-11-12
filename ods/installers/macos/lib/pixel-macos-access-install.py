@@ -4226,6 +4226,7 @@ def _prepare_source_upgrade_journal(plan, bridge, records, *, context_raw, backe
     if intent['mode'] == 'absent':
         if backend is not None:
             raise InstallError('native-source-installer-mode-changed')
+        print('Checking native Source absence before staging.', file=sys.stderr, flush=True)
         proof = custody.native_absent_for_installer(bridge, transaction=transaction)
     elif intent['mode'] == 'withdrawal':
         if backend is None or backend.bridge is not bridge:
@@ -4248,6 +4249,7 @@ def _prepare_source_upgrade_journal(plan, bridge, records, *, context_raw, backe
     if protected_bytes(context, limit=_upgrade.JOURNAL_LIMIT) != context_raw:
         raise InstallError('native-source-installer-context-changed')
     journal = _upgrade.RecoveryJournal.create(bridge.state / 'runtime-upgrade.json', value)
+    print('Preserving native Source installer history.', file=sys.stderr, flush=True)
     _rollover_source_installer_history(bridge, transaction, selected=selected, publisher=publisher)
     if publisher is not None:
         receipt = publisher.withdraw_installer_generation(selected, transaction=transaction, intent=proof)
@@ -4255,6 +4257,7 @@ def _prepare_source_upgrade_journal(plan, bridge, records, *, context_raw, backe
             publisher.verify_installer_withdrawal(selected, transaction=transaction, intent=intent, receipt=receipt)
         journal.bind_source_withdrawal(receipt, verify_withdrawal=verify_withdrawal, **options)
     else:
+        print('Rechecking native Source absence against its preparation receipt.', file=sys.stderr, flush=True)
         custody.native_verify_installer_absence(bridge, proof, transaction=transaction)
     return journal
 
@@ -5233,6 +5236,7 @@ def _execute_upgrade_install(plan, source):
             journal = _upgrade.RecoveryJournal.create(bridge.state / 'runtime-upgrade.json', value)
         # Staging changes no live references; failures retain the exact journal
         # and leave recovery to a verified operator command, not a fresh install.
+        print('Publishing the verified native Pixel runtime.', file=sys.stderr, flush=True)
         published = _bundle.publish(selection['source'], expected_digest=selection['digest'])
         if str(published) != selection['destination']:
             raise InstallError('native-bundle-destination-changed')
