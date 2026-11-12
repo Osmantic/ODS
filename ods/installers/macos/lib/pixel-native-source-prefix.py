@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import stat
 import sys
@@ -35,6 +36,32 @@ def require(ok, code):
 
 def encoded(value):
     return (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()
+
+
+def owner_relay_key(settings, path):
+    """The controller pins an owner-private credential; it is not a Root file."""
+    owner = pwd.getpwnam(settings['owner'])
+    expected = settings.get('edge_owner_key_sha256')
+    require(owner.pw_uid > 0 and type(expected) is str and re.fullmatch('[a-f0-9]{64}', expected),
+        'prefix-owner-credential-binding-required')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        require(stat.S_ISREG(before.st_mode) and before.st_uid == owner.pw_uid and before.st_nlink == 1
+            and stat.S_IMODE(before.st_mode) == 0o600 and 32 <= before.st_size <= 4096,
+            'prefix-owner-credential-unsafe')
+        body = stream.read(4097)
+        after = os.fstat(stream.fileno())
+        stamp = lambda s: (s.st_dev, s.st_ino, s.st_uid, s.st_gid, s.st_mode,
+            s.st_nlink, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+        require(stamp(before) == stamp(after) and len(body) <= 4096
+            and hashlib.sha256(body).hexdigest() == expected, 'prefix-owner-credential-changed')
+    try:
+        key = body.decode('ascii')
+    except UnicodeError:
+        raise PrefixError('prefix-owner-credential-invalid') from None
+    require(re.fullmatch(r'[!-~]{32,4096}', key), 'prefix-owner-credential-invalid')
+    return key
 
 
 def inode(info):
@@ -261,7 +288,7 @@ def main():
     require(len(raw) <= 16384, 'prefix-selection-invalid')
     expected = json.loads(raw, object_pairs_hook=c._native_pairs)
     selection_id(expected)
-    key = protected_bytes('/private/etc/ods/pixel-access-relay.key').decode().strip()
+    key = owner_relay_key(settings, '/private/etc/ods/pixel-access-relay.key')
     bridge = LaunchdAccessBridge(Path(settings['install_dir']), key,
         gateway_target=settings['gateway_target'], gateway_plist=settings['gateway_plist'],
         gateway_process=settings['gateway_process'], state=Path(settings['state_dir']),

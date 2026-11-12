@@ -65,6 +65,9 @@ receipts. These inputs constrain the selection; they grant no authority.
 Under the existing Root lock, the installed bridge requalifies the current
 deployment, kit, history, complete Directory Service identity and preparation
 binding. The custody receipt must still have no gate inode or child records.
+The relay credential keeps its existing owner-private ownership and mode;
+the helper verifies its FD metadata and the digest pinned by Root's settings,
+rather than treating that owner credential as a Root-owned file.
 The selected directory must remain empty, Root-owned, mode 0700 and without
 an ACL. Later lifecycle records, connected-account data, logs, loaded Source
 jobs, Source processes, changed images or unknown Source metadata are refused.
