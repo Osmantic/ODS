@@ -592,6 +592,18 @@ comes after the Source items are archived and before any Core path moves. The
 Core move now accepts that shipped parent for its one child, as described
 under Upgrade and preservation. The retirement has not completed there yet.
 
+On 12 November 2026 the retirement and a fresh install of `2015b0a69` completed
+on that Mac mini, the install in 9 minutes 11 seconds with every service
+healthy. A first attempt had stopped at `initial-install-port-unavailable` with
+nothing listening: the old gateway's connections had left TIME_WAIT rows on
+127.0.0.1:18789 that never expired. The initial port check now refuses a port
+only when a loopback connection is accepted or a reuse-address bind fails, as
+the Node listeners bind. The journeys could not run on that install. The Mac
+had been up 49 days 22 hours, past macOS's 2^32 ms TCP clock wrap: TIME_WAIT
+rows stopped expiring Mac-wide, and about one new loopback connection to the
+gateway port in eight hung in SYN_SENT, so the first Portal chat's reply never
+reached the ingress. Only a restart, with the FileVault password, clears that.
+
 Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
 notifications and reboot acceptance remain pending. The Mac has not been
 restarted for this qualification. With explicit owner approval, a separate local
