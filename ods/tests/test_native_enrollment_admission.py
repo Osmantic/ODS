@@ -603,8 +603,15 @@ def test_plain_model_hold_discovers_its_owner_before_reading_a_closed_source_pla
         discovered.append(allow_installing)
         bridge.owner = account
 
+    def inspect(*, allow_installing=False):
+        # The guard admitted the closed plan; Root's own state checks follow.
+        assert bridge.owner is account
+        raise access.AccessError('inspection-reached')
+
     monkeypatch.setattr(bridge, 'discover', discover)
+    monkeypatch.setattr(bridge, 'inspect', inspect)
     assert not hasattr(bridge, 'owner')
-    result = bridge.model_begin()
-    assert result['status'] == 'held' and discovered[0] is True
+    with pytest.raises(access.AccessError, match='^inspection-reached$'):
+        bridge.model_begin()
+    assert discovered == [True]
     assert manager.journal() == closed
