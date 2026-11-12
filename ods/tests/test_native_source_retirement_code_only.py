@@ -48,8 +48,20 @@ def retiring(first_target, monkeypatch):
     archive.SETTINGS.write_bytes(c._native_encoded(dict(owner=n.f.bridge.owner.pw_name,
         install_dir=str(n.f.bridge.install), state_dir=str(n.metadata), openclaw_bin=str(archive.LAUNCHER))))
     archive.SETTINGS.chmod(0o600)
+    # The Mac's run directory: macOS ships /private/var/run as root:daemon 0775.
+    # Only that owner/group observation and the Darwin ACL query are modeled.
+    run = n.world / 'var/run'
+    n.run_child = run / core.RUN_CHILD
+    n.run_child.mkdir(parents=True)
+    (n.run_child / 'control.sock').write_bytes(b'')
+    run.chmod(0o775)
+    info = run.stat()
+    n.owners[(info.st_dev, info.st_ino)] = (0, core.RUN_GID)
+    monkeypatch.setattr(core, 'RUN', run)
+    monkeypatch.setattr(core, 'DIRECTORIES', (str(n.run_child),))
+    monkeypatch.setattr(mac, '_require_no_acl', lambda fd: None)
     previous = mac.protected_directory
-    allowed = {n.world, n.metadata, n.kit.parent, units, archive.ARCHIVE_ROOT}
+    allowed = {n.world, n.metadata, n.kit.parent, units, archive.ARCHIVE_ROOT, run.parent}
     @contextmanager
     def directory(path, **kwargs):
         path = Path(path)
@@ -177,11 +189,13 @@ def test_mac_stop_point_resumes_and_retires_with_the_ledger_archived(retiring, m
     saved = n.archive / archive._destination(index)
     assert not n.ledger.exists() and (saved.read_bytes(), saved.stat().st_ino) == ledger
     assert {name for name in os.listdir(n.metadata) if name.startswith(archive._SOURCE_PREFIXES)} == {archive.CURSOR}
-    # The Core phase moves the remaining Core records and settings, as retire() would.
+    # The Core phase moves the run directory, the remaining Core records and
+    # the settings, as retire() would.
     account = ops_account(n, monkeypatch)
     leftovers = [n.metadata / name for name in sorted(os.listdir(n.metadata))
         if name not in core.RETAIN | {'lock', 'retirement.json', archive.CURSOR}]
     assert leftovers and all(core.state_name_allowed(path.name) for path in leftovers)
+    run_child = n.run_child.stat().st_ino
     lock = os.open(n.metadata / 'lock', os.O_RDWR | os.O_NOFOLLOW)
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     rename, hit = os.rename, []
@@ -194,7 +208,7 @@ def test_mac_stop_point_resumes_and_retires_with_the_ledger_archived(retiring, m
     monkeypatch.setattr(os, 'rename', renamed)
     try:
         assert core._source_core_archive(n.archive, transaction=n.transaction, witness=n.witness,
-            paths=[archive.SETTINGS, *leftovers]) == {'status': 'retired', 'archive': str(n.archive)}
+            paths=[archive.SETTINGS, n.run_child, *leftovers]) == {'status': 'retired', 'archive': str(n.archive)}
         with pytest.raises(OSError, match='final lock reply loss'):
             core._source_finish_controls(n.archive, transaction=n.transaction, witness=n.witness)
     finally: os.close(lock)  # The interrupted caller no longer owns the flock.
@@ -210,6 +224,44 @@ def test_mac_stop_point_resumes_and_retires_with_the_ledger_archived(retiring, m
     assert (n.archive / 'source-witness.json').read_bytes() == n.raw
     assert json.loads((n.archive / 'receipt.json').read_bytes())['status'] == 'retired'
     assert (saved.read_bytes(), saved.stat().st_ino) == ledger
+    assert not n.run_child.exists() and (n.archive / 'item-1').stat().st_ino == run_child
+    assert (n.archive / 'item-1/control.sock').is_file()
+
+
+def test_run_directory_changed_after_the_core_plan_stops_before_its_rename(retiring, monkeypatch):
+    n = retiring
+    progress = archive.archive_begin(transaction=n.transaction, archive_id=n.archive.name)
+    while progress['phase'] != 'core':
+        progress = archive.archive_step(transaction=n.transaction)
+    ops_account(n, monkeypatch)
+    leftovers = [n.metadata / name for name in sorted(os.listdir(n.metadata))
+        if name not in core.RETAIN | {'lock', 'retirement.json', archive.CURSOR}]
+    save, hit = archive._save_at, []
+    def saved(directory, name, value, **kwargs):
+        result = save(directory, name, value, **kwargs)
+        if not hit and name == archive.CORE_PLAN and value['next'] == 0:
+            hit.append(True)
+            raise OSError('invented Core plan reply loss')
+        return result
+    monkeypatch.setattr(archive, '_save_at', saved)
+    lock = os.open(n.metadata / 'lock', os.O_RDWR | os.O_NOFOLLOW)
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(OSError, match='Core plan reply loss'):
+            core._source_core_archive(n.archive, transaction=n.transaction, witness=n.witness,
+                paths=[n.run_child, archive.SETTINGS, *leftovers])
+        monkeypatch.setattr(archive, '_save_at', save)
+        # A different directory now holds the planned name.
+        n.run_child.rename(n.run_child.with_name('moved-aside'))
+        n.run_child.mkdir()
+        before = files(n)
+        with pytest.raises(ValueError, match='native-source-retirement-core-image-changed'):
+            core._source_core_archive(n.archive, transaction=n.transaction, witness=n.witness)
+    finally: os.close(lock)
+    plan = json.loads((n.archive / archive.CORE_PLAN).read_bytes())
+    assert hit and plan['next'] == 0 and plan['plan'][0]['source'] == str(n.run_child)
+    assert files(n) == before and archive.SETTINGS.exists()
+    assert not [name for name in os.listdir(n.archive) if name.startswith('item-')]
 
 
 @pytest.mark.parametrize('fault', ['uncommitted', 'other-nonce', 'kit-inode', 'before-image', 'schema', 'mode',
