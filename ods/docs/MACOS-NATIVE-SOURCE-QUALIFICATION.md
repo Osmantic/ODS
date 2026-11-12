@@ -98,9 +98,15 @@ beside the candidate. A private receipt is sealed before an exclusive move
 preserves the unrecorded inode in protected quarantine; it is never adopted as
 Source code. Contents, unknown names, changed recorded files, conflicting
 receipts or a changed hold are refusals. The existing bounded publication still
-has to complete separately; quarantine alone is not Source readiness. Native
-retirement does not yet inventory these preserved objects, so an uninstall
-refuses them as unknown protected state.
+has to complete separately; quarantine alone is not Source readiness. Their
+`.ods-` names lie outside the Source prefixes, so the typed Source retirement
+inventory never claims them. Native retirement moves each exact receipt,
+directory and empty file into its archive with the other Core deployment
+records, after the Source prefix when one exists, by rename and with its inode
+kept. It never reads or hashes them, so they are never retirement authority.
+The writer's temporary names and look-alike names remain unknown protected
+state, and an unfinished quarantine still holds its recovery journal, which
+blocks retirement.
 
 Before stopping Core, the operation seals private context/journal copies and a
 fixed preservation manifest. Only after every service is confirmed stopped may

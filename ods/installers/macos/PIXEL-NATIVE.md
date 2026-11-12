@@ -1432,8 +1432,15 @@ Retirement recognizes the model coordinator's retained backup and completion
 records: `model-before.json`, `model-route-completed.json`,
 `model-promotion-completed.json`, and the legacy `model-completed.json`.
 They are archived with the old deployment under the existing protected-file
-checks. Pending access/model transitions, policy activation, runtime upgrades,
-and unknown state still block retirement before services or containers stop.
+checks. The records of an explicit `recover-runtime --quarantine-empty-source-stage`
+are archived with it too: the sealed `.ods-empty-source-stage-<nonce>.json`
+receipt with its empty `.ods-quarantined-source-kit-<nonce>` directory, and each
+empty `.ods-quarantined-source-file-<nonce>-<tag>.file` with its `.json` receipt.
+They move by rename and keep their inodes; retirement never reads them or binds
+them as authority. Pending access/model transitions, policy
+activation, runtime upgrades, and unknown state, including the quarantine
+writer's temporary names, still block retirement before services or containers
+stop.
 
 The uninstaller retires native services before removing the ODS tree. It keeps
 root-protected recovery archives, stops and renames the exact owned sandbox,

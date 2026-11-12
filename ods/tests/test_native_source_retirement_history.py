@@ -91,6 +91,36 @@ def test_actual_inert_kit_inventory_is_code_only_without_generation_or_private_s
     assert set(p.name for p in n.kit.iterdir()) == {'source-kit.json', 'broker.py', 'source-broker.env'}
 
 
+def test_code_only_inventory_never_claims_quarantined_source_stage(material, monkeypatch):
+    """The typed Source inventory neither adopts nor refuses the Core-archived quarantine records."""
+    n = material
+    n.world.chmod(0o755)
+    descriptor = json.loads(runtime_custody.DESCRIPTOR.read_bytes())
+    monkeypatch.setattr(c, 'NATIVE_RUNTIME_DESCRIPTOR', runtime_custody.DESCRIPTOR)
+    monkeypatch.setattr(c, 'NATIVE_RUNTIME_MANIFEST', Path(descriptor['manifest']))
+    monkeypatch.setattr(c, 'NATIVE_RUNTIMES', n.f.root.parent)
+    monkeypatch.setattr(n.f.bridge, 'state', n.metadata, raising=False)
+    value = retirement.code_only_inventory(n.selected)
+    nonce = '5e9bd1134ba942c08ea766f23d29df75'
+    kit = n.metadata / ('.ods-quarantined-source-kit-' + nonce)
+    kit.mkdir(mode=0o700)
+    empty = n.metadata / 'unrecorded-empty-file'
+    empty.write_bytes(b'')
+    empty.chmod(0o600)
+    info = empty.stat()
+    stem = ('.ods-quarantined-source-file-' + nonce + '-' + helper.sha(b'broker.py')[:16]
+            + '-' + format(info.st_dev, 'x') + '-' + format(info.st_ino, 'x'))
+    empty = empty.rename(n.metadata / (stem + '.file'))
+    records = [kit, empty, n.metadata / ('.ods-empty-source-stage-' + nonce + '.json'), n.metadata / (stem + '.json')]
+    for path in records[2:]:
+        path.write_bytes(b'{"sealed":true}\n')
+        path.chmod(0o600)
+    before = {path: path.stat().st_ino for path in n.metadata.iterdir()}
+    assert retirement.code_only_inventory(n.selected) == value
+    assert not any(name in json.dumps(value) for name in (path.name for path in records))
+    assert {path: path.stat().st_ino for path in n.metadata.iterdir()} == before
+
+
 def test_actual_publication_history_uses_only_ledger_derived_backups(publication):
     n = publication
     helper.publish_kit(n.selected)

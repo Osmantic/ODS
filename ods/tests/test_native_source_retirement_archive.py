@@ -286,6 +286,61 @@ def test_actual_core_prefix_and_final_controls_preserve_same_archive(archive_rea
     assert (n.archive / 'source-controller-lock').is_file() and (n.archive / 'source-cursor.json').is_file()
 
 
+def quarantined_source_stage(metadata):
+    """A finished empty-stage quarantine's kit directory, empty file and sealed receipts."""
+    nonce = '5e9bd1134ba942c08ea766f23d29df75'
+    kit = metadata / ('.ods-quarantined-source-kit-' + nonce)
+    kit.mkdir(mode=0o700)
+    orphan = metadata / 'unrecorded-empty-file'
+    orphan.write_bytes(b'')
+    orphan.chmod(0o600)
+    info = orphan.stat()  # The writer names the file by its own retained inode.
+    stem = ('.ods-quarantined-source-file-' + nonce + '-' + digest(b'source-broker.env')[:16]
+            + '-' + format(info.st_dev, 'x') + '-' + format(info.st_ino, 'x'))
+    os.rename(orphan, metadata / (stem + '.file'))
+    receipts = [metadata / ('.ods-empty-source-stage-' + nonce + '.json'), metadata / (stem + '.json')]
+    for path in receipts:
+        path.write_bytes(b'{"sealed":"receipt bytes are never parsed by retirement"}\n')
+        path.chmod(0o600)
+    return [kit, metadata / (stem + '.file'), *receipts]
+
+
+def test_actual_core_prefix_archives_quarantined_source_stage_unread(archive_ready, monkeypatch):
+    n = archive_ready
+    records = quarantined_source_stage(n.metadata)
+    identity = {path.name: (path.stat().st_dev, path.stat().st_ino) for path in records}
+    previous_read = os.read
+    def read(fd, count):
+        info = os.fstat(fd)
+        assert (info.st_dev, info.st_ino) not in identity.values(), 'quarantine records are never read'
+        return previous_read(fd, count)
+    monkeypatch.setattr(os, 'read', read)
+    paths, lock = core_prefix(n, monkeypatch)
+    # The typed Source prefix neither claims nor refuses them; they stay live.
+    cursor = json.loads((n.metadata / archive.CURSOR).read_bytes())
+    assert cursor['phase'] == 'core' and not {row['name'] for row in cursor['plan']} & set(identity)
+    assert all(path.exists() for path in records)
+    try:
+        result = core._source_core_archive(n.archive, transaction=n.transaction, witness=n.witness,
+            paths=[*paths, *records])
+        assert result == {'status': 'retired', 'archive': str(n.archive)}
+        plan = json.loads((n.archive / archive.CORE_PLAN).read_bytes())
+        saved = {Path(row['source']).name: (n.archive / ('item-' + str(index)), row['image'])
+            for index, row in enumerate(plan['plan'])}
+        for path in records:
+            target, image = saved[path.name]
+            assert not os.path.lexists(path)
+            assert (target.stat().st_dev, target.stat().st_ino) == identity[path.name]
+            assert image['sha256'] is None and image['kind'] == ('directory' if path == records[0] else 'file')
+        assert saved[records[0].name][0].is_dir() and not list(saved[records[0].name][0].iterdir())
+        assert core._source_finish_controls(n.archive, transaction=n.transaction, witness=n.witness) == result
+    finally: os.close(lock)
+    assert set(p.name for p in n.metadata.iterdir()) == {'source-identity.json', 'ops-identity.json', 'ops-identity.lock'}
+    # The Root witness never binds them, and its Core reader would refuse them as bindings.
+    assert not {Path(path).name for path in n.witness['hashes']} & set(identity)
+    assert not any(archive._core_name(name) for name in identity)
+
+
 def test_actual_core_and_final_control_lost_replies_reuse_one_plan(archive_ready, monkeypatch):
     n = archive_ready
     paths, lock = core_prefix(n, monkeypatch)

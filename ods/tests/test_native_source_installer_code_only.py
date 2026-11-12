@@ -1,6 +1,7 @@
 """Canonical inert-code upgrade through the actual installer and publisher."""
 # ruff: noqa: E402,F401,F811
 import hashlib
+import importlib.util
 import json
 from contextlib import contextmanager
 import os
@@ -19,8 +20,23 @@ from test_native_source_installer_first_kit import (first_target, material, nati
 from test_native_source_installer_withdrawal import files
 from test_macos_pixel_access_install import installer
 from pixel_connections import custody as c, source_backend, native_executor, status
+from pixel_connections import native_retirement
 import pixel_access_bridge as access_bridge
 import pixel_macos_custody as mac
+
+_UNINSTALL = importlib.util.spec_from_file_location('code_only_quarantine_retirement',
+    Path(__file__).resolve().parents[1] / 'installers/macos/lib/pixel-native-uninstall.py')
+uninstall = importlib.util.module_from_spec(_UNINSTALL)
+_UNINSTALL.loader.exec_module(uninstall)
+
+
+def retired_quarantine_names(n):
+    """Native retirement archives exactly what this writer left: no Source name, no authority."""
+    names = {path.name for path in n.metadata.iterdir() if path.name.startswith('.ods-')}
+    uninstall.validate_state_names(names)
+    assert not any(name.startswith(native_retirement._SOURCE_PREFIXES) or native_retirement._core_name(name)
+                   for name in names)
+    return names
 
 
 @pytest.fixture(autouse=True)
@@ -179,6 +195,7 @@ def test_explicit_empty_stage_quarantine_keeps_inodes_and_requires_live_authorit
         finish_source_caller(n, monkeypatch)
         assert json.loads((n.metadata / 'source-installer-code-only.json').read_bytes())['phase'] == 'committed'
         assert quarantine.stat().st_ino == inode
+        assert retired_quarantine_names(n) == {quarantine.name, receipt.name}
 
 
 @pytest.mark.parametrize('first_target', ['code-only'], indirect=True)
@@ -273,6 +290,7 @@ def test_empty_unrecorded_file_is_preserved_only_with_qualified_authority(first_
         finish_source_caller(n, monkeypatch)
         assert json.loads((n.metadata / 'source-installer-code-only.json').read_bytes())['phase'] == 'committed'
         assert retained[0].stat().st_ino == orphan_inode
+        assert retired_quarantine_names(n) == {retained[0].name, receipt.name}
 
 
 def quarantine_caller(n, monkeypatch, *, hold_changes=False):
@@ -358,6 +376,7 @@ def test_first_kit_directory_left_by_expired_finish_is_quarantined_then_publishe
     assert final['candidateInode'] == [n.kit.stat().st_dev, n.kit.stat().st_ino] and n.kit.stat().st_ino != inode
     assert quarantine.stat().st_ino == inode and not list(quarantine.iterdir())
     assert not c.NATIVE_STATE.exists() and not (n.metadata / 'source-identity.json').exists()
+    assert retired_quarantine_names(n) == {quarantine.name, receipt.name}
 
 
 @pytest.mark.parametrize('first_target', [None], indirect=True)
@@ -415,6 +434,7 @@ def test_first_kit_unjournaled_empty_file_is_quarantined_then_published(first_ta
     final = json.loads((n.metadata / 'source-publication.json').read_bytes())
     assert final['phase'] == 'prepared-no-jobs' and final['candidateInode'] == record['candidateInode']
     assert retained[0].stat().st_ino == orphan_inode
+    assert retired_quarantine_names(n) == {retained[0].name, retained[0].name[:-len('.file')] + '.json'}
 
 
 # Physical cost of one protected proof on the M4 Mac mini fleet host (2026-11-11),
