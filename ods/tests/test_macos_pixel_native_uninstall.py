@@ -961,6 +961,93 @@ class RetirementRebootIntegration(unittest.TestCase):
         self.assertFalse(any(args[1] == 'bootout' for args in self.calls))
 
 
+@unittest.skipIf(sys.platform == 'win32', 'POSIX directory descriptors')
+class ShippedRunDirectory(unittest.TestCase):
+    """The Source Core move opens macOS's shipped root:daemon 0775 run directory for one child only.
+
+    A temporary tree stands in for /private/var. Only its owner/group
+    observation, the protected /private/var opener and the Darwin ACL query
+    are modeled; modes, links, inodes and the production image are real.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, str(ROOT / 'bin'))
+        import pixel_macos_custody
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.var = Path(temporary.name).resolve() / 'var'
+        self.run = self.var / 'run'
+        self.child = self.run / retirement.RUN_CHILD
+        self.child.mkdir(parents=True)
+        (self.child / 'control.sock').write_bytes(b'')
+        self.run.chmod(0o775)
+        self.owners, self.acl = {}, []
+        self.shipped(0, retirement.RUN_GID)
+        real_fstat = os.fstat
+        def fstat(fd):
+            info = real_fstat(fd)
+            if (info.st_dev, info.st_ino) not in self.owners:
+                return info
+            fields = {key: getattr(info, key) for key in dir(info) if key.startswith('st_')}
+            fields['st_uid'], fields['st_gid'] = self.owners[(info.st_dev, info.st_ino)]
+            return SimpleNamespace(**fields)
+        @contextmanager
+        def protected_directory(path, **kwargs):
+            self.assertEqual((Path(path), kwargs), (self.var, {}))
+            fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try: yield fd
+            finally: os.close(fd)
+        def require_no_acl(fd):
+            if self.acl: raise pixel_macos_custody.CustodyError('macos-custody-acl-present')
+        for patcher in (patch.object(retirement, 'RUN', self.run), patch('os.fstat', fstat),
+                patch.object(pixel_macos_custody, 'protected_directory', protected_directory),
+                patch.object(pixel_macos_custody, '_require_no_acl', require_no_acl)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def shipped(self, uid, gid):
+        info = self.run.lstat()
+        self.owners[(info.st_dev, info.st_ino)] = (uid, gid)
+
+    def image(self, path):
+        return retirement._source_core_image(path, authority=False)
+
+    def test_shipped_parent_is_opened_only_for_its_fixed_child(self):
+        info = self.child.stat()
+        self.assertEqual(self.image(self.child), dict(inode=[info.st_dev, info.st_ino], uid=info.st_uid,
+            gid=info.st_gid, mode=info.st_mode & 0o7777, kind='directory', sha256=None))
+        (self.run / 'other').mkdir()
+        with self.assertRaisesRegex(ValueError, 'native-source-retirement-run-child-refused'):
+            self.image(self.run / 'other')
+
+    def test_any_other_parent_form_is_refused(self):
+        for mode, owner in ((0o777, (0, 1)), (0o755, (0, 1)), (0o1775, (0, 1)), (0o770, (0, 1)),
+                (0o775, (501, 1)), (0o775, (0, 0)), (0o775, (0, 20))):
+            with self.subTest(mode=oct(mode), owner=owner):
+                self.run.chmod(mode)
+                self.shipped(*owner)
+                with self.assertRaisesRegex(ValueError, 'native-source-retirement-run-directory-changed'):
+                    self.image(self.child)
+        self.run.chmod(0o775)
+        self.shipped(0, retirement.RUN_GID)
+        self.acl.append(True)
+        with self.assertRaisesRegex(Exception, 'macos-custody-acl-present'):
+            self.image(self.child)
+
+    def test_symlinked_run_directory_is_refused(self):
+        real = self.var / 'elsewhere'
+        self.run.rename(real)
+        self.run.symlink_to(real.name)
+        with self.assertRaisesRegex(ValueError, 'native-source-retirement-run-directory-changed'):
+            self.image(self.child)
+
+    def test_replaced_child_no_longer_matches_its_image(self):
+        before = self.image(self.child)
+        self.child.rename(self.run / 'moved-aside')
+        self.child.mkdir()
+        self.assertNotEqual(self.image(self.child)['inode'], before['inode'])
+
+
 @unittest.skipUnless(sys.platform == 'darwin' and os.environ.get('ODS_TEST_LAUNCHD_QUARANTINE') == '1',
                      'opt-in isolated GUI launchd fixture; does not touch native Pixel jobs')
 class LivePlistQuarantine(unittest.TestCase):

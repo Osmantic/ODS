@@ -44,6 +44,12 @@ DIRECTORIES = ('/private/var/lib/ods-pixel-native-config',
     '/usr/local/libexec/ods-pixel-runtimes')
 CONFIG_NAMES = ('pixel-access.json', 'pixel-access-relay.key', 'pixel-gateway.sb',
     'pixel-gateway.full-access.sb', 'pixel-gateway.sandboxed.sb', 'pixel-access-relay.sb')
+# macOS ships its run directory as root:daemon 0775, which the root-only
+# protected-directory rule refuses. The Source-mode Core move accepts exactly
+# that shipped form, for its one fixed ODS child only (see _source_core_parent).
+RUN = Path('/private/var/run')
+RUN_CHILD = 'ods-pixel-access'
+RUN_GID = 1  # daemon
 # Source data remains outside the legacy retirement family until the typed
 # withdrawal/inventory transaction qualifies. Its presence must never yield an
 # "absent" result merely because the access configuration has disappeared.
@@ -551,8 +557,12 @@ def _source_core_allowed(path, witness):
 
 
 @contextmanager
-def _source_core_parent(path):
+def _source_core_parent(path, child):
+    """The fixed parent directory of one Core move, opened for that child only."""
     import pixel_macos_custody as custody
+    if Path(path) == RUN:
+        with _shipped_run_directory(child) as directory: yield directory
+        return
     if Path(path) != BROKER:
         with custody.protected_directory(path) as directory: yield directory
         return
@@ -567,6 +577,33 @@ def _source_core_parent(path):
             if ((info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (identity['id'], identity['id'], 0o750)
                     or os.stat(BROKER.name, dir_fd=parent, follow_symlinks=False).st_ino != info.st_ino):
                 raise ValueError('native-source-retirement-operations-home-changed')
+            yield directory
+        finally: os.close(directory)
+
+
+@contextmanager
+def _shipped_run_directory(child):
+    """macOS's own /private/var/run, opened only for the fixed ODS run directory.
+
+    macOS ships it root:daemon 0775, so protected_directory's root-only rule
+    refuses it. Only that exact form is accepted, reached from a protected
+    /private/var without following a link. The child keeps its own image
+    check, and the Core guard images it again in the archive after the rename.
+    """
+    import pixel_macos_custody as custody
+    if child != RUN_CHILD:
+        raise ValueError('native-source-retirement-run-child-refused')
+    with custody.protected_directory(RUN.parent) as parent:
+        named = os.stat(RUN.name, dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISDIR(named.st_mode):
+            raise ValueError('native-source-retirement-run-directory-changed')
+        directory = os.open(RUN.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            info = os.fstat(directory)
+            if ((info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)
+                    or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (0, RUN_GID, 0o775)):
+                raise ValueError('native-source-retirement-run-directory-changed')
+            custody._require_no_acl(directory)
             yield directory
         finally: os.close(directory)
 
@@ -597,7 +634,7 @@ def _source_core_image(path, *, opaque=False, authority=True):
     """No follow, copy or credential-body read for preserved Core data roots."""
     import pixel_macos_custody as custody
     path = Path(path)
-    with _source_core_parent(path.parent) as parent:
+    with _source_core_parent(path.parent, path.name) as parent:
         observed = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
         if stat.S_ISREG(observed.st_mode): kind = 'file'
         elif stat.S_ISDIR(observed.st_mode): kind = 'directory'
@@ -804,7 +841,7 @@ def _source_core_archive(archive, *, transaction, witness, paths=None):
             index = value['next']
             origin, saved = Path(value['plan'][index]['source']), archive / ('item-' + str(index))
             if os.path.lexists(origin):
-                with _source_core_parent(origin.parent) as parent:
+                with _source_core_parent(origin.parent, origin.name) as parent:
                     if _source_core_image(origin, opaque=origin.parent == BROKER,
                             authority=value['plan'][index]['image']['sha256'] is not None) != value['plan'][index]['image']:
                         raise ValueError('native-source-retirement-core-image-changed')

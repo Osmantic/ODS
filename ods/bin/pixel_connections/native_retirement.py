@@ -30,6 +30,7 @@ DAEMONS = Path('/Library/LaunchDaemons')
 LAUNCHER = Path('/usr/local/libexec/ods-pixel-access/openclaw-gateway-launcher')
 CURSOR = 'source-retirement-cursor.json'
 CORE_PLAN = 'source-core-plan.json'
+CODE_ONLY_LEDGER = 'source-installer-code-only.json'
 CORE_ROLES = ('native-gateway', 'access', 'access-relay', 'native-manager', 'native-promoter', 'native-operations')
 MAX_HISTORY_ENTRIES = 1024
 MAX_HISTORY_BYTES = 32 * 1024 * 1024
@@ -891,6 +892,51 @@ def _fixed_root(kind):
     return result
 
 
+def _code_only_history_nonces(inventory):
+    """Code-only installer transactions whose before-images and old kit the witness froze."""
+    history = inventory['history']
+    nonces = set()
+    for name in history['metadata']:
+        match = re.fullmatch(r'\.source-code-only-publication-before-([a-f0-9]{32})\.json', name)
+        if (match is not None and '.source-code-only-sidefiles-before-' + match[1] + '.json' in history['metadata']
+                and '.source-kit-before-' + match[1] in history['kits']):
+            nonces.add(match[1])
+    return nonces
+
+
+def _code_only_ledger(witness, metadata, publisher):
+    """Bind the committed code-only installer ledger to the witness history it produced.
+
+    `_capture_histories` freezes that transaction's before-images and old kit
+    but never images the fixed ledger, which stays a current name. It is
+    retained installer history, not authority: the plan archives it by rename
+    and nothing reads it again or follows it to another path.
+    """
+    if c._native_at_inode(metadata, CODE_ONLY_LEDGER) is None:
+        return None
+    raw, inode = c._native_root_file(metadata, CODE_ONLY_LEDGER, limit=524288)
+    record = _json(raw)
+    publisher._installer_code_only_record(c, record)
+    if record['phase'] != 'committed': _fail('code-only-ledger-unsettled')
+    inventory, runtime = witness['source']['inventory'], witness['source']['runtime']
+    history = inventory['history']
+    kit = history['kits'].get(record['backup'])
+    before = {label: (history['metadata'].get('.source-code-only-' + label + '-before-' + record['nonce'] + '.json'),
+        dict(inode=record[label]['beforeInode'], sha256=_sha(c._native_encoded(record[label]['before']))))
+        for label in ('publication', 'sidefiles')}
+    if (_code_only_history_nonces(inventory) != {record['nonce']}
+            or record['transaction']['candidateDigest'] != runtime['bundleSha256']
+            or record['deploymentSha256'] != runtime['deploymentSha256'] or record['sourceRef'] != runtime['sourceRef']
+            or type(kit) is not dict or kit.get('inode') != record['oldKit']['inode']
+            or any(type(image) is not dict or {key: image.get(key) for key in wanted} != wanted
+                for image, wanted in before.values())):
+        _fail('code-only-ledger-unbound')
+    node = _capture_node(metadata, CODE_ONLY_LEDGER, remaining=[MAX_HISTORY_ENTRIES, MAX_HISTORY_BYTES])
+    if (node['kind'], node['inode'], node['sha256'], node['mode'], node['gid']) != ('file', inode, _sha(raw), 0o600, 0):
+        _fail('code-only-ledger-changed')
+    return node
+
+
 def _plan(witness, transaction, publisher, receipt=None, record=None):
     """Derive literal roots and exact ledger names; never accept caller paths."""
     from pixel_macos_custody import protected_directory
@@ -933,6 +979,10 @@ def _plan(witness, transaction, publisher, receipt=None, record=None):
         if private:
             for name in ('source-environment-generation.json', receipt['archive']['name']):
                 metadata_images[name] = _capture_node(metadata, name, remaining=[MAX_HISTORY_ENTRIES, MAX_HISTORY_BYTES])
+        elif CODE_ONLY_LEDGER not in metadata_images:
+            ledger = _code_only_ledger(witness, metadata, publisher)
+            if ledger is not None:
+                metadata_images[CODE_ONLY_LEDGER] = ledger
         expected = set(metadata_images) | ({'source-identity.json'} if c._native_at_inode(metadata, 'source-identity.json') is not None else set())
         actual_source = {name for name in os.listdir(metadata) if name.startswith(_SOURCE_PREFIXES)
             or name == 'native-app-enrollment.json'}
@@ -1006,13 +1056,23 @@ def _bind_plan(witness, cursor):
         allowed[('metadata', receipt['archive']['name'])] = None
     elif cursor['receipt'] is not None:
         _fail('cursor-receipt-invalid')
-    if {(row['kind'], row['name']) for row in cursor['plan']} != set(allowed): _fail('cursor-plan-unbound')
+    planned = {(row['kind'], row['name']) for row in cursor['plan']}
+    ledger = ('metadata', CODE_ONLY_LEDGER)
+    if not private and ledger in planned and ledger not in allowed:
+        # `_code_only_ledger` proved this exact file against the one code-only
+        # transaction the witness history froze; its node is pinned below.
+        if len(_code_only_history_nonces(inv)) != 1: _fail('cursor-plan-unbound')
+        allowed[ledger] = None
+    if planned != set(allowed): _fail('cursor-plan-unbound')
     for row in cursor['plan']:
         key = row['kind'], row['name']
         image = allowed[key]
         actual = row['expected']
         if image is None:
-            if key[1] == cursor['receipt']['archive']['name']:
+            if not private:
+                if key != ledger or (actual.get('kind'), actual.get('mode'), actual.get('gid')) != ('file', 0o600, 0):
+                    _fail('cursor-plan-unbound')
+            elif key[1] == cursor['receipt']['archive']['name']:
                 if (actual.get('kind') != 'directory' or actual.get('inode') != cursor['receipt']['archive']['inode']
                         or actual.get('entries', {}).get('withdrawal-receipt.json', {}).get('sha256')
                             != cursor['receipt']['archive']['receiptSha256']):

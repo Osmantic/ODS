@@ -573,6 +573,23 @@ helper, a read-only `--validate-only` on that Mac returned `validated` in 269
 seconds through its code-only Source inventory and left the protected state
 directory unchanged. The retirement itself has not run there yet.
 
+On 11 November 2026 a forced reinstall on the fleet Mac mini (macOS 26.2)
+reached that retirement with a committed code-only kit. It stopped every Core
+job, wrote its witness and prepared archive, then refused
+`native-source-retirement-actors-present`: launchd's persistent
+`disabled services` table still listed the booted-out Core labels, and the
+actor census searched the whole `launchctl print system` text. The census now
+reads only the loaded `services` table. The next stop would have been the
+unbound code-only ledger described under Upgrade and preservation. Neither
+stop reaches the Source cursor, so nothing moved. A read-only dry run of the
+corrected plan on that Mac then passed the Source plan, plan binding and
+prefix checks with the ledger bound. Its Core phase then refused
+`/private/var/run/ods-pixel-access`: macOS ships `/private/var/run` as
+root:daemon 0775, and the Core image required a root-only parent. That stop
+comes after the Source items are archived and before any Core path moves. The
+Core move now accepts that shipped parent for its one child, as described
+under Upgrade and preservation. The retirement has not completed there yet.
+
 Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
 notifications and reboot acceptance remain pending. The Mac has not been
 restarted for this qualification. With explicit owner approval, a separate local
@@ -745,6 +762,55 @@ witness/lock/cursor. Lost acknowledgements resume the same archive and inodes,
 including after Core settings/runtime paths have moved. Source-bearing archives
 are excluded from legacy completed-retirement pruning. Tokens are not copied
 or read to repair custody.
+
+A code-only Source install (an inert kit, no account and no private state)
+leaves its committed installer ledger, `source-installer-code-only.json`, in
+the protected state directory. The retirement witness freezes that
+transaction's `.source-code-only-publication-before-<nonce>.json` and
+`.source-code-only-sidefiles-before-<nonce>.json` images and its
+`.source-kit-before-<nonce>` backup as history, but not the ledger, which
+stays a current name. The Source plan therefore refused the unbound name
+(`native-source-retirement-archive-namespace-unbound`), and the Core phase
+could not have moved it either, so no Mac with a code-only kit could retire.
+Retirement now archives that one ledger by rename with the other Source items.
+First the old runtime's publisher validates its schema, and the ledger must be
+committed and match the witness: the one code-only nonce in its history, both
+before-images by inode and content, the kit backup's inode, and the witness
+bundle, deployment and Source ref. The archived inode is then pinned like
+every other item. The ledger is never deleted, never read again and grants
+nothing: no other path, prefix or action follows from it. An uncommitted or
+mismatched ledger, a second ledger-like name, and a witness holding more than
+one code-only transaction are still refused before anything moves.
+
+Archiving is the chosen outcome because the ledger is the only record that
+ties the preserved before-images and old kit to the transaction that made
+them. Moving it with them keeps that evidence in the same archive. Leaving it
+behind blocks retirement, and deleting it destroys installer history that the
+witness deliberately preserves. Installer history from more than one Source
+transaction (`source-installer-history.json`) is not bound this way yet; its
+retirement still refuses and preserves everything.
+
+The Source-mode Core phase opens each moved path's parent directory with the
+root-only protected-directory rule, then moves the path by rename. macOS ships
+`/private/var/run` as root:daemon 0775, so that rule refused the parent of
+`/private/var/run/ods-pixel-access`, the stopped access service's run
+directory. Every Mac that had run native Portal had this directory, so the
+Core phase could never complete. The legacy retirement renamed it without that
+check. The Core move now accepts exactly the shipped form: owner root, group
+daemon, mode 0775, no ACL, a directory and not a link, reached from a
+protected `/private/var` without following links, and only for the one fixed
+child `ods-pixel-access`. Any other mode, owner, group or ACL, a linked run
+directory and any other child are refused. The child keeps its own image
+check before the move, and the Core guard images it again at its archive
+location afterwards. Every other parent keeps the root-only rule.
+
+Accepting that one parent is the chosen outcome. The directory must be
+archived: retirement and a later install both treat a leftover one as an
+unbound residue, and it is never deleted. Its parent is the operating system's
+own run directory, writable only by root and the daemon group, so it cannot be
+made root-only. If a daemon-group process replaced the child between its image
+and the rename, the guard would find a different inode and stop rather than
+silently archive a replacement.
 
 This is not universal stopped-state or reboot recovery. A fresh Source-bearing
 retirement with already-stopped Core services and no same-transaction witness,
