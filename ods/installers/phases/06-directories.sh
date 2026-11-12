@@ -406,7 +406,12 @@ else
         if [[ -n "$_phase06_tx_owner" ]]; then
             _phase06_tx_home="$(ods_pixel_owner_home "$_phase06_tx_owner" 2>/dev/null || true)"
             if [[ -n "$_phase06_tx_home" && -d "$_phase06_tx_home" ]]; then
-                _ods_pixel_write_install_transaction "$_phase06_tx_owner" "$_phase06_tx_home" 2>/dev/null || true
+                if ! declare -F _ods_pixel_ambient_deployment_detected >/dev/null 2>&1 \
+                    || ! _ods_pixel_ambient_deployment_detected "$_phase06_tx_home" \
+                    || (declare -F _ods_pixel_has_valid_managed_marker >/dev/null 2>&1 && _ods_pixel_has_valid_managed_marker "$_phase06_tx_owner" "$_phase06_tx_home") \
+                    || (declare -F _ods_pixel_verify_interrupted_transaction >/dev/null 2>&1 && _ods_pixel_verify_interrupted_transaction "$_phase06_tx_owner" "$_phase06_tx_home"); then
+                    _ods_pixel_write_install_transaction "$_phase06_tx_owner" "$_phase06_tx_home" 2>/dev/null || true
+                fi
             fi
         fi
     fi

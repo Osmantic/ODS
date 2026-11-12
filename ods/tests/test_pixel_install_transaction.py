@@ -207,6 +207,72 @@ ai(){{ :; }}; ai_ok(){{ :; }}; ai_bad(){{ :; }}; ai_warn(){{ :; }}
         marker = self.home / ".config/ods/pixel-managed.json"
         self.assertFalse(marker.exists())
 
+    def test_writer_refuses_ambient_foreign_deployment(self):
+        """Writer refuses to create transaction evidence against ambient foreign deployment."""
+        openclaw_dir = self.home / ".openclaw"
+        openclaw_dir.mkdir(parents=True, exist_ok=True)
+        (openclaw_dir / "openclaw.json").write_text("{}", encoding="utf-8")
+
+        res = self._run_shell(f'_ods_pixel_write_install_transaction "{self.owner}" "{self.home}"')
+        self.assertNotEqual(res.returncode, 0)
+        tx_marker = self.home / ".config/ods/.pixel-install-transaction.json"
+        local_tx = self.install_dir / ".ods-pixel-transaction"
+        self.assertFalse(tx_marker.exists())
+        self.assertFalse(local_tx.exists())
+
+    def test_production_sequence_foreign_deployment_fails_closed(self):
+        """Writer-then-guard sequence against ambient foreign deployment fails closed without marker."""
+        openclaw_dir = self.home / ".openclaw"
+        openclaw_dir.mkdir(parents=True, exist_ok=True)
+        (openclaw_dir / "openclaw.json").write_text("{}", encoding="utf-8")
+
+        # Run production sequence (writer then guard)
+        res = self._run_shell(
+            f'_ods_pixel_write_install_transaction "{self.owner}" "{self.home}" || true; '
+            f'_ods_pixel_assert_managed_state "{self.owner}" "{self.home}"'
+        )
+        self.assertNotEqual(res.returncode, 0)
+        marker = self.home / ".config/ods/pixel-managed.json"
+        tx_marker = self.home / ".config/ods/.pixel-install-transaction.json"
+        local_tx = self.install_dir / ".ods-pixel-transaction"
+        self.assertFalse(marker.exists())
+        self.assertFalse(tx_marker.exists())
+        self.assertFalse(local_tx.exists())
+
+    def test_production_sequence_interrupted_transaction_allows_resumption(self):
+        """Production sequence allows resumption when valid interrupted transaction already exists."""
+        openclaw_dir = self.home / ".openclaw"
+        openclaw_dir.mkdir(parents=True, exist_ok=True)
+        (openclaw_dir / "openclaw.json").write_text("{}", encoding="utf-8")
+
+        # Prior interrupted install left valid transaction evidence
+        tx_dir = self.home / ".config/ods"
+        tx_dir.mkdir(parents=True, exist_ok=True)
+        tx_file = tx_dir / ".pixel-install-transaction.json"
+        tx_file.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "manager": "ods",
+                "install_dir": str(self.install_dir),
+                "pixel_source_ref": self.pixel_source_ref,
+            }),
+            encoding="utf-8",
+        )
+        tx_file.chmod(0o600)
+
+        # Both guard-then-writer and writer-then-guard should succeed for genuine interrupted install
+        res = self._run_shell(
+            f'_ods_pixel_assert_managed_state "{self.owner}" "{self.home}" && '
+            f'_ods_pixel_write_install_transaction "{self.owner}" "{self.home}"'
+        )
+        self.assertEqual(res.returncode, 0, f"Expected success but got: {res.stderr}")
+        marker = self.home / ".config/ods/pixel-managed.json"
+        self.assertTrue(marker.exists())
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual(data.get("manager"), "ods")
+        self.assertEqual(data.get("state"), "installing")
+        self.assertEqual(data.get("initial_active_state"), "absent")
+
     def test_transaction_lifecycle_write_and_clear(self):
         """Write and clear lifecycle functions manage markers cleanly."""
         res_write = self._run_shell(f'_ods_pixel_write_install_transaction "{self.owner}" "{self.home}"')

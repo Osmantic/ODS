@@ -284,59 +284,45 @@ _ods_pixel_prepare_attempt_log() {
     printf '%s\n' "$path"
 }
 
-_ods_pixel_write_install_transaction() {
-    local owner="$1" home="$2" marker_dir tx_marker local_tx
-    tx_marker="$home/.config/ods/.pixel-install-transaction.json"
-    marker_dir="${tx_marker%/*}"
-    local_tx="${INSTALL_DIR:?}/.ods-pixel-transaction"
-    if [[ -e "$marker_dir" || -L "$marker_dir" ]]; then
-        [[ -d "$marker_dir" && ! -L "$marker_dir" ]] || return 1
-        [[ "$(stat -c '%u' -- "$marker_dir")" == "$(id -u "$owner")" ]] || return 1
-        ods_pixel_run_as_owner "$owner" "$home" chmod 0700 "$marker_dir" || return 1
-    else
-        ods_pixel_run_as_owner "$owner" "$home" install -d -m 0700 -- "$marker_dir" || return 1
+_ods_pixel_ambient_deployment_detected() {
+    local home="$1"
+    local pixel_install="$home/.local/share/pixel"
+    local gateway_unit="${ODS_PIXEL_GATEWAY_UNIT_PATH:-/etc/systemd/system/openclaw-gateway.service}"
+    local existing
+    for existing in \
+        "$home/.openclaw/openclaw.json" \
+        "$home/.config/pixel-agent/gateway.env" \
+        "$home/.config/pixel-deployment/onboarding.json" \
+        "$pixel_install/current" \
+        "$pixel_install/runtime-attestation.json" \
+        "$gateway_unit"; do
+        if [[ -e "$existing" || -L "$existing" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+_ods_pixel_has_valid_managed_marker() {
+    local owner="$1" home="$2" marker
+    marker="$home/.config/ods/pixel-managed.json"
+    if [[ ! -e "$marker" && ! -L "$marker" ]]; then
+        return 1
     fi
-    ods_pixel_run_as_owner "$owner" "$home" python3 - \
-        "$tx_marker" "$local_tx" "${INSTALL_DIR:?}" "${PIXEL_SOURCE_REF:-}" <<'PY'
-import json, os, pathlib, subprocess, sys, tempfile, time
-
-marker_path = pathlib.Path(sys.argv[1])
-local_path = pathlib.Path(sys.argv[2])
-install_dir = sys.argv[3]
-pixel_source_ref = sys.argv[4]
-
-git_commit = ""
+    [[ -f "$marker" && ! -L "$marker" ]] || return 1
+    [[ "$(stat -c '%u' -- "$marker")" == "$(id -u "$owner")" ]] || return 1
+    (( (8#$(stat -c '%a' -- "$marker") & 0077) == 0 )) || return 1
+    ods_pixel_run_as_owner "$owner" "$home" python3 - "$marker" "${INSTALL_DIR:?}" <<'PY' >/dev/null 2>&1
+import json, pathlib, sys
 try:
-    git_commit = subprocess.check_output(
-        ["git", "-C", install_dir, "rev-parse", "HEAD"],
-        stderr=subprocess.DEVNULL,
-        text=True,
-    ).strip()
+    value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+    if (value.get("schema_version") in {1, 2} and value.get("manager") == "ods"
+            and value.get("install_dir") == sys.argv[2]):
+        if value.get("schema_version") != 2 or value.get("initial_active_state") == "absent":
+            sys.exit(0)
 except Exception:
     pass
-
-payload = json.dumps({
-    "schema_version": 1,
-    "manager": "ods",
-    "install_dir": install_dir,
-    "pixel_source_ref": pixel_source_ref,
-    "git_commit": git_commit,
-    "timestamp": int(time.time()),
-    "uid": os.getuid(),
-}, indent=2, sort_keys=True) + "\n"
-
-for target in (marker_path, local_path):
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix=".pixel-tx.", dir=target.parent)
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, target)
-    except Exception:
-        pass
+sys.exit(1)
 PY
 }
 
@@ -416,6 +402,70 @@ sys.exit(1)
 PY
 }
 
+_ods_pixel_write_install_transaction() {
+    local owner="$1" home="$2" marker_dir tx_marker local_tx
+    # Establish a clean or already-owned starting state before writing a new transaction;
+    # only previously validated recovery evidence should authorize adoption.
+    if _ods_pixel_ambient_deployment_detected "$home"; then
+        if ! _ods_pixel_has_valid_managed_marker "$owner" "$home" \
+            && ! _ods_pixel_verify_interrupted_transaction "$owner" "$home"; then
+            return 1
+        fi
+    fi
+    tx_marker="$home/.config/ods/.pixel-install-transaction.json"
+    marker_dir="${tx_marker%/*}"
+    local_tx="${INSTALL_DIR:?}/.ods-pixel-transaction"
+    if [[ -e "$marker_dir" || -L "$marker_dir" ]]; then
+        [[ -d "$marker_dir" && ! -L "$marker_dir" ]] || return 1
+        [[ "$(stat -c '%u' -- "$marker_dir")" == "$(id -u "$owner")" ]] || return 1
+        ods_pixel_run_as_owner "$owner" "$home" chmod 0700 "$marker_dir" || return 1
+    else
+        ods_pixel_run_as_owner "$owner" "$home" install -d -m 0700 -- "$marker_dir" || return 1
+    fi
+    ods_pixel_run_as_owner "$owner" "$home" python3 - \
+        "$tx_marker" "$local_tx" "${INSTALL_DIR:?}" "${PIXEL_SOURCE_REF:-}" <<'PY'
+import json, os, pathlib, subprocess, sys, tempfile, time
+
+marker_path = pathlib.Path(sys.argv[1])
+local_path = pathlib.Path(sys.argv[2])
+install_dir = sys.argv[3]
+pixel_source_ref = sys.argv[4]
+
+git_commit = ""
+try:
+    git_commit = subprocess.check_output(
+        ["git", "-C", install_dir, "rev-parse", "HEAD"],
+        stderr=subprocess.DEVNULL,
+        text=True,
+    ).strip()
+except Exception:
+    pass
+
+payload = json.dumps({
+    "schema_version": 1,
+    "manager": "ods",
+    "install_dir": install_dir,
+    "pixel_source_ref": pixel_source_ref,
+    "git_commit": git_commit,
+    "timestamp": int(time.time()),
+    "uid": os.getuid(),
+}, indent=2, sort_keys=True) + "\n"
+
+for target in (marker_path, local_path):
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".pixel-tx.", dir=target.parent)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, target)
+    except Exception:
+        pass
+PY
+}
+
 _ods_pixel_assert_managed_state() {
     local owner="$1" home="$2" marker marker_dir pixel_install
     marker="$home/.config/ods/pixel-managed.json"
@@ -460,21 +510,7 @@ PY
     fi
 
     # Never adopt or rewrite an ambient user-managed Pixel/OpenClaw deployment.
-    local ambient_detected=false
-    for existing in \
-        "$home/.openclaw/openclaw.json" \
-        "$home/.config/pixel-agent/gateway.env" \
-        "$home/.config/pixel-deployment/onboarding.json" \
-        "$pixel_install/current" \
-        "$pixel_install/runtime-attestation.json" \
-        "$gateway_unit"; do
-        if [[ -e "$existing" || -L "$existing" ]]; then
-            ambient_detected=true
-            break
-        fi
-    done
-
-    if [[ "$ambient_detected" == true ]]; then
+    if _ods_pixel_ambient_deployment_detected "$home"; then
         if _ods_pixel_verify_interrupted_transaction "$owner" "$home"; then
             ai_warn "Detected interrupted previous ODS installation for this repository. Resuming setup..."
         else
@@ -5594,8 +5630,8 @@ ods_pixel_install_default_agent() {
         # restoring just the checkout would not restore the whole runtime.
         _ods_pixel_source_upgrade downstream "$owner" || return 1
     fi
-    _ods_pixel_write_install_transaction "$owner" "$home" || return 1
     _ods_pixel_assert_managed_state "$owner" "$home" || return 1
+    _ods_pixel_write_install_transaction "$owner" "$home" || return 1
     gateway_port_status=0
     _ods_pixel_existing_gateway_port_matches "$owner" "$home" "$pixel_gateway_port" \
         || gateway_port_status=$?

@@ -829,6 +829,24 @@ check _ods_pixel_clear_install_transaction "$owner" "$tx_lifecycle_home"
 check test ! -e "$tx_lifecycle_home/.config/ods/.pixel-install-transaction.json"
 check test ! -e "$TEST_ROOT/ods/.ods-pixel-transaction"
 
+foreign_seq_home="$TEST_ROOT/foreign-seq-home"
+mkdir -p "$foreign_seq_home/.openclaw"
+printf '%s\n' '{}' > "$foreign_seq_home/.openclaw/openclaw.json"
+INSTALL_DIR="$TEST_ROOT/ods"
+if _ods_pixel_write_install_transaction "$owner" "$foreign_seq_home" >/dev/null 2>&1; then
+    fail "writer refused on foreign ambient deployment"
+else
+    pass "writer refused on foreign ambient deployment"
+fi
+check test ! -e "$foreign_seq_home/.config/ods/.pixel-install-transaction.json"
+check test ! -e "$TEST_ROOT/ods/.ods-pixel-transaction"
+if _ods_pixel_assert_managed_state "$owner" "$foreign_seq_home" >/dev/null 2>&1; then
+    fail "guard refused on foreign ambient deployment after writer attempt"
+else
+    pass "guard refused on foreign ambient deployment after writer attempt"
+fi
+check test ! -e "$foreign_seq_home/.config/ods/pixel-managed.json"
+
 inactive_home="$TEST_ROOT/inactive-conflict-home"
 inactive_pixel_root="$TEST_ROOT/inactive-conflict-source"
 inactive_release="$inactive_home/.local/share/pixel/releases/4.3.27"
