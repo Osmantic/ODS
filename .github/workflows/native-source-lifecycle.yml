@@ -134,6 +134,8 @@ jobs:
           - packet: retirement-archive-census
             files: ods/tests/test_native_source_retirement_archive.py
             filter: census
+          - packet: retirement-code-only
+            files: ods/tests/test_native_source_retirement_code_only.py
           - packet: retirement-core-archive
             files: ods/tests/test_native_source_retirement_archive.py
             filter: actual_core or public_retire
