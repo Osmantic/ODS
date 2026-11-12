@@ -579,10 +579,15 @@ job, wrote its witness and prepared archive, then refused
 `native-source-retirement-actors-present`: launchd's persistent
 `disabled services` table still listed the booted-out Core labels, and the
 actor census searched the whole `launchctl print system` text. The census now
-reads only the loaded `services` table. The next refusal would have been the
-unbound code-only ledger described under Upgrade and preservation. Both
-refusals preceded the Source cursor, so nothing moved. The retirement has not
-completed there yet.
+reads only the loaded `services` table. The next stop would have been the
+unbound code-only ledger described under Upgrade and preservation. Neither
+stop reaches the Source cursor, so nothing moved. A read-only dry run of the
+corrected plan on that Mac then passed the Source plan, plan binding and
+prefix checks with the ledger bound. Its Core phase would still refuse
+`/private/var/run/ods-pixel-access`: macOS ships `/private/var/run` as
+root:daemon 0775, and the Core image requires a root-only parent. That stop
+comes after the Source items are archived and before any Core path moves. It
+is not yet resolved, and the retirement has not completed there.
 
 Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
 notifications and reboot acceptance remain pending. The Mac has not been
