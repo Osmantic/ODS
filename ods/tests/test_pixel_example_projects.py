@@ -41,12 +41,12 @@ MACOS_INSTALLER = ROOT / 'installers/macos/install-macos.sh'
 PUBLISHED = {
     'chars.js': 'af03eef4d9ab9a6906cbb4357e68cff4b7efee515ffb1b1b31494b34289f6a63',
     'dungeon.js': '80dfc2e0517cb89bce4f445d75e6a85a4a9c2317893a6762d87666b5b136004c',
-    'engine.js': 'd9ee0583004b3e263b09e3472afa85856f356c8b26b9b5a2c092378882391a88',
+    'engine.js': 'cc56359be34c3204aa0e744f655d7ccbc7fc23188b03090244647bf18803aa86',
     'index.html': 'c4491e65f40d66c29907d842048bcdccdf451774ed49cd09b84544e57080360b',
     'legacy.js': '81e8f16fa20cd0961200fb0a78750ea7cd1365fbfda42ca2edbfac07410050eb',
     'style.css': 'f2d39c8053267b0ed1ce98307e13c5331180871c95b0153bd701be9fa3b3474f',
-    'ui.js': '8ab355d14467fcb183c77a3cabf9423206156d9939053d5be0cc66ba91378db9',
-    'world.js': '935ff43d4d85145157a0834b304d2f540ff65c0213f20d455a4de07f65dfacdd',
+    'ui.js': 'ac765dac5795f678799d1f3be1fe84d9005b289479b2a256684bc9fb6049f775',
+    'world.js': 'fd725d752bd13d2fbb4b9bc0d2de2512506209b702c67a4e5eaf65b629426a2a',
 }
 WARNING = 'WARN: Portal is ready, but ODS could not add its Elf of Doom example project: '
 # Not a Discord invite: tests/test-help-links.sh rejects any other invite.
