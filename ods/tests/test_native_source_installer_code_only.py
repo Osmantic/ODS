@@ -18,7 +18,7 @@ from test_native_source_installer_first_kit import (first_target, material, nati
     source, package, runtime_custody, bundle, services, helper, qualification_operation)
 from test_native_source_installer_withdrawal import files
 from test_macos_pixel_access_install import installer
-from pixel_connections import custody as c, source_backend, native_executor
+from pixel_connections import custody as c, source_backend, native_executor, status
 import pixel_access_bridge as access_bridge
 import pixel_macos_custody as mac
 
@@ -452,6 +452,88 @@ def test_finish_bound_keeps_twice_the_measured_physical_proof_cost(first_target,
                 + counts['bundle'] * M4_BUNDLE_SECONDS)
     assert 2 * estimate <= installer.SOURCE_FINISH_SECONDS, (counts, estimate)
     assert installer.SOURCE_TRANSACTION_SECONDS >= installer.SOURCE_FINISH_SECONDS + 900
+
+
+def finished_update(n, monkeypatch):
+    """The fleet Mac's state after a completed native update: a kit, no Source state."""
+    finish_source_caller(n, monkeypatch)
+    journal = installer._upgrade.RecoveryJournal(n.upgrade, json.loads(n.upgrade.read_bytes()))
+    terminal = helper.verify_installer_code_only_kit if n.absence['kit'] is not None else helper.verify_installer_absent_kit
+    journal.finish(lambda: terminal(n.selected, transaction=n.transaction, proof=n.absence))
+    assert not n.upgrade.exists() and not c.NATIVE_STATE.exists()
+
+
+def count_publisher_proofs(monkeypatch):
+    """Record each publisher load, complete material proof and selection proof, in order."""
+    calls = []
+    publisher, material, selected = native_executor._publisher, helper._material, c._native_selected
+    def counted_publisher(*args, **kwargs):
+        calls.append('publisher:current' if kwargs.get('_current_bridge') is not None else 'publisher')
+        return publisher(*args, **kwargs)
+    def counted_material(selection):
+        calls.append('material')
+        return material(selection)
+    def counted_selected(selection, **kwargs):
+        calls.append('selected')
+        return selected(selection, **kwargs)
+    monkeypatch.setattr(native_executor, '_publisher', counted_publisher)
+    monkeypatch.setattr(helper, '_material', counted_material)
+    monkeypatch.setattr(c, '_native_selected', counted_selected)
+    return calls
+
+
+@pytest.mark.parametrize('first_target', ['code-only'], indirect=True)
+def test_code_only_history_qualifies_its_publisher_material_once(first_target, monkeypatch):
+    """As in the code-only and first-kit authorities: the publisher's own material, never a second one."""
+    n = first_target
+    finished_update(n, monkeypatch)
+    calls = count_publisher_proofs(monkeypatch)
+    before = files(n)
+    history = c.native_installer_code_only_history(n.selected)
+    assert 'source-installer-code-only.json' in history['metadata'] and files(n) == before
+    # One publisher and its material (whose authority proves the selection),
+    # then only initial_boot_images' own material proof.
+    assert calls == ['publisher', 'material', 'selected', 'material', 'selected']
+
+
+@pytest.mark.parametrize('first_target', ['code-only'], indirect=True)
+def test_code_only_status_keeps_each_independent_proof_once(first_target, monkeypatch):
+    """The fleet Mac's post-update status: the view's proof, the history's own, initial_boot_images'."""
+    n = first_target
+    finished_update(n, monkeypatch)
+    calls = count_publisher_proofs(monkeypatch)
+    before = files(n)
+    projection = source_backend.native_status_projection(n.f.bridge)
+    assert not projection['statePresent'] and projection['tokenIdentity'] is None and files(n) == before
+    assert calls == ['publisher:current', 'material', 'selected',  # the status view's own proof
+                     'publisher', 'material', 'selected',  # the code-only history's independent proof
+                     'material', 'selected']  # initial_boot_images' own material proof
+
+
+# The fleet M4 ran the 39-40 s status read of 4d798e834 (six deployment and four
+# bundle proofs) past its 90 s bound while the integration journeys ran: at least
+# 2.3 times its idle cost. Keep the counted physical cost inside the Root bound
+# at that measured slowdown.
+MEASURED_LOAD_SLOWDOWN = 2.3
+
+
+@pytest.mark.parametrize('first_target', ['code-only', None], indirect=True)
+def test_status_fits_its_bound_at_the_measured_loaded_proof_cost(first_target, monkeypatch):
+    n = first_target
+    finished_update(n, monkeypatch)
+    calls = count_publisher_proofs(monkeypatch)
+    deployments = []
+    deployment = access_bridge.LaunchdAccessBridge.connection_deployment
+    def counted_deployment(self):
+        deployments.append(True)
+        return deployment(self)
+    monkeypatch.setattr(access_bridge.LaunchdAccessBridge, 'connection_deployment', counted_deployment)
+    source_backend.native_status_projection(n.f.bridge)
+    # The driver's publisher stand-in omits only the production publisher's own
+    # selection proof for a supplied selection; add it back for each such call.
+    estimate = ((len(deployments) + calls.count('publisher')) * M4_DEPLOYMENT_SECONDS
+                + calls.count('material') * M4_BUNDLE_SECONDS)
+    assert MEASURED_LOAD_SLOWDOWN * estimate <= status.NATIVE_STATUS_SECONDS, (calls, len(deployments), estimate)
 
 
 def finish_and_first_prepare(n, monkeypatch):
