@@ -495,7 +495,8 @@ def test_initial_plan_requires_bundle_and_does_not_adopt_installed_agent(deploym
         installer.make_plan(**dict(bundled_deployment, source_plist=str(agent)), initial_install=True)
 
 
-@pytest.mark.parametrize('fault', [None, 'loaded', 'unknown', 'timeout', 'definition', 'registered', 'port'])
+@pytest.mark.parametrize('fault', [None, 'loaded', 'unknown', 'timeout', 'definition', 'registered', 'port',
+                                   'accepting', 'connect-error'])
 def test_initial_absence_is_explicit_and_closes_every_probe_socket(tmp_path, monkeypatch, fault):
     source = SimpleNamespace(target='gui/501/fixture', verify_definition=Mock(
         side_effect=installer.InstallError('changed-template') if fault == 'definition' else None))
@@ -513,19 +514,29 @@ def test_initial_absence_is_explicit_and_closes_every_probe_socket(tmp_path, mon
     monkeypatch.setattr(installer, '_command', command)
     sockets = []
     def create(*args):
+        assert args == (installer.socket.AF_INET, installer.socket.SOCK_STREAM)
         listener = Mock()
+        listener.connect_ex.return_value = installer.errno.ECONNREFUSED
         if fault == 'port' and sockets: listener.bind.side_effect = OSError('busy')
+        if fault == 'accepting' and len(sockets) == 2: listener.connect_ex.return_value = 0
+        if fault == 'connect-error': listener.connect_ex.side_effect = OSError('unreachable')
         sockets.append(listener)
         return listener
     monkeypatch.setattr(installer.socket, 'socket', create)
     if fault:
-        with pytest.raises((installer.InstallError, subprocess.TimeoutExpired)):
+        with pytest.raises((installer.InstallError, subprocess.TimeoutExpired)) as raised:
             installer._require_initial_absence(plan, source)
+        if fault in ('port', 'accepting', 'connect-error'):
+            assert raised.value.code == 'initial-install-port-unavailable'
     else:
         installer._require_initial_absence(plan, source)
-        assert len(sockets) == 2
-        sockets[0].bind.assert_called_once_with(('127.0.0.1', 18789))
-        sockets[1].bind.assert_called_once_with(('127.0.0.1', 18790))
+        assert len(sockets) == 4
+        for probe, listener, port in ((sockets[0], sockets[1], 18789), (sockets[2], sockets[3], 18790)):
+            probe.connect_ex.assert_called_once_with(('127.0.0.1', port))
+            probe.bind.assert_not_called()
+            listener.setsockopt.assert_called_once_with(
+                installer.socket.SOL_SOCKET, installer.socket.SO_REUSEADDR, 1)
+            listener.bind.assert_called_once_with(('127.0.0.1', port))
     for listener in sockets: listener.close.assert_called_once()
 
 
@@ -540,6 +551,57 @@ def test_initial_absence_rejects_actual_occupied_loopback_port(tmp_path, monkeyp
                 'access_settings': {'gateway_port': listener.getsockname()[1]}, 'access_port': 18790}
         with pytest.raises(installer.InstallError, match='initial-install-port-unavailable'):
             installer._require_initial_absence(plan, source)
+
+
+def _free_loopback_port():
+    import socket
+    with socket.socket() as spare:
+        spare.bind(('127.0.0.1', 0))
+        return spare.getsockname()[1]
+
+
+def test_initial_absence_rejects_a_listening_loopback_port(tmp_path, monkeypatch):
+    import socket
+    source = SimpleNamespace(target='gui/501/fixture', verify_definition=Mock())
+    monkeypatch.setattr(installer, '_command', Mock(side_effect=
+        installer.InstallError('host-command-failed', returncode=113)))
+    # A Node gateway listens with SO_REUSEADDR; the probe's own reuse bind must not hide it.
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(('0.0.0.0', 0))
+        listener.listen(1)
+        plan = {'owner': SimpleNamespace(pw_dir=str(tmp_path)),
+                'access_settings': {'gateway_port': _free_loopback_port()},
+                'access_port': listener.getsockname()[1]}
+        with pytest.raises(installer.InstallError, match='initial-install-port-unavailable'):
+            installer._require_initial_absence(plan, source)
+
+
+def test_initial_absence_ignores_time_wait_left_by_a_removed_gateway(tmp_path, monkeypatch):
+    import errno
+    import socket
+    source = SimpleNamespace(target='gui/501/fixture', verify_definition=Mock())
+    monkeypatch.setattr(installer, '_command', Mock(side_effect=
+        installer.InstallError('host-command-failed', returncode=113)))
+    # The removed gateway (a Node listener, so SO_REUSEADDR) closed a connection
+    # first, leaving its side in TIME_WAIT on the gateway port after it exited.
+    with socket.socket() as old_gateway:
+        old_gateway.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        old_gateway.bind(('127.0.0.1', 0))
+        old_gateway.listen(1)
+        port = old_gateway.getsockname()[1]
+        client = socket.create_connection(('127.0.0.1', port), timeout=5)
+        served, _ = old_gateway.accept()
+        served.close()
+        assert client.recv(1) == b''
+        client.close()
+    with socket.socket() as plain:
+        with pytest.raises(OSError) as busy:
+            plain.bind(('127.0.0.1', port))
+    assert busy.value.errno == errno.EADDRINUSE
+    plan = {'owner': SimpleNamespace(pw_dir=str(tmp_path)),
+            'access_settings': {'gateway_port': port}, 'access_port': _free_loopback_port()}
+    installer._require_initial_absence(plan, source)
 
 
 def test_initial_installer_cannot_activate_upgrade_plan():
