@@ -21,7 +21,7 @@ if sys.platform != "linux" or not Path("/proc/self/fd").is_dir():
     )
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_native_source_generation import generation, SPECS  # noqa: F401
-from test_native_source_custody import native  # noqa: F401
+from test_native_source_custody import native, launchctl_system  # noqa: F401
 from test_connection_deployment_paths import deployment  # noqa: F401
 from test_native_source_runtime_publication import built, source, package  # noqa: F401
 from test_native_source_publication import material, publication, helper  # noqa: F401
@@ -139,7 +139,7 @@ def test_additive_slot_keeps_loaded_sibling_frames_and_inputs_unchanged(
 
     def command(argv, **kwargs):
         if argv == ["/bin/launchctl", "print", "system"]:
-            return "system = {\n services = {\n " + first["label"] + " = {}\n }\n}\n"
+            return launchctl_system(first["label"])
         return original(argv, **kwargs)
 
     monkeypatch.setattr(n.f.bridge, "command", command)
@@ -376,7 +376,7 @@ def test_unknown_or_drift_is_preserved_without_new_authority(
             n.f.bridge,
             "command",
             lambda argv, **kwargs: (
-                "system = {\n com.ods.pixel-native-source-revoke = {}\n}\n"
+                launchctl_system("com.ods.pixel-native-source-revoke")
                 if argv == ["/bin/launchctl", "print", "system"]
                 else original(argv, **kwargs)
             ),
@@ -410,7 +410,7 @@ def test_boot_and_grant_quiesce_are_required_before_new_intent(
             n.f.bridge,
             "command",
             lambda argv, **kwargs: (
-                "system = {\n " + first["label"] + " = {}\n}\n"
+                launchctl_system(first["label"])
                 if argv == ["/bin/launchctl", "print", "system"]
                 else original(argv, **kwargs)
             ),

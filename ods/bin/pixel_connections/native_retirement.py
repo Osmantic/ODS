@@ -745,9 +745,11 @@ def _core_no_actors(witness):
     from pixel_macos_process import process_birth, ProcessIdentityError
     import errno
     if c._native_boot_uuid().lower() != witness['boot']: _fail('boot-changed')
-    loaded = _command(['/bin/launchctl', 'print', 'system'])
-    if not loaded.startswith('system = {') or not loaded.rstrip().endswith('}'): _fail('census-unavailable')
-    if c.NATIVE_LABEL in loaded or any(target.removeprefix('system/') in loaded for target in witness['trees']):
+    # Only loaded jobs count: launchd keeps a booted-out label in its
+    # persistent override table, which the same output also prints.
+    loaded = c.native_launchd_loaded_labels(_command(['/bin/launchctl', 'print', 'system']))
+    core = {target.removeprefix('system/') for target in witness['trees']}
+    if any(label in core or label.startswith(c.NATIVE_LABEL) for label in loaded):
         _fail('actors-present')
     for tree in witness['trees'].values():
         for pid, sec, usec in tree:

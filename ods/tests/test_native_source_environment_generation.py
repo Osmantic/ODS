@@ -15,7 +15,7 @@ if sys.platform != 'linux' or not Path('/proc/self/fd').is_dir():
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_native_source_executor import executor, qualification_operation
 from test_native_source_generation import generation, SPECS
-from test_native_source_custody import native
+from test_native_source_custody import native, launchctl_system
 from test_connection_deployment_paths import deployment
 from test_native_source_runtime_publication import built, source, package
 from test_native_source_publication import material, publication, helper
@@ -291,7 +291,7 @@ def test_no_actor_unknown_or_present_never_creates_intent(executor, monkeypatch,
     driver = n.f.bridge.command
     def command(argv, **kwargs):
         if kind == 'loaded' and argv == ['/bin/launchctl', 'print', 'system']:
-            return 'system = {\n ' + c.NATIVE_LABEL + 'sync = {}\n}\n'
+            return launchctl_system(c.NATIVE_LABEL + 'sync')
         if argv == ['/bin/ps', '-axo', 'pid=,uid=']:
             if kind == 'live': return '1 0\n123 ' + str(n.identity['id']) + '\n'
             if kind == 'empty': return ''

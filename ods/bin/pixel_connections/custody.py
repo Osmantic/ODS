@@ -1434,6 +1434,43 @@ def _native_installer_owner(bridge, *, context_owner=None):
     return owner
 
 
+_NATIVE_LAUNCHD_SERVICE = re.compile(r'\t\t *[0-9]+ +\S+ *\t(\S+)')
+
+
+def native_launchd_loaded_labels(raw):
+    """Labels of the jobs loaded in the system domain, from `launchctl print system`.
+
+    Only the domain's one top-level ``services`` table lists loaded jobs, one
+    ``PID STATUS<TAB>LABEL`` row each. The same output also prints launchd's
+    persistent enable/disable overrides (``disabled services``), endpoints and
+    other tables, which keep naming a label after its job is booted out, so a
+    search of the whole text cannot prove that a job is absent. An unknown
+    layout or row, including a label with anything appended, fails closed
+    instead of being skipped.
+    """
+    def unavailable():
+        raise CustodyError('native-source-launchd-census-unavailable')
+
+    lines = raw.splitlines() if type(raw) is str and len(raw) <= 1024 * 1024 else []
+    if not lines or lines[0] != 'system = {' or lines[-1] != '}':
+        unavailable()
+    starts = [index for index, line in enumerate(lines) if line == '\tservices = {']
+    if len(starts) != 1:
+        unavailable()
+    labels = set()
+    for line in lines[starts[0] + 1:]:
+        if line == '\t}':
+            # The system domain always has loaded services; none is no census.
+            if not labels:
+                unavailable()
+            return frozenset(labels)
+        match = _NATIVE_LAUNCHD_SERVICE.fullmatch(line)
+        if match is None or match[1] in labels:
+            unavailable()
+        labels.add(match[1])
+    unavailable()
+
+
 @dataclass(frozen=True)
 class _NativeRetainedSourceCensus:
     """Standalone identity-only observation, never an installer bridge."""
@@ -2303,8 +2340,8 @@ def _native_installer_absence_state(bridge, *, qualified_runtime=None, _installe
         if identity['id'] in (0, owner.pw_uid):
             raise CustodyError('native-source-installer-identity-conflict')
         identity_view, uid = {'kind': 'retained', 'record': identity}, identity['id']
-    raw = bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10)
-    if not raw.startswith('system = {') or not raw.rstrip().endswith('}') or len(raw) > 1024 * 1024 or NATIVE_LABEL in raw:
+    loaded = native_launchd_loaded_labels(bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10))
+    if any(label.startswith(NATIVE_LABEL) for label in loaded):
         raise CustodyError('native-source-installer-loaded-source-preserved')
     processes = bridge.command(['/bin/ps', '-axo', 'pid=,uid='], timeout=10)
     if not processes.strip() or len(processes) > 1024 * 1024:

@@ -29,6 +29,32 @@ from pixel_connections import custody as source
 import pixel_macos_custody as mac
 from test_connection_deployment_paths import deployment  # noqa: F401 -- real shared fixture
 
+# launchd's persistent override entries on the fleet Mac (macOS 26.2) after
+# every ODS job had been booted out (2026-11-11), plus one Source label as
+# `launchctl enable` would leave it. None of them is a loaded job.
+LAUNCHD_OVERRIDES = ('com.ods.pixel-access-relay', 'com.ods.pixel-native-gateway', 'com.ods.pixel-access',
+    'com.ods.pixel-native-source-sync')
+
+
+def launchctl_system(*loaded, overrides=LAUNCHD_OVERRIDES):
+    """`launchctl print system` in the layout captured on that Mac, trimmed.
+
+    Only the services table lists loaded jobs (`PID STATUS<TAB>LABEL`); the
+    endpoints, attractive and disabled-services tables follow it.
+    """
+    rows = [(612, '-', 'com.apple.IOUserDockChannelSerial-0x100000da0'), (0, '(pe)', 'com.apple.kernelmanager_helper'),
+        (0, '0', 'com.apple.wifiFirmwareLoader'), (0, '1', 'com.apple.iomfb_fdr_loader'),
+        *((0, '-', label) for label in loaded)]
+    return ''.join((
+        'system = {\n\ttype = system\n\thandle = 0\n\tservice count = %d\n\tsubdomains = {\n\t\tpid/466\n\t}\n\n'
+        % len(rows),
+        '\tservices = {\n', *('\t\t%8d %6s \t%s\n' % row for row in rows), '\t}\n\n',
+        '\tunmanaged processes = {\n\t}\n\n\tendpoints = {\n\t\t 0x1503    M   A   com.apple.logd.admin\n\t}\n\n',
+        '\tattractive services = {\n\t\tcom.apple.MessagesBlastDoorService\n\t}\n\n',
+        '\tdisabled services = {\n\t\t"com.apple.ftpd" => disabled\n',
+        *('\t\t"%s" => enabled\n' % label for label in overrides), '\t}\n\n',
+        '\tproperties = uncorked | audit check done | bootcache hack\n}\n'))
+
 
 class AppleACL:
     """Documented ACL API behavior only; not a Darwin ABI/kernel claim."""

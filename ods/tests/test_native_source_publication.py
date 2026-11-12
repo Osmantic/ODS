@@ -19,7 +19,7 @@ if not sys.platform.startswith('linux') or not Path('/proc/self/fd').is_dir():
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'tests'),str(ROOT/'bin')]
-from test_native_source_custody import native  # noqa: E402,F401
+from test_native_source_custody import native, launchctl_system  # noqa: E402,F401
 from test_connection_deployment_paths import deployment  # noqa: E402,F401
 from test_native_source_runtime_publication import built, source, package, helper  # noqa: E402,F401
 from pixel_provider import runtime_custody  # noqa: E402
@@ -65,7 +65,7 @@ def material(native, built, monkeypatch):  # noqa: F811
     n.commands=[]
     def command(argv,timeout=20):
         n.commands.append(list(argv))
-        if argv==['/bin/launchctl','print','system']:return 'system = {\n services = {\n }\n}\n'
+        if argv==['/bin/launchctl','print','system']:return launchctl_system()
         if argv==['/bin/ps','-axo','pid=,uid=']:return '1 0\n42 1000\n'
         if argv==['/usr/sbin/sysctl','-n','kern.bootsessionuuid']:return '01234567-89AB-4DEF-8123-0123456789AB\n'
         raise AssertionError('No launch/mutation/unbound command: '+repr(argv))
@@ -197,7 +197,7 @@ def test_unknown_existing_authority_refuses_before_publication_intent(publicatio
     if what in ('job','process','wrong-domain'):
         original=n.f.bridge.command
         def command(argv,timeout=20):
-            if what=='job' and argv==['/bin/launchctl','print','system']:return 'system = {\n services = {\n com.ods.pixel-native-source-sync\n }\n}\n'
+            if what=='job' and argv==['/bin/launchctl','print','system']:return launchctl_system('com.ods.pixel-native-source-sync')
             if what=='wrong-domain' and argv==['/bin/launchctl','print','system']:return 'gui/1000 = {\n}\n'
             if what=='process' and argv==['/bin/ps','-axo','pid=,uid=']:return '11 60001\n'
             return original(argv,timeout=timeout)

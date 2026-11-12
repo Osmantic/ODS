@@ -13,7 +13,7 @@ if sys.platform != 'linux' or not Path('/proc/self/fd').is_dir():
     pytest.skip('Linux/procfs Apple metadata harness, not physical Darwin', allow_module_level=True)
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
-from test_native_source_custody import native
+from test_native_source_custody import native, launchctl_system
 from test_connection_deployment_paths import deployment
 from pixel_connections import custody as c
 from pixel_provider import runtime_custody
@@ -44,7 +44,7 @@ def old_core(native, monkeypatch):
     monkeypatch.setattr(c, '_native_clock_ns', raw_clock)
     monkeypatch.setattr(c, '_native_boot_uuid', lambda: '01234567-89AB-4DEF-8123-0123456789AB')
     def command(argv, **_kwargs):
-        if argv == ['/bin/launchctl', 'print', 'system']: return 'system = {\n}\n'
+        if argv == ['/bin/launchctl', 'print', 'system']: return launchctl_system()
         if argv == ['/bin/ps', '-axo', 'pid=,uid=']: return '1 0\n'
         raise AssertionError('No job mutation or other command: ' + repr(argv))
     monkeypatch.setattr(n.f.bridge, 'command', command)
@@ -77,7 +77,7 @@ def test_descriptor_only_classification_preserves_unknown_or_changed_source(old_
         with (n.f.root / 'runtime/openclaw.mjs').open('ab') as stream: stream.write(b'// drift')
     elif fault == 'loaded-source':
         original = n.f.bridge.command
-        monkeypatch.setattr(n.f.bridge, 'command', lambda argv, **kw: 'system = {\n' + c.NATIVE_LABEL + 'sync\n}\n'
+        monkeypatch.setattr(n.f.bridge, 'command', lambda argv, **kw: launchctl_system(c.NATIVE_LABEL + 'sync')
             if argv == ['/bin/launchctl', 'print', 'system'] else original(argv, **kw))
     else:
         monkeypatch.setattr(c, '_native_boot_uuid', lambda: 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE')

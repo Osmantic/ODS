@@ -19,7 +19,7 @@ if sys.platform != 'linux':
     pytest.skip('Linux/procfs control driver, not physical Darwin', allow_module_level=True)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_native_source_generation import generation, SPECS
-from test_native_source_custody import native
+from test_native_source_custody import native, launchctl_system
 from test_connection_deployment_paths import deployment
 from test_native_source_runtime_publication import built, source, package
 from test_native_source_publication import material, publication, helper
@@ -74,7 +74,7 @@ class Launchd:
     def __call__(self, args, timeout=20):
         self.sent.append(list(args))
         if args == ['/bin/launchctl', 'print', 'system']:
-            return 'system = {\n services = {\n' + '\n'.join(' ' + label + ' = {}' for label in self.jobs) + '\n }\n}\n'
+            return launchctl_system(*self.jobs)
         if args == ['/bin/ps', '-axo', 'pid=,uid=']:
             pids = []
             for process in self.children:
