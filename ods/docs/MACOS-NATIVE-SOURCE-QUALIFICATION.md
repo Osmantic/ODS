@@ -81,6 +81,16 @@ authority; the ordinary preparer must independently create and qualify a new
 directory. This operation does not start jobs, exchange a Google grant or
 prepare Source itself.
 
+An optional `child` selection handles only the final `proposals` allocation
+left before its inode was recorded. It binds that exact child inode in addition
+to the recorded gate and the three receipt images. All four preceding layout
+entries must be recorded, ready, match their ownership/modes and remain empty
+(the private directory contains only its empty OAuth directory). The gate must
+still have its private preparation mode and no ACL. Environment, logs, jobs,
+data, descriptor, unknown names and changed entries refuse preservation. The
+same sealed-capsule/exclusive-rename procedure retains the empty child without
+adopting it or modifying live receipts. The normal preparer creates its replacement.
+
 A lost rename acknowledgement may resume only the same sealed capsule and
 selection. An interrupted unsealed capsule is retained and refused, rather
 than recreated. This recovery is not evidence that ordinary Portal first

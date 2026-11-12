@@ -243,3 +243,81 @@ def test_unsealed_partial_capsule_is_retained_and_never_recreated(gate, monkeypa
     assert {path: (path.read_bytes(), path.stat().st_ino) for path in saved} == saved
     assert c.NATIVE_STATE.stat().st_ino == n.gate_inode[1]
     originals_unchanged(n)
+
+
+@pytest.fixture
+def last_child(gate, monkeypatch):
+    n = gate
+    preserve(n)
+    original = c._native_save_at
+    def interrupt(selection, directory, name, value, **kwargs):
+        if name == 'source-custody-prepare.json' and 'proposals' in value['children']:
+            raise RuntimeError('last-allocation-before-receipt')
+        return original(selection, directory, name, value, **kwargs)
+    with monkeypatch.context() as fault:
+        fault.setattr(c, '_native_save_at', interrupt)
+        with pytest.raises(RuntimeError, match='last-allocation-before-receipt'):
+            c.native_prepare_state(n.selected, n.identity)
+    gate_info = c.NATIVE_STATE.stat()
+    child_info = (c.NATIVE_STATE / 'proposals').stat()
+    n.expected['gate'] = [gate_info.st_dev, gate_info.st_ino]
+    n.expected['child'] = {'name': 'proposals', 'inode': [child_info.st_dev, child_info.st_ino]}
+    with mac.protected_directory(n.metadata) as fd:
+        for dest, leaf in p.COPIES.items():
+            raw, pair = c._native_root_file(fd, leaf, limit=131072)
+            n.expected['images'][dest] = {'inode': pair, 'sha256': hashlib.sha256(raw).hexdigest()}
+    n.originals = {leaf: ((n.metadata / leaf).read_bytes(), (n.metadata / leaf).stat().st_ino)
+        for leaf in p.COPIES.values()}
+    return n
+
+
+def test_preserved_last_child_is_replaced_by_normal_preparer(last_child):
+    n = last_child
+    result = p.preserve_empty_child(c, mac, n.selected, n.expected)
+    assert result['status'] == 'preserved-empty-first-child'
+    archive = Path(result['archive'])
+    assert (archive / 'child').stat().st_ino == n.expected['child']['inode'][1]
+    assert not (c.NATIVE_STATE / 'proposals').exists()
+    originals_unchanged(n)
+    assert p.preserve_empty_child(c, mac, n.selected, n.expected) == result
+    assert c.native_prepare_state(n.selected, n.identity)['phase'] == 'prepared-no-jobs'
+    assert (c.NATIVE_STATE / 'proposals').stat().st_ino != n.expected['child']['inode'][1]
+    assert (archive / 'child').stat().st_ino == n.expected['child']['inode'][1]
+
+
+@pytest.mark.parametrize('change', ['child-data', 'private-data', 'child-inode', 'recorded-inode', 'acl', 'later'])
+def test_last_child_preservation_refuses_changes(last_child, change):
+    n = last_child
+    if change == 'child-data':
+        (c.NATIVE_STATE / 'proposals/keep').write_bytes(b'preserve')
+    elif change == 'private-data':
+        (c.NATIVE_STATE / 'private/keep').write_bytes(b'preserve')
+    elif change == 'child-inode':
+        n.expected['child']['inode'][1] += 1
+    elif change == 'recorded-inode':
+        n.expected['gate'][1] += 1
+    elif change == 'acl':
+        n.acl.acls[tuple(n.expected['child']['inode'])] = {'entries': [{'tag': 1, 'uuid': b'x' * 16, 'mask': 1}], 'flags': 0}
+    else:
+        (n.metadata / 'source-environment.json').write_bytes(b'{}')
+    archive = p.ARCHIVES / ('first-child-' + p.selection_id(n.expected))
+    with pytest.raises((p.PrefixError, c.CustodyError, OSError)):
+        p.preserve_empty_child(c, mac, n.selected, n.expected)
+    assert (c.NATIVE_STATE / 'proposals').is_dir() and not archive.exists()
+
+
+@pytest.mark.parametrize('when', ['before', 'after'])
+def test_last_child_lost_rename_acknowledgement(last_child, monkeypatch, when):
+    n = last_child
+    rename = p.rename_exclusive
+    def interrupt(*args):
+        if when == 'after':
+            rename(*args)
+        raise OSError('lost-child-ack')
+    with monkeypatch.context() as fault:
+        fault.setattr(p, 'rename_exclusive', interrupt)
+        with pytest.raises(OSError, match='lost-child-ack'):
+            p.preserve_empty_child(c, mac, n.selected, n.expected)
+    result = p.preserve_empty_child(c, mac, n.selected, n.expected)
+    assert (Path(result['archive']) / 'child').stat().st_ino == n.expected['child']['inode'][1]
+    originals_unchanged(n)
