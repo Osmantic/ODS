@@ -42,6 +42,8 @@ jobs:
             files: ods/tests/test_native_source_backend.py
           - packet: normal-initial-prepare
             files: ods/tests/test_native_source_initial_backend.py
+          - packet: empty-first-gate-preservation
+            files: ods/tests/test_native_source_empty_gate_preservation.py
           - packet: initial-generation-faults
             files: ods/tests/test_native_source_initial_generation.py
             filter: initial_lost_reply

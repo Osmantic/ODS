@@ -40,6 +40,7 @@ MAC_LIB = (
     'pixel-native-ops-service.py', 'pixel-native-ops-state.py', 'pixel-native-prepare.py',
     'pixel-native-promoter-service.py', 'pixel-native-readiness.py', 'pixel-native-recover.py',
     'pixel-native-retirement-reboot.py', 'pixel-native-services.py', 'pixel-native-source-broker.py',
+    'pixel-native-source-prefix.py',
     'pixel-native-stack.py', 'pixel-native-uninstall.py', 'pixel-native-update.py',
     'pixel-runtime-bundle.py', 'pixel-runtime-receipt.py', 'pixel-runtime-upgrade.py',
 )

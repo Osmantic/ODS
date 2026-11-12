@@ -53,6 +53,37 @@ New Source jobs are not activated by retirement or an installer rebind.
 Keep private receipts, cursors, archives, and existing data after a refusal.
 Deleting a pending record or editing a private receipt is not a recovery method.
 
+## Empty first-state directory preservation
+
+The administrator-only `installers/macos/lib/pixel-native-source-prefix.py`
+preserves one narrower first-connection interruption: the fixed Source state
+directory was allocated before its inode reached `source-custody-prepare.json`.
+Its private selection file names the exact runtime digest, gate device/inode,
+and device/inode plus SHA-256 of the identity, custody and committed code-only
+receipts. These inputs constrain the selection; they grant no authority.
+
+Under the existing Root lock, the installed bridge requalifies the current
+deployment, kit, history, complete Directory Service identity and preparation
+binding. The custody receipt must still have no gate inode or child records.
+The selected directory must remain empty, Root-owned, mode 0700 and without
+an ACL. Later lifecycle records, connected-account data, logs, loaded Source
+jobs, Source processes, changed images or unknown Source metadata are refused.
+
+Before an exclusive same-filesystem rename, a private Root capsule under
+`/private/var/lib/ods-pixel-source-recovery` seals copies of the three receipts
+and an immutable manifest. The original directory moves into that capsule
+without changing its inode, permissions or contents. Live receipts remain
+unchanged. The archived directory is never adopted or granted execution
+authority; the ordinary preparer must independently create and qualify a new
+directory. This operation does not start jobs, exchange a Google grant or
+prepare Source itself.
+
+A lost rename acknowledgement may resume only the same sealed capsule and
+selection. An interrupted unsealed capsule is retained and refused, rather
+than recreated. This recovery is not evidence that ordinary Portal first
+connection completed without an interruption. Record the physical outcome
+separately; simulated Darwin metadata tests do not qualify the Mac.
+
 ## Failed first-sidefile preservation
 
 The explicit `archive-sidefiles` installer operation covers one narrow legacy
