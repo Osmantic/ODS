@@ -52,6 +52,18 @@ SOURCE_RESIDUES = ('/private/var/lib/pixel-source-broker',
     '/usr/local/libexec/ods-pixel-access/pixel_connections/source-broker-kit',
     '/private/etc/ods/pixel-provider-runtime.json',
     '/private/etc/ods/pixel-provider-runtime-manifest.json')
+# `recover-runtime --quarantine-empty-source-stage` (pixel-macos-access-install.py)
+# seals a receipt, then moves one unrecorded empty Source staging object into
+# STATE: a first or code-only kit's candidate directory, or one empty kit file.
+# These exact names lie outside the Source prefixes, so the typed Source
+# inventory never claims them. Retirement archives them by rename with the Core
+# records; it never reads them, binds them as authority or deletes them. The
+# writer's temporary names and every look-alike remain unknown state.
+SOURCE_QUARANTINE = re.compile(
+    r'\.ods-empty-source-stage-[a-f0-9]{32}\.json'
+    r'|\.ods-quarantined-source-kit-[a-f0-9]{32}'
+    r'|\.ods-quarantined-source-file-[a-f0-9]{32}-[a-f0-9]{16}'
+    r'-(?:0|[1-9a-f][0-9a-f]{0,15})-[1-9a-f][0-9a-f]{0,15}\.(?:file|json)')
 
 
 def helper(name):
@@ -80,9 +92,15 @@ def selected(settings, installation, services, *, owner, install_dir):
     return root
 
 
+def source_quarantine_record(name):
+    """One exact empty-stage quarantine object or receipt; never authority."""
+    return SOURCE_QUARANTINE.fullmatch(name) is not None
+
+
 def state_name_allowed(name):
     # Model changes retain their backup and completion receipts after releasing
     # transition.json. Archive those records with the deployment, not as authority.
+    # The same holds for Source empty-stage quarantine objects and receipts.
     return (name in RETAIN | {'installation.json', 'installation-edge.json', 'lock',
              'model-before.json', 'model-completed.json',
              'model-route-completed.json', 'model-promotion-completed.json',
@@ -92,7 +110,8 @@ def state_name_allowed(name):
         or re.fullmatch(r'runtime-upgrade-[a-f0-9]{64}\.completed\.json', name)
         or re.fullmatch(r'runtime-upgrade-(?:context|edge)-[a-f0-9]{64}\.json', name)
         or re.fullmatch(r'runtime-upgrade-stop-[a-f0-9]{64}-(?:candidate|previous)-(?:access|gateway|integrations|manager|operations|promoter|relay)\.json', name)
-        or re.fullmatch(r'runtime-controller-repair-[a-f0-9]{64}\.json', name))
+        or re.fullmatch(r'runtime-controller-repair-[a-f0-9]{64}\.json', name)
+        or source_quarantine_record(name))
 
 
 def validate_state_names(names):
@@ -1034,10 +1053,13 @@ def retire(install_dir, owner_name, *, validate_only=False,
             if {p.name for p in config_root.iterdir()} != {str(owner.pw_uid)}:
                 raise ValueError('native-retirement-foreign-config-owner')
             # Snapshot all root-controlled files used as retirement authority.
+            # Quarantine records are not authority (one is a directory): the
+            # witness never binds them and no step reads them before the move.
             snapshots = {str(p): custody.protected_bytes(reboot.path(p), limit=32 * 1024 * 1024)
                          for p in [SETTINGS, *plists, *([Path(p) for p in SOURCE_RESIDUES[-2:]] if legacy_descriptors is not None else []),
                              *(STATE / n for n in os.listdir(directory)
-                             if n not in ('retirement.json', 'retirement-plists') and n not in source_names)]}
+                             if n not in ('retirement.json', 'retirement-plists') and n not in source_names
+                             and not source_quarantine_record(n))]}
             gateway = plistlib.loads(snapshots[str(plists[0])])
             if launchd_definition_digest(gateway, ValueError) != settings.get('gateway_binding', {}).get('definition'):
                 raise ValueError('native-retirement-gateway-binding-mismatch')

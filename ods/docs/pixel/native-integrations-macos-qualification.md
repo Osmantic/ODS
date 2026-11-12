@@ -559,6 +559,20 @@ same read makes 33 deployment proofs in the Linux driver before it reads any
 broker projection, about 150 seconds on that Mac, so it cannot fit this bound.
 Refreshing the Edge of an updated Mac is not yet part of the native update.
 
+A fresh-install pre-check of `52671d8de` on that Mac then refused. A forced
+reinstall runs the candidate's uninstaller first, and native retirement, from
+the installed and the candidate helper alike, answered
+`native-retirement-unknown-protected-state`. The protected state directory
+held the first-kit quarantine's sealed `.ods-empty-source-stage-<nonce>.json`
+receipt and its empty `.ods-quarantined-source-kit-<nonce>` directory. Their
+`.ods-` names match neither the Core allowlist nor the Source prefixes, so any
+Mac that used the quarantine recovery could not be uninstalled or reinstalled.
+Retirement now archives each exact quarantine record with the Core deployment
+records, by rename, unread and outside the stop witness. With the corrected
+helper, a read-only `--validate-only` on that Mac returned `validated` in 269
+seconds through its code-only Source inventory and left the protected state
+directory unchanged. The retirement itself has not run there yet.
+
 Candidate chat, Calendar, browser-closed scheduling, Notes approvals, MCP,
 notifications and reboot acceptance remain pending. The Mac has not been
 restarted for this qualification. With explicit owner approval, a separate local

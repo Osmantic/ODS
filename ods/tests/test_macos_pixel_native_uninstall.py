@@ -89,6 +89,61 @@ class RetirementSelection(unittest.TestCase):
                     ValueError, 'native-retirement-unknown-protected-state'):
                 retirement.validate_state_names({'model-before.json', name})
 
+    @staticmethod
+    def quarantine_names(nonce='5e9bd1134ba942c08ea766f23d29df75', leaf='broker.py', device=16777232, inode=9187483):
+        """Names built exactly as recover-runtime --quarantine-empty-source-stage builds them."""
+        stem = ('.ods-quarantined-source-file-' + nonce + '-' + hashlib.sha256(leaf.encode()).hexdigest()[:16]
+                + '-' + format(device, 'x') + '-' + format(inode, 'x'))
+        return {'kit-receipt': '.ods-empty-source-stage-' + nonce + '.json',
+                'kit': '.ods-quarantined-source-kit-' + nonce,
+                'file': stem + '.file', 'file-receipt': stem + '.json'}
+
+    def test_quarantined_source_stage_is_an_archived_deployment_record(self):
+        names = self.quarantine_names()
+        # The fleet Mac's Core names after a first-kit quarantine and a later
+        # code-only update (Source names are inventoried separately); digests
+        # replaced. Before this record family it refused as unknown state.
+        old, new = 'a' * 64, 'b' * 64
+        roles = ('access', 'gateway', 'manager', 'operations', 'promoter', 'relay')
+        mac = {'installation-edge.json', 'installation.json', 'integrations-preservation.json', 'lock',
+               'ops-identity.json', 'ops-identity.lock', 'service-baseline.json', 'service-installation.json',
+               'verified.json', names['kit-receipt'], names['kit'],
+               *('runtime-upgrade-' + digest + '.completed.json' for digest in (old, new)),
+               *('runtime-upgrade-' + kind + '-' + digest + '.json' for kind in ('context', 'edge') for digest in (old, new)),
+               *('runtime-upgrade-stop-' + old + '-previous-' + role + '.json' for role in roles),
+               *('runtime-upgrade-stop-' + new + '-previous-' + role + '.json' for role in (*roles, 'integrations'))}
+        retirement.validate_state_names(mac)
+        retirement.validate_state_names(mac | {names['file'], names['file-receipt']})
+        for form, name in names.items():
+            with self.subTest(form=form):
+                self.assertTrue(retirement.state_name_allowed(name))
+                self.assertTrue(retirement.source_quarantine_record(name))
+        self.assertTrue(retirement.source_quarantine_record(self.quarantine_names(device=0, inode=1)['file']))
+        # An unfinished quarantine still holds its recovery journal.
+        with self.assertRaisesRegex(ValueError, 'native-retirement-transition-pending'):
+            retirement.validate_state_names(mac | {'runtime-upgrade.json'})
+
+    def test_quarantined_source_stage_look_alikes_remain_unknown_state(self):
+        nonce = '5e9bd1134ba942c08ea766f23d29df75'
+        names = self.quarantine_names(nonce)
+        stem = names['file'][:-len('.file')]
+        head = '.ods-quarantined-source-file-' + nonce + '-' + 'a' * 16
+        for name in (
+                # The writer's own temporaries are an unfinished seal, not a record.
+                '.ods-empty-source-stage-tmp-' + 'c' * 32, '.ods-empty-source-file-tmp-' + 'c' * 32,
+                names['kit-receipt'][:-len('.json')], names['kit-receipt'] + '.tmp', names['kit'] + '.json',
+                names['kit'] + '/foreign', '../' + names['kit'], names['kit'] + '\n', names['kit'][1:],
+                names['kit'][:-1], names['kit'] + 'a', '.ods-empty-source-stage-' + nonce.upper() + '.json',
+                '.ods-quarantined-source-' + nonce, '.ods-quarantined-source-kit-' + '\u0661' * 32,
+                stem, stem + '.tmp', stem + '.file.json', head + '-01-1.file', head + '-1-0.file',
+                head + '-1-01.json', head + '-' + '1' * 17 + '-1.file', head + '-1.file', head + '--1-1.file',
+                '.ods-quarantined-source-file-' + nonce + '-' + 'a' * 15 + '-1-1.file',
+                '.ods-quarantined-source-file-' + nonce + '-' + 'A' * 16 + '-1-1.json'):
+            with self.subTest(name=name):
+                self.assertFalse(retirement.source_quarantine_record(name))
+                with self.assertRaisesRegex(ValueError, 'native-retirement-unknown-protected-state'):
+                    retirement.validate_state_names({'installation.json', names['kit'], names['kit-receipt'], name})
+
     def test_platform_guard_has_no_side_effects(self):
         with patch.object(retirement.sys, 'platform', 'linux'), patch.object(retirement, 'command') as command:
             with self.assertRaisesRegex(ValueError, 'macos-root-required'):
@@ -712,6 +767,79 @@ class RetirementRebootIntegration(unittest.TestCase):
         receipt = json.loads((Path(result['archive']) / 'receipt.json').read_text())
         moved = next(move for move in receipt['moves'] if move['source'] == str(pending))
         self.assertEqual(Path(moved['archive']).read_bytes(), b'{"schemaVersion":')
+
+    def quarantined_source_stage(self):
+        """What a finished empty-stage quarantine leaves: kit directory, one file, sealed receipts."""
+        nonce = '5e9bd1134ba942c08ea766f23d29df75'
+        kit = self.state / ('.ods-quarantined-source-kit-' + nonce)
+        kit.mkdir(mode=0o700)
+        orphan = self.state / 'unrecorded-empty-file'
+        orphan.write_bytes(b'')
+        orphan.chmod(0o600)
+        info = orphan.stat()  # The writer names the file by its own retained inode.
+        stem = ('.ods-quarantined-source-file-' + nonce + '-' + hashlib.sha256(b'broker.py').hexdigest()[:16]
+                + '-' + format(info.st_dev, 'x') + '-' + format(info.st_ino, 'x'))
+        empty = self.state / (stem + '.file')
+        os.rename(orphan, empty)
+        records = {'kit': kit, 'file': empty,
+                   'kit-receipt': self.state / ('.ods-empty-source-stage-' + nonce + '.json'),
+                   'file-receipt': self.state / (stem + '.json')}
+        for form in ('kit-receipt', 'file-receipt'):
+            records[form].write_bytes(b'{"sealed":"' + form.encode() + b'"}\n')
+            records[form].chmod(0o600)
+        return records
+
+    def test_quarantined_source_stage_is_archived_by_rename_and_never_read(self):
+        records = self.quarantined_source_stage()
+        identity = {form: (path.stat().st_dev, path.stat().st_ino) for form, path in records.items()}
+        receipts = {form: records[form].read_bytes() for form in ('kit-receipt', 'file-receipt')}
+        self.loaded['system/' + self.plists[0].stem] = 1000
+        custody = sys.modules['pixel_macos_custody']
+        read, reads = custody.protected_bytes, []
+        def recorded(path, **kwargs):
+            reads.append(Path(path).name)
+            return read(path, **kwargs)
+        with patch.object(custody, 'protected_bytes', side_effect=recorded):
+            self.assertEqual(self.run_retire(validate_only=True)['status'], 'validated')
+            self.assertTrue(all(path.exists() for path in records.values()))
+            result = self.run_retire()
+        self.assertEqual(result['status'], 'retired')
+        # Never authority: no protected read (a directory cannot be one) and no witness binding.
+        self.assertTrue(reads)
+        self.assertFalse({path.name for path in records.values()} & set(reads))
+        receipt = json.loads((Path(result['archive']) / 'receipt.json').read_text())
+        self.assertEqual(receipt['status'], 'retired')
+        moved = {Path(move['source']).name: Path(move['archive']) for move in receipt['moves'] if move['done']}
+        for form, path in records.items():
+            with self.subTest(form=form):
+                self.assertFalse(os.path.lexists(path))
+                saved = moved[path.name]
+                self.assertEqual((saved.stat().st_dev, saved.stat().st_ino), identity[form])
+        self.assertTrue(moved[records['kit'].name].is_dir())
+        self.assertEqual(list(moved[records['kit'].name].iterdir()), [])
+        self.assertEqual(moved[records['file'].name].read_bytes(), b'')
+        for form, body in receipts.items():
+            self.assertEqual(moved[records[form].name].read_bytes(), body)
+        witness = json.loads(moved['retirement.json'].read_text())
+        self.assertTrue(witness['hashes'])
+        self.assertFalse({Path(path).name for path in witness['hashes']} & {path.name for path in records.values()})
+        self.assertEqual({path.name for path in self.state.iterdir()}, {'ops-identity.json'})
+
+    def test_quarantined_source_stage_look_alike_refuses_before_any_stop(self):
+        records = self.quarantined_source_stage()
+        # An interrupted seal leaves the writer's temporary; it is not a record.
+        temporary = self.state / ('.ods-empty-source-stage-tmp-' + 'c' * 32)
+        temporary.write_bytes(b'{"schemaVersion":')
+        temporary.chmod(0o600)
+        self.loaded['system/' + self.plists[0].stem] = 1000
+        for mode in ({'validate_only': True}, {}, {'prepare_stopped_recovery': True}):
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, 'native-retirement-unknown-protected-state'):
+                self.run_retire(**mode)
+        self.assertEqual(self.calls, [])
+        self.assertFalse((self.state / 'retirement.json').exists())
+        self.assertFalse(self.path('/private/var/lib/ods-pixel-retired').exists())
+        self.assertTrue(all(path.exists() for path in [temporary, *records.values()]))
+        self.assertTrue(all(path.exists() for path in self.plists))
 
     def test_preservation_never_adopts_a_different_owner_or_unknown_private_residue(self):
         preservation = retirement.helper('pixel-native-integrations-preservation')
