@@ -73,8 +73,13 @@ The protected service installer now distinguishes a first installation using
 requires an explicit unloaded `--gateway-plist` staging template and selected
 runtime bundle. Before staging and again before activation it verifies the
 template, rejects an existing owner LaunchAgent definition or loaded job, and
-checks both gateway/access loopback ports. It never disables, starts or restores
-the template as a user service. Migration behavior is unchanged.
+checks both gateway/access loopback ports. A port is refused when a loopback
+connection to it is accepted or when a reuse-address bind fails. Those are the
+conditions the Node gateway and access listeners would hit. Connections a
+removed install left in TIME_WAIT do not count; macOS can hold thousands of
+them on the old gateway port for a long time after it closed, and a plain bind
+would report that port as taken. It never disables, starts or restores the
+template as a user service. Migration behavior is unchanged.
 
 On initial activation failure, confirmed shutdown produces `initial-stopped`;
 unconfirmed cleanup produces `recovery-required`. Both preserve the admission

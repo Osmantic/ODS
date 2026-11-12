@@ -17,6 +17,7 @@ import argparse
 import ast
 import base64
 from contextlib import nullcontext
+import errno
 import grp
 import hashlib
 import importlib.util
@@ -2076,17 +2077,38 @@ def _require_initial_absence(plan, source):
             raise
     else:
         raise InstallError('initial-install-existing-user-service')
-    sockets = []
+    for port in (plan['access_settings']['gateway_port'], plan['access_port']):
+        _require_free_loopback_port(port)
+
+
+def _require_free_loopback_port(port):
+    """Refuse a live listener or a socket bound to this address, not closed connections.
+
+    The gateway and access services are Node listeners, and libuv binds them with
+    SO_REUSEADDR, so connections a removed install left in TIME_WAIT never stop
+    them. A plain bind fails on those leftovers, and macOS can keep thousands of
+    them on the old gateway port long after it closed. Probe the way the services
+    bind. On Darwin a reuse-address bind can succeed beside a wildcard listener,
+    so a loopback connection must also be refused.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.settimeout(2)
     try:
-        for port in (plan['access_settings']['gateway_port'], plan['access_port']):
-            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sockets.append(listener)
-            listener.bind(('127.0.0.1', port))
+        refused = probe.connect_ex(('127.0.0.1', port)) == errno.ECONNREFUSED
+    except OSError:
+        refused = False
+    finally:
+        probe.close()
+    if not refused:
+        raise InstallError('initial-install-port-unavailable')
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(('127.0.0.1', port))
     except OSError:
         raise InstallError('initial-install-port-unavailable') from None
     finally:
-        for listener in sockets:
-            listener.close()
+        listener.close()
 
 
 def _migration_edge_context(plan):
