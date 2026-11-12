@@ -129,7 +129,11 @@ def test_fresh_isolated_entry_actual_peer_and_canonical_module_graph(support, pe
     source, python = support
     result = s.stage_support(source, python=python)
     driver = r'''
-import importlib.util,json,os,sys,urllib.request
+import importlib.util,json,os,sys,urllib.request,sysconfig
+# Initialize host stdlib configuration before the Darwin observation driver.
+# No protected peer is imported here. Otherwise CPython builds such as the
+# ARM Docker image seek nonexistent Darwin sysconfig data when zoneinfo loads.
+sysconfig.get_config_vars()
 from pathlib import Path
 root=Path(__ROOT__)
 spec=importlib.util.spec_from_file_location('pixel_native_installer_entry',root/'bin/pixel_native_installer_entry.py')
