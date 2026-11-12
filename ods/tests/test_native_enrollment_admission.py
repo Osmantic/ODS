@@ -580,3 +580,31 @@ def test_unreserved_or_closed_source_allows_new_app_but_cannot_restage_across_it
     with bridge.locked(), pytest.raises(source.UpgradeError, match='^native-app-transition-in-progress$'):
         source._guard_native_stage(manager, bridge.owner, bridge.state)
     assert files(tmp_path) == before and manager.journal() == value
+
+
+def test_plain_model_hold_discovers_its_owner_before_reading_a_closed_source_plan(retained_source, monkeypatch):
+    """An installer update with no Source change takes a plain model hold.
+
+    A finished Source upgrade leaves its closed plan in Root's state, and the
+    guard reads that plan as the discovered owner. Before discovery that was an
+    AttributeError, which the coordinator answered as access-service-unavailable,
+    so every later update stopped at the model route (a WSL laptop, 2026-11-12).
+    """
+    manager, account, state, _pending = retained_source
+    value = manager.journal()
+    value.update(phase='complete', hold='d' * 64, outcome='applied')
+    manager._save(value)
+    closed = manager.journal()
+    bridge = LegacyBridge(state)
+    bridge.install = manager.install
+    discovered = []
+
+    def discover(*, allow_installing=False):
+        discovered.append(allow_installing)
+        bridge.owner = account
+
+    monkeypatch.setattr(bridge, 'discover', discover)
+    assert not hasattr(bridge, 'owner')
+    result = bridge.model_begin()
+    assert result['status'] == 'held' and discovered[0] is True
+    assert manager.journal() == closed

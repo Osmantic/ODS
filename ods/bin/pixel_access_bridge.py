@@ -1307,6 +1307,11 @@ class SystemdAccessBridge:
                 except UpgradeError as error:
                     raise AccessError(str(error)) from None
             if not reserved_source:
+                # The guard reads a retained Source plan as the discovered owner.
+                # Only the installer Source path above has discovered so far; an
+                # installer update with no Source change takes this hold fresh.
+                if not hasattr(self, 'owner'):
+                    self.discover(allow_installing=True)
                 guard_native_enrollment(self)
             try:
                 snapshot = self.inspect(allow_installing=True)
