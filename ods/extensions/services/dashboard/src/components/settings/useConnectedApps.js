@@ -92,26 +92,59 @@ export function useConnectedAppsEnabled() {
   return {enabled, unavailable, refresh}
 }
 
+// Retry only a typed pre-read lock refusal. Sign-in and every other mutation
+// keep their single-request behavior, including after an ambiguous reply.
+async function readStatus(current) {
+  const until = performance.now() + 20000
+  let retried = false
+  while (current()) {
+    if (retried && performance.now() >= until) throw new Error('Connected apps are busy')
+    const response = await fetch('/api/pixel/connections', {cache: 'no-store'})
+    if (response.ok) return response.json()
+    const value = response.status === 409 ? await response.json().catch(() => null) : null
+    if (value?.detail?.code !== 'transition-busy') throw new Error(String(response.status))
+    retried = true
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(500, until - performance.now()))))
+  }
+  return null
+}
+
 // Connected-apps status, refreshed while a step runs, on focus, and on request.
 export function useConnectedAppsStatus() {
   const [status, setStatus] = useState(null)
   const [unavailable, setUnavailable] = useState(false)
   const latest = useRef(0)
-  const refresh = useCallback(async () => {
+  const flight = useRef(null)
+  const refresh = useCallback(() => {
+    // Focus/visibility/click may arrive together. They share one live read;
+    // there is no completed-result cache or successful empty fallback.
+    if (flight.current) return flight.current
     const version = ++latest.current
-    try {
-      const response = await fetch('/api/pixel/connections', {cache: 'no-store'})
-      if (!response.ok) throw new Error(String(response.status))
-      const value = await response.json()
-      if (version !== latest.current) return value
-      setStatus(value)
-      setUnavailable(false)
-      return value
-    } catch {
-      if (version === latest.current) setUnavailable(true)
-      return null
-    }
+    const promise = (async () => {
+      try {
+        const value = await readStatus(() => version === latest.current)
+        if (version !== latest.current || value === null) return null
+        setStatus(value)
+        setUnavailable(false)
+        return value
+      } catch {
+        if (version === latest.current) setUnavailable(true)
+        return null
+      } finally {
+        if (flight.current === promise) flight.current = null
+      }
+    })()
+    flight.current = promise
+    return promise
   }, [])
+  const refreshAfterChange = useCallback(async () => {
+    // An action must observe a read begun after it completed, even if focus
+    // already had an earlier status in flight. This never repeats the action.
+    const version = latest.current
+    if (flight.current) await flight.current
+    if (version !== latest.current) return null
+    return refresh()
+  }, [refresh])
   useEffect(() => {
     void refresh()
     const wake = () => { if (document.visibilityState !== 'hidden') void refresh() }
@@ -119,6 +152,7 @@ export function useConnectedAppsStatus() {
     document.addEventListener('visibilitychange', wake)
     return () => {
       latest.current++
+      flight.current = null
       window.removeEventListener('focus', wake)
       document.removeEventListener('visibilitychange', wake)
     }
@@ -129,7 +163,7 @@ export function useConnectedAppsStatus() {
     const timer = setTimeout(() => { void refresh() }, delay)
     return () => clearTimeout(timer)
   }, [status, unavailable, refresh])
-  return {status, unavailable, refresh}
+  return {status, unavailable, refresh, refreshAfterChange}
 }
 
 // Full Access is the one Portal mode connected apps warn about; read once.

@@ -2558,6 +2558,9 @@ def _finish_source_upgrade(plan, records, journal):
     transaction = dict(kind='native-installer-upgrade', transaction=addition['contextSha256'],
         currentDigest=plan['upgrade_qualification']['currentDigest'],
         candidateDigest=plan['upgrade_qualification']['candidateDigest'])
+    # A first inert kit and a retained one both cross many independently guarded
+    # inode and publication boundaries; SOURCE_FINISH_SECONDS records what they
+    # cost on a Mac mini. bounded() still intersects the enclosing deadline.
     with bridge.bounded(SOURCE_FINISH_SECONDS):
         _discover_source_installer_bridge(bridge)
         if intent['mode'] == 'absent' and phase == 'restored':
@@ -2759,8 +2762,19 @@ def _recover_unstarted_upgrade(plan, records, journal, previous, candidate, *, v
                 # state, not a missing process that recovery may fabricate.
                 service.verify_definition()
                 service.assert_stopped()
-            elif _observe_upgrade_service(service, candidate[role]) != 'previous':
-                raise InstallError('runtime-upgrade-original-service-required')
+            else:
+                target = candidate[role]
+                observed = _observe_upgrade_service(service, target)
+                if (observed == 'candidate' and getattr(service, '_upgrade_stop_peer', None) is target
+                        and getattr(target, '_upgrade_stop_peer', None) is service):
+                    # The factory linked byte-identical definitions and process
+                    # contracts. Canonical stop-slot selection prefers candidate,
+                    # even before staging. Re-prove the original live contract;
+                    # this path neither starts/stops it nor adopts a stop witness.
+                    service.verify_definition()
+                    _upgrade_service_identity(service)
+                elif observed != 'previous':
+                    raise InstallError('runtime-upgrade-original-service-required')
         _upgrade_policy_mode(plan)
         _ready_gateway(previous['gateway'], plan['access_settings']['gateway_port'])
         _ready_access(previous['access'], upgrade_guard=previous_guard)
@@ -4281,6 +4295,7 @@ def _prepare_source_upgrade_journal(plan, bridge, records, *, context_raw, backe
     if intent['mode'] == 'absent':
         if backend is not None:
             raise InstallError('native-source-installer-mode-changed')
+        print('Checking native Source absence before staging.', file=sys.stderr, flush=True)
         proof = custody.native_absent_for_installer(bridge, transaction=transaction)
     elif intent['mode'] == 'withdrawal':
         if backend is None or backend.bridge is not bridge:
@@ -4303,6 +4318,7 @@ def _prepare_source_upgrade_journal(plan, bridge, records, *, context_raw, backe
     if protected_bytes(context, limit=_upgrade.JOURNAL_LIMIT) != context_raw:
         raise InstallError('native-source-installer-context-changed')
     journal = _upgrade.RecoveryJournal.create(bridge.state / 'runtime-upgrade.json', value)
+    print('Preserving native Source installer history.', file=sys.stderr, flush=True)
     _rollover_source_installer_history(bridge, transaction, selected=selected, publisher=publisher)
     if publisher is not None:
         receipt = publisher.withdraw_installer_generation(selected, transaction=transaction, intent=proof)
@@ -4310,6 +4326,7 @@ def _prepare_source_upgrade_journal(plan, bridge, records, *, context_raw, backe
             publisher.verify_installer_withdrawal(selected, transaction=transaction, intent=intent, receipt=receipt)
         journal.bind_source_withdrawal(receipt, verify_withdrawal=verify_withdrawal, **options)
     else:
+        print('Rechecking native Source absence against its preparation receipt.', file=sys.stderr, flush=True)
         custody.native_verify_installer_absence(bridge, proof, transaction=transaction)
     return journal
 
@@ -5318,6 +5335,7 @@ def _execute_upgrade_install(plan, source):
             journal = _upgrade.RecoveryJournal.create(bridge.state / 'runtime-upgrade.json', value)
         # Staging changes no live references; failures retain the exact journal
         # and leave recovery to a verified operator command, not a fresh install.
+        print('Publishing the verified native Pixel runtime.', file=sys.stderr, flush=True)
         published = _bundle.publish(selection['source'], expected_digest=selection['digest'])
         if str(published) != selection['destination']:
             raise InstallError('native-bundle-destination-changed')

@@ -147,6 +147,26 @@ def test_second_prepared_installer_rollover_preserves_exact_original_record(seco
 
 
 @pytest.mark.parametrize('first_target', ['code-only-history'], indirect=True)
+@pytest.mark.parametrize('change', [None, 'retained-bytes'])
+def test_absence_inventory_returns_same_fresh_history_without_trusting_an_earlier_read(second_prepared, change):
+    n = second_prepared
+    ledger = rollover(n)
+    before = files(n)
+    state, history = c._native_installer_absence_state(n.f.bridge, _with_history=True)
+    assert state == c._native_installer_absence_state(n.f.bridge)
+    assert history == c.native_installer_history(n.selected)
+    assert files(n) == before
+    if change:
+        leaf = ledger['entries'][-1]['artifacts']['source-installer-code-only.json']['name']
+        path = n.metadata / leaf
+        path.write_bytes(path.read_bytes() + b' ')
+        changed = files(n)
+        with pytest.raises((c.CustodyError, AccessError, ValueError)):
+            c._native_installer_absence_state(n.f.bridge, _with_history=True)
+        assert files(n) == changed
+
+
+@pytest.mark.parametrize('first_target', ['code-only-history'], indirect=True)
 @pytest.mark.parametrize('where', ['intent', 'rename', 'committed'])
 def test_second_installer_rollover_lost_ack_keeps_one_frozen_inode(second_prepared, monkeypatch, where):
     n = second_prepared
@@ -180,6 +200,10 @@ def test_second_installer_rollover_lost_ack_keeps_one_frozen_inode(second_prepar
 @pytest.mark.parametrize('fault', ['context', 'old-publication', 'early-code', 'active-phase'])
 def test_second_installer_rollover_unknown_origin_preserves_current_record(second_prepared, fault):
     n = second_prepared
+    # A successful earlier inspection in the same operation must not hide drift.
+    before_inspection = files(n)
+    assert c.native_installer_history_plan(n.selected, transaction=n.transaction)['entry'] is not None
+    assert files(n) == before_inspection
     if fault == 'context':
         n.context.write_bytes(n.context.read_bytes() + b' ')
     elif fault == 'old-publication':

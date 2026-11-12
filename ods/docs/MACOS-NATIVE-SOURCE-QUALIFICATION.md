@@ -135,12 +135,23 @@ retained data, not authority to run Source or enable a connection.
 | Installer history ledger | 64 explicit entries |
 | Pending-initial boot history | 16 explicit transactions |
 | Failed-sidefile preservation history reader | 16 explicit archives |
+| Installer Source finish (first or retained inert kit, restored verification, withdrawn-generation rebind) | 3,600 seconds, intersected with the enclosing 4,500-second installer transaction |
 | Read-only OS census output | 1 MiB per command, bounded command deadline |
 
 Exceeding a bound preserves the records and refuses the operation. No filename
 prefix or capacity failure grants permission to delete or prune Source history.
 Source-bearing archives use a distinct receipt schema and are excluded from
 legacy completed-retirement pruning.
+
+The installer's Source finish has one budget, `SOURCE_FINISH_SECONDS`. On an M4
+Mac mini every publication guard re-proves the deployment and both runtime
+trees, so a first inert kit and a retained one each outlast the earlier
+180-second sub-deadline (see
+[native-integrations-macos-qualification.md](pixel/native-integrations-macos-qualification.md)).
+Its per-mutation custody, receipt, inode, inactive-actor and independent
+completion checks still run. This allowance does not change Portal query limits
+or authorize a Source job; admission remains held until all completion proofs
+pass.
 
 ## Evidence and remaining platform gate
 
