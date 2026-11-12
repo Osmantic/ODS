@@ -273,6 +273,15 @@ async def _agent_status() -> dict:
         raw = await request_agent_json("GET", "/v1/pixel/connections", timeout=100)
     except AgentHTTPError as exc:
         code = exc.status_code if exc.status_code in (400, 409, 503) else 502
+        if code == 409:
+            try:
+                busy = json.loads(exc.response_text) == {"error": "transition-busy"}
+            except (TypeError, ValueError):
+                busy = False
+            if busy:
+                raise HTTPException(409, {"code": "transition-busy",
+                    "message": "ODS is finishing another Portal check. Try again in a moment.",
+                    "help": False}, headers=NO_STORE) from None
         raise HTTPException(code, "Connected apps status is unavailable right now. Try again in a moment.",
                             headers=NO_STORE) from None
     except AgentUnavailable:

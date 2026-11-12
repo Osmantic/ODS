@@ -52,7 +52,7 @@ function SourceRows({google}) {
 
 // Settings, Connected apps: one card per connector, Google first.
 export default function ConnectedApps() {
-  const {status, unavailable, refresh} = useConnectedAppsStatus()
+  const {status, unavailable, refresh, refreshAfterChange} = useConnectedAppsStatus()
   const fullAccess = useFullAccessOn()
   const [wizard, setWizard] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -79,7 +79,7 @@ export default function ConnectedApps() {
       setProblem({message: error.message, fix: null, help: Boolean(error.help)})
     } finally {
       setBusy(false)
-      void refresh()
+      void refreshAfterChange()
     }
   }
 
@@ -96,7 +96,7 @@ export default function ConnectedApps() {
     setNotice(missing.length
       ? `Google did not grant: ${missing.join(', ')}.`
       : '')
-    void refresh()
+    void refreshAfterChange()
   }
 
   return <section aria-labelledby="connected-apps-title" className="space-y-4">
@@ -148,15 +148,15 @@ export default function ConnectedApps() {
           <button type="button" disabled={busy} className={`rounded-lg px-3 py-2 ${focus}`} onClick={() => setConfirming(false)}>Keep connected</button>
         </div>
       </div> : null}
-      {wizard && catalog ? <GoogleConnectWizard catalog={catalog} initial={wizard.initial} status={status} refresh={refresh}
-        onClose={() => { setWizard(null); void refresh() }} onConnected={connected} /> : null}
+      {wizard && catalog ? <GoogleConnectWizard catalog={catalog} initial={wizard.initial} status={status} refresh={refreshAfterChange}
+        onClose={() => { setWizard(null); void refreshAfterChange() }} onConnected={connected} /> : null}
       {google?.account && !wizard ? <CalendarChanges waiting={google.waitingChanges ?? 0}
-        writable={Boolean(google.capabilities?.['calendar.write'])} onChanged={() => { void refresh() }} /> : null}
-      {google?.account && !wizard && google.capabilities?.['calendar.direct'] ? <CalendarActivity onChanged={() => { void refresh() }} /> : null}
+        writable={Boolean(google.capabilities?.['calendar.write'])} onChanged={() => { void refreshAfterChange() }} /> : null}
+      {google?.account && !wizard && google.capabilities?.['calendar.direct'] ? <CalendarActivity onChanged={() => { void refreshAfterChange() }} /> : null}
       {google?.account && !wizard ? <EmailDrafts waiting={google.waitingDrafts ?? 0}
-        writable={Boolean(google.capabilities?.['gmail.drafts'])} onChanged={() => { void refresh() }} /> : null}
+        writable={Boolean(google.capabilities?.['gmail.drafts'])} onChanged={() => { void refreshAfterChange() }} /> : null}
     </article> : null}
-    <PortalPlugins status={status} onChanged={() => { void refresh() }} />
+    <PortalPlugins status={status} onChanged={() => { void refreshAfterChange() }} />
     <ReviewedApps />
   </section>
 }

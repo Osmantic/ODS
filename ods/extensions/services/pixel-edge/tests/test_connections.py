@@ -153,6 +153,15 @@ class ConnectionsRelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, 503)
             self.assertEqual(await response.json(), {'error': 'connections-unavailable'})
 
+    async def test_only_typed_read_lock_contention_is_identified_for_retry(self):
+        self.reply_status = 409
+        for reason in ('transition-busy', 'runtime-upgrade-recovery-required', 'private path or secret'):
+            self.reply = {'error': reason}
+            async with self.client.get(self.url, headers=OWNER) as response:
+                self.assertEqual(response.status, 409)
+                self.assertEqual(await response.json(), {'error':
+                    'transition-busy' if reason == 'transition-busy' else 'connections-unavailable'})
+
     async def act(self, payload, *, headers=OWNER, raw=None):
         body = raw if raw is not None else json.dumps(payload).encode()
         async with self.client.post(self.url, data=body,

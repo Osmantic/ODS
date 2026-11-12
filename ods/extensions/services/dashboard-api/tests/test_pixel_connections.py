@@ -84,6 +84,23 @@ def test_main_registers_the_connections_route(test_client):
     assert test_client.get("/api/pixel/connections/enabled").status_code == 401
 
 
+@pytest.mark.parametrize('body,busy', [('{"error":"transition-busy"}', True),
+    ('{"error":"runtime-upgrade-recovery-required"}', False), ('invalid private text', False),
+    ('{"error":"transition-busy","token":"private-sentinel"}', False)])
+def test_status_identifies_only_the_fixed_pre_read_busy_refusal(client, mock_request, body, busy):
+    mock_request.side_effect = AgentHTTPError(409, 'private-sentinel', body)
+    response = client.get('/api/pixel/connections', headers=AUTH)
+    assert response.status_code == 409
+    assert response.headers['cache-control'] == 'no-store'
+    assert 'private-sentinel' not in response.text
+    if busy:
+        assert response.json()['detail']['code'] == 'transition-busy'
+        assert response.json()['detail']['help'] is False
+    else:
+        assert isinstance(response.json()['detail'], str)
+    mock_request.assert_awaited_once_with('GET', '/v1/pixel/connections', timeout=100)
+
+
 @pytest.mark.parametrize("value,enabled", [(None, True), ("true", True), (" TRUE ", True), ("false", False),
                                            (" False ", False), ("", True)])
 def test_settings_learns_whether_connected_apps_are_on_without_asking_the_runtime(client, mock_request, monkeypatch,

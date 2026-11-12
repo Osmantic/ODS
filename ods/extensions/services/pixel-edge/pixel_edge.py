@@ -1493,6 +1493,9 @@ async def handle_connections(request: web.Request):
                 raw = await _read_bounded(response.content, 65536)
                 if response.status != 200:
                     status = response.status if response.status in (400, 403, 409, 503) else 503
+                    if status == 409 and _controller_reason(raw) == 'transition-busy':
+                        return web.json_response({'error': 'transition-busy'}, status=409,
+                                                 headers={'Cache-Control': 'no-store'})
                     return web.json_response({'error': 'connections-unavailable'}, status=status)
                 value = public_connections(strict_json(raw))
         return web.json_response(value, headers={'Cache-Control': 'no-store'})
