@@ -20,7 +20,7 @@ if sys.platform != 'linux' or not Path('/proc/self/fd').is_dir():
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_native_source_active_publication import active, journal, gate
 from test_native_source_generation import generation, SPECS
-from test_native_source_custody import native
+from test_native_source_custody import native, launchctl_system
 from test_connection_deployment_paths import deployment
 from test_native_source_runtime_publication import built, source, package
 from test_native_source_publication import material, publication, helper
@@ -97,7 +97,7 @@ def test_real_owned_child_quiesce_revokes_before_stop_and_rearm_keeps_definition
             if argv == ['/bin/ps', '-axo', 'pid=,uid=']:
                 return f'{process.pid} {n.identity["id"]}\n'
             if argv == ['/bin/launchctl', 'print', 'system']:
-                return 'system = {\n services = {\n ' + n.first['label'] + ' = {}\n }\n}\n'
+                return launchctl_system(n.first['label'])
         return command(argv, **kwargs)
     monkeypatch.setattr(n.f.bridge, 'command', observed)
     try:

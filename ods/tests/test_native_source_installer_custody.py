@@ -16,7 +16,7 @@ if sys.platform != 'linux' or not Path('/proc/self/fd').is_dir():
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_native_source_executor import executor, qualification_operation
 from test_native_source_generation import generation, SPECS
-from test_native_source_custody import native
+from test_native_source_custody import native, launchctl_system, LAUNCHD_OVERRIDES
 from test_connection_deployment_paths import deployment
 from test_native_source_runtime_publication import built, source, package
 from test_native_source_publication import material, publication, helper
@@ -42,7 +42,7 @@ def absent(native, monkeypatch):
     def command(argv, timeout=10):
         calls.append(argv)
         if argv == ['/bin/launchctl', 'print', 'system']:
-            return 'system = {\n services = {\n }\n}\n'
+            return launchctl_system()
         if argv == ['/bin/ps', '-axo', 'pid=,uid=']:
             return '1 0\n42 1000\n'
         raise AssertionError('unexpected command ' + repr(argv))
@@ -70,7 +70,7 @@ def test_retained_identity_bootstrap_uses_actual_fixed_inventory_without_runtime
     def run(argv, **kwargs):
         commands.append(argv)
         assert kwargs['stdin'] is c.subprocess.DEVNULL and kwargs['timeout'] == 10
-        output = 'system = {\n}\n' if argv == ['/bin/launchctl', 'print', 'system'] else '1 0\n42 1000\n'
+        output = launchctl_system() if argv == ['/bin/launchctl', 'print', 'system'] else '1 0\n42 1000\n'
         return SimpleNamespace(returncode=0, stdout=output)
     monkeypatch.setattr(c.subprocess, 'run', run)
     result = c.native_retained_identity_only(owner_uid=n.f.bridge.owner.pw_uid, owner_gid=n.f.bridge.owner.pw_gid)
@@ -90,15 +90,72 @@ def test_absence_inventory_never_uses_missing_source_data_to_waive_custody(absen
         original = n.f.bridge.command
         def changed(argv, timeout=10):
             if change == 'loaded-label' and argv == ['/bin/launchctl', 'print', 'system']:
-                return 'system = {\n ' + c.NATIVE_LABEL + 'sync = {}\n}\n'
+                return launchctl_system(c.NATIVE_LABEL + 'sync')
             if change == 'broker-process' and argv == ['/bin/ps', '-axo', 'pid=,uid=']:
                 return '1 0\n42 ' + str(n.identity['id']) + '\n'
             return original(argv, timeout=timeout)
         monkeypatch.setattr(n.f.bridge, 'command', changed)
     before = (n.metadata / 'source-identity.json').read_bytes()
-    with pytest.raises(c.CustodyError):
+    codes = {'loaded-label': 'native-source-installer-loaded-source-preserved',
+        'broker-process': 'native-source-installer-process-preserved'}
+    with pytest.raises(c.CustodyError, match=codes.get(change)):
         c._native_installer_absence_state(n.f.bridge)
     assert (n.metadata / 'source-identity.json').read_bytes() == before
+
+
+def test_absence_inventory_ignores_labels_only_in_launchd_override_table(absent):
+    # The fleet Mac kept these `disabled services` entries after every ODS job
+    # was booted out. A whole-output search refused them as loaded jobs.
+    n = absent
+    raw = launchctl_system()
+    assert c.NATIVE_LABEL in raw and all(label in raw for label in LAUNCHD_OVERRIDES)
+    assert not any(label.startswith('com.ods.') for label in c.native_launchd_loaded_labels(raw))
+    kit, files, identity, witness = c._native_installer_absence_state(n.f.bridge)
+    assert identity['kind'] == 'retained' and witness['brokerProcesses'] == 0
+    assert ['/bin/launchctl', 'print', 'system'] in n.census
+
+
+def test_launchd_census_reads_only_the_loaded_services_table():
+    loaded = c.native_launchd_loaded_labels(launchctl_system('com.ods.pixel-access-relay', c.NATIVE_LABEL + 'sync'))
+    # Exact row labels: a loaded label's prefix is not itself loaded.
+    assert {'com.ods.pixel-access-relay', c.NATIVE_LABEL + 'sync', 'com.apple.kernelmanager_helper'} <= loaded
+    assert 'com.ods.pixel-access' not in loaded and 'com.ods.pixel-native-gateway' not in loaded
+    # ODS names in every other table stay unloaded.
+    raw = launchctl_system().replace('\t\tpid/466\n', '\t\tpid/466\n\t\tcom.ods.pixel-access\n').replace(
+        'com.apple.logd.admin\n', 'com.apple.logd.admin\n\t\t 0x1603    M   A   ' + c.NATIVE_LABEL + 'direct\n').replace(
+        'com.apple.MessagesBlastDoorService\n', 'com.apple.MessagesBlastDoorService\n\t\tcom.ods.pixel-native-manager\n')
+    assert not any(label.startswith('com.ods.') for label in c.native_launchd_loaded_labels(raw))
+    # The production reader receives the bridge's stripped stdout.
+    assert c.native_launchd_loaded_labels(launchctl_system().strip()) == c.native_launchd_loaded_labels(launchctl_system())
+
+
+def _one_row_changed(row):
+    lines = launchctl_system().splitlines(keepends=True)
+    index = next(i for i, line in enumerate(lines) if line.endswith('com.apple.wifiFirmwareLoader\n'))
+    lines[index] = row
+    return ''.join(lines)
+
+
+@pytest.mark.parametrize('raw', [
+    '', 'system = {\n}\n', 'gui/501 = {\n\tservices = {\n\t\t       0      - \tcom.apple.x\n\t}\n}\n',
+    launchctl_system().replace('\tservices = {\n', '\tservice = {\n'),
+    launchctl_system().replace('\tunmanaged processes = {\n', '\tservices = {\n'),
+    launchctl_system().rsplit('}', 1)[0],
+    'system = {\n\tservices = {\n\t}\n}\n',
+    'system = {\n\tservices = {\n\t\t       0      - \tcom.apple.x\n}\n',
+    _one_row_changed(' ' + c.NATIVE_LABEL + 'sync = {}\n'),
+    _one_row_changed('\t\t' + c.NATIVE_LABEL + 'sync\n'),
+    _one_row_changed('\t\t       -      - \t' + c.NATIVE_LABEL + 'sync\n'),
+    _one_row_changed('\t\t\t       0      - \t' + c.NATIVE_LABEL + 'sync\n'),
+    _one_row_changed('\t\t       0      - \tcom.apple.kernelmanager_helper\n'),
+    _one_row_changed('\t\t       0      - \tcom.ods.pixel-access (pending)\n'),
+    launchctl_system() + ' ' * (1024 * 1024)], ids=[
+    'empty', 'no-services-table', 'other-domain', 'renamed-table', 'two-tables', 'unterminated-output',
+    'empty-table', 'unterminated-table', 'assignment-row', 'bare-label-row', 'dash-pid-row', 'nested-row',
+    'duplicate-row', 'annotated-label-row', 'oversized'])
+def test_launchd_census_fails_closed_on_unknown_layout(raw):
+    with pytest.raises(c.CustodyError, match='native-source-launchd-census-unavailable'):
+        c.native_launchd_loaded_labels(raw)
 
 
 def test_absence_inventory_accepts_a_macos_nobody_process(absent, monkeypatch):

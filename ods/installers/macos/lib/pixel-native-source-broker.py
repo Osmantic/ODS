@@ -691,10 +691,8 @@ def _no_actors(selection, custody, metadata, *, _generation=False):
     """Read-only proof for inert B3.1. A loaded job is not silently stopped."""
     if not _generation and os.path.lexists(custody.NATIVE_META / 'native-source-jobs'):
         raise ValueError('native-source-job-state-requires-lifecycle')
-    raw = selection.bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10)
-    if not raw.startswith('system = {') or not raw.rstrip().endswith('}') or len(raw) > 1024 * 1024:
-        raise ValueError('native-source-job-observation-unavailable')
-    if custody.NATIVE_LABEL in raw:
+    loaded = custody.native_launchd_loaded_labels(selection.bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10))
+    if any(label.startswith(custody.NATIVE_LABEL) for label in loaded):
         raise ValueError('native-source-loaded-job-preserved')
     identity, _body = custody._native_json_at(metadata, 'source-identity.json')
     if identity is not None:
@@ -4375,12 +4373,10 @@ def _publish_active_slot(selection, role, identifier=None, *, rollback=False, _c
                 # Existing labels can remain loaded while an independent slot
                 # is added. Unknown labels (including the prospective target)
                 # do not acquire provenance from the new transaction.
-                loaded = selection.bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10)
-                if (not loaded.startswith('system = {') or not loaded.rstrip().endswith('}')
-                        or len(loaded) > 1024 * 1024):
-                    raise ValueError('native-source-job-observation-unavailable')
+                loaded = custody.native_launchd_loaded_labels(
+                    selection.bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10))
                 allowed_labels = set(record['current']['gate']['document'].get('launch', {}).get('invocations', {}))
-                if set(re.findall(r'com\.ods\.pixel-native-source-[A-Za-z0-9.-]+', loaded)) - allowed_labels:
+                if {label for label in loaded if label.startswith(custody.NATIVE_LABEL)} - allowed_labels:
                     raise ValueError('native-source-active-unbound-loaded-job')
                 if txn is not None:
                     for key, (name, body, mode, gid) in images().items():

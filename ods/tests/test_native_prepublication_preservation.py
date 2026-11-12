@@ -16,7 +16,7 @@ import pytest
 if sys.platform != 'linux' or not Path('/proc/self/fd').is_dir():
     pytest.skip('Linux/procfs owned-file driver, not physical Darwin qualification', allow_module_level=True)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_native_source_custody import native
+from test_native_source_custody import native, launchctl_system
 from test_connection_deployment_paths import deployment
 from test_native_source_installer_custody import absent
 from test_native_source_sidefile_archives import make_bound_archive, c, upgrade
@@ -228,7 +228,7 @@ def test_fresh_source_state_refuses_before_capsule_preparation(active, monkeypat
     elif fault == 'loaded-job':
         original = a.n.f.bridge.command
         monkeypatch.setattr(a.n.f.bridge, 'command', lambda argv, timeout=10:
-            'system = { ' + c.NATIVE_LABEL + 'invented }' if argv[0] == '/bin/launchctl' else original(argv, timeout=timeout))
+            launchctl_system(c.NATIVE_LABEL + 'invented') if argv[0] == '/bin/launchctl' else original(argv, timeout=timeout))
     else:
         name = {'publication': 'source-publication.json', 'enrollment': 'native-app-enrollment.json',
             'unknown-history': 'source-sidefiles-archive-' + 'e' * 64}[fault]

@@ -18,7 +18,7 @@ import pytest
 if sys.platform != 'linux' or not Path('/proc/self/fd').is_dir():
     pytest.skip('Linux/procfs FD fixture, not Darwin qualification', allow_module_level=True)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_native_source_custody import native
+from test_native_source_custody import native, launchctl_system
 from test_connection_deployment_paths import deployment
 from test_native_source_sidefile_archives import make_archive, c, CURRENT, CANDIDATE
 from test_native_connection_sidefiles import installer
@@ -311,11 +311,15 @@ def test_source_census_refuses_present_or_unavailable_actor_state(unbound, monke
         assert timeout == 10
         if argv == ['/bin/launchctl', 'print', 'system']:
             if fault == 'bad-launchctl': return 'unknown format'
-            return 'system = {\n' + (c.NATIVE_LABEL if fault == 'loaded-job' else '') + '\n}'
+            # The bridge strips stdout; only the services table lists loaded jobs.
+            return launchctl_system(*([c.NATIVE_LABEL + 'sync'] if fault == 'loaded-job' else [])).strip()
         assert argv == ['/bin/ps', '-axo', 'pid=,uid=']
         return {'bad-processes': '1 0\n1 0\n', 'empty-processes': ''}.get(fault, '1 0\n2 501\n')
     bridge = SimpleNamespace(state=a.n.metadata, command=command)
-    if fault:
+    if fault == 'bad-launchctl':
+        with pytest.raises(c.CustodyError, match='native-source-launchd-census-unavailable'):
+            installer._archive_sidefiles_no_source(bridge, a.path.name)
+    elif fault:
         with pytest.raises(installer.InstallError): installer._archive_sidefiles_no_source(bridge, a.path.name)
     else:
         installer._archive_sidefiles_no_source(bridge, a.path.name)

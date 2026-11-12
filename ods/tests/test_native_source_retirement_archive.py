@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
 from test_native_source_executor import executor, qualification_operation, proc
 from test_native_source_generation import generation, SPECS
-from test_native_source_custody import native
+from test_native_source_custody import native, launchctl_system, LAUNCHD_OVERRIDES
 from test_connection_deployment_paths import deployment
 from test_native_source_runtime_publication import built, source, package
 from test_native_source_publication import material, publication, helper
@@ -220,7 +220,7 @@ def test_changed_archive_authority_preserves_all_items_before_any_rename(archive
         path.chmod(0o600)
     elif fault == 'live-label':
         command = archive._command
-        monkeypatch.setattr(archive, '_command', lambda argv: 'system = {\ncom.ods.pixel-native-gateway\n}\n'
+        monkeypatch.setattr(archive, '_command', lambda argv: launchctl_system('com.ods.pixel-native-gateway')
             if argv == ['/bin/launchctl', 'print', 'system'] else command(argv))
     elif fault == 'owner-guid':
         n.acl.identities[n.f.bridge.owner.pw_uid] = b'X' * 16
@@ -232,6 +232,64 @@ def test_changed_archive_authority_preserves_all_items_before_any_rename(archive
         archive.archive_step(transaction=n.transaction)
     assert {path.name: path.stat().st_ino for path in n.archive.iterdir()} == before
     assert (n.metadata / archive.CURSOR).read_bytes() == cursor
+
+
+@pytest.mark.parametrize('case', ['override-only', 'core-loaded', 'source-loaded', 'broker-process', 'unknown-layout'])
+def test_core_actor_census_reads_loaded_jobs_not_launchd_overrides(archive_ready, monkeypatch, case):
+    n = archive_ready
+    original = archive._command
+    loaded = {'core-loaded': ('com.ods.pixel-access-relay',), 'source-loaded': (c.NATIVE_LABEL + 'sync',)}.get(case, ())
+    def observed(argv):
+        if argv == ['/bin/launchctl', 'print', 'system']:
+            raw = launchctl_system(*loaded)
+            return raw.replace('\tservices = {\n', '\tservices = {\n com.ods.pixel-access = {}\n') if case == 'unknown-layout' else raw
+        if argv == ['/bin/ps', '-axo', 'pid=,uid='] and case == 'broker-process':
+            return original(argv) + '4242 ' + str(n.identity['id']) + '\n'
+        return original(argv)
+    monkeypatch.setattr(archive, '_command', observed)
+    # The fleet Mac listed booted-out Core labels only in this override table.
+    raw = archive._command(['/bin/launchctl', 'print', 'system'])
+    assert all(label in raw for label in LAUNCHD_OVERRIDES)
+    if case == 'override-only':
+        assert archive._core_no_actors(n.witness) is None
+        return
+    code = 'native-source-launchd-census-unavailable' if case == 'unknown-layout' else 'native-source-retirement-actors-present'
+    with pytest.raises(c.CustodyError, match=code):
+        archive._core_no_actors(n.witness)
+
+
+def test_census_refusal_keeps_witness_and_archive_resumable(archive_ready, monkeypatch):
+    # The fleet Mac stopped here: Root witness and prepared archive receipt
+    # written, no cursor. A census refusal moves nothing, and the next run
+    # resumes the same witness, archive and, once written, cursor.
+    n = archive_ready
+    original = archive._command
+    loaded = ['com.ods.pixel-native-gateway']
+    monkeypatch.setattr(archive, '_command', lambda argv: launchctl_system(*loaded)
+        if argv == ['/bin/launchctl', 'print', 'system'] else original(argv))
+    receipt = (n.archive / 'receipt.json').read_bytes()
+    archive_inode = [n.archive.stat().st_dev, n.archive.stat().st_ino]
+    with pytest.raises(c.CustodyError, match='native-source-retirement-actors-present'):
+        archive.archive_begin(transaction=n.transaction, archive_id=n.archive_id)
+    assert not (n.metadata / archive.CURSOR).exists()
+    assert [path.name for path in n.archive.iterdir()] == ['receipt.json']
+    assert (n.archive / 'receipt.json').read_bytes() == receipt and (n.metadata / 'retirement.json').read_bytes() == n.raw
+    loaded.clear()  # Booted out; its override entry stays listed.
+    result = archive.archive_begin(transaction=n.transaction, archive_id=n.archive_id)
+    cursor = json.loads((n.metadata / archive.CURSOR).read_bytes())
+    assert result['phase'] == 'source' and (cursor['archiveId'], cursor['archiveInode']) == (n.archive_id, archive_inode)
+    assert archive.archive_step(transaction=n.transaction)['completed'] == 1
+    frozen = (n.metadata / archive.CURSOR).read_bytes()
+    loaded.append(c.NATIVE_LABEL + 'sync')
+    with pytest.raises(c.CustodyError, match='native-source-retirement-actors-present'):
+        archive.archive_step(transaction=n.transaction)
+    assert (n.metadata / archive.CURSOR).read_bytes() == frozen
+    loaded.clear()
+    while result['phase'] != 'core':
+        result = archive.archive_step(transaction=n.transaction)
+    resumed = json.loads((n.metadata / archive.CURSOR).read_bytes())
+    assert resumed['plan'] == cursor['plan'] and resumed['archiveInode'] == archive_inode
+    assert result['completed'] == result['total'] and (n.metadata / 'retirement.json').read_bytes() == n.raw
 
 
 def core_prefix(n, monkeypatch):

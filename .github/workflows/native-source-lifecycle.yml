@@ -131,6 +131,9 @@ jobs:
           - packet: retirement-archive-refusals
             files: ods/tests/test_native_source_retirement_archive.py
             filter: changed_archive_authority
+          - packet: retirement-archive-census
+            files: ods/tests/test_native_source_retirement_archive.py
+            filter: census
           - packet: retirement-core-archive
             files: ods/tests/test_native_source_retirement_archive.py
             filter: actual_core or public_retire

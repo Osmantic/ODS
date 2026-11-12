@@ -3537,9 +3537,8 @@ def _archive_sidefiles_no_source(bridge, archive_name):
         if name.startswith(('source-', '.source-', 'native-source-', '.native-source-')) or name == 'native-app-enrollment.json'}
     if names - {'source-sidefiles.json', 'source-sidefiles-archives.json', archive_name}:
         raise InstallError('native-sidefiles-archive-source-present')
-    raw = bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10)
-    if (not raw.startswith('system = {') or not raw.rstrip().endswith('}')
-            or len(raw) > 1024 * 1024 or custody.NATIVE_LABEL in raw):
+    loaded = custody.native_launchd_loaded_labels(bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10))
+    if any(label.startswith(custody.NATIVE_LABEL) for label in loaded):
         raise InstallError('native-sidefiles-archive-source-present')
     processes = bridge.command(['/bin/ps', '-axo', 'pid=,uid='], timeout=10)
     seen = set()
@@ -4426,9 +4425,8 @@ def _prepublication_source_absence(bridge, candidate, owner):
         if name.startswith(('source-', '.source-', 'native-source-', '.native-source-')) or name == 'native-app-enrollment.json'}
     if names - allowed:
         raise InstallError('native-prepublication-source-present')
-    raw = bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10)
-    if (not raw.startswith('system = {') or not raw.rstrip().endswith('}')
-            or len(raw) > 1024 * 1024 or custody.NATIVE_LABEL in raw):
+    loaded = custody.native_launchd_loaded_labels(bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10))
+    if any(label.startswith(custody.NATIVE_LABEL) for label in loaded):
         raise InstallError('native-prepublication-source-present')
     processes = bridge.command(['/bin/ps', '-axo', 'pid=,uid='], timeout=10)
     seen = set()

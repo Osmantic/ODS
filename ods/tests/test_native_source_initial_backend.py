@@ -16,7 +16,7 @@ if sys.platform != 'linux' or not Path('/proc/self/fd').is_dir():
     pytest.skip('Linux metadata driver, not physical Darwin', allow_module_level=True)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_native_source_executor import qualification_operation, Launchd
-from test_native_source_custody import native
+from test_native_source_custody import native, launchctl_system
 from test_connection_deployment_paths import deployment
 from test_native_source_runtime_publication import built, source, package
 from test_native_source_publication import material, publication, helper
@@ -95,7 +95,7 @@ def initial(material, monkeypatch, request):
         def absent_command(argv, **kwargs):
             assert kwargs['stdin'] is c.subprocess.DEVNULL and kwargs['timeout'] == 10
             assert argv in (['/bin/launchctl', 'print', 'system'], ['/bin/ps', '-axo', 'pid=,uid='])
-            return SimpleNamespace(returncode=0, stdout='system = {\n}\n' if argv[0] == '/bin/launchctl' else '1 0\n42 1000\n')
+            return SimpleNamespace(returncode=0, stdout=launchctl_system() if argv[0] == '/bin/launchctl' else '1 0\n42 1000\n')
         with monkeypatch.context() as proof:
             proof.setattr(c.subprocess, 'run', absent_command)
             n.retained = c.native_retained_identity_only(owner_uid=n.f.bridge.owner.pw_uid, owner_gid=n.f.bridge.owner.pw_gid)
