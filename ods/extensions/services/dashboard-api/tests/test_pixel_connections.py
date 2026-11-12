@@ -1,4 +1,5 @@
 """Connected-apps status route: owner-only, content-free, and strict about its shape."""
+import asyncio
 import copy
 import json
 import os
@@ -99,6 +100,109 @@ def test_status_identifies_only_the_fixed_pre_read_busy_refusal(client, mock_req
     else:
         assert isinstance(response.json()['detail'], str)
     mock_request.assert_awaited_once_with('GET', '/v1/pixel/connections', timeout=100)
+
+
+@pytest.mark.asyncio
+async def test_attention_and_settings_share_only_a_live_read(monkeypatch, tmp_path):
+    flag(monkeypatch, 'true')
+    monkeypatch.setattr(api, '_status_reads', {})
+    monkeypatch.setattr(api, '_attention', {'until': 0.0, 'value': None})
+    started, release = asyncio.Event(), asyncio.Event()
+    value = host_reply(tmp_path)
+    async def read(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return value
+    request = AsyncMock(side_effect=read)
+    monkeypatch.setattr(api, 'request_agent_json', request)
+    attention = asyncio.create_task(api.owner_attention())
+    await started.wait()
+    settings = asyncio.create_task(api._agent_status())
+    await asyncio.sleep(0)
+    assert request.await_count == 1
+    release.set()
+    await attention
+    result = await settings
+    assert result['connectors']['google']['state'] == 'connected'
+    await api._agent_status()
+    assert request.await_count == 2  # No completed-result cache for Settings.
+    assert api._status_reads == {}
+
+
+@pytest.mark.asyncio
+async def test_disconnected_waiter_does_not_cancel_a_shared_read_or_share_mutable_results(monkeypatch, tmp_path):
+    monkeypatch.setattr(api, '_status_reads', {})
+    started, release = asyncio.Event(), asyncio.Event()
+    value = host_reply(tmp_path)
+    async def read(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+        return value
+    request = AsyncMock(side_effect=read)
+    monkeypatch.setattr(api, 'request_agent_json', request)
+    departed = asyncio.create_task(api._agent_status())
+    await started.wait()
+    remaining = [asyncio.create_task(api._agent_status()) for _ in range(2)]
+    await asyncio.sleep(0)
+    departed.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await departed
+    release.set()
+    first, second = await asyncio.gather(*remaining)
+    first['connectors']['google']['account'] = 'changed@example.com'
+    assert second['connectors']['google']['account'] == 'owner@example.com'
+    assert request.await_count == 1 and api._status_reads == {}
+
+
+@pytest.mark.asyncio
+async def test_change_and_lost_reply_both_exclude_an_earlier_status_from_later_reads(monkeypatch, tmp_path):
+    flag(monkeypatch, 'true')
+    monkeypatch.setattr(api, '_status_reads', {})
+    monkeypatch.setattr(api, '_attention', {'until': 100000000000.0, 'value': {'state': 'old'}})
+    started, release = asyncio.Event(), asyncio.Event()
+    value = host_reply(tmp_path)
+    reads = 0
+    async def request(method, *_args, **_kwargs):
+        nonlocal reads
+        if method == 'POST':
+            raise AgentUnavailable('fixture-lost-reply')
+        reads += 1
+        if reads == 1:
+            started.set()
+            await release.wait()
+        return value
+    monkeypatch.setattr(api, 'request_agent_json', request)
+    old = asyncio.create_task(api._agent_status())
+    await started.wait()
+    with pytest.raises(api.HTTPException):
+        await api._action('/v1/pixel/connections/google/sync', {}, api.OutcomeReply, 45)
+    assert api._attention['until'] == 0.0
+    fresh = await api._agent_status()
+    assert reads == 2 and fresh['available'] is True
+    release.set()
+    await old
+    assert api._status_reads == {}
+
+
+@pytest.mark.asyncio
+async def test_attention_started_before_a_change_cannot_repopulate_the_cache(monkeypatch, tmp_path):
+    flag(monkeypatch, 'true')
+    monkeypatch.setattr(api, '_status_reads', {})
+    monkeypatch.setattr(api, '_attention', {'until': 0.0, 'value': None})
+    started, release = asyncio.Event(), asyncio.Event()
+    async def read(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+        return host_reply(tmp_path)
+    monkeypatch.setattr(api, 'request_agent_json', AsyncMock(side_effect=read))
+    old = asyncio.create_task(api.owner_attention())
+    await started.wait()
+    api._invalidate_status_reads()
+    release.set()
+    await old
+    assert api._attention == {'until': 0.0, 'value': None}
+    await api.owner_attention()
+    assert api._attention['until'] > 0.0
 
 
 @pytest.mark.parametrize("value,enabled", [(None, True), ("true", True), (" TRUE ", True), ("false", False),

@@ -16,6 +16,8 @@ Settings asks whether it is.
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import json
 import re
 import time
@@ -267,7 +269,41 @@ async def get_connections_enabled():
     return JSONResponse(content={"enabled": _connected_apps_enabled()}, headers=NO_STORE)
 
 
+_status_reads: dict[asyncio.AbstractEventLoop, asyncio.Task] = {}
+_status_epoch = 0
+
+
+def _invalidate_status_reads():
+    global _status_epoch
+    _status_epoch += 1
+    # Existing waiters still receive their observation. A read requested after
+    # a change must not join that earlier operation, even after a lost reply.
+    _status_reads.clear()
+    _attention.update(until=0.0, value=None)
+
+
 async def _agent_status() -> dict:
+    """Share one live read between Settings and Portal's attention poll.
+
+    All callers are already owner-authenticated. Only overlapping reads join;
+    completion discards the task, and each caller receives its own projection.
+    """
+    loop = asyncio.get_running_loop()
+    task = _status_reads.get(loop)
+    if task is None:
+        task = loop.create_task(_read_agent_status())
+        _status_reads[loop] = task
+
+        def finished(result):
+            if _status_reads.get(loop) is result:
+                _status_reads.pop(loop)
+            if not result.cancelled():
+                result.exception()  # A disconnected waiter must not orphan an exception.
+        task.add_done_callback(finished)
+    return copy.deepcopy(await asyncio.shield(task))
+
+
+async def _read_agent_status() -> dict:
     """The validated status, or HTTPException with the owner-facing reason."""
     try:
         raw = await request_agent_json("GET", "/v1/pixel/connections", timeout=100)
@@ -334,12 +370,14 @@ async def owner_attention() -> dict | None:
     now = time.monotonic()
     if now < _attention["until"]:
         return _attention["value"]
+    epoch = _status_epoch
     try:
         value = _attention_of(await _agent_status())
     except HTTPException:
         # Unknown status interrupts nobody; Settings shows why it is unavailable.
         value = None
-    _attention.update(until=now + ATTENTION_SECONDS, value=value)
+    if epoch == _status_epoch:
+        _attention.update(until=time.monotonic() + ATTENTION_SECONDS, value=value)
     return value
 
 
@@ -666,6 +704,7 @@ class OutcomeReply(Strict):
 
 async def _action(path: str, payload: dict, reply_model: type[BaseModel], timeout: float) -> JSONResponse:
     _enabled()
+    _invalidate_status_reads()
     try:
         raw = await request_agent_json("POST", path, payload=payload, timeout=timeout)
     except AgentHTTPError as exc:
@@ -675,6 +714,8 @@ async def _action(path: str, payload: dict, reply_model: type[BaseModel], timeou
         raise _refusal(503, "connections-unavailable") from None
     except AgentProtocolError:
         raise _refusal(502, "connection-change-unconfirmed") from None
+    finally:
+        _invalidate_status_reads()
     try:
         reply = reply_model.model_validate(raw)
     except ValidationError:
@@ -889,6 +930,7 @@ def _native_refusal(status_code, code):
 
 async def _native_action(app, name, payload, model):
     _enabled()
+    _invalidate_status_reads()
     try:
         raw = await request_agent_json('POST', f'/v1/pixel/connections/apps/{app}/{name}', payload=payload,
                                        timeout=90 if name in ('complete', 'check') else 330)
@@ -897,6 +939,8 @@ async def _native_action(app, name, payload, model):
         raise _native_refusal(exc.status_code if exc.status_code in (400, 409, 503) else 502, code) from None
     except (AgentUnavailable, AgentProtocolError):
         raise _native_refusal(503, 'native-app-unavailable') from None
+    finally:
+        _invalidate_status_reads()
     try:
         value = model.model_validate(raw)
     except ValidationError:
