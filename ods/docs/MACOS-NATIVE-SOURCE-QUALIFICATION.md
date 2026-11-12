@@ -135,7 +135,7 @@ retained data, not authority to run Source or enable a connection.
 | Installer history ledger | 64 explicit entries |
 | Pending-initial boot history | 16 explicit transactions |
 | Failed-sidefile preservation history reader | 16 explicit archives |
-| Installer Source finish (first or retained inert kit, restored verification, withdrawn-generation rebind) | 3,600 seconds, intersected with the enclosing 4,500-second installer transaction |
+| Installer Source finish (first or retained inert kit, restored verification, withdrawn-generation rebind) | 4,500 seconds, intersected with the enclosing 5,400-second installer transaction |
 | Read-only OS census output | 1 MiB per command, bounded command deadline |
 
 Exceeding a bound preserves the records and refuses the operation. No filename

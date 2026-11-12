@@ -99,6 +99,9 @@ jobs:
           - packet: installer-code-only-metadata-faults
             files: ods/tests/test_native_source_installer_code_only.py
             filter: lost_reply and (publication or sidefiles or terminal)
+          - packet: installer-code-only-bound-and-quarantine
+            files: ods/tests/test_native_source_installer_code_only.py
+            filter: finish_bound_keeps_twice or quarantine
           - packet: installer-rebind-positive
             files: ods/tests/test_native_source_installer_rebind.py
             filter: restored_runtime_rebind or actual_new_bundle or admitted_connected_owner_images

@@ -34,8 +34,8 @@ SANDBOX_GUIDANCE = {
 SANDBOX_ERRORS = frozenset(SANDBOX_GUIDANCE)
 HELP = 'Need help? https://discord.gg/4ntNp9MAwC'
 # Protected activation runs as the installer's protected CLI child; it must not
-# be killed before that child's own PROTECTED_CLI_SECONDS (5,400) bound.
-ACTIVATION_TIMEOUT_SECONDS = 5400
+# be killed before that child's own PROTECTED_CLI_SECONDS (6,300) bound.
+ACTIVATION_TIMEOUT_SECONDS = 6300
 
 
 def helper(name):

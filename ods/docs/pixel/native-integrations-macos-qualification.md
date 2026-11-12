@@ -530,10 +530,12 @@ first-kit finish makes 278 deployment and 110 bundle proofs, about 1,400-1,700
 seconds on that Mac. The first-kit authority now reuses its publisher's proof,
 as the code-only authority already did, and its plan rechecks the selection
 once more. That lowers the counts to 173 and 48, about 800-970 seconds. Every
-guard still re-proves the deployment, bundle and records. The finish bound is
-now 3,600 seconds, inside a 4,500-second transaction and a 5,400-second
-protected child; the next update's code-only kit is estimated at 1,400-1,700
-seconds. The empty-stage quarantine now also covers the first kit.
+guard still re-proves the deployment, bundle and records. The next update's
+code-only kit is estimated at about 2,000 seconds: 298 deployment and 80 bundle
+proofs once each code-only authority also re-proves its selection after reading
+the shared installer history. The finish bound is 4,500 seconds, twice that
+estimate, inside a 5,400-second transaction and a 6,300-second protected child.
+The empty-stage quarantine now also covers the first kit.
 
 After the in-place update to `4d798e834` completed on that Mac (runtime
 `34c8b94ae1ea6065e80038ded8050ca1bce3af35b15dc360f6287771e6984d77`, committed

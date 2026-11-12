@@ -93,10 +93,12 @@ ACCESS_FILES = {
 # walking each complete runtime tree again (measured at 4.6 and 3.6 seconds on an
 # M4 Mac mini with the shipped 34,651-entry runtime). From those proof counts the
 # first inert kit takes about 800-970 seconds there and the next update's
-# code-only kit about 1,400-1,700. The earlier 180-second bound expired
-# mid-staging. The enclosing locked transaction keeps its previous 900 seconds
-# for all other work, and the protected CLI child must outlive it.
-SOURCE_FINISH_SECONDS = 3600
+# code-only kit about 2,000, since each code-only authority also re-proves its
+# selection after reading the shared history. The bound keeps twice that. The
+# earlier 180-second bound expired mid-staging. The enclosing locked transaction
+# keeps its previous 900 seconds for all other work, and the protected CLI child
+# must outlive it.
+SOURCE_FINISH_SECONDS = 4500
 SOURCE_TRANSACTION_SECONDS = SOURCE_FINISH_SECONDS + 900
 PROTECTED_CLI_SECONDS = SOURCE_TRANSACTION_SECONDS + 900
 
