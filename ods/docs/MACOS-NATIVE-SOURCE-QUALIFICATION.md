@@ -1,0 +1,229 @@
+# Native Source lifecycle qualification
+
+This note describes the native Source custody boundary used by Portal on macOS.
+It is a technical qualification record, not evidence of a physical Mac run.
+
+## Supported retirement boundaries
+
+- Normal retirement starts while the installed Core services are still available.
+  The outer ODS uninstaller invokes native retirement before stopping Core or Docker.
+- The actual old protected bridge selects the installed owner, gateway, runtime,
+  and configuration. Source disables its triggers and stops all recorded roles.
+  A fresh boot, label, process, identity, and file-custody proof precedes withdrawal.
+- Private Source generations use a distinct installer-retirement transaction.
+  The publisher revokes the old execution authority and preserves its definitions
+  and journals at the complete v1 boundary before Core is stopped.
+- An inert code kit without private Source state uses a separate code-only
+  inventory. It does not invent a generation, token, broker account, or withdrawal.
+- A known legacy Core with the fixed public provider descriptors and no native
+  Source component, data, metadata, account, or actors has a separate absence proof.
+  A failed Source inspection is never reclassified as this legacy case.
+- The protected Source cursor preserves only the exact witness-bound state,
+  logs, kit, current metadata, and ledger-derived history. Its archive identifier
+  is fixed by the immutable retirement intent.
+- Source finishes before the fixed Core archive plan starts. Core retries keep
+  the original plan, archive, and object inodes even after settings or runtime
+  directories have moved. The original controller lock, witness, and cursor are
+  the last control objects archived.
+
+State is preserved by rename. A lost acknowledgement observes the same object
+at its fixed destination; it does not choose another archive or copy data.
+Token contents are never read, copied, restored, or used as a recovery shortcut.
+Token and environment inodes remain unchanged. The dedicated Source identity
+is retained and revalidated with the existing Operations identity contract.
+New Source jobs are not activated by retirement or an installer rebind.
+
+## Cases that remain refused
+
+- A fresh Source-bearing retirement whose Core services were already stopped
+  without this transaction's witness is not automatically adopted.
+- Source-bearing `--prepare-stopped-recovery` and `--resume-stopped-recovery`
+  are not qualified by this implementation. The public descriptor-only fresh
+  stopped-recovery case is also outside the new ordinary classification path.
+  The pre-existing no-descriptor legacy schema 1/2 assist path is unchanged.
+- A reboot during a retirement transaction does not refresh its old boot witness.
+  This differs from the separately qualified pending-initial-generation recovery.
+- An old protected bridge/publisher without a required Source capability is
+  refused when Source state exists. Prepared code is not treated as active data.
+- Unknown or mixed metadata, unbound historical names, changed owner or DS GUID,
+  new token/state, replaced inodes, live actors, changed authority bytes, and
+  incompatible target templates preserve the current state and stop the operation.
+- Cross-filesystem renames are not replaced with a copy/delete fallback.
+
+Keep private receipts, cursors, archives, and existing data after a refusal.
+Deleting a pending record or editing a private receipt is not a recovery method.
+
+## Empty first-state directory preservation
+
+The administrator-only `installers/macos/lib/pixel-native-source-prefix.py`
+preserves one narrower first-connection interruption: the fixed Source state
+directory was allocated before its inode reached `source-custody-prepare.json`.
+Its private selection file names the exact runtime digest, gate device/inode,
+and device/inode plus SHA-256 of the identity, custody and committed code-only
+receipts. These inputs constrain the selection; they grant no authority.
+
+Under the existing Root lock, the installed bridge requalifies the current
+deployment, kit, history, complete Directory Service identity and preparation
+binding. The custody receipt must still have no gate inode or child records.
+The relay credential keeps its existing owner-private ownership and mode;
+the helper verifies its FD metadata and the digest pinned by Root's settings,
+rather than treating that owner credential as a Root-owned file.
+The selected directory must remain empty, Root-owned, mode 0700 and without
+an ACL. Later lifecycle records, connected-account data, logs, loaded Source
+jobs, Source processes, changed images or unknown Source metadata are refused.
+
+Before an exclusive same-filesystem rename, a private Root capsule under
+`/private/var/lib/ods-pixel-source-recovery` seals copies of the three receipts
+and an immutable manifest. The original directory moves into that capsule
+without changing its inode, permissions or contents. Live receipts remain
+unchanged. The archived directory is never adopted or granted execution
+authority; the ordinary preparer must independently create and qualify a new
+directory. This operation does not start jobs, exchange a Google grant or
+prepare Source itself.
+
+An optional `child` selection handles only the final `proposals` allocation
+left before its inode was recorded. It binds that exact child inode in addition
+to the recorded gate and the three receipt images. All four preceding layout
+entries must be recorded, ready, match their ownership/modes and remain empty
+(the private directory contains only its empty OAuth directory). The gate must
+still have its private preparation mode and no ACL. Environment, logs, jobs,
+data, descriptor, unknown names and changed entries refuse preservation. The
+same sealed-capsule/exclusive-rename procedure retains the empty child without
+adopting it or modifying live receipts. The normal preparer creates its replacement.
+
+For the later initial-generation `manifest.json` allocation, `--empty-manifest
+DEVICE:INODE` selects only a zero-byte Root-owned mode-0600 single-link file
+without an ACL. The original first-child preservation must still verify. The
+current runtime, immutable identity/code receipts, preconsent/no-actor proof,
+canonical v1 gate and complete state/environment/logs are requalified. The
+parent must be in `generation`, its exact child in `staging`, with both fixed
+sync/direct definitions ready, no public definitions, no other staged entries,
+and neither manifest nor replacement-gate inode recorded. Eight current receipt
+images are sealed in a separate Root capsule before an exclusive same-filesystem
+rename retains the unrecorded file. Live receipts are unchanged. The installed
+publisher independently verifies the resulting child prefix before completion.
+Lost acknowledgements may resume only the same sealed images and retained inode;
+unsealed capsules, changed data/authority and a new live manifest refuse recovery.
+This administrator preservation is bounded to 600 seconds and starts no Source
+process, grants no Google access and does not prepare or activate a generation.
+
+The scoped immutable-bundle inventory can use the metadata reader's internal FD
+visitor. One traversal checks every current Root owner/mode/ACL, entry set,
+namespace identity and internal link while inventorying bytes through held FDs.
+Unchanged immutable bytes may reuse their verified hash, but metadata and ACL
+qualification are never cached. Older metadata readers retain the complete
+separate traversal. An empty quiescence namespace grants no historical name;
+existing names still require the complete history proof, and unknown names refuse.
+
+A lost rename acknowledgement may resume only the same sealed capsule and
+selection. An interrupted unsealed capsule is retained and refused, rather
+than recreated. This recovery is not evidence that ordinary Portal first
+connection completed without an interruption. Record the physical outcome
+separately; simulated Darwin metadata tests do not qualify the Mac.
+
+## Failed first-sidefile preservation
+
+The explicit `archive-sidefiles` installer operation covers one narrow legacy
+failure: a restored schema 5 update, with no prior Source kit, identity or private
+state, left an empty Root-owned `gateway.env` with the owner directory's inherited
+group before recording its inode. The caller must select the exact receipt and
+file device/inode pairs observed in the failed attempt. `onboarding.json` must
+remain absent. Filled, linked, ACL-bearing, replaced or unrelated files are
+refused; this operation never completes or adopts the unbound file.
+
+The original controller lock, current restored deployment and fresh Source
+absence checks precede preservation. The original file and sidefile receipt
+move by exclusive rename without changing their bytes, ownership or inodes.
+Private copies of the frozen context and restored journal keep the archive
+verifiable after normal runtime-attempt retirement. A complete immutable manifest
+precedes the moves; only a terminal Root ledger entry makes the exact archive
+visible to later absence, first-connection and retirement inventories. Unlisted
+names remain refusals and no historical record grants Source execution authority.
+
+After a sealed manifest exists, an interrupted move can resume only with the
+same captured inodes. Interruption while preparing the capsule, before a complete
+manifest exists, preserves the partial capsule and both originals and refuses
+automatic retry. This narrower boundary must not be reported as recovery from
+every interruption. The mutator handles the first selected archive or replay of
+that same archive; it does not prune or merge unrelated preservation histories.
+
+An explicit `recover-runtime --rollback-before-source-publication` operation
+covers a different boundary: Core is active, its first Source publication never
+began, and both owner sidefiles have complete inode-bound receipts. Ordinary
+active recovery still resumes the selected candidate. The explicit rollback
+requires a schema 5 context and journal, all approved after-images, retained
+admission, original absent kit/identity proof, and fresh absence of Source state,
+metadata, identity and actors. It does not roll back a partially published Source.
+
+An explicit `recover-runtime --quarantine-empty-source-stage` operation covers
+another narrow interruption: the active installer's inert code-kit staging
+created a root-owned empty directory or one empty file before recording its
+inode. It requires the exact active journal, Source absence proof, current
+candidate selection and live admission hold. Recorded files must still match
+their qualified prefixes. A private receipt is sealed before an exclusive move
+preserves the unrecorded inode in protected quarantine; it is never adopted as
+Source code. Contents, unknown names, changed recorded files, conflicting
+receipts or a changed hold are refusals. The existing bounded publication still
+has to complete separately; quarantine alone is not Source readiness.
+
+Before stopping Core, the operation seals private context/journal copies and a
+fixed preservation manifest. Only after every service is confirmed stopped may
+it exclusively rename the two owner sidefiles and both Root receipts into the
+capsule. Their bytes, ownership and inodes are preserved. The previous archive
+ledger is compared and extended without dropping its earlier entries. A lost
+move or ledger acknowledgement replays only the same sealed selection; an
+unsealed preparation remains retained and refuses automatic adoption.
+
+The schema 2 capsule has exactly seven objects. Readers validate its original
+active journal, sidefile contents and ready receipts, prior archive images and
+the absence of history cycles. Retirement records the owner UID only for the
+two exact sidefile leaves from an independently qualified capsule; every other
+history object keeps its Root custody requirement. A historical capsule is
+retained data, not authority to run Source or enable a connection.
+
+## Bounds
+
+| Boundary | Limit |
+| --- | --- |
+| Retirement history | 1,024 captured nodes, 32 MiB total, maximum depth 16 |
+| Source archive move plan | 1,024 fixed items |
+| Core archive move plan | 1,024 fixed items |
+| Core authority hashes | 512 files |
+| Recorded Core process tree | 4,096 birth-identity rows per service |
+| Installer history ledger | 64 explicit entries |
+| Pending-initial boot history | 16 explicit transactions |
+| Failed-sidefile preservation history reader | 16 explicit archives |
+| Active retained inert-kit installer publication | 900 seconds, intersected with the enclosing installer deadline |
+| Read-only OS census output | 1 MiB per command, bounded command deadline |
+
+Exceeding a bound preserves the records and refuses the operation. No filename
+prefix or capacity failure grants permission to delete or prune Source history.
+Source-bearing archives use a distinct receipt schema and are excluded from
+legacy completed-retirement pruning.
+
+Only the active installer replacement of an already retained inert kit uses
+the existing installer budget. Its per-mutation custody, receipt, inode,
+inactive-actor and independent completion checks still run. First-kit absence,
+restored-target verification and private-generation rebind keep their existing
+180-second sub-deadlines. This allowance does not change Portal query limits or
+authorize a Source job; admission remains held until all completion proofs pass.
+
+## Evidence and remaining platform gate
+
+Owned-file controls exercise actual immutable bundle verification, Root
+contexts/journals, publication, withdrawal, renames, inode preservation, typed
+receipt CAS, and lost-acknowledgement recovery. Apple ownership, Directory
+Services, ACL, and launchd observations are simulated explicitly on Linux.
+They do not establish Darwin kernel, service, Metal/model, or physical Mac behavior.
+
+Earlier records remain bound to their original Source 4.3.45 identity. Separate
+coupled checks use the genuine Source 4.3.46 bundle and pins; they do not relabel
+the earlier evidence. The composed release preserves that 4.3.46 selection.
+
+The code-only installer support capsule has a separate closed manifest from
+the 111-file runtime Source deployment. Its fixed peers execute in fresh
+isolated Root Python processes. Cold bridge discovery reads the installed
+Root definitions and current owner configuration; it does not accept candidate
+constructor fields as installed authority. This boundary is exercised separately
+from the file-only archive controls. A physical Apple Silicon run of the composed
+release remains required before claiming macOS acceptance.

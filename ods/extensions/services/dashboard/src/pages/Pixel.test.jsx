@@ -5,7 +5,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import { act } from '@testing-library/react'
 import {saveProfile} from '../lib/localProfile'
-import {saveConversation,readConversations,DELETE_EVENT} from '../lib/pixelConversations'
+import {saveConversation,readConversations,rememberActiveConversation,DELETE_EVENT} from '../lib/pixelConversations'
 import { StrictMode } from 'react'
 import {previewManifestResponse} from '../test/previewFixtures'
 
@@ -1024,6 +1024,27 @@ describe('Pixel', () => {
       expect(screen.queryByRole('status', { name: 'Model capability' })).not.toBeInTheDocument()
       expect(screen.getByText('Available')).not.toHaveAttribute('title')
       expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+    }
+  )
+
+  it('points to Connected apps when the Google connection needs the owner, from Portal status alone', async () => {
+    globalThis.fetch.mockResolvedValue(response({ available: true, model: 'pixel/default', detail: 'Owner agent ready',
+      connectedApps: { state: 'needs-reconnect', reason: 'invalid-grant', step: null } }))
+    render(<Pixel />)
+    await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
+    const notice = screen.getByRole('status', { name: 'Connected apps' })
+    expect(notice).toHaveTextContent('Google needs reconnecting.')
+    expect(within(notice).getByRole('link', { name: 'Open Connected apps' })).toHaveAttribute('href', '/settings?section=apps')
+    expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+    expect(globalThis.fetch.mock.calls.some(([url]) => String(url).startsWith('/api/pixel/connections'))).toBe(false)
+  })
+
+  it.each([undefined, null, { state: 'connected', reason: null, step: null }, { state: 'made-up' }, 'needs-reconnect'])(
+    'shows no Connected apps notice for %j', async connectedApps => {
+      globalThis.fetch.mockResolvedValue(response({ available: true, model: 'pixel/default', connectedApps }))
+      render(<Pixel />)
+      await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
+      expect(screen.queryByRole('status', { name: 'Connected apps' })).not.toBeInTheDocument()
     }
   )
 
@@ -2301,6 +2322,7 @@ describe('Pixel', () => {
   it('rechecks the selected interrupted chat even when the previous interrupted chat is terminal', async () => {
     saveConversation({schema:1,chatId:'second_interrupted',interrupted:true,messages:[{role:'user',content:'Another task'}]})
     saveInterruptedChat()
+    rememberActiveConversation('restored_opaque_chat')
     globalThis.fetch.mockImplementation(async (url, options) => {
       if (url === '/api/pixel/status') return response({available:true})
       expect(url).toBe('/api/pixel/chat/activity')

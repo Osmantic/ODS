@@ -1,7 +1,7 @@
 import {act,fireEvent,screen} from '@testing-library/react'
 import {render} from '../test/test-utils'
 import Pixel from './Pixel'
-import {saveConversation,SELECT_EVENT} from '../lib/pixelConversations'
+import {saveConversation,rememberActiveConversation,SELECT_EVENT} from '../lib/pixelConversations'
 
 // Real Pixel page + context hook + HTTP JSON contract; no hook/state mocks.
 const response=(body,status=200)=>({ok:status>=200&&status<300,status,json:async()=>body})
@@ -13,7 +13,10 @@ const context=(state='running',used=1200)=>({schemaVersion:1,status:'ready',sess
   context:{used,window:8192,measuredAt:'2026-09-30T11:00:00.000Z'},
   compaction:{status:state==='runtime-restarted'?'unknown':state,requestId:operation,count:state==='completed'?1:0,...(['failed','runtime-restarted'].includes(state)?{reason:state==='failed'?'runtime-failed':state}:{})},
   history:{revision:'c'.repeat(64),acknowledgedMessages:2}})
-const seed=()=>localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'first',messages:ownerMessages,draft:'Keep my next request'}))
+const seed=()=>{
+  localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'first',messages:ownerMessages,draft:'Keep my next request'}))
+  rememberActiveConversation('first')
+}
 const ring=used=>`${Math.round(used*100/8192)}% full · ${used.toLocaleString()} / ${(8192).toLocaleString()} tokens used`
 const calls=url=>fetch.mock.calls.filter(([path])=>path===url)
 const tick=async ms=>act(async()=>vi.advanceTimersByTimeAsync(ms))

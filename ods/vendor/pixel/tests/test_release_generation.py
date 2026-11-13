@@ -41,6 +41,36 @@ class ReleaseGenerationTests(unittest.TestCase):
     def test_checked_in_generation_is_current(self):
         self.run_node(self.root, "scripts/generate-release-files.mjs", "--check")
 
+    def test_unreviewed_next_release_stays_outside_both_exact_archive_families(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.copy_repository(Path(temporary))
+            manifest_path = root / "RELEASE-MANIFEST.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            current = manifest["pixel"]
+            self.assertEqual(current, "4.3.46")
+            manifest["pixel"] = "4.3.47"
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+            matrix_path = root / "OPENCLAW-COMPATIBILITY.json"
+            matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+            row = json.loads(json.dumps(next(item for item in matrix["combinations"] if item["pixel"] == current)))
+            row["pixel"] = "4.3.47"
+            matrix["combinations"].append(row)
+            matrix_path.write_text(json.dumps(matrix, indent=2) + "\n", encoding="utf-8")
+            # Make the generated VERSION and ordinary metadata coherent. The
+            # actual closed archive-family guards must still reject this version.
+            self.run_node(root, "scripts/generate-release-files.mjs", "--write")
+            failure = self.run_node(root, "scripts/check-release-contract.mjs", success=False)
+            self.assertIn("Release reactivation archive bridge contract is invalid", failure.stderr)
+            failure = self.run_node(
+                root, "scripts/generate-release-update.mjs",
+                "--artifact", str(root / "pixel-4.3.47.tar.gz"),
+                "--sbom", str(root / "pixel-4.3.47.cdx.json"),
+                "--provenance", str(root / "pixel-4.3.47.intoto.jsonl"),
+                "--output", str(root / "pixel-4.3.47.update.json"), success=False,
+            )
+            self.assertIn("Release update policy and VERSION disagree", failure.stderr)
+            self.assertFalse((root / "pixel-4.3.47.update.json").exists())
+
     def test_export_links_only_to_available_audit_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self.copy_repository(Path(temporary))
@@ -51,11 +81,22 @@ class ReleaseGenerationTests(unittest.TestCase):
             evidence.write_text("# Fixture evidence\n", encoding="utf-8")
             self.run_node(root, "scripts/generate-release-files.mjs", "--write")
             self.assertIn(f"[audit]({audit})", (root / "OPENCLAW-COMPATIBILITY.md").read_text(encoding="utf-8"))
+            self.run_node(root, "scripts/docs/generate-status.mjs", "--write")
+            self.assertIn(f"](../{audit})", (root / "docs/status.md").read_text(encoding="utf-8"))
             evidence.unlink()
             self.run_node(root, "scripts/generate-release-files.mjs", "--write")
+            self.run_node(root, "scripts/docs/generate-status.mjs", "--write")
             table = (root / "OPENCLAW-COMPATIBILITY.md").read_text(encoding="utf-8")
             self.assertNotIn(f"[audit]({audit})", table)
             self.assertIn(f"Historical audit not included in this source export (`{audit}`)", table)
+            status = json.loads((root / "docs/status.json").read_text(encoding="utf-8"))
+            page = (root / "docs/status.md").read_text(encoding="utf-8")
+            self.assertEqual(status["repository"]["evidenceDocument"], audit)
+            for row in (status["repository"], status["latestSupportedCompatibility"]):
+                document = row["evidenceDocument"]
+                if not (root / document).exists():
+                    self.assertNotIn(f"](../{document})", page)
+                    self.assertIn(f"`{document}` (not included in this source export)", page)
             self.assertEqual(matrix, json.loads((root / "OPENCLAW-COMPATIBILITY.json").read_text(encoding="utf-8")))
 
     def test_drift_is_rejected_and_regeneration_repairs_it(self):
@@ -269,6 +310,7 @@ class ReleaseGenerationTests(unittest.TestCase):
             env = dict(os.environ)
             env.update({
                 "PIXEL_SOURCE_BROKER_ENABLED": "0",
+                "PIXEL_SKIP_NPM_CI": "1",
                 "PIXEL_OPS_BROKER_ENABLED": "0",
                 "PIXEL_FRONTIER_BROKER_ENABLED": "0",
                 "PIXEL_WEB_COURIER_ENABLED": "0",

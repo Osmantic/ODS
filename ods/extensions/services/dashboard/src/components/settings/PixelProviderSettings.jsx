@@ -177,7 +177,7 @@ export default function PixelProviderSettings({ showHeading = true }) {
 
   return <section aria-labelledby="pixel-connections-title" className="settings-premium-card pixel-connections-settings rounded-lg border border-theme-border p-5 space-y-5 text-theme-text">
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><h2 id="pixel-connections-title" className={showHeading ? 'text-lg font-semibold' : 'sr-only'}>Portal connections</h2>
+      <div><h2 id="pixel-connections-title" className={showHeading ? 'text-lg font-semibold' : 'sr-only'}>Portal models</h2>
         <p className="text-sm text-theme-text-muted">{dirty ? 'Unsaved provider changes' : 'Inference providers and routing'}</p></div>
       <div className="flex flex-wrap gap-2">
         <button className={buttonStyle} disabled={loading || saving || runtimeBusy || connectionBusy} onClick={reload}>Reload providers</button>

@@ -462,8 +462,19 @@ def test_source_entrypoint_alone_repairs_stop_then_takes_normal_durable_hold(tmp
     plan = {"hold": None, "identity": {"configSha256": "a" * 64}}
     manager = SimpleNamespace(journal=lambda: plan, bind=Mock())
     monkeypatch.setitem(sys.modules, "pixel_source_upgrade", SimpleNamespace(
-        begin_plan=Mock(return_value=manager), UpgradeError=RuntimeError))
+        begin_plan=Mock(return_value=manager), guard_fresh_admission=Mock(), UpgradeError=RuntimeError))
     monkeypatch.setattr(bridge.platform, "system", lambda: "Linux")
+    # Model only the protected state directory's Root ownership. Its real mode,
+    # file type and symlink identity still go through the production guards.
+    original_lstat = Path.lstat
+    def root_state_stat(path, *args, **kwargs):
+        value = original_lstat(path, *args, **kwargs)
+        if path == adapter.state:
+            fields = list(value)
+            fields[4] = 0
+            return os.stat_result(fields)
+        return value
+    monkeypatch.setattr(Path, "lstat", root_state_stat)
     monkeypatch.setattr(bridge.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(bridge, "atomic_json", lambda path, value: path.write_text(json.dumps(value)))
     if stopped and not source:

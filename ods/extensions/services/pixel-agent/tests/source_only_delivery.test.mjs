@@ -4,6 +4,7 @@ import {readFileSync,mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
 import vm from 'node:vm';
+import {nativeIntegrationHookState} from './native-integration-hook-state.mjs';
 const {createToolLoopGuard, userMessageRequestsWorkspacePreview} = await import(
   process.env.ODS_SOURCE_ONLY_GUARD_MODULE || '../plugin/tool-loop-guard.mjs');
 
@@ -95,6 +96,7 @@ for (const deferred of [false,true]) test(`real finalization retains verified so
   const end = source.indexOf('    // Delivery rewriting',start);
   let finalize;
   vm.runInNewContext(source.slice(start,end),{
+    ...nativeIntegrationHookState(),
     api:{on:(_name,callback)=>{finalize=callback;}}, toolLoopGuard:guard, AGENT_ID:'pixel',
     goalProgress:{finalize:(_event,_context,decision)=>decision.guardDecision},
     delegationDelivery:{finalize(){}},

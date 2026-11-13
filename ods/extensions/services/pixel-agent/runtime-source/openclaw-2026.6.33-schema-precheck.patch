@@ -1,0 +1,19 @@
+--- selection-BEwSQKM-.js (reviewed e07)
++++ selection-BEwSQKM-.js (schema-aware precheck)
+@@ -175,0 +176 @@
++import { t as buildOpenAICompletionsParams } from "./openai-transport-stream-P3cLoEh2.js";
+@@ -13751,0 +13753,11 @@
++					// ODS 64K+ completions: the transport also budgets the offered schemas.
++					// Count its real conversion of the final post-policy visible objects;
++					// never alter model messages, tool objects, reserve or output settings.
++					let odsOfferedSchemaPressure = 0;
++					if (sessionAgentId === "pixel" && params.model.api === "openai-completions"
++						&& Number.isInteger(contextTokenBudget) && contextTokenBudget >= 65536 && effectiveTools.length > 0) {
++						const offered = buildOpenAICompletionsParams(params.model, {messages: [], tools: effectiveTools}).tools;
++						if (offered?.length) odsOfferedSchemaPressure = estimateLlmBoundaryTokenPressure({
++							messages: [], prompt: JSON.stringify(offered)
++						});
++					}
+@@ -13756 +13768 @@
+-					});
++					}) + odsOfferedSchemaPressure;

@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test, {after} from 'node:test';
 import vm from 'node:vm';
+import {nativeIntegrationHookState} from './native-integration-hook-state.mjs';
 
 import {createProjectRestoreRoute, createProjectSnapshots, helperRunner, projectsNamed, SNAPSHOT_DIRECTORY}
   from '../plugin/project-snapshots.mjs';
@@ -553,6 +554,7 @@ test('the plugin entry waits for the copy in before_tool_call, after the final d
   let guardDecision, release;
   const callbacks = {};
   vm.runInNewContext(slice('    api.on("before_tool_call",', '    api.on("after_tool_call",'), {
+    ...nativeIntegrationHookState(),
     api: {config: {}, on: (name, callback) => { callbacks[name] = callback; }},
     AGENT_ID: 'pixel', toolLoopGuard: {beforeToolCall: () => guardDecision},
     accessRuntime: {isProbe: context => context.runId === 'private-proof', beforeTool: () => undefined},
@@ -583,6 +585,7 @@ test("the plugin entry records each Portal run's end, never a probe's", () => {
   const callbacks = {};
   const noop = () => {};
   vm.runInNewContext(slice('    api.on("agent_end",', '    api.on("before_tool_call",'), {
+    ...nativeIntegrationHookState(),
     api: {on: (name, callback) => { callbacks[name] = callback; }, logger: {warn: noop}},
     delegationDelivery: {end: noop}, conversationImageLifecycle: {observe: noop},
     toolLoopGuard: {endPreviewRevalidation: noop, observeAgentEnd: noop},

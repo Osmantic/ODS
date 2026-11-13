@@ -5,6 +5,41 @@ import {createActivityTool,displayForActivity} from '../plugin/activity-display.
 import {parseTaskActivity} from '../host/task_activity_schema.mjs';
 const runId='chatcmpl_11111111-2222-4333-8444-555555555555';
 const context={agentId:'pixel',runId,toolCallId:'call-1',toolName:'tool_call'};
+
+test('integration activity names only the actual action and never publishes sensitive arguments or results',()=>{
+ const cases=[
+  ['pixel_ods_notes',{action:'search'},'Searching notes'],
+  ['pixel_ods_notes',{action:'read'},'Reading a note'],
+  ['pixel_ods_notes',{action:'write',mode:'append'},'Adding to a note'],
+  ['pixel_ods_notes',{action:'write'},'Adding to a note'],
+  ['pixel_ods_notes',{action:'write',mode:'create'},'Creating a note'],
+  ['pixel_ods_notify',{},'Sending a notification'],
+  ['pixel_ods_mcp',{action:'list'},'Checking connected tools'],
+  ['pixel_ods_mcp',{action:'call'},'Using a connected tool'],
+  ['pixel_ods_connections_status',{},'Checking connections'],
+  ['pixel_ods_skill',{},'Checking task guidance'],
+ ];
+ for(const [name,action,label] of cases) for(const wrapped of [false,true]) {
+  const args={...action,query:'private-query',path:'/private/vault/secret.md',text:'private-note',
+   title:'private-title',message:'private-message',server:'private-server',tool:'private-tool',
+   arguments:{authorization:'Bearer private-token'}};
+  const ctx={toolName:wrapped?'tool_call':name};
+  const event={params:wrapped?{id:`openclaw:pixel-ods:${name}`,args}:args,
+   result:{content:[{type:'text',text:'private-result'}],details:{summary:'private-summary'}}};
+  const display=displayForActivity(event,ctx);
+  assert.deepEqual(display,{type:'tool',label,detail:null,sources:[],steps:[],change:null});
+  assert.doesNotMatch(JSON.stringify(display),/private-|Bearer/);
+  // The completion hook can omit arguments. Preserve the observed action,
+  // rather than suggesting another operation or leaking its result.
+  const completed=displayForActivity({result:event.result},ctx,display);
+  assert.deepEqual(completed,display);
+ }
+ for(const [name,args] of [['pixel_ods_notes',{action:'delete'}],['pixel_ods_mcp',{action:'discover'}],
+                          ['pixel_ods_notes',{action:'constructor'}],['pixel_ods_mcp',{action:'toString'}],
+                          ['pixel_ods_notes',{action:'write',mode:'replace'}]]) {
+  assert.equal(displayForActivity({params:args},{toolName:name}).label,'Using a tool');
+ }
+});
 test('public updates and search sources survive the complete projection without raw output',async()=>{
  const tracker=createTaskActivity();tracker.begin({},context);
  const event={params:{id:'pixel_ods_research',args:{query:'Documentação oficial'}}};

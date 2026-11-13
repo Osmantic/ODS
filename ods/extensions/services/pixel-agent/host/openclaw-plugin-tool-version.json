@@ -1,0 +1,16 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "a8e2d7ee4e69b6a3ee491e68a5b841a8e7920d96d5d895c949cce7cda55a9563",
+  "patchedSha256": "417f9feeb905b329fb3d71286d84029a30e770b65cf4a428ab47ee1e69d28b57",
+  "previousReplacements": {},
+  "replacements": [
+    [
+      "\tsetPluginToolMeta(tool, {\n\t\tpluginId,\n\t\toptional:",
+      "\tsetPluginToolMeta(tool, {\n\t\tpluginId,\n\t\tpluginVersion: params.plugin?.version,\n\t\toptional:"
+    ],
+    [
+      "\t\t\tpluginToolMeta.set(tool, {\n\t\t\t\tpluginId: entry.pluginId,\n\t\t\t\toptional,",
+      "\t\t\tpluginToolMeta.set(tool, {\n\t\t\t\tpluginId: entry.pluginId,\n\t\t\t\tpluginVersion: manifestPlugin?.version,\n\t\t\t\toptional,"
+    ]
+  ]
+}

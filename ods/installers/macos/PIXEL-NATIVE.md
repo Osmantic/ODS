@@ -8,6 +8,15 @@ renderer uses `ProcessType=Interactive`, `/dev/null` for stdin and umask `077`.
 The ODS gateway renderer now follows these three defaults. This is a candidate
 definition change, not a performance measurement or an update of live services.
 
+The Root access coordinator also uses `ProcessType=Interactive`: its custody
+checks answer owner requests within fixed deadlines. A Terminal measurement
+does not establish the response time of a `Background` LaunchDaemon, whose CPU
+and I/O scheduling macOS throttles. This changes scheduling only; the daemon's
+Root identity, fixed interpreter, owner authentication and custody checks remain
+the same. Existing installations receive the definition through the normal
+protected update, including its before/after service proofs.
+See Apple's [launchd ProcessType documentation](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5).
+
 ODS deliberately retains its protected LaunchDaemon definition, running the
 gateway as the installation owner, and its controlled stop/restart contract.
 Running `openclaw gateway install` alongside it would create a second supervisor

@@ -5,6 +5,26 @@ const current = () => JSON.parse(localStorage.getItem(CHAT_KEY))
 beforeEach(()=>localStorage.clear())
 afterEach(()=>vi.restoreAllMocks())
 
+it('keeps both different-chat commits when a second tab saves between library writes',()=>{
+  const first={...chat,chatId:'tab-first',draft:'First original'}
+  const second={...chat,chatId:'tab-second',draft:'Second original'}
+  saveConversation(first);saveConversation(second)
+  const firstWrite=createConversationWriter(readConversations().find(value=>value.chatId===first.chatId))
+  const secondWrite=createConversationWriter(readConversations().find(value=>value.chatId===second.chatId))
+  const setItem=Storage.prototype.setItem
+  let interleave=true
+  vi.spyOn(Storage.prototype,'setItem').mockImplementation(function(key,value){
+    if(interleave && key==='ods.pixel.conversations.v1'){
+      interleave=false
+      secondWrite({...second,draft:'Second committed'})
+    }
+    return setItem.call(this,key,value)
+  })
+  firstWrite({...first,draft:'First committed'})
+  expect(readConversations().find(value=>value.chatId===second.chatId).draft).toBe('Second committed')
+  expect(()=>secondWrite({...second,draft:'Second next message'})).not.toThrow()
+})
+
 it('detects changed contents even when timestamps are equal',()=>{
   vi.spyOn(Date,'now').mockReturnValue(42)
   saveConversation(chat)

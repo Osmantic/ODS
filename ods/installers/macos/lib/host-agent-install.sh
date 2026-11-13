@@ -106,9 +106,51 @@ _verify_macos_dashboard_host_agent() {
 }
 
 
+_write_macos_host_agent_plist() {
+    # Publish only a complete plist. Recovery can retry a failed render with the
+    # previous login service and its on-disk definition still in place.
+    "$AGENT_PYTHON" -I - "$ODS_AGENT_PLIST" "$ODS_AGENT_PLIST_LABEL" "$AGENT_PYTHON" \
+        "$INSTALL_DIR" "$HOME" "$ODS_AGENT_PATH" <<'AGENT_PLIST_PY'
+import os
+from pathlib import Path
+import plistlib
+import sys
+import tempfile
+
+path = Path(sys.argv[1])
+label, python, install, home, search_path = sys.argv[2:]
+if path.is_symlink() or (path.exists() and not path.is_file()):
+    sys.exit("Refusing to replace a non-regular host-agent plist.")
+environment = {"ODS_HOME": install, "HOME": home, "PATH": search_path}
+if os.environ.get("DOCKER_HOST"):
+    # Retained-install recovery pins a verified Docker transport.
+    for key in ("DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+        environment[key] = os.environ.get(key, "")
+log = str(Path(home) / "Library/Logs/ODS/ods-host-agent.log")
+document = {
+    "Label": label,
+    "ProgramArguments": [python, str(Path(install) / "bin/ods-host-agent.py"), "--install-dir", install],
+    "WorkingDirectory": install,
+    "EnvironmentVariables": environment,
+    "RunAtLoad": True,
+    "KeepAlive": {"SuccessfulExit": False},
+    "StandardOutPath": log,
+    "StandardErrorPath": log,
+}
+with tempfile.TemporaryDirectory(prefix=".ods-host-agent-", dir=path.parent) as temporary:
+    staged = Path(temporary) / "agent.plist"
+    with staged.open("xb") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        plistlib.dump(document, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(staged, path)
+AGENT_PLIST_PY
+}
+
 ods_macos_install_host_agent() {
 local _agent_native_bind _agent_probe_host _agent_bootstrap_err _agent_bootstrap_rc
-local _agent_health_ok _agent_health_i
+local _agent_health_ok _agent_health_i _agent_listen_addr
 AGENT_PYTHON="$(command -v python3 || true)"
 if [[ -f "${INSTALL_DIR}/bin/ods-host-agent.py" ]] && [[ -n "$AGENT_PYTHON" ]]; then
     # xpcproxy permits log creation under HOME even for external-volume installs.
@@ -127,83 +169,17 @@ if [[ -f "${INSTALL_DIR}/bin/ods-host-agent.py" ]] && [[ -n "$AGENT_PYTHON" ]]; 
     fi
     ODS_AGENT_PORT="$(read_env_value "$INSTALL_DIR/.env" "ODS_AGENT_PORT")"
     ODS_AGENT_PORT="${ODS_AGENT_PORT:-7710}"
-    if ! cat > "$ODS_AGENT_PLIST" <<AGENT_PLIST_EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>${ODS_AGENT_PLIST_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>${AGENT_PYTHON}</string>
-        <string>${INSTALL_DIR}/bin/ods-host-agent.py</string>
-        <string>--install-dir</string>
-        <string>${INSTALL_DIR}</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>${INSTALL_DIR}</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>ODS_HOME</key>
-        <string>${INSTALL_DIR}</string>
-        <key>HOME</key>
-        <string>${HOME}</string>
-        <key>PATH</key>
-        <string>${ODS_AGENT_PATH}</string>
-    </dict>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
-    <key>StandardOutPath</key>
-    <string>${HOME}/Library/Logs/ODS/ods-host-agent.log</string>
-    <key>StandardErrorPath</key>
-    <string>${HOME}/Library/Logs/ODS/ods-host-agent.log</string>
-</dict>
-</plist>
-AGENT_PLIST_EOF
-    then
-        ai_err "Could not write the ODS host-agent LaunchAgent."
+    if ! _agent_listen_addr="$(macos_check_host_agent_port "$_agent_native_bind" "$ODS_AGENT_PORT" "$INSTALL_DIR" "$ODS_AGENT_PLIST_LABEL")"; then
+        ai_err "Could not verify the listener on port $ODS_AGENT_PORT as belonging to this ODS installation."
+        return 1
+    fi
+    if ! _write_macos_host_agent_plist; then
+        ai_err "Could not prepare the ODS host-agent LaunchAgent. Check the install path and Docker settings, then retry."
         return 1
     fi
 
-    # Recovery pins a verified socket. launchd does not inherit that environment;
-    # without this, model/extension actions could use a different Docker engine.
-    if [[ -n "${DOCKER_HOST:-}" ]]; then
-        if ! "$AGENT_PYTHON" - "$ODS_AGENT_PLIST" <<'AGENT_DOCKER_ENV_PY'
-import os
-from pathlib import Path
-import plistlib
-import sys
-import tempfile
-
-path = Path(sys.argv[1])
-document = plistlib.loads(path.read_bytes())
-environment = document["EnvironmentVariables"]
-for key in ("DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
-    environment[key] = os.environ.get(key, "")
-with tempfile.TemporaryDirectory(prefix=".ods-host-agent-", dir=path.parent) as temporary:
-    staged = Path(temporary) / "agent.plist"
-    with staged.open("xb") as stream:
-        os.fchmod(stream.fileno(), 0o600)
-        plistlib.dump(document, stream)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(staged, path)
-AGENT_DOCKER_ENV_PY
-        then
-            ai_err "Could not preserve the selected Docker transport for the host agent."
-            return 1
-        fi
-    fi
-
     launchctl bootout "gui/$(id -u)/${ODS_AGENT_PLIST_LABEL}" >/dev/null 2>&1 || true
-    if ! macos_retire_owned_host_agent_listener "$_agent_probe_host" "$ODS_AGENT_PORT" "$INSTALL_DIR"; then
+    if ! macos_retire_owned_host_agent_listener "$_agent_listen_addr" "$ODS_AGENT_PORT" "$INSTALL_DIR"; then
         ai_err "Port ${ODS_AGENT_PORT} still has a listener that cannot be safely retired as this ODS host agent."
         return 1
     fi

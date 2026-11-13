@@ -45,9 +45,14 @@ import {
   statusFileFromEnv,
   statusPayload,
 } from "./projection.mjs";
-import { longTaskContract, promptContractForAgent } from "./prompt-contract.mjs";
+import { longTaskContract, promptContractForAgent, PORTAL_INTEGRATION_API_CONTRACT, PORTAL_INTEGRATION_TURN_CONTEXT } from "./prompt-contract.mjs";
 import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
+import { createIntegrationTools } from "./integrations.mjs";
+import {integrationCapabilitiesContext} from './integration-capabilities.mjs';
+import { createIntegrationOutcomes } from "./integration-outcomes.mjs";
+import { createIntegrationReviewRecovery } from "./integration-review-recovery.mjs";
+import { createTaskHooks } from "./integration-tasks.mjs";
 import { createPendingClarifications } from "./pending-clarification.mjs";
 import {
   appsToolText,
@@ -61,12 +66,12 @@ import {
   managedTeamRole,
   privateBrowserAccessForAgent,
 } from "./tool-loop-guard.mjs";
-import { withPixelCronDeliveryDefault } from "./cron-delivery-default.mjs";
+import { withPixelCronDeliveryDefault, withPixelCronJobAdmission } from "./cron-delivery-default.mjs";
 import { withCronCommandPayloadBlock } from "./cron-command-payload-guard.mjs";
 import { withPixelSubagentWorkspace } from "./subagent-workspace.mjs";
 import { createPublicPageReader, createPublicWebExtractTool } from "./web-extract.mjs";
 import { citationPageReadsAllowed, createHostCitationVerifier } from "./citation-verification.mjs";
-import { createStopSynthesisClient } from "./stop-synthesis.mjs";
+import { createStopSynthesisClient, defaultAgentId } from "./stop-synthesis.mjs";
 import { createExtensionRepositoryContext } from './extension-repository-context.mjs';
 
 const extensionRepositoryContext = createExtensionRepositoryContext({
@@ -93,6 +98,7 @@ import { createTaskActivity } from "./task-activity.mjs";
 import { createWorkspaceProjects } from "./workspace-projects.mjs";
 import { createProjectRestoreRoute, createProjectSnapshots } from "./project-snapshots.mjs";
 import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs";
+import { createConnectionsStatusTool } from './connections-status.mjs';
 import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
 import {createContextCompaction, readContextRequest, prepareStableContextModel} from './context-compaction.mjs';
 import {registerHistoryIntegration} from './history-context.mjs';
@@ -126,6 +132,8 @@ const evidenceArtifactWriter = createEvidenceArtifactWriter();
 let perplexicaAvailability;
 const bundleAdmission = createWorkspaceBundleAdmission();
 const artifactAdmission = createWorkspaceArtifactAdmission();
+const integrationOutcomes = createIntegrationOutcomes();
+let integrationReviewRecovery;
 
 // Restrict tool registration to the Pixel agent. Tools are only offered to the
 // agent id declared by this plugin (see openclaw.plugin.json); this guards the
@@ -325,7 +333,9 @@ export default definePluginEntry({
       forgetConversation:sessionKey=>pendingClarifications.forget(sessionKey),
     });
     conversationImageLifecycle.register(api);
-    api.on('before_agent_run',(_event,context)=>{
+    api.on('before_agent_run',(event,context)=>{
+      const review=integrationReviewRecovery?.admit(event,context);
+      if(review)return review;
       try {conversationImageLifecycle.observe(context);}
       catch {return {outcome:'block',reason:'conversation-image-custody-unavailable',message:'This conversation is deleted or its private image custody could not be confirmed. Start a new conversation or retry after checking storage.'};}
     });
@@ -396,6 +406,23 @@ export default definePluginEntry({
       // The per-result cap a tool-limit stop's result must fit (4,000 when unset).
       toolResultMaxChars: () => projectCapabilityOutputLimit(api.runtime?.config?.current?.() ?? api.config, AGENT_ID),
     });
+    integrationReviewRecovery ??= createIntegrationReviewRecovery({
+      eligible: runId => toolLoopGuard.continuationAllowed(runId),
+      nativeStartClear: state => integrationOutcomes.reviewStartClear({agentId:AGENT_ID,
+        runId:state.runId,sessionId:state.sessionId,sessionKey:state.sessionKey}),
+      ready: state => {
+        const config = api.runtime?.config?.current?.() ?? api.config;
+        const access = accessRuntime.status();
+        // Native admission marks the currently running owner as busy. That is
+        // expected here; a held/interrupted/unavailable transition is refused.
+        if (defaultAgentId(config) !== AGENT_ID || !access.available || !['idle','busy'].includes(access.phase)) return false;
+        const agent = config.agents?.list?.find(value => value.id === AGENT_ID);
+        const selected = agent?.model?.primary ?? agent?.model ?? config.agents?.defaults?.model?.primary ?? config.agents?.defaults?.model;
+        if (typeof selected !== 'string' || !selected.includes('/')) return false;
+        const divider = selected.indexOf('/');
+        return state.modelProviderId === selected.slice(0,divider) && state.modelId === selected.slice(divider+1);
+      },
+    });
     const bundleExecution = createWorkspaceBundleExecution({
       readConfig: () => api.runtime?.config?.current?.() ?? api.config,
       createTools: createOpenClawCodingTools, resolveSandbox: resolveSandboxContext,
@@ -458,8 +485,13 @@ export default definePluginEntry({
       toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess, workspaceRoot, executionHost, runTimeoutSeconds });
       // After delegation custody, which links a child or continuation to its
       // owner run: the shipped example's guard starts with the run.
-      if (!accessRuntime.isProbe(context)) { delegationDelivery.observe(event,context); toolLoopGuard.observeExampleRun(context, AGENT_ID); }
+      if (!accessRuntime.isProbe(context)) {
+        delegationDelivery.observe(event,context);
+        if (!integrationReviewRecovery.isReviewOnly(context, event)) toolLoopGuard.observeExampleRun(context, AGENT_ID);
+      }
+      if (!accessRuntime.isProbe(context)) integrationOutcomes.begin(event, context, delegationDelivery.ownerRunFor(context));
       const ownerEvent = toolLoopGuard.ownerIntentEventForRun(context?.runId ?? event?.runId, event);
+      if (!accessRuntime.isProbe(context)) integrationReviewRecovery.observe(ownerEvent, context, delegationDelivery.ownerRunOf(context));
       if (!accessRuntime.isProbe(context)) { goalProgress.begin(ownerEvent, context); taskActivity.begin(ownerEvent, {...context,workspaceRoot}); }
       const contract = promptContractForAgent(context, AGENT_ID, ownerEvent, {
         verificationStatus: toolLoopGuard.verificationStatus(context?.runId),
@@ -469,7 +501,7 @@ export default definePluginEntry({
         privateBrowserAccess,
         executionHost,
       });
-      const repositoryEvidence = contract ? await extensionRepositoryContext(ownerEvent,
+      const repositoryEvidence = contract && !integrationReviewRecovery.isReviewOnly(context, event) ? await extensionRepositoryContext(ownerEvent,
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
       // Per-attempt, model-only context: not part of the cached system prompt.
       const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
@@ -487,14 +519,21 @@ export default definePluginEntry({
       const languageNote = responseLanguageTurnContext(configuredResponseLanguage,
         {goal: goalProgress.active(context?.runId ?? event?.runId), teamRole: managedTeamRole(ownerEvent)});
       const goalContract = inResponseLanguage(GOAL_CONTRACT, configuredResponseLanguage);
+      const integrationTurnContext = contract && !accessRuntime.isProbe(context) ? PORTAL_INTEGRATION_TURN_CONTEXT : '';
+      // Static API facts belong in SYSTEM; the history reminder stays by the owner.
+      const integrationApiContract = integrationTurnContext ? PORTAL_INTEGRATION_API_CONTRACT : '';
+      const integrationCapabilities = integrationTurnContext ? integrationCapabilitiesContext({agentId:context?.agentId,
+        role:managedTeamRole(ownerEvent), probe:accessRuntime.isProbe(context), reviewOnly:integrationReviewRecovery.isReviewOnly(context,event),
+        trigger:context?.trigger, contextWindow:configuredContextWindow}) : '';
       const appendContext = [goalProgress.active(context?.runId ?? event?.runId) ? goalContract : '', languageNote,
         toolLoopGuard.clarificationContextForRun(context?.runId ?? event?.runId) ??
-          toolLoopGuard.clarificationContextForRun(delegationDelivery.ownerRunFor(context))].filter(Boolean).join('\n\n');
+          toolLoopGuard.clarificationContextForRun(delegationDelivery.ownerRunFor(context)),
+        integrationTurnContext].filter(Boolean).join('\n\n');
       // Ordinary workspace work only: Operations, exact downloads and managed
       // extension requests refuse update_plan, and read-only roles cannot edit.
       const longTask = toolLoopGuard.longTaskEligible(context?.runId ?? event?.runId)
         ? longTaskContract(context, ownerEvent, {configuredContextWindow, configuredLeanPrompt}) : '';
-      return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(appendContext ? {appendContext} : {}), appendSystemContext: `${inResponseLanguage(ACTIVITY_CONTRACT, configuredResponseLanguage)} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? goalContract : ""} ${contract.appendSystemContext}${longTask ? ` ${longTask}` : ''} ${inResponseLanguage(executionContext(), configuredResponseLanguage)} ${repositoryEvidence}` } : prependContext ? {prependContext} : undefined;
+      return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(appendContext ? {appendContext} : {}), appendSystemContext: `${inResponseLanguage(ACTIVITY_CONTRACT, configuredResponseLanguage)} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? goalContract : ""} ${contract.appendSystemContext}${integrationApiContract ? ` ${integrationApiContract}` : ''}${longTask ? ` ${longTask}` : ''} ${inResponseLanguage(executionContext(), configuredResponseLanguage)} ${repositoryEvidence}${integrationCapabilities ? `\n\n${integrationCapabilities}` : ''}` } : prependContext ? {prependContext} : undefined;
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
@@ -527,22 +566,51 @@ export default definePluginEntry({
         accessRuntime.isProbe(context) ? undefined : delegationDelivery.admission(context));
     }
     api.on("agent_end", (event, context) => {
+      integrationReviewRecovery.end(event, context);
+      integrationOutcomes.end(event, context);
       delegationDelivery.end(event,context);
       try {conversationImageLifecycle.observe(context);}catch {api.logger.warn('Portal conversation image custody could not be updated.');}
       toolLoopGuard.endPreviewRevalidation(event, context);
       toolLoopGuard.observeAgentEnd(event, context);
       if (!accessRuntime.isProbe(context)) {
-        goalProgress.finish(event, context); taskActivity.finish(event, context); void projectSnapshots.end(event, context);
+        goalProgress.finish(event, context); taskActivity.finish(event, context);
+        if (!integrationReviewRecovery.isReviewOnly(context, event)) void projectSnapshots.end(event, context);
       }
       if (!managedRuntime) return accessRuntime.finish({runId: event.runId}, context);
     });
     api.on("before_tool_call", async (event, context) => {
       if (accessRuntime.isProbe(context)) return;
+      integrationReviewRecovery.beforeTool(event, context);
       const interrupted=delegationDelivery.blocked(context,event);
       if (interrupted) return interrupted;
+      // This floor precedes repair/adaptation helpers, snapshots and every
+      // executor. The correction only reaches integration admission; a model
+      // cannot escape through exec/Operations or nested Tool Search code.
+      const reviewFloor = integrationReviewRecovery.floor(event, context);
+      if (reviewFloor || integrationReviewRecovery.isReviewOnly(context, event)) {
+        let decision = reviewFloor ?? accessRuntime.beforeTool(event, context);
+        if (!decision?.block) {
+          const candidate=await integrationOutcomes.prepareReviewCandidate(event,context,decision);
+          if (candidate?.block) decision=candidate;
+          else if (candidate?.ref) {
+            const permit=integrationOutcomes.checkNativeCandidate(candidate,
+              value=>integrationReviewRecovery.admitNativeCandidate(value,context));
+            decision=integrationOutcomes.commitNativeCandidate(candidate,permit)??decision;
+          } else decision={block:true,blockReason:'This review call has no current native admission. Nothing was submitted.'};
+        }
+        if (decision?.block) {
+          integrationOutcomes.refuseReviewCall(context?.toolCallId??event?.toolCallId,context,
+            decision.code??'review-candidate-refused',{recoveryReviewOnly:true});
+          if (decision.code!=='integration-outcome-unresolved')
+            integrationReviewRecovery.stopReview?.(context,'review-candidate-refused');
+        }
+        delegationDelivery.before(event, context, decision);
+        taskActivity.before(event, context, decision?.block === true);
+        return decision;
+      }
       let guard = withPixelCronDeliveryDefault(
-        await toolLoopGuard.beforeToolCall(event, context, AGENT_ID,
-          delegationDelivery.hasPendingChildren(context)),
+        withPixelCronJobAdmission(await toolLoopGuard.beforeToolCall(event, context, AGENT_ID,
+          delegationDelivery.hasPendingChildren(context)), event, context, AGENT_ID),
         event, context, AGENT_ID,
       );
       const runtimeConfig = api.runtime?.config?.current?.() ?? api.config;
@@ -550,7 +618,9 @@ export default definePluginEntry({
         scope => getSessionEntry({...scope,
           storePath: resolveStorePath(runtimeConfig?.session?.store, {agentId: AGENT_ID})}), {resolveUserPath, resolveAgentWorkspaceDir});
       guard = withCronCommandPayloadBlock(guard, event, context);
-      const decision = guard?.block ? guard : delegationDelivery.blocked(context,event) ?? goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
+      let decision = guard?.block ? guard : delegationDelivery.blocked(context,event) ?? goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
+      decision = integrationOutcomes.before(event, context, decision,
+        {recoveryReviewOnly:integrationReviewRecovery.isReviewOnly(context, event)}) ?? decision;
       delegationDelivery.before(event,context,decision);
       bundleAdmission.before(event, context, decision);
       artifactAdmission.before(event, context, decision);
@@ -563,8 +633,13 @@ export default definePluginEntry({
       delegationDelivery.after(event,context);
       bundleAdmission.after(event, context);
       artifactAdmission.after(event, context);
+      integrationOutcomes.after(event, context);
       projectRunControl.after(event, context);
       accessRuntime.afterTool(event, context);
+      if (integrationReviewRecovery.isReviewOnly(context, event)) {
+        taskActivity.after(event, context);
+        return;
+      }
       if (!accessRuntime.isProbe(context)) {
         goalProgress.update(event, context);
         taskActivity.after(event, context);
@@ -651,6 +726,13 @@ export default definePluginEntry({
       toolLoopGuard.observeReplyEnd(event, context, AGENT_ID);
     });
     api.on("before_agent_finalize", async (event, context) => {
+      if (integrationReviewRecovery.isReviewOnly(context, event)) {
+        // No preview repair, citation fetch, goal continuation or second revise
+        // can add effects after the bounded integration review.
+        const decision = {action:'finalize',reason:'The review-only correction is complete; no automatic action may follow.'};
+        delegationDelivery.finalize(event, context, decision);
+        return decision;
+      }
       await toolLoopGuard.revalidateWorkspacePreview(event, context, AGENT_ID);
       await toolLoopGuard.recoverWorkspacePreview(event, context, AGENT_ID);
       await toolLoopGuard.verifyCitedPages(event, context, AGENT_ID);
@@ -659,6 +741,7 @@ export default definePluginEntry({
       const decision = goalProgress.finalize(event, context, {guardDecision,
         allowed:toolLoopGuard.continuationAllowed(context?.runId ?? event?.runId),
         waiting:verification?.status === 'pending'});
+      if (integrationReviewRecovery.isReviewOnly(context, event)) toolLoopGuard.discardExampleRun(context?.runId ?? event?.runId);
       delegationDelivery.finalize(event,context,decision);
       return decision;
     });
@@ -668,7 +751,7 @@ export default definePluginEntry({
     // seen at before_agent_finalize, ahead of Portal's one line about it
     // (preview-explanation.mjs).
     api.on("reply_payload_sending", (event) =>
-      toolLoopGuard.replyPayloadSending(event)
+      integrationOutcomes.channel(event, toolLoopGuard.replyPayloadSending(event))
     );
     api.registerHttpRoute({
       path: "/pixel-ods/abort",
@@ -683,6 +766,8 @@ export default definePluginEntry({
         // Both synchronous fences are installed before either native abort
         // awaits drainage; queued announcements cannot steal owner custody.
         const delegatedPending=delegationDelivery.cancel(parsed.user);
+        integrationReviewRecovery.cancelSession(`agent:${AGENT_ID}:openai-user:${parsed.user}`);
+        integrationOutcomes.cancelUser(parsed.user);
         const compactionPending=contextCompaction.cancelPending(parsed.user);
         const parentPending=toolLoopGuard.abortUserRun(parsed.user);
         const [delegated,parentAborted,compactionAborted]=await Promise.all([delegatedPending,parentPending,compactionPending]);
@@ -747,7 +832,9 @@ export default definePluginEntry({
         }
         await toolLoopGuard.settleDelivery(parsed.runId);
         const task = taskActivity.projection(parsed.runId);
-        sendJson(res, 200, {...toolLoopGuard.deliveryVerificationForRun(parsed.runId), ...(task ? {task} : {})});
+        sendJson(res, 200, integrationOutcomes.verification(
+          {...toolLoopGuard.deliveryVerificationForRun(parsed.runId), ...(task ? {task} : {})}, parsed.runId,
+          req.headers?.['x-ods-silent-completion'] === '1'));
         return true;
       },
     });
@@ -861,6 +948,8 @@ export default definePluginEntry({
       { names: ["pixel_ods_status"] }
     );
 
+    registerTool(api, createConnectionsStatusTool(), {names:['pixel_ods_connections_status']});
+
     registerTool(api, createHostObserveTool({
       readOdsStatus: async () => statusPayload(await readProjection(statusFile)),
     }), {
@@ -951,6 +1040,22 @@ export default definePluginEntry({
     })), {names:['pixel_ods_workspace_artifact']});
     registerTool(api, createAgentSkillTool(), {names:['pixel_ods_skill']});
     registerTool(api, createAskUserTool({responseLanguage: configuredResponseLanguage}), {names:['pixel_ods_ask_user']});
+    // The owner's notes, notifications, MCP servers and apps, all through the host integrations service.
+    for (const {name} of createIntegrationTools()) {
+      api.registerTool(onlyPixel(context => createIntegrationTools({context, outcomes:integrationOutcomes,
+        requireBound:factoryContext=>integrationReviewRecovery.isReviewOnly(factoryContext),
+        onReviewRefused:(factoryContext,code)=>integrationReviewRecovery.stopReview?.(factoryContext,code)})
+        .find(tool => tool.name === name)), {names: [name]});
+    }
+    // Finished scheduled tasks notify the owner; the daily news digest is kept as a cron job.
+    const taskHooks = createTaskHooks({warn: message => api.logger.warn(message)});
+    api.on("gateway_start", (event, context) => taskHooks.gatewayStart(event, context));
+    api.on("gateway_stop", async () => {
+      await integrationReviewRecovery.stop();
+      integrationOutcomes.clear();
+      await taskHooks.gatewayStop();
+    });
+    api.on("cron_changed", (event, context) => taskHooks.cronChanged(event, context));
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
     registerTool(api, createActivityTool(), {names:['pixel_ods_activity']});
     registerProjectBuild(api, onlyPixel, projectRunControl);

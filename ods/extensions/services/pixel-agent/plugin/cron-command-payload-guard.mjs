@@ -21,7 +21,7 @@ function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function cronArguments(params, toolName) {
+export function cronArguments(params, toolName) {
   if (!isPlainObject(params)) return undefined;
   if (CRON_TOOL_NAMES.has(toolName)) return params;
   if (

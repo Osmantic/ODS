@@ -19,6 +19,7 @@ import platform
 import re
 import selectors
 import shlex
+import shutil
 import socket
 import stat
 import subprocess
@@ -26,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import CodeType
 from urllib.parse import urlsplit
 import pixel_access_protocol as protocol
 from pixel_gateway_service import LaunchdGatewayService, SystemdGatewayService
@@ -39,6 +41,7 @@ OWNER_EXIT_TIMEOUT = 5
 OWNER_TERMINATE_TIMEOUT = 10
 MODEL_DRAIN_TIMEOUT = 1800
 SOURCE_LOCK_WAIT_SECONDS = 120
+SCHEDULE_LOCK_WAIT_SECONDS = 5
 LOCK_WAIT_POLL_SECONDS = 0.25
 _DEADLINE = contextvars.ContextVar("pixel_access_operation_deadline", default=None)
 _INSTALLER_ACCESS_REPROOF = contextvars.ContextVar("pixel_installer_access_reproof", default=False)
@@ -50,6 +53,31 @@ class AccessError(Exception):
         self.http_status = http_status
         self.returncode = returncode
         super().__init__(code)
+
+
+def guard_native_enrollment(bridge):
+    """Refuse fresh writers across native/source intent inside Root's lock."""
+    # Enrollment imports this module and the connection coordinator. Defer the
+    # dependency until initialization is complete, without acquiring any lock.
+    try:
+        from pixel_connections.native_enrollment import guard_idle
+        from pixel_connections.native_mcp import NativeError
+    except ImportError:
+        raise AccessError("native-app-transition-unavailable") from None
+    try:
+        guard_idle(bridge)
+    except NativeError as error:
+        raise AccessError(error.code) from None
+    except OSError:
+        raise AccessError("native-app-transition-unavailable") from None
+    try:
+        from pixel_source_upgrade import guard_fresh_admission, UpgradeError
+    except ImportError:
+        raise AccessError("source-transition-unavailable") from None
+    try:
+        guard_fresh_admission(bridge)
+    except UpgradeError as error:
+        raise AccessError(str(error)) from None
 
 
 PROBE_FAILURES = frozenset((
@@ -105,6 +133,42 @@ def _pipe_send(stream, value, deadline):
 def runtime_config_path(bridge):
     """Use the protected deployment's config, retaining the Linux default."""
     return getattr(bridge, '_runtime_config_path', None) or bridge.home / '.openclaw/openclaw.json'
+
+
+def gateway_runtime_environment(document):
+    """Fixed launchd env grammar shared by Root and its unprivileged worker."""
+    arguments = document.get('ProgramArguments') if type(document) is dict else None
+    if type(arguments) is not list or len(arguments) < 4 or arguments[:2] != ['/usr/bin/env', '-i']:
+        raise AccessError('gateway-runtime-environment-unavailable')
+    values = {}
+    for argument in arguments[2:]:
+        if not isinstance(argument, str):
+            raise AccessError('gateway-runtime-environment-unavailable')
+        key, separator, value = argument.partition('=')
+        if not separator or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key):
+            break
+        if key in values:
+            raise AccessError('gateway-runtime-environment-unavailable')
+        values[key] = value
+    for key in ('HOME', 'OPENCLAW_CONFIG_PATH', 'OPENCLAW_STATE_DIR'):
+        value = values.get(key)
+        if (not isinstance(value, str) or not value.startswith('/') or value == '/'
+                or any(part in ('', '.', '..') for part in value.split('/')[1:])
+                or any(ord(char) < 32 for char in value) or Path(value).resolve() != Path(value)):
+            raise AccessError('gateway-runtime-path-unavailable')
+    return values
+
+
+def connection_paths(bridge):
+    """Root-private deployment selection; Linux defaults retain their bytes."""
+    if platform.system() == 'Darwin':
+        deployment = bridge.connection_deployment()
+        doc = deployment.document
+        return {'env': Path(doc['gatewayEnvPath']), 'answers': Path(doc['answersPath']),
+                'plan': {'install_dir': None, 'plugin_paths': doc['pluginPaths']}, 'deployment': deployment}
+    return {'env': bridge.home / '.config/pixel-agent/gateway.env',
+            'answers': bridge.install / 'data/pixel/onboarding.json',
+            'plan': {'install_dir': str(bridge.home / '.local/share/pixel')}, 'deployment': None}
 
 
 def private_json(path, uid, maximum=1024 * 1024):
@@ -318,6 +382,32 @@ class SystemdAccessBridge:
             if data_dir_id != self.settings_source(): raise AccessError("settings-data-directory-changed")
             return status(self)
 
+    def schedules(self, request, *, source):
+        from pixel_schedules import validate_request
+        validate_request(request)
+        # Wait only for admission; execute the operation once under the lock.
+        with self.bounded(180), self.locked(wait_seconds=SCHEDULE_LOCK_WAIT_SECONDS):
+            self.discover()
+            # A Windows host and its WSL guest have different path namespaces.
+            # The private ingress instead binds this request to its installed
+            # owner key, which root already binds to this exact deployment.
+            if source['kind'] == 'data-directory':
+                expected = self.settings_source()
+            else:
+                if type(self.edge_key) is not str or not 32 <= len(self.edge_key) <= 4096:
+                    raise AccessError('access-owner-auth-unavailable')
+                expected = hashlib.sha256(self.edge_key.encode('ascii')).hexdigest()
+            if source['identity'] != expected:
+                raise AccessError('schedule-installation-mismatch')
+            starting = request['action'] == 'create' or (request['action'] == 'set-enabled' and request['enabled'])
+            if starting and self.pending() is not None:
+                raise AccessError('runtime-change-pending')
+            snapshot = self.worker('settings-status')
+            if starting and snapshot['pending']:
+                raise AccessError('runtime-change-pending')
+            return self.worker('schedules', config_hash=snapshot['configSha256'], schedule_request=request,
+                               gateway_port=self.native_port)
+
     def settings_source(self):
         from pixel_settings.runtime import settings_data_directory
         env_file = self.install / ".env"
@@ -360,6 +450,14 @@ class SystemdAccessBridge:
 
     def model_control(self, operation, request=None):
         from pixel_model_coordinator import control
+        return control(self, operation, request)
+
+    def connection_control(self, operation, request):
+        # Linux and WSL only: the Source Broker is a set of systemd units.
+        if operation.startswith('connection-app-'):
+            from pixel_connections.native_public import control
+            return control(self, operation, request)
+        from pixel_connections.coordinator import control
         return control(self, operation, request)
 
     def command(self, args, timeout=20):
@@ -653,7 +751,15 @@ class SystemdAccessBridge:
                                      payload, timeout=min(3, budget()))
             pending = self.pending()
             if operation is None and pending:
-                return self.stopped_native(pending["token"])
+                try:
+                    return self.stopped_native(pending["token"])
+                except AccessError as stopped_error:
+                    if stopped_error.code != "native-idle-unconfirmed":
+                        raise
+                    # An active/restarting unit is not proof of stopped idle.
+                    # Keep the original read failure so readiness callers can
+                    # distinguish a transient channel loss from an HTTP refusal.
+                    # This neither retries a POST nor fabricates an idle state.
             raise
 
     def owns_native_hold(self, snapshot, token):
@@ -757,14 +863,23 @@ class SystemdAccessBridge:
         return {"HOME": str(self.home), "USER": self.owner.pw_name, "LOGNAME": self.owner.pw_name,
                 "PATH": str(Path(self.binary).parent) + ":/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"}
 
+    def _worker_executable(self, operation, environment):
+        return self.binary
+
     def worker(self, operation="status", *, confirmed=False, config_hash=None, busy=None, restart=None,
                transaction_id=None, settings_revision=None, preferences=None, capabilities=None, activate_settings=None,
                binding=None, activate_provider=None, expected_projection=None, provider_probe=None,
                model_target=None, model_outcome=None, relocation=None,
                candidate_path=None, candidate_sha256=None, release_outcome=None, verify_release=None,
-               receipt_sha256=None):
+               receipt_sha256=None, connection_target=None, connection_answers=None, activate_connection=None,
+               schedule_request=None, gateway_port=None, native_oauth_request=None):
         env = self.worker_environment()
-        request = dict(operation=operation, openclaw=self.binary, config_sha256=config_hash, confirmed=confirmed)
+        request = dict(operation=operation, openclaw=self._worker_executable(operation, env),
+                       config_sha256=config_hash, confirmed=confirmed)
+        if operation == 'schedules':
+            request.update(schedule_request=schedule_request, gateway_port=gateway_port)
+        if operation == 'native-mcp-oauth':
+            request['native_oauth_request'] = native_oauth_request
         if operation.startswith('release-'):
             request['transaction_id'] = transaction_id
             if operation == 'release-prepare':
@@ -777,8 +892,18 @@ class SystemdAccessBridge:
             request['relocation'] = relocation
         if operation == 'provider-worker-status':
             request['provider_probe'] = provider_probe
-        if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover"):
+        if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover",
+                         "connection-apply", "connection-recover"):
             request["transaction_id"] = transaction_id
+        connection_deployment = None
+        if operation in ('connection-owner-status', 'connection-apply', 'connection-recover', 'native-mcp-oauth') and platform.system() == 'Darwin':
+            connection_deployment = self.connection_deployment()
+            request['connection_deployment'] = connection_deployment.document
+        if operation in ("connection-owner-status", "connection-apply"):
+            request["answers_path"] = (connection_deployment.document['answersPath'] if connection_deployment
+                                       else str(self.install / "data/pixel/onboarding.json"))
+        if operation == "connection-apply":
+            request.update(connection_target=connection_target, connection_answers=connection_answers)
         if operation.startswith("model-") and operation != "model-status":
             request["transaction_id"] = transaction_id
         if operation == "model-apply": request["model_target"] = model_target
@@ -797,6 +922,7 @@ class SystemdAccessBridge:
         except (ValueError, TypeError, RecursionError):
             raise AccessError("owner-protocol-failed") from None
         deadline = time.monotonic() + remaining(OWNER_TIMEOUT)
+        reply_limit = protocol.SCHEDULE_REPLY if operation == 'schedules' else protocol.MAX_REPLY
         process = self._launch_owner_worker(env)
         try:
             _pipe_send(process.stdin, encoded, deadline)
@@ -809,15 +935,15 @@ class SystemdAccessBridge:
                     # and retain framing without losing the outer deadline.
                     if b"\n" not in buffered:
                         if not selector.select(min(1, max(0, deadline - time.monotonic()))): continue
-                        chunk = os.read(process.stdout.fileno(), protocol.MAX_REPLY + 1)
+                        chunk = os.read(process.stdout.fileno(), reply_limit + 1)
                         if not chunk: raise AccessError("owner-protocol-failed")
                         buffered += chunk
                     raw, separator, rest = buffered.partition(b"\n")
-                    if len(raw) + 1 > protocol.MAX_REPLY: raise AccessError("owner-protocol-failed")
+                    if len(raw) + 1 > reply_limit: raise AccessError("owner-protocol-failed")
                     if not separator: continue
                     buffered = rest
                     try:
-                        value = protocol.decode_frame(raw.decode("utf-8") + "\n", protocol.MAX_REPLY)
+                        value = protocol.decode_frame(raw.decode("utf-8") + "\n", reply_limit)
                         if type(value) is not dict: raise ValueError()
                     except ValueError:
                         raise AccessError("owner-protocol-failed") from None
@@ -838,9 +964,12 @@ class SystemdAccessBridge:
                         raise AccessError("owner-protocol-failed")
                     callback = {"busy": busy, "restart": restart, "settings-activate": activate_settings,
                                 "provider-activate": activate_provider,
-                                "release-verify": verify_release}.get(value["hook"])
+                                "release-verify": verify_release,
+                                "connection-activate": activate_connection}.get(value["hook"])
                     if callback is None: raise AccessError("owner-protocol-failed")
                     remaining(deadline - time.monotonic())
+                    if connection_deployment is not None and self.connection_deployment() != connection_deployment:
+                        raise AccessError('connection-deployment-changed')
                     answer = callback()
                     remaining(deadline - time.monotonic())
                     try: protocol.hook_reply(operation, value["hook"], answer)
@@ -1158,6 +1287,27 @@ class SystemdAccessBridge:
                 if installer_source:
                     return self.resume_source_begin()
                 raise AccessError("transition-recovery-required")
+            source_plan = None
+            if installer_source and platform.system() == 'Linux' and os.path.lexists(self.state / 'source-upgrade'):
+                if os.geteuid() != 0:
+                    raise AccessError('source-installer-root-required')
+                self.discover(allow_installing=True)
+                from pixel_source_upgrade import begin_plan, UpgradeError
+                try:
+                    source_plan = begin_plan(self.state, self.install, self.owner, installer=True)
+                except UpgradeError as error:
+                    raise AccessError(str(error)) from None
+            # bind() durably reserves a source transaction before transition.json.
+            # Preserve only that already-started, exact-baseline crash recovery.
+            reserved_source = False
+            if source_plan is not None:
+                from pixel_source_upgrade import reserved_begin_plan
+                try:
+                    reserved_source = reserved_begin_plan(source_plan, self.owner)
+                except UpgradeError as error:
+                    raise AccessError(str(error)) from None
+            if not reserved_source:
+                guard_native_enrollment(self)
             try:
                 snapshot = self.inspect(allow_installing=True)
             except AccessError as error:
@@ -1169,13 +1319,13 @@ class SystemdAccessBridge:
                     raise
                 self.restart_stopped_source_edge()
                 snapshot = self.inspect(allow_installing=True)
-            source_plan = None
             if installer_source or (platform.system() == 'Linux' and os.path.lexists(self.state / 'source-upgrade')):
                 if platform.system() != 'Linux' or (installer_source and os.geteuid() != 0):
                     raise AccessError('source-installer-root-required')
                 from pixel_source_upgrade import begin_plan, UpgradeError
                 try:
-                    source_plan = begin_plan(self.state, self.install, self.owner, installer=installer_source)
+                    if source_plan is None:
+                        source_plan = begin_plan(self.state, self.install, self.owner, installer=installer_source)
                     if (source_plan is not None and snapshot['_config'].get('config_sha256')
                             != source_plan.journal()['identity']['configSha256']):
                         raise AccessError('source-owner-state-changed')
@@ -2236,6 +2386,7 @@ class SystemdAccessBridge:
                 raise AccessError("settings-recovery-required")
             if pending and request["mode"] != "sandboxed": raise AccessError("restore-required")
             if not pending:
+                guard_native_enrollment(self)
                 pending = {"kind": "access", "token": os.urandom(32).hex(), "phase": "acquiring", "edge_revision": snapshot["_edge"]["revision"]}
                 self.prepare_access_marker(pending, snapshot["_config"]["config_sha256"])
                 atomic_json(self.state / "transition.json", pending)
@@ -2320,6 +2471,113 @@ class SystemdAccessBridge:
                 raise AccessError("transition-failed") from None
 
 
+_NATIVE_RUNTIME_OPERATION = contextvars.ContextVar("pixel_native_runtime_operation", default=None)
+_NATIVE_RUNTIME_OPERATION_SEAL = object()
+_NATIVE_SOURCE_DEADLINE = contextvars.ContextVar("pixel_native_source_deadline", default=None)
+_NATIVE_SOURCE_DEADLINE_SEAL = object()
+
+
+class _NativeSourceDeadline:
+    """Revocable raw-clock twin of one actual Root bounded scope, not admission."""
+    __slots__ = ('bridge', 'thread', 'active', 'seal', 'raw0', 'ceiling', 'monotonic', 'parent')
+
+    def __init__(self, bridge, raw0, ceiling, monotonic, parent):
+        self.bridge, self.raw0, self.ceiling = bridge, raw0, ceiling
+        self.monotonic, self.parent = monotonic, parent
+        self.thread, self.active = threading.current_thread(), True
+        self.seal = _NATIVE_SOURCE_DEADLINE_SEAL
+
+
+def _native_source_clock_ns():
+    """Unavailable raw time makes only Source dispatch ineligible."""
+    if sys.platform != 'darwin':
+        return None
+    try:
+        value = time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
+    except (AttributeError, OSError, TypeError, ValueError, OverflowError):
+        return None
+    return value if type(value) is int and 0 < value < 2**63 else None
+
+
+def _native_source_deadline_chain(scope):
+    seen = set()
+    while scope is not None:
+        if (type(scope) is not _NativeSourceDeadline or id(scope) in seen
+                or scope.seal is not _NATIVE_SOURCE_DEADLINE_SEAL or scope.active is not True
+                or type(scope.bridge) is not LaunchdAccessBridge
+                or scope.thread is not threading.current_thread()
+                or type(scope.monotonic) not in (int, float)
+                or type(scope.raw0) is not int or type(scope.ceiling) is not int
+                or not 0 < scope.raw0 < scope.ceiling < 2**63):
+            return False
+        seen.add(id(scope))
+        child, scope = scope, scope.parent
+        if scope is not None and (type(scope) is not _NativeSourceDeadline
+                or type(scope.raw0) is not int or type(scope.ceiling) is not int
+                or child.raw0 < scope.raw0 or child.ceiling > scope.ceiling):
+            return False
+    return True
+
+
+class _NativeRuntimeOperation:
+    """Private immutable-data lease; never deployment or execution authority."""
+    __slots__ = ('bridge', 'custody', 'thread', 'active', 'seal', 'bundle_root', 'code')
+
+    def __init__(self, bridge, custody):
+        self.bridge, self.custody = bridge, custody
+        self.thread, self.active = threading.current_thread(), True
+        self.seal = _NATIVE_RUNTIME_OPERATION_SEAL
+        self.bundle_root = None
+        self.code = {}
+
+
+def _native_runtime_bundle_cache(operation, root):
+    """Fixed Root lease only; a path/dictionary never selects a hash cache."""
+    if (type(operation) is not _NativeRuntimeOperation
+            or type(operation.bridge) is not LaunchdAccessBridge
+            or LaunchdAccessBridge._native_runtime_lease(operation.bridge) is not operation
+            or _NATIVE_RUNTIME_OPERATION.get() is not operation
+            or operation.bundle_root is None or Path(root) != operation.bundle_root
+            or type(operation.custody._cache) is not dict):
+        raise AccessError('provider-runtime-operation-unqualified')
+    return operation.custody._cache
+
+
+def _native_runtime_code(operation, path, body):
+    """Compile freshly protected helper bytes; never cache qualification or globals.
+
+    Callers still prove the current Source and read the complete helper on
+    every call. The cache only avoids parsing those same bytes again, within the
+    exact active Root lease. Its two fixed helper families may span old bundles.
+    """
+    if (type(operation) is not _NativeRuntimeOperation
+            or type(operation.bridge) is not LaunchdAccessBridge
+            or LaunchdAccessBridge._native_runtime_lease(operation.bridge) is not operation
+            or _NATIVE_RUNTIME_OPERATION.get() is not operation
+            or type(operation.code) is not dict):
+        raise AccessError('provider-runtime-operation-unqualified')
+    path = Path(path)
+    if (not path.is_absolute() or path.resolve(strict=True) != path
+            or path.parts[-4:-1] != ('installers', 'macos', 'lib')
+            or path.name not in ('pixel-runtime-bundle.py', 'pixel-native-source-broker.py')
+            or type(body) is not bytes):
+        raise AccessError('provider-runtime-operation-unqualified')
+    key = (str(path), hashlib.sha256(body).digest(), sys.flags.optimize)
+    code = operation.code.get(key)
+    if code is not None:
+        if type(code) is not CodeType or code.co_filename != str(path):
+            raise AccessError('provider-runtime-operation-unqualified')
+        return code
+    code = compile(body, str(path), 'exec', flags=0, dont_inherit=True, optimize=sys.flags.optimize)
+    # At most eight successful compilations, each from at most 2 MiB of source.
+    # Never retain failures, source bytes, modules, globals or mutable results.
+    if len(body) <= 2 * 1024 * 1024:
+        if len(operation.code) >= 8:
+            operation.code.clear()
+        operation.code[key] = code
+    return code
+
+
 class LaunchdAccessBridge(SystemdAccessBridge):
     """Darwin bridge for a root-owned system LaunchDaemon gateway.
 
@@ -2354,9 +2612,85 @@ class LaunchdAccessBridge(SystemdAccessBridge):
         # legacy systemd drop-in. Darwin mode never creates one.
         self.dropin = Path('/private/var/empty/ods-pixel-no-systemd-dropin')
 
+    def _native_runtime_lease(self):
+        from pixel_provider.runtime_custody import RuntimeCustody
+        lease = _NATIVE_RUNTIME_OPERATION.get()
+        if (type(self) is LaunchdAccessBridge and type(lease) is _NativeRuntimeOperation
+                and lease.seal is _NATIVE_RUNTIME_OPERATION_SEAL and lease.active
+                and lease.bridge is self and lease.thread is threading.current_thread()
+                and type(lease.custody) is RuntimeCustody and lease.custody.bridge is self):
+            return lease
+        return None
+
     @contextlib.contextmanager
-    def locked(self):
-        with super().locked():
+    def _native_runtime_operation(self):
+        """Reuse verified hashes and compiled code within this exact Root operation.
+
+        An explicit scope may also cover initial publication outside bounded().
+        It adds no deadline or authority; every inspect still qualifies files.
+        """
+        if type(self) is not LaunchdAccessBridge or LaunchdAccessBridge._native_runtime_lease(self) is not None:
+            yield
+            return
+        from pixel_provider.runtime_custody import RuntimeCustody
+        lease = _NativeRuntimeOperation(self, RuntimeCustody(self))
+        token = _NATIVE_RUNTIME_OPERATION.set(lease)
+        try:
+            yield
+        finally:
+            # Context copies can retain this object after reset. Revoke first,
+            # then discard caches rather than letting a later operation reuse them.
+            lease.active = False
+            lease.custody._cache.clear()
+            lease.code.clear()
+            _NATIVE_RUNTIME_OPERATION.reset(token)
+
+    @contextlib.contextmanager
+    def bounded(self, seconds):
+        raw0 = _native_source_clock_ns() if type(self) is LaunchdAccessBridge else None
+        parent = _NATIVE_SOURCE_DEADLINE.get()
+        with super().bounded(seconds):
+            scope, token = None, None
+            if type(self) is LaunchdAccessBridge:
+                ceiling = None
+                if raw0 is not None and _native_source_deadline_chain(parent):
+                    try:
+                        candidate = raw0 + int(remaining(seconds) * 10**9)
+                        if parent is not None:
+                            candidate = min(candidate, parent.ceiling)
+                        if raw0 < candidate < 2**63:
+                            ceiling = candidate
+                    except (AccessError, TypeError, ValueError, OverflowError):
+                        pass
+                scope = _NativeSourceDeadline(self, raw0, ceiling, _DEADLINE.get(), parent)
+                token = _NATIVE_SOURCE_DEADLINE.set(scope)
+            try:
+                with LaunchdAccessBridge._native_runtime_operation(self):
+                    yield
+            finally:
+                if scope is not None:
+                    scope.active = False
+                    _NATIVE_SOURCE_DEADLINE.reset(token)
+
+    def _native_source_deadline_ns(self):
+        """Return only this live bounded scope's original conservative ceiling."""
+        scope = _NATIVE_SOURCE_DEADLINE.get()
+        if (type(self) is not LaunchdAccessBridge or type(scope) is not _NativeSourceDeadline
+                or scope.bridge is not self or not _native_source_deadline_chain(scope)
+                or _DEADLINE.get() != scope.monotonic):
+            raise AccessError('native-source-deadline-unavailable')
+        now = _native_source_clock_ns()
+        try:
+            remaining(1)  # The existing monotonic deadline remains independently binding.
+        except (AccessError, TypeError, ValueError, OverflowError):
+            raise AccessError('native-source-deadline-unavailable') from None
+        if now is None or not scope.raw0 <= now < scope.ceiling:
+            raise AccessError('native-source-deadline-unavailable')
+        return scope.ceiling
+
+    @contextlib.contextmanager
+    def locked(self, *, wait_seconds=0):
+        with (super().locked(wait_seconds=wait_seconds) if wait_seconds else super().locked()):
             # Do not infer successful recovery from a journal phase alone.
             # The upgrader removes this marker only after live verification.
             if os.path.lexists(self.state / 'runtime-upgrade.json'):
@@ -2509,28 +2843,7 @@ class LaunchdAccessBridge(SystemdAccessBridge):
 
     def _runtime_environment(self):
         _, document = self._launchd_document()
-        arguments = document.get('ProgramArguments')
-        if (type(arguments) is not list or len(arguments) < 4
-                or arguments[:2] != ['/usr/bin/env', '-i']):
-            raise AccessError('gateway-runtime-environment-unavailable')
-        values = {}
-        for argument in arguments[2:]:
-            if not isinstance(argument, str):
-                raise AccessError('gateway-runtime-environment-unavailable')
-            key, separator, value = argument.partition('=')
-            if not separator or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key):
-                break
-            if key in values:
-                raise AccessError('gateway-runtime-environment-unavailable')
-            values[key] = value
-        for key in ('HOME', 'OPENCLAW_CONFIG_PATH', 'OPENCLAW_STATE_DIR'):
-            value = values.get(key)
-            if (not isinstance(value, str) or not value.startswith('/') or value == '/'
-                    or any(part in ('', '.', '..') for part in value.split('/')[1:])
-                    or any(ord(char) < 32 for char in value)
-                    or Path(value).resolve() != Path(value)):
-                raise AccessError('gateway-runtime-path-unavailable')
-        return values
+        return gateway_runtime_environment(document)
 
     def worker_environment(self):
         self.verify_gateway_installation_binding()
@@ -2544,6 +2857,54 @@ class LaunchdAccessBridge(SystemdAccessBridge):
             if key in configured:
                 env[key] = configured[key]
         return env
+
+    def _native_runtime_selection(self, environment):
+        # The native CLI validator is an exact protected wrapper, not a package
+        # directory. Reuse the existing full runtime qualification; only this
+        # fixed operation receives the real entrypoint on the private pipe.
+        from pixel_provider.runtime_custody import RuntimeCustody
+        try:
+            lease = LaunchdAccessBridge._native_runtime_lease(self)
+            qualifier = lease.custody if lease is not None else RuntimeCustody(self)
+            runtime, _custody = RuntimeCustody.inspect(qualifier)
+            if lease is not None:
+                lease.bundle_root = Path(runtime['node']).parent
+        except (OSError, ValueError):
+            raise AccessError('scheduler-runtime-unqualified') from None
+        process = getattr(self, 'gateway_process', None)
+        if (type(process) is not dict or set(process) != {'uid', 'gid', 'executable'}
+                or process['uid'] != self.owner.pw_uid or process['gid'] != self.owner.pw_gid
+                or process['executable'] != runtime['node']):
+            raise AccessError('scheduler-runtime-unqualified')
+        node = shutil.which('node', path=environment.get('PATH', ''))
+        entrypoint = Path(runtime['runtimeRoot']) / 'openclaw.mjs'
+        try:
+            if (node is None or Path(node).resolve(strict=True) != Path(runtime['node'])
+                    or entrypoint.resolve(strict=True) != entrypoint or not entrypoint.is_file()):
+                raise AccessError('scheduler-runtime-unqualified')
+        except OSError:
+            raise AccessError('scheduler-runtime-unqualified') from None
+        return runtime, _custody, str(entrypoint)
+
+    def _worker_executable(self, operation, environment):
+        if operation not in ('schedules', 'connection-owner-status', 'connection-apply', 'connection-recover', 'native-mcp-oauth'):
+            return super()._worker_executable(operation, environment)
+        return self._native_runtime_selection(environment)[2]
+
+    def connection_deployment(self):
+        from pixel_connections.planner import native_deployment, PlanError
+        self.verify_gateway_installation_binding()
+        environment = self._runtime_environment()
+        if Path(environment['HOME']) != self.home or Path(environment['OPENCLAW_CONFIG_PATH']) != runtime_config_path(self):
+            raise AccessError('connection-deployment-changed')
+        try:
+            runtime, checksum, _entrypoint = self._native_runtime_selection(environment)
+            raw, _document = self._launchd_document()
+            return native_deployment(runtime, checksum, uid=self.owner.pw_uid, gid=self.owner.pw_gid,
+                environment=environment, plist=self.gateway_plist, plist_sha256=hashlib.sha256(raw).hexdigest(),
+                _operation=LaunchdAccessBridge._native_runtime_lease(self))
+        except (OSError, ValueError, PlanError):
+            raise AccessError('connection-deployment-unavailable') from None
 
     def _docker_process_context(self):
         # Docker Desktop and its socket are owner-managed. Drop root before

@@ -3,6 +3,57 @@
 // the plugin entry, factories, wrappers and their schemas execute unchanged.
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import {registerHooks} from 'node:module';
+import {join} from 'node:path';
+import {fileURLToPath, pathToFileURL} from 'node:url';
+
+// Use the shipped Source factories and locked TypeBox, not copies of their
+// schemas. Registration creates tool objects only; no executor is invoked.
+export async function registeredSourceReadTools() {
+  const pkg = process.env.OPENCLAW_PACKAGE_DIR;
+  const typebox = process.env.PIXEL_TEST_TYPEBOX_DIR;
+  assert.ok(pkg && typebox, 'actual pinned SDK and locked Source TypeBox are required');
+  const source = new URL('../../../../vendor/pixel/plugin/', import.meta.url);
+  assert.equal(JSON.parse(await readFile(join(typebox, 'package.json'))).version,
+    JSON.parse(await readFile(new URL('package.json', source))).dependencies.typebox);
+  const aliases = {
+    typebox: pathToFileURL(join(typebox, 'build/index.mjs')).href,
+    'typebox/value': pathToFileURL(join(typebox, 'build/value/index.mjs')).href,
+    'openclaw/plugin-sdk/plugin-entry': pathToFileURL(join(pkg, 'dist/plugin-sdk/plugin-entry.js')).href,
+  };
+  const loader = registerHooks({resolve(specifier, context, next) {
+    return context.parentURL?.startsWith(source.href) && aliases[specifier]
+      ? {url: aliases[specifier], shortCircuit: true} : next(specifier, context);
+  }});
+  const flags = {PIXEL_AGENT_ID: 'pixel', PIXEL_LIMB_EMAIL_ENABLED: '1',
+    PIXEL_LIMB_CALENDAR_ENABLED: '1', PIXEL_LIMB_CALENDAR_WRITE_ENABLED: '0',
+    PIXEL_CALENDAR_DIRECT_ENABLED: '0', PIXEL_LIMB_EMAIL_DRAFTS_ENABLED: '0',
+    PIXEL_LIMB_WEB_ENABLED: '0', PIXEL_LIMB_SOCIAL_ENABLED: '0',
+    PIXEL_LIMB_OPERATIONS_ENABLED: '0', PIXEL_LIMB_FRONTIER_ENABLED: '0'};
+  const saved = Object.fromEntries(Object.keys(flags).map(key => [key, process.env[key]]));
+  const tools = [];
+  try {
+    Object.assign(process.env, flags);
+    const {default: entry} = await import(pathToFileURL(join(fileURLToPath(source), 'index.js')));
+    entry.register({config: {agents: {defaults: {userTimezone: 'America/Sao_Paulo'}}},
+      registerTool(factory, {names}) {
+        const tool = factory({agentId: 'pixel'});
+        assert.ok(tool && typeof tool.execute === 'function');
+        assert.deepEqual(names, [tool.name]);
+        tools.push(tool);
+      }});
+  } finally {
+    loader.deregister();
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+  assert.deepEqual(tools.map(tool => tool.name).sort(), ['pixel_limb_status',
+    'pixel_gmail_inbox', 'pixel_gmail_sent', 'pixel_gmail_search', 'pixel_gmail_read',
+    'pixel_gmail_thread', 'pixel_gmail_count', 'pixel_calendar_list', 'pixel_calendar_get',
+    'pixel_calendar_count'].sort(), 'read-only fixture must not register an action tool');
+  return tools.filter(tool => tool.name !== 'pixel_limb_status');
+}
 
 export async function registeredPixelTools({inspection = true, project = true} = {}) {
   const entry = new URL('../plugin/index.js', import.meta.url);

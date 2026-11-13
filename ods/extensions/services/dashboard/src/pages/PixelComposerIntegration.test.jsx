@@ -140,3 +140,74 @@ it('leaves keys and the draft alone while the workspace hides the composer', asy
   expect(field.closest('.pixel-chat-preview-layout')).not.toHaveClass('is-workspace-expanded')
   expect(field).toHaveValue('Retained draft')
 })
+
+function scheduleApi({loseCreateReply=false}={}) {
+  const requests=[]
+  let task=null
+  fetch.mockImplementation(async (url,opts)=>{
+    if(url!=='/api/pixel/schedules')return {ok:true,json:async()=>({available:true,model:'pixel/default'})}
+    const body=JSON.parse(opts.body);requests.push(body)
+    let reply
+    if(body.action==='create') {
+      task={id:'scheduled-note',name:body.name,task:body.task,schedule:body.schedule,revision:'a'.repeat(64),enabled:true,createdAt:1,updatedAt:1,
+        nextRunAt:Date.parse(body.schedule.at),lastRunAt:null,runningSince:null,lastStatus:null,externalDelivery:false,removed:false,removalPending:false}
+      if(loseCreateReply)throw new TypeError('lost create reply')
+      reply={kind:'change',outcome:'applied',task}
+    } else if(body.action==='check-create')reply={kind:'change',outcome:'unchanged',task}
+    else reply={kind:'tasks',items:task?[task]:[],offset:0,hasMore:false,nextOffset:null,pendingCreates:[],pendingCount:0,pendingRemovals:[]}
+    return new globalThis.Response(JSON.stringify(reply),{headers:{'Content-Type':'application/json'}})
+  })
+  return requests
+}
+const noteDraft='Append the night shift checkpoint to Dispatch.md.'
+async function openDraftSchedule() {
+  render(<Pixel/>)
+  const composer=await screen.findByPlaceholderText('Message Portal...')
+  await screen.findByText('Available')
+  fireEvent.change(composer,{target:{value:noteDraft}})
+  fireEvent.click(screen.getByRole('button',{name:'Schedule this draft'}))
+  expect(await screen.findByLabelText('What should Portal do?')).toHaveValue(noteDraft)
+  expect(screen.getByLabelText('Repeat')).toHaveValue('once')
+  return composer
+}
+function fillDraftSchedule() {
+  fireEvent.change(screen.getByLabelText('Name'),{target:{value:'Night shift'}})
+  fireEvent.change(screen.getByLabelText('Date and time'),{target:{value:'2099-01-10T12:00'}})
+}
+function expectNoChatDispatch() {
+  expect(fetch.mock.calls.filter(([url])=>String(url).includes('/api/pixel/chat/stream'))).toHaveLength(0)
+}
+it('reviews and cancels a chat draft without sending it, then schedules it exactly once on confirmation',async()=>{
+  const requests=scheduleApi();const composer=await openDraftSchedule()
+  fireEvent.click(screen.getByRole('button',{name:'Cancel',exact:true}))
+  expect(composer).toHaveValue(noteDraft);expect(requests.filter(x=>x.action==='create')).toHaveLength(0)
+  fireEvent.click(screen.getByRole('button',{name:'Schedule this draft'}))
+  await screen.findByLabelText('What should Portal do?');fillDraftSchedule()
+  fireEvent.click(screen.getByRole('button',{name:'Schedule task',exact:true}))
+  await screen.findByText('Task scheduled.')
+  expect(composer).toHaveValue('');expectNoChatDispatch()
+  expect(requests.filter(x=>x.action==='create')).toEqual([expect.objectContaining({task:noteDraft,schedule:{kind:'at',at:expect.any(String)}})])
+})
+it('recovers a lost create reply without sending the draft twice or clearing newer composer text',async()=>{
+  const requests=scheduleApi({loseCreateReply:true});const composer=await openDraftSchedule();fillDraftSchedule()
+  fireEvent.change(composer,{target:{value:'A newer ordinary note'}})
+  fireEvent.click(screen.getByRole('button',{name:'Schedule task',exact:true}))
+  const check=await screen.findByRole('button',{name:'Check request'})
+  expect(composer).toHaveValue('A newer ordinary note');fireEvent.click(check)
+  await screen.findByText('The existing task was found. No duplicate was created.')
+  const [created]=requests.filter(x=>x.action==='create')
+  expect(requests.filter(x=>x.action==='create')).toHaveLength(1)
+  expect(requests.filter(x=>x.action==='check-create')).toEqual([{action:'check-create',requestId:created.requestId}]);expect(composer).toHaveValue('A newer ordinary note');expectNoChatDispatch()
+})
+
+it('preserves an open schedule edit and drops its draft handoff when the owner changes chats',async()=>{
+  const requests=scheduleApi();const composer=await openDraftSchedule()
+  fireEvent.change(screen.getByLabelText('What should Portal do?'),{target:{value:'Owner edited the scheduled instructions'}})
+  fireEvent.change(composer,{target:{value:'A second draft'}})
+  fireEvent.click(screen.getByRole('button',{name:'Schedule this draft'}))
+  await screen.findByText(/Finish or cancel the open task first/)
+  expect(screen.getByLabelText('What should Portal do?')).toHaveValue('Owner edited the scheduled instructions')
+  fireEvent(window,new Event('ods:pixel-new-task'))
+  await waitFor(()=>expect(screen.queryByLabelText('What should Portal do?')).not.toBeInTheDocument())
+  expect(requests.filter(x=>x.action==='create')).toHaveLength(0);expectNoChatDispatch()
+})

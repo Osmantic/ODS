@@ -53,7 +53,14 @@ def test_package_preserves_source_and_requires_relocated_loader(tmp_path, monkey
         path.mkdir()
         (path / 'openclaw.plugin.json').write_text(json.dumps({'id': name}))
         plugins.append(str(path))
-    monkeypatch.setattr(config, 'runtime_plugins', lambda *a: {'searxng': plugins[1] if fault != 'foreign' else '/foreign'})
+    dormant = {}
+    for _directory, name in config.bootstrap.PIXEL_PLUGINS:
+        path = tmp_path / name
+        path.mkdir()
+        (path / 'openclaw.plugin.json').write_text(json.dumps({'id': name}))
+        dormant[name] = str(path)
+    monkeypatch.setattr(config, 'runtime_plugins', lambda *a: {
+        'searxng': plugins[1] if fault != 'foreign' else '/foreign', **dormant})
     candidate = tmp_path / 'candidate'
     candidate.mkdir(mode=0o700)
     receipt = candidate / 'candidate.json'
@@ -67,18 +74,49 @@ def test_package_preserves_source_and_requires_relocated_loader(tmp_path, monkey
     path.write_text(json.dumps(original))
     path.chmod(0o600)
     calls = []
+    component = {'component.json': b'qualified source component fixture'}
+    host_python = tmp_path / 'Apple Python'
+    original_spec = config.importlib.util.spec_from_file_location
+    def source_dependencies(name, location, *args, **kwargs):
+        spec = original_spec(name, location, *args, **kwargs)
+        # This orchestration fixture supplies its Source payload and Apple
+        # interpreter discovery, just as it supplies the bundle builder. The
+        # real custody/acquisition validators have their own focused suites.
+        if name in ('native_source_payload', 'native_source_python'):
+            original_exec = spec.loader.exec_module
+            def execute(module):
+                original_exec(module)
+                if name == 'native_source_python':
+                    def select_python():
+                        calls.append('python')
+                        return host_python
+                    module.select_python = select_python
+                else:
+                    def source_payloads(source, ref, python):
+                        calls.append('source')
+                        assert source == tmp_path and ref == 'a' * 40 and python == host_python
+                        return component
+                    module.source_payloads = source_payloads
+            spec.loader.exec_module = execute
+        return spec
+    monkeypatch.setattr(config.importlib.util, 'spec_from_file_location', source_dependencies)
     def build(**kwargs):
         calls.append('build')
-        assert kwargs['plugins'] == plugins
+        assert kwargs['plugins'] == plugins + list(dormant.values())
         assert kwargs['stream_progress_fix'] is True
         assert kwargs['shared_runtime_repairs'] is True
         assert kwargs['pixel_source_ref'] == 'a' * 40
         assert kwargs['ods_plugin_indices'] == [0]
         assert kwargs['ods_source'] == Path(__file__).resolve().parents[1]
         assert kwargs['service_manifest'] is None
+        assert kwargs['source_component'] is component
         assert kwargs['exec_wrapper'] == Path(__file__).resolve().parents[1] / 'extensions/services/pixel-agent/host/cancellable-exec.sh'
         assert kwargs['exec_wrapper'].is_file()
         kwargs['destination'].mkdir()
+        for index, plugin in enumerate(kwargs['plugins']):
+            target = kwargs['destination'] / 'plugins' / str(index)
+            target.mkdir(parents=True)
+            (target / 'openclaw.plugin.json').write_bytes((Path(plugin) / 'openclaw.plugin.json').read_bytes())
         return 'b' * 64
     monkeypatch.setattr(config.bundle, 'build', build)
     def validate(path, **kwargs):
@@ -97,6 +135,8 @@ def test_package_preserves_source_and_requires_relocated_loader(tmp_path, monkey
         calls.append('verify')
         assert kwargs['expected_digest'] == 'b' * 64
         if fault == 'mutation': raise ValueError('runtime changed')
+        return {'plugins': ['plugins/' + str(i) for i in range(len(plugins) + len(dormant))],
+                'entries': config.bundle.inventory(args[0])}, 'b' * 64
     monkeypatch.setattr(config.bundle, 'verify', verify)
     destination = tmp_path / 'Qualified Bundle'
     if fault == 'existing': destination.mkdir()
@@ -111,7 +151,7 @@ def test_package_preserves_source_and_requires_relocated_loader(tmp_path, monkey
         assert destination.exists() is (fault == 'existing')
     else:
         assert run() == 'b' * 64
-        assert calls == ['build', 'validate', 'verify']
+        assert calls == ['python', 'source', 'build', 'validate', 'verify']
         assert destination.is_dir()
     if fault != 'config-change': assert json.loads(path.read_text()) == original
     assert not list(tmp_path.glob('.pixel-package-*'))

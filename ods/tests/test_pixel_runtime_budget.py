@@ -34,6 +34,24 @@ def invoke(path, home, explicit_home=None):
                           capture_output=True, text=True, timeout=10)
 
 
+@pytest.mark.parametrize('mode', ['all', 'off'])
+def test_connection_status_read_is_permitted_without_changing_sandbox_mode(tmp_path, mode):
+    tmp_path.chmod(0o700)
+    value = configuration()
+    value['agents']['defaults']['sandbox'] = {'mode': mode}
+    path = tmp_path / 'openclaw.json'
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    result = invoke(path, tmp_path)
+    assert result.returncode == 0, result.stderr
+    updated = json.loads(Path(result.stdout.strip()).read_text())
+    name = 'pixel_ods_connections_status'
+    assert name in updated['tools']['alsoAllow']
+    assert name in updated['tools']['sandbox']['tools']['allow']
+    assert name not in updated['agents']['list'][0]['tools']['deny']
+    assert updated['agents']['defaults']['sandbox']['mode'] == mode
+
+
 @pytest.mark.parametrize('policy,expected', [('supported', ['text', 'image']),
     ('unknown', ['text', 'image']), ('unsupported', ['text'])])
 def test_image_policy_overlay_binds_selected_route_and_replaces_previous_policy(tmp_path, policy, expected):
@@ -313,5 +331,48 @@ def test_invalid_or_foreign_thinking_control_is_refused_without_staging(tmp_path
                              str(tmp_path / '.openclaw')], capture_output=True, text=True, timeout=10)
     assert result.returncode != 0
     assert ('route does not match' if control is None else 'invalid ODS Pixel thinking-control contract') in result.stderr
+    assert path.read_bytes() == before
+    assert not list(tmp_path.glob('.ods-pixel-runtime-budget.*'))
+
+
+def test_reviewed_plugins_load_from_the_onboarding_contract_exactly_as_reviewed(tmp_path):
+    from pixel_connections import plugins
+    tmp_path.chmod(0o700)
+    value = configuration()
+    value['plugins'] = {'allow': ['pixel-ods', 'llama-cpp'], 'entries': {'pixel-ods': {'config': {}}}}
+    value['agents']['list'][0]['tools'] = {'deny': ['message']}
+    path = tmp_path / 'openclaw.json'
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    route = {'modelProvider': 'ods-local', 'modelId': 'Qwen3.5-9B', 'modelName': 'ODS Local Qwen3.5-9B'}
+    answers = tmp_path / 'onboarding.json'
+    args = [sys.executable, str(WRITER), str(path), '3099', str(answers), str(tmp_path / '.openclaw')]
+
+    def overlay(chosen):
+        answers.write_text(json.dumps(dict(route, portalPlugins=chosen)))
+        answers.chmod(0o600)
+        return subprocess.run(args, capture_output=True, text=True, timeout=10)
+
+    entry = plugins.answers(['memory-wiki'])[0]
+    result = overlay([entry])
+    assert result.returncode == 0, result.stderr
+    staged = Path(result.stdout.strip())
+    updated = json.loads(staged.read_text())
+    assert updated['plugins']['allow'] == ['pixel-ods', 'llama-cpp', 'memory-wiki']
+    assert updated['plugins']['entries']['memory-wiki'] == {'enabled': True, 'config': plugins.MEMORY_WIKI['config']}
+    for tools in (updated['tools']['alsoAllow'], updated['tools']['sandbox']['tools']['allow']):
+        assert set(plugins.MEMORY_WIKI['tools']) <= set(tools) and tools == sorted(tools)
+    # The overlay over its own output changes nothing.
+    path.write_bytes(staged.read_bytes())
+    path.chmod(0o600)
+    staged.unlink()
+    assert overlay([entry]).stdout.strip() == 'unchanged'
+    before = path.read_bytes()
+    for bad in ([dict(entry, id='pixel-ods')], [dict(entry, tools=['pixel_ods_status'])], [dict(entry, extra=1)],
+                [entry, entry], [dict(entry, config='unsafe-local')], {'memory-wiki': True}):
+        result = overlay(bad)
+        assert result.returncode != 0 and 'invalid ODS Portal plugin contract' in result.stderr, bad
+    result = overlay([dict(entry, tools=['message'])])
+    assert result.returncode != 0 and 'collide with a tool Portal is denied' in result.stderr
     assert path.read_bytes() == before
     assert not list(tmp_path.glob('.ods-pixel-runtime-budget.*'))

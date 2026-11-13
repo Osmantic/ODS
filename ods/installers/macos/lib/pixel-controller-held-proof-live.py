@@ -164,7 +164,9 @@ class Adapter:
                                    held=False, ready=True, exact=True)
             self.budget()
         if hold['phase'] != 'released':
-            self.i._finish_migration_hold(self.plan, hold, verify_before_release=final_proof)
+            source_options = ({'verify_while_held': lambda: self.i._verify_archived_source_rebind(
+                self.plan, self.records, self.journal)} if self.plan.get('source_lifecycle') is not None else {})
+            self.i._finish_migration_hold(self.plan, hold, verify_before_release=final_proof, **source_options)
         else:
             final_proof()
             result = self.i._migration_edge_request(self.plan, hold['container'], 'release', hold['binding'])

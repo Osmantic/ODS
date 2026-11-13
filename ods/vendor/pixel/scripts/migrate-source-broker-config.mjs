@@ -18,8 +18,8 @@ config.plugins.entries ??= {};
 const legacyPluginIds = new Set(["pixel-google-workspace", "pixel-gmail-readonly"]);
 const sourceTools = [
   "pixel_limb_status",
-  "pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search", "pixel_gmail_read", "pixel_gmail_thread",
-  "pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_propose_create",
+  "pixel_gmail_inbox", "pixel_gmail_sent", "pixel_gmail_search", "pixel_gmail_read", "pixel_gmail_thread", "pixel_gmail_count",
+  "pixel_calendar_list", "pixel_calendar_get", "pixel_calendar_count", "pixel_calendar_propose_create",
   "pixel_calendar_propose_update", "pixel_calendar_propose_delete",
   "pixel_social_feed", "pixel_social_search",
 ];

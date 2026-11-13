@@ -577,6 +577,14 @@ try {
     $message=''
     try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
     Check ($message -match '40 GB' -and -not $script:calls.Contains('features')) 'low disk space stops before WSL is installed'
+    foreach ($target in @(@{Distro='Ubuntu-26.04'}, @{})) {
+        Reset-Scenario
+        $script:freeGB = 12
+        if (-not $target.Count) { $script:scenario = 'missing' }
+        $message = ''
+        try { $null = Invoke-ODSPortalSetup $target 'unused' } catch { $message = $_.Exception.Message }
+        Check ($message -match '40 GB' -and -not $script:calls.Contains('confirm') -and -not $script:downloaded) 'low disk space stops before offering a new Ubuntu on a ready WSL host'
+    }
     Reset-Scenario
     $script:freeGB = 12
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'low disk space on a host with WSL (rerun) only warns'
