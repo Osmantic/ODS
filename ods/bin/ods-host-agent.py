@@ -4867,6 +4867,19 @@ class _PixelModelTransaction:
                     and value['transactionId']!=self.id):
                 self._save('completed','rollback')
                 raise error
+            # The controller takes its state lock before doing anything, so a
+            # transition-busy refusal never started this apply. When it still
+            # holds this transaction on the previous contract, the refusal is
+            # definite rather than uncertain: return the journal to its
+            # post-begin state, so the caller's own rollback (or an explicit
+            # recovery) can release it. Other refusals stay uncertain, since a
+            # coordinator may write the target before refusing.
+            if (operation=='model-apply' and isinstance(error,_PixelModelTransactionRejected)
+                    and getattr(error,'code','')=='transition-busy'
+                    and self._matches(value,'held',self.previous)):
+                self.target=None
+                self._save('held')
+                raise error
         if not self._matches(value, phase, contract, outcome):
             raise _PixelModelTransactionUncertain('Managed model transaction outcome is unconfirmed; recovery is required')
         return value
