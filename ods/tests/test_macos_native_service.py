@@ -4,6 +4,7 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -84,12 +85,50 @@ class NativeServiceTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            try:
-                child.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                pass
-            self.assertIsNotNone(child.poll(), "install-owned llama-server was not reaped when install path contains spaces")
+            child.wait(timeout=5)
+            self.assertIsNotNone(child.returncode)
             self.assertFalse(pid_file.exists())
+
+    def test_stop_spares_processes_that_only_mention_llama_server(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            commands = root / "commands"
+            commands.mkdir()
+            (commands / "launchctl").write_text("#!/bin/sh\nexit 1\n")
+            (commands / "launchctl").chmod(0o700)
+            install = root / "ods install with spaces"
+            binary = install / "bin" / "llama-server"
+            binary.parent.mkdir(parents=True)
+            model_argument = ["--model", str(install / "data" / "models" / "model.gguf")]
+            sleeper = ["-c", "import time; time.sleep(120)"]
+            lookalike = root / "bin" / "notllama-server"
+            lookalike.parent.mkdir()
+            lookalike.symlink_to(sys.executable)
+            bystanders = [
+                subprocess.Popen([sys.executable, *sleeper, "llama-server", *model_argument]),
+                subprocess.Popen([str(lookalike), *sleeper, *model_argument]),
+            ]
+            for bystander in bystanders:
+                self.addCleanup(bystander.kill)
+            pid_file = install / "data" / ".llama-server.pid"
+            pid_file.parent.mkdir(parents=True)
+            env = dict(
+                os.environ,
+                HOME=str(root),
+                PATH=f"{commands}:{os.environ['PATH']}",
+            )
+
+            result = subprocess.run(
+                ["bash", str(SCRIPT), "stop", str(install), str(binary), str(pid_file)],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for bystander in bystanders:
+                self.assertIsNone(bystander.poll(), bystander.args)
 
     def test_live_old_process_blocks_replacement_and_preserves_recovery_files(self):
         with tempfile.TemporaryDirectory() as temporary:
