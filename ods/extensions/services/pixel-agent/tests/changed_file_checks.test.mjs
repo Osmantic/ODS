@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {syncBuiltinESMExports} from 'node:module';
 import {createChangedFileChecks, createModuleCheckQueue, debugGlobalWrites, FILE_CHECK_INSTRUCTION, FILE_CHECK_LIMITS, FILE_CHECK_REMOVAL,
   FILE_CHECKS_OFF, fileCheckFacts, fileCheckInstruction, generatedFile, nodeModuleCheck, parseCheck, scratchEntry, topLevelDefinitions,
   touchedProjects} from '../plugin/changed-file-checks.mjs';
@@ -480,6 +481,42 @@ test('a file rewritten with the same size and mtime is read again', t => {
   fs.utimesSync(at('Playground/game/a.js'), second, second);
   assert.equal(fs.statSync(at('Playground/game/a.js')).mtimeMs, second.getTime());
   assert.deepEqual(checks.findings(), []);
+});
+
+test('a repaired file is read again when all cached metadata collides', t => {
+  const {root, write, at} = workspace(t, {'Playground/game/a.js': 'const a = 1;\n'});
+  const checks = createChangedFileChecks();
+  checks.touch(root, ['Playground/game']);
+  const file = at('Playground/game/a.js');
+  write('Playground/game/a.js', 'function x() {}\nfunction x() {}\n');
+  const cached = fs.lstatSync(file);
+  assert.equal(checks.findings().length, 1);
+  write('Playground/game/a.js', 'function x() {}\nfunction y() {}\n');
+  assert.equal(fs.lstatSync(file).size, cached.size);
+  const realLstat = fs.lstatSync;
+  const mocked = t.mock.method(fs, 'lstatSync', (target, ...args) => {
+    const stat = realLstat(target, ...args);
+    if (target === file) {
+      stat.mtimeMs = cached.mtimeMs;
+      stat.ctimeMs = cached.ctimeMs;
+      assert.equal(stat.ino, cached.ino);
+    }
+    return stat;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { mocked.mock.restore(); syncBuiltinESMExports(); });
+  assert.deepEqual(checks.findings(), []);
+});
+
+test('rechecking cached content respects the scan read budget', t => {
+  const {root, write} = workspace(t, {'Playground/game/a.js': 'const a = 1;\n', 'Playground/game/b.js': 'const b = 1;\n'});
+  const checks = createChangedFileChecks({limits: {readBytes: 40}});
+  checks.touch(root, ['Playground/game']);
+  write('Playground/game/a.js', 'function x() {}\nfunction x() {}\n');
+  write('Playground/game/b.js', 'function y() {}\nfunction y() {}\n');
+  const first = checks.findings({final: true});
+  assert.deepEqual(first, [{kind: 'definition', project: 'Playground/game', file: 'a.js', name: 'x', count: 2}]);
+  assert.deepEqual(checks.findings({final: true}), first);
 });
 
 test('the same finding in two projects is told for each, and names the texts cannot print are left out', t => {
