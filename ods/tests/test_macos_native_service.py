@@ -130,6 +130,7 @@ class NativeServiceTests(unittest.TestCase):
                 subprocess.Popen([str(lookalike), *sleeper, *model_argument]),
             ]
             for bystander in bystanders:
+                self.addCleanup(bystander.wait, timeout=5)
                 self.addCleanup(bystander.kill)
             pid_file = install / "data" / ".llama-server.pid"
             pid_file.parent.mkdir(parents=True)
