@@ -40,6 +40,7 @@ declare -F ods_native_llm_owns_host_gpu >/dev/null 2>&1 \
 
 [[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "$SCRIPT_DIR/lib/safe-env.sh"
 . "$SCRIPT_DIR/installers/lib/wsl-memory.sh"
+. "$SCRIPT_DIR/installers/lib/wsl-disk.sh"
 declare -F ods_vllm_route_blocker >/dev/null || . "$SCRIPT_DIR/installers/lib/llm-backend.sh"
 
 ods_progress 12 "detection" "Detecting GPU hardware"
@@ -154,6 +155,7 @@ while [[ -n "$_disk_probe_path" ]] && [[ ! -e "$_disk_probe_path" ]]; do
 done
 _disk_probe_path="${_disk_probe_path:-$HOME}"
 DISK_AVAIL=$(df -Pk "$_disk_probe_path" 2>/dev/null | tail -1 | awk '{printf "%d", $4 / 1048576}')
+ods_bound_wsl_disk_avail "$_disk_probe_path"
 log "Available disk: ${DISK_AVAIL}GB (on filesystem: $_disk_probe_path)"
 
 # GPU Detection
