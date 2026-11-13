@@ -67,6 +67,15 @@ else
     fail "config edit rc=$rc: $(printf '%s' "$out" | head -n 2 | tr '\n' '|')"
 fi
 
+# Test config show retains final key when .env has no trailing newline
+printf 'FIRST_SETTING=alpha\nFINAL_SETTING=omega' > "$INSTALL_SCAFFOLD/.env"
+out=$(run_cli config show); rc=$?
+if [[ $rc -eq 0 && "$out" == *"FINAL_SETTING=omega"* ]]; then
+    pass "config show preserves final line lacking trailing newline"
+else
+    fail "config show dropped final line lacking trailing newline: $(printf '%s' "$out" | tr '\n' '|')"
+fi
+
 out=$(run_cli status); rc=$?
 if [[ $rc -ne 0 && "$out" == *"Docker Desktop is not running"* ]]; then
     pass "status still requires a Docker runtime (gate unchanged)"
