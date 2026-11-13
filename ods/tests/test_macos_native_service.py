@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import plistlib
+import select
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,36 @@ SCRIPT = Path(__file__).resolve().parents[1] / "installers/macos/lib/native-llam
 
 
 class NativeServiceTests(unittest.TestCase):
+    def live_owned_process(self, binary):
+        # Copied Apple platform binaries can die on launch. Compile a fixture
+        # and require a readiness message before testing whether stop reaps it.
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("cc is required to build a live native process fixture")
+        subprocess.run(
+            [compiler, "-x", "c", "-o", str(binary), "-"],
+            input='#include <stdio.h>\n#include <unistd.h>\n'
+                  'int main(void) { puts("ready"); fflush(stdout); for (;;) pause(); }\n',
+            text=True, capture_output=True, check=True, timeout=30,
+        )
+        child = subprocess.Popen([str(binary), "120"], stdout=subprocess.PIPE)
+
+        def cleanup():
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+            child.stdout.close()
+
+        self.addCleanup(cleanup)
+        self.assertTrue(select.select([child.stdout], [], [], 5)[0], "fixture did not become ready")
+        self.assertEqual(child.stdout.readline(), b"ready\n")
+        self.assertIsNone(child.poll(), "fixture died before stop")
+        command = subprocess.check_output(
+            ["ps", "-p", str(child.pid), "-o", "command="], text=True,
+        ).strip()
+        self.assertEqual(command, f"{binary} 120")
+        return child
+
     def test_stop_reaps_untracked_install_owned_process(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -23,12 +54,7 @@ class NativeServiceTests(unittest.TestCase):
             install = root / "ods"
             binary = install / "bin" / "llama-server"
             binary.parent.mkdir(parents=True)
-            # macOS system binaries can carry protected flags that an
-            # unprivileged temp fixture cannot reproduce with copy2.
-            shutil.copyfile("/bin/sleep", binary)
-            binary.chmod(0o700)
-            child = subprocess.Popen([str(binary), "120"])
-            self.addCleanup(lambda: child.poll() is None and child.kill())
+            child = self.live_owned_process(binary)
             pid_file = install / "data" / ".llama-server.pid"
             pid_file.parent.mkdir(parents=True)
             pid_file.write_text("999999\n")
@@ -61,12 +87,7 @@ class NativeServiceTests(unittest.TestCase):
             install = root / "ods install with spaces"
             binary = install / "bin" / "llama-server"
             binary.parent.mkdir(parents=True)
-            shutil.copyfile("/bin/sleep", binary)
-            binary.chmod(0o700)
-            if shutil.which("codesign"):
-                subprocess.run(["codesign", "-s", "-", "-f", str(binary)], check=False, capture_output=True)
-            child = subprocess.Popen([str(binary), "120"])
-            self.addCleanup(lambda: child.poll() is None and child.kill())
+            child = self.live_owned_process(binary)
             pid_file = install / "data" / ".llama-server.pid"
             pid_file.parent.mkdir(parents=True)
             pid_file.write_text("999999\n")
