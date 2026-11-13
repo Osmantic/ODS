@@ -22,6 +22,7 @@ class PixelInstallTransactionTests(unittest.TestCase):
         self.home.mkdir(parents=True, exist_ok=True)
         self.install_dir.mkdir(parents=True, exist_ok=True)
         self.owner = subprocess.check_output(["id", "-un"], text=True).strip()
+        self.uid = os.getuid()
         self.pixel_source_ref = "b" * 40
 
     def _run_shell(self, script):
@@ -68,6 +69,7 @@ ai(){{ :; }}; ai_ok(){{ :; }}; ai_bad(){{ :; }}; ai_warn(){{ :; }}
                 "manager": "ods",
                 "install_dir": str(self.install_dir),
                 "pixel_source_ref": self.pixel_source_ref,
+                "uid": self.uid,
             }),
             encoding="utf-8",
         )
@@ -95,6 +97,7 @@ ai(){{ :; }}; ai_ok(){{ :; }}; ai_bad(){{ :; }}; ai_warn(){{ :; }}
                 "manager": "ods",
                 "install_dir": str(self.install_dir),
                 "pixel_source_ref": self.pixel_source_ref,
+                "uid": self.uid,
             }),
             encoding="utf-8",
         )
@@ -105,8 +108,8 @@ ai(){{ :; }}; ai_ok(){{ :; }}; ai_bad(){{ :; }}; ai_warn(){{ :; }}
         marker = self.home / ".config/ods/pixel-managed.json"
         self.assertTrue(marker.exists())
 
-    def test_onboarding_provenance_fallback_allows_resumption(self):
-        """Deployment with ODS onboarding contract provenance permits resuming setup."""
+    def test_onboarding_without_transaction_fails_closed(self):
+        """Ambient OpenClaw with mode-0666 onboarding.json but no transaction fails closed."""
         openclaw_dir = self.home / ".openclaw"
         openclaw_dir.mkdir(parents=True, exist_ok=True)
         (openclaw_dir / "openclaw.json").write_text("{}", encoding="utf-8")
@@ -116,7 +119,8 @@ ai(){{ :; }}; ai_ok(){{ :; }}; ai_bad(){{ :; }}; ai_warn(){{ :; }}
 
         deployment_dir = self.home / ".config/pixel-deployment"
         deployment_dir.mkdir(parents=True, exist_ok=True)
-        (deployment_dir / "onboarding.json").write_text(
+        onboarding_file = deployment_dir / "onboarding.json"
+        onboarding_file.write_text(
             json.dumps({
                 "deploymentName": "ods-default",
                 "gatewayExtensions": [
@@ -128,11 +132,91 @@ ai(){{ :; }}; ai_ok(){{ :; }}; ai_bad(){{ :; }}; ai_warn(){{ :; }}
             }),
             encoding="utf-8",
         )
+        onboarding_file.chmod(0o666)
 
         res = self._run_shell(f'_ods_pixel_assert_managed_state "{self.owner}" "{self.home}"')
-        self.assertEqual(res.returncode, 0, f"Expected success but got: {res.stderr}")
+        self.assertNotEqual(res.returncode, 0)
         marker = self.home / ".config/ods/pixel-managed.json"
-        self.assertTrue(marker.exists())
+        self.assertFalse(marker.exists())
+
+    def test_dangling_onboarding_without_transaction_fails_closed(self):
+        """Ambient OpenClaw with dangling onboarding plugin path and no transaction fails closed."""
+        openclaw_dir = self.home / ".openclaw"
+        openclaw_dir.mkdir(parents=True, exist_ok=True)
+        (openclaw_dir / "openclaw.json").write_text("{}", encoding="utf-8")
+
+        deployment_dir = self.home / ".config/pixel-deployment"
+        deployment_dir.mkdir(parents=True, exist_ok=True)
+        onboarding_file = deployment_dir / "onboarding.json"
+        onboarding_file.write_text(
+            json.dumps({
+                "deploymentName": "ods-default",
+                "gatewayExtensions": [
+                    {
+                        "id": "pixel-ods",
+                        "path": "/nonexistent/path/extensions/services/pixel-agent/plugin",
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+        res = self._run_shell(f'_ods_pixel_assert_managed_state "{self.owner}" "{self.home}"')
+        self.assertNotEqual(res.returncode, 0)
+        marker = self.home / ".config/ods/pixel-managed.json"
+        self.assertFalse(marker.exists())
+
+    def test_mismatched_uid_transaction_fails_closed(self):
+        """Transaction recording a different UID fails closed."""
+        openclaw_dir = self.home / ".openclaw"
+        openclaw_dir.mkdir(parents=True, exist_ok=True)
+        (openclaw_dir / "openclaw.json").write_text("{}", encoding="utf-8")
+
+        tx_dir = self.home / ".config/ods"
+        tx_dir.mkdir(parents=True, exist_ok=True)
+        tx_file = tx_dir / ".pixel-install-transaction.json"
+        tx_file.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "manager": "ods",
+                "install_dir": str(self.install_dir),
+                "pixel_source_ref": self.pixel_source_ref,
+                "uid": self.uid + 999,
+            }),
+            encoding="utf-8",
+        )
+        tx_file.chmod(0o600)
+
+        res = self._run_shell(f'_ods_pixel_assert_managed_state "{self.owner}" "{self.home}"')
+        self.assertNotEqual(res.returncode, 0)
+        marker = self.home / ".config/ods/pixel-managed.json"
+        self.assertFalse(marker.exists())
+
+    def test_mismatched_source_ref_transaction_fails_closed(self):
+        """Transaction recording a different pixel_source_ref fails closed."""
+        openclaw_dir = self.home / ".openclaw"
+        openclaw_dir.mkdir(parents=True, exist_ok=True)
+        (openclaw_dir / "openclaw.json").write_text("{}", encoding="utf-8")
+
+        tx_dir = self.home / ".config/ods"
+        tx_dir.mkdir(parents=True, exist_ok=True)
+        tx_file = tx_dir / ".pixel-install-transaction.json"
+        tx_file.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "manager": "ods",
+                "install_dir": str(self.install_dir),
+                "pixel_source_ref": "c" * 40,
+                "uid": self.uid,
+            }),
+            encoding="utf-8",
+        )
+        tx_file.chmod(0o600)
+
+        res = self._run_shell(f'_ods_pixel_assert_managed_state "{self.owner}" "{self.home}"')
+        self.assertNotEqual(res.returncode, 0)
+        marker = self.home / ".config/ods/pixel-managed.json"
+        self.assertFalse(marker.exists())
 
     def test_mismatched_install_dir_transaction_fails_closed(self):
         """Transaction referencing a different install directory fails closed."""
@@ -148,6 +232,8 @@ ai(){{ :; }}; ai_ok(){{ :; }}; ai_bad(){{ :; }}; ai_warn(){{ :; }}
                 "schema_version": 1,
                 "manager": "ods",
                 "install_dir": "/opt/unrelated-ods",
+                "pixel_source_ref": self.pixel_source_ref,
+                "uid": self.uid,
             }),
             encoding="utf-8",
         )
@@ -172,6 +258,8 @@ ai(){{ :; }}; ai_ok(){{ :; }}; ai_bad(){{ :; }}; ai_warn(){{ :; }}
                 "schema_version": 1,
                 "manager": "ods",
                 "install_dir": str(self.install_dir),
+                "pixel_source_ref": self.pixel_source_ref,
+                "uid": self.uid,
             }),
             encoding="utf-8",
         )
@@ -255,6 +343,7 @@ ai(){{ :; }}; ai_ok(){{ :; }}; ai_bad(){{ :; }}; ai_warn(){{ :; }}
                 "manager": "ods",
                 "install_dir": str(self.install_dir),
                 "pixel_source_ref": self.pixel_source_ref,
+                "uid": self.uid,
             }),
             encoding="utf-8",
         )

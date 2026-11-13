@@ -747,7 +747,7 @@ mkdir -p "$TEST_ROOT/ods/extensions/services/pixel-agent/plugin"
 tx_home="$TEST_ROOT/tx-home"
 mkdir -p "$tx_home/.openclaw" "$tx_home/.config/ods"
 printf '%s\n' '{}' > "$tx_home/.openclaw/openclaw.json"
-printf '{"schema_version":1,"manager":"ods","install_dir":"%s"}\n' "$TEST_ROOT/ods" > "$tx_home/.config/ods/.pixel-install-transaction.json"
+printf '{"schema_version":1,"manager":"ods","install_dir":"%s","pixel_source_ref":"%s","uid":%s}\n' "$TEST_ROOT/ods" "${PIXEL_SOURCE_REF:-}" "$(id -u)" > "$tx_home/.config/ods/.pixel-install-transaction.json"
 chmod 0600 "$tx_home/.config/ods/.pixel-install-transaction.json"
 INSTALL_DIR="$TEST_ROOT/ods"
 if _ods_pixel_assert_managed_state "$owner" "$tx_home" >/dev/null 2>&1; then
@@ -760,7 +760,7 @@ check test -f "$tx_home/.config/ods/pixel-managed.json"
 tx_local_home="$TEST_ROOT/tx-local-home"
 mkdir -p "$tx_local_home/.openclaw"
 printf '%s\n' '{}' > "$tx_local_home/.openclaw/openclaw.json"
-printf '{"schema_version":1,"manager":"ods","install_dir":"%s"}\n' "$TEST_ROOT/ods" > "$TEST_ROOT/ods/.ods-pixel-transaction"
+printf '{"schema_version":1,"manager":"ods","install_dir":"%s","pixel_source_ref":"%s","uid":%s}\n' "$TEST_ROOT/ods" "${PIXEL_SOURCE_REF:-}" "$(id -u)" > "$TEST_ROOT/ods/.ods-pixel-transaction"
 chmod 0600 "$TEST_ROOT/ods/.ods-pixel-transaction"
 INSTALL_DIR="$TEST_ROOT/ods"
 if _ods_pixel_assert_managed_state "$owner" "$tx_local_home" >/dev/null 2>&1; then
@@ -787,16 +787,16 @@ cat > "$provenance_home/.config/pixel-deployment/onboarding.json" <<EOF
 EOF
 INSTALL_DIR="$TEST_ROOT/ods"
 if _ods_pixel_assert_managed_state "$owner" "$provenance_home" >/dev/null 2>&1; then
-    pass "ambient OpenClaw with ODS onboarding provenance resumes managed setup"
+    fail "ambient OpenClaw with onboarding without transaction rejected"
 else
-    fail "ambient OpenClaw with ODS onboarding provenance resumes managed setup"
+    pass "ambient OpenClaw with onboarding without transaction rejected"
 fi
-check test -f "$provenance_home/.config/ods/pixel-managed.json"
+check test ! -e "$provenance_home/.config/ods/pixel-managed.json"
 
 mismatch_home="$TEST_ROOT/mismatch-home"
 mkdir -p "$mismatch_home/.openclaw" "$mismatch_home/.config/ods"
 printf '%s\n' '{}' > "$mismatch_home/.openclaw/openclaw.json"
-printf '{"schema_version":1,"manager":"ods","install_dir":"%s"}\n' "$TEST_ROOT/other-ods" > "$mismatch_home/.config/ods/.pixel-install-transaction.json"
+printf '{"schema_version":1,"manager":"ods","install_dir":"%s","pixel_source_ref":"%s","uid":%s}\n' "$TEST_ROOT/other-ods" "${PIXEL_SOURCE_REF:-}" "$(id -u)" > "$mismatch_home/.config/ods/.pixel-install-transaction.json"
 chmod 0600 "$mismatch_home/.config/ods/.pixel-install-transaction.json"
 INSTALL_DIR="$TEST_ROOT/ods"
 if _ods_pixel_assert_managed_state "$owner" "$mismatch_home" >/dev/null 2>&1; then
@@ -809,7 +809,7 @@ check test ! -e "$mismatch_home/.config/ods/pixel-managed.json"
 insecure_home="$TEST_ROOT/insecure-home"
 mkdir -p "$insecure_home/.openclaw" "$insecure_home/.config/ods"
 printf '%s\n' '{}' > "$insecure_home/.openclaw/openclaw.json"
-printf '{"schema_version":1,"manager":"ods","install_dir":"%s"}\n' "$TEST_ROOT/ods" > "$insecure_home/.config/ods/.pixel-install-transaction.json"
+printf '{"schema_version":1,"manager":"ods","install_dir":"%s","pixel_source_ref":"%s","uid":%s}\n' "$TEST_ROOT/ods" "${PIXEL_SOURCE_REF:-}" "$(id -u)" > "$insecure_home/.config/ods/.pixel-install-transaction.json"
 chmod 0666 "$insecure_home/.config/ods/.pixel-install-transaction.json"
 INSTALL_DIR="$TEST_ROOT/ods"
 if _ods_pixel_assert_managed_state "$owner" "$insecure_home" >/dev/null 2>&1; then
@@ -818,6 +818,19 @@ else
     pass "insecure permission transaction rejected"
 fi
 check test ! -e "$insecure_home/.config/ods/pixel-managed.json"
+
+mismatch_uid_home="$TEST_ROOT/mismatch-uid-home"
+mkdir -p "$mismatch_uid_home/.openclaw" "$mismatch_uid_home/.config/ods"
+printf '%s\n' '{}' > "$mismatch_uid_home/.openclaw/openclaw.json"
+printf '{"schema_version":1,"manager":"ods","install_dir":"%s","pixel_source_ref":"%s","uid":99999}\n' "$TEST_ROOT/ods" "${PIXEL_SOURCE_REF:-}" > "$mismatch_uid_home/.config/ods/.pixel-install-transaction.json"
+chmod 0600 "$mismatch_uid_home/.config/ods/.pixel-install-transaction.json"
+INSTALL_DIR="$TEST_ROOT/ods"
+if _ods_pixel_assert_managed_state "$owner" "$mismatch_uid_home" >/dev/null 2>&1; then
+    fail "mismatched transaction UID rejected"
+else
+    pass "mismatched transaction UID rejected"
+fi
+check test ! -e "$mismatch_uid_home/.config/ods/pixel-managed.json"
 
 tx_lifecycle_home="$TEST_ROOT/tx-lifecycle-home"
 mkdir -p "$tx_lifecycle_home"

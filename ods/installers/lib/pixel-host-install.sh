@@ -335,18 +335,21 @@ _ods_pixel_clear_install_transaction() {
 }
 
 _ods_pixel_verify_interrupted_transaction() {
-    local owner="$1" home="$2" tx_marker local_tx onboarding_path
+    local owner="$1" home="$2" tx_marker local_tx expected_uid expected_ref
     tx_marker="$home/.config/ods/.pixel-install-transaction.json"
     local_tx="${INSTALL_DIR:?}/.ods-pixel-transaction"
-    onboarding_path="$home/.config/pixel-deployment/onboarding.json"
+    expected_uid="$(id -u "$owner" 2>/dev/null || stat -c '%u' "$home" 2>/dev/null || true)"
+    expected_ref="${PIXEL_SOURCE_REF:-}"
     ods_pixel_run_as_owner "$owner" "$home" python3 - \
-        "$tx_marker" "$local_tx" "${INSTALL_DIR:?}" "$onboarding_path" <<'PY'
+        "$tx_marker" "$local_tx" "${INSTALL_DIR:?}" "${expected_ref}" "${expected_uid:-}" <<'PY'
 import json, os, pathlib, stat, sys
 
 tx_marker = pathlib.Path(sys.argv[1])
 local_tx = pathlib.Path(sys.argv[2])
 install_dir = sys.argv[3]
-onboarding_path = pathlib.Path(sys.argv[4])
+expected_ref = sys.argv[4].strip()
+expected_uid_raw = sys.argv[5].strip()
+expected_uid = int(expected_uid_raw) if expected_uid_raw.isdigit() else os.getuid()
 
 def check_tx_file(path: pathlib.Path) -> bool:
     if not path.is_file() or path.is_symlink():
@@ -357,46 +360,36 @@ def check_tx_file(path: pathlib.Path) -> bool:
             return False
         if info.st_nlink != 1 or (info.st_mode & 0o077) != 0 or info.st_size > 65536:
             return False
+        if info.st_uid != expected_uid or info.st_uid != os.getuid():
+            return False
         data = json.loads(path.read_text(encoding="utf-8"))
-        if data.get("schema_version") == 1 and data.get("manager") == "ods":
-            rec_dir = data.get("install_dir", "")
-            if rec_dir and install_dir:
-                try:
-                    if os.path.exists(rec_dir) and os.path.exists(install_dir):
-                        if os.path.samefile(rec_dir, install_dir):
-                            return True
-                except Exception:
-                    pass
-                if os.path.abspath(rec_dir) == os.path.abspath(install_dir):
-                    return True
+        if data.get("schema_version") != 1 or data.get("manager") != "ods":
+            return False
+        rec_uid = data.get("uid")
+        if rec_uid is None or rec_uid != expected_uid:
+            return False
+        rec_ref = str(data.get("pixel_source_ref") or "").strip()
+        if expected_ref and rec_ref != expected_ref:
+            return False
+        rec_dir = data.get("install_dir", "")
+        if not rec_dir or not install_dir:
+            return False
+        try:
+            if os.path.exists(rec_dir) and os.path.exists(install_dir):
+                if not os.path.samefile(rec_dir, install_dir):
+                    return False
+            elif os.path.abspath(rec_dir) != os.path.abspath(install_dir):
+                return False
+        except Exception:
+            if os.path.abspath(rec_dir) != os.path.abspath(install_dir):
+                return False
+        return True
     except Exception:
         pass
     return False
 
 if check_tx_file(tx_marker) or check_tx_file(local_tx):
     sys.exit(0)
-
-# Fallback: check onboarding.json provenance if created by ODS
-try:
-    if onboarding_path.is_file() and not onboarding_path.is_symlink():
-        info = onboarding_path.lstat()
-        if stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode) and info.st_size <= 262144:
-            onboarding = json.loads(onboarding_path.read_text(encoding="utf-8"))
-            if onboarding.get("deploymentName") == "ods-default":
-                for ext in onboarding.get("gatewayExtensions", []):
-                    p = ext.get("path", "")
-                    if p and "extensions/services/pixel-agent" in p:
-                        plugin_dir = pathlib.Path(p)
-                        expected = pathlib.Path(install_dir) / "extensions/services/pixel-agent/plugin"
-                        try:
-                            if plugin_dir.exists() and expected.exists() and os.path.samefile(plugin_dir, expected):
-                                sys.exit(0)
-                        except Exception:
-                            pass
-                        if os.path.abspath(plugin_dir) == os.path.abspath(expected):
-                            sys.exit(0)
-except Exception:
-    pass
 
 sys.exit(1)
 PY
