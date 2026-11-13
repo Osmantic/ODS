@@ -246,10 +246,25 @@ check_port_conflict() {
     if lsof -i ":${port}" -sTCP:LISTEN >/dev/null 2>&1; then
         listener_found=true
     # macOS can hide root-owned listeners from an unprivileged lsof process.
-    # A bounded loopback handshake still proves that the port cannot be bound.
-    elif command -v nc >/dev/null 2>&1 \
-        && nc -z -w 1 127.0.0.1 "$port" >/dev/null 2>&1; then
-        listener_found=true
+    # nc's own timeout can stall with the macOS TCP clock-wrap fault. Bound
+    # the child from the caller as well; Python is a checked prerequisite.
+    elif command -v nc >/dev/null 2>&1; then
+        if "${ODS_PYTHON_CMD:-python3}" - "$port" <<'PY' >/dev/null 2>&1
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(
+        ["nc", "-z", "-w", "1", "127.0.0.1", sys.argv[1]],
+        timeout=2, check=False,
+    )
+except (subprocess.TimeoutExpired, OSError):
+    sys.exit(1)
+sys.exit(0 if result.returncode == 0 else 1)
+PY
+        then
+            listener_found=true
+        fi
     fi
 
     if $listener_found; then
