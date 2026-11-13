@@ -189,6 +189,48 @@ def test_inactive_native_status_holds_token_without_reading_or_trusting_stale_pr
     assert result['reason'] == 'connection-admission-held' and token.stat().st_ino == before
 
 
+@pytest.mark.parametrize('present', [False, True])
+def test_token_observation_requalifies_files_after_metadata_without_reading_credentials(backend, monkeypatch, present):
+    n = backend
+    token = broker_file(n, 'private/google-token.json', b'INVENTED_TOKEN_NOT_READ') if present else None
+    original_files, original_read = b.NativeSource._files, os.read
+    proofs = []
+    def files(self):
+        result = original_files(self)
+        proofs.append(result[1]['id'])
+        return result
+    def read(fd, limit):
+        if token is not None and os.fstat(fd).st_ino == token.stat().st_ino:
+            raise AssertionError('Root read credential bytes')
+        return original_read(fd, limit)
+    monkeypatch.setattr(b.NativeSource, '_files', files)
+    monkeypatch.setattr(os, 'read', read)
+    uid, observed = n.backend._sign_in_observation()
+    assert uid == n.identity['id'] and proofs == [uid, uid]
+    assert (observed is not None) is present
+    if present:
+        assert observed[:2] == (token.stat().st_dev, token.stat().st_ino)
+
+
+@pytest.mark.parametrize('present', [False, True])
+def test_token_observation_refuses_replaced_private_directory_after_metadata(backend, monkeypatch, present):
+    n = backend
+    token = broker_file(n, 'private/google-token.json', b'INVENTED_TOKEN_NOT_READ') if present else None
+    private = c.NATIVE_STATE / 'private'
+    retained = c.NATIVE_STATE / 'retained-private'
+    original = b.NativeSource._file
+    def file(directory, name, uid, **kwargs):
+        result = original(directory, name, uid, **kwargs)
+        os.rename(private, retained)
+        private.mkdir(mode=0o700)
+        return result
+    monkeypatch.setattr(b.NativeSource, '_file', staticmethod(file))
+    with pytest.raises(c.CustodyError):
+        n.backend._sign_in_observation()
+    if token is not None:
+        assert (retained / token.name).read_bytes() == b'INVENTED_TOKEN_NOT_READ'
+
+
 def test_known_environment_gate_rename_is_readonly_recovery_status(backend, monkeypatch):
     n = backend
     token = broker_file(n, 'private/google-token.json', b'INVENTED_TOKEN_NOT_READ')

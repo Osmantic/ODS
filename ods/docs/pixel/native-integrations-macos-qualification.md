@@ -18,6 +18,27 @@ Calendar-count and scheduled-task journeys passed. The PR qualification note
 identifies the exact composed candidate and records its final Windows update
 result.
 
+## Physical Source preparation observation, 13 November 2026
+
+Administrator-assisted recovery using reviewed `3fd37378d` preserved the exact
+unrecorded empty initial manifest and completed the inactive generation on the
+existing Mac. The publisher used the installed runtime and all nine unchanged
+Source payloads. Separate installed publisher and installed backend proofs
+passed; the original manifest, identity and code receipts remained preserved.
+Publication took 627 seconds, with independent proofs taking 149 and 27 seconds.
+This did not start Source jobs or create a Google grant. It is recovery evidence,
+not an uninterrupted Portal first-connection pass.
+
+The subsequent Connected apps journey stopped before Google consent. A single
+owner socket status read, admitted after the Root controller was free, returned
+`native-source-deadline-unavailable` after 90.66 seconds. Calendar access and the
+real Portal query remain unqualified. The read-only backend now obtains broker
+identity and token metadata within one bracketed directory observation, retaining
+the complete file proof before and after that held FD. It avoids two redundant
+full qualifications; deployment and the separate current-boot execution view
+remain independently checked. This reader correction still needs physical timing
+and installed Portal validation.
+
 ## First physical run
 
 Start from the exact source commit named in the PR qualification note, with

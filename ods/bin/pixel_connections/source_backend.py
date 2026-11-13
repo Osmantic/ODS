@@ -117,9 +117,19 @@ class NativeSource:
 
     @contextmanager
     def _directory(self, relative):
+        with self._directory_identity(relative) as (directory, _identity):
+            yield directory
+
+    @contextmanager
+    def _directory_identity(self, relative):
+        """Observe identity and child through one fresh, bracketed file proof.
+
+        No qualified selection or identity can be supplied by the caller. The
+        ordinary full file proof still runs before and after the held child FD.
+        """
         if relative not in ('private', 'private/oauth', 'projection', 'results', 'proposals'):
             raise c.CustodyError('native-source-directory-invalid')
-        _selection, _identity, binding = self._files()
+        _selection, identity, binding = self._files()
         with protected_directory(c.NATIVE_META) as metadata, protected_directory(c.NATIVE_STATE.parent) as parent:
             intent, _raw = c._native_json_at(metadata, 'source-custody-prepare.json')
             gate = os.open(c.NATIVE_STATE.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
@@ -131,7 +141,7 @@ class NativeSource:
                         or intent['gate'] != binding['gate']
                         or list((os.fstat(directory).st_dev, os.fstat(directory).st_ino)) != expected):
                     raise c.CustodyError('native-source-directory-changed')
-                yield directory
+                yield directory, identity
                 current = c._native_directory_fd(gate, relative)
                 try:
                     if [os.fstat(current).st_dev, os.fstat(current).st_ino] != expected:
@@ -285,12 +295,16 @@ class NativeSource:
     def sign_in_identity(self):
         if not os.path.lexists(c.NATIVE_STATE):
             return None
-        uid, _gid = self.broker_ids()
-        with self._directory('private') as directory:
+        return self._sign_in_observation()[1]
+
+    def _sign_in_observation(self):
+        """Broker UID and token metadata from the same bound directory view."""
+        with self._directory_identity('private') as (directory, identity):
+            uid = identity['id']
             _raw, info = self._file(directory, 'google-token.json', uid, metadata_only=True)
             if info is None:
-                return None
-            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+                return uid, None
+            return uid, (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
                 info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode), info.st_nlink)
 
     def holds_sign_in(self):
@@ -492,8 +506,7 @@ def native_status_view(bridge):
             c._native_installer_absence_state(bridge, qualified_runtime={'sourceRoot': doc['sourceRoot']})
         return {'paths': paths, 'brokerUid': None, 'tokenIdentity': None,
             'statePresent': False, 'dispatchReady': False}
-    _selection, identity, _binding = source._files()
-    token = source.sign_in_identity()
+    uid, token = source._sign_in_observation()
     try:
         _doc, public = source._view()
     except c.CustodyError:
@@ -512,7 +525,7 @@ def native_status_view(bridge):
         ready = False
     else:
         ready = public.get('schemaVersion') == 3
-    return {'paths': paths, 'brokerUid': identity['id'], 'tokenIdentity': token,
+    return {'paths': paths, 'brokerUid': uid, 'tokenIdentity': token,
         'statePresent': True, 'dispatchReady': ready}
 
 
