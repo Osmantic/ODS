@@ -640,7 +640,14 @@ def inventory(root, *, exclude_manifest=False, normalize_modes=True, _operation=
         try:
             return _fused_inventory(root, exclude_manifest=exclude_manifest,
                 normalize_modes=normalize_modes, operation=_operation)
-        except (AccessError, CustodyError):
+        except CustodyError as error:
+            code = str(error)
+            if code == 'macos-custody-entry-changed':
+                raise BundleError('bundle-source-changed') from None
+            if code == 'macos-custody-link-invalid':
+                raise BundleError('bundle-link-escapes') from None
+            raise BundleError('bundle-operation-unqualified') from None
+        except AccessError:
             raise BundleError('bundle-operation-unqualified') from None
     if _operation is not None:
         return _scoped_inventory(root, root_info, exclude_manifest=exclude_manifest,
