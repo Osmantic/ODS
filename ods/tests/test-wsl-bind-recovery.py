@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for scripts/wsl-bind-recovery.py (Docker mocked)."""
+import contextlib
 import importlib.util
 import io
 import json
@@ -62,6 +63,10 @@ class Base(unittest.TestCase):
         self.host = Path(self.tmp.name) / "host"
         self.host.mkdir()
         (self.host / "f.txt").write_text("x")
+        # The recovery lock (flock, WSL only) has its own tests below.
+        unlocked = mock.patch.object(H, "recovery_lock", lambda *_a, **_k: contextlib.nullcontext())
+        unlocked.start()
+        self.addCleanup(unlocked.stop)
 
     def run_main(self, argv, run_side_effect, which="docker"):
         with mock.patch.object(H, "run", side_effect=run_side_effect), \
@@ -315,6 +320,7 @@ class TestStoppedClassification(Base):
              mock.patch.object(H, "compose_config_json", return_value=cfg), \
              mock.patch.object(H, "compose_ps", return_value=[{"Service": "a", "Name": "failed"}]), \
              mock.patch.object(H, "inspect_container", return_value=container), \
+             mock.patch.object(H, "prove_fresh_views", return_value=(True, "")), \
              mock.patch.object(H, "backup_phantom") as backup, \
              mock.patch.object(H, "recreate") as recreate, \
              mock.patch.object(H, "verify", return_value=(True, "ok")):
@@ -547,6 +553,7 @@ class TestRecreateFlags(Base):
              mock.patch.object(H, "compose_ps", return_value=rows), \
              mock.patch.object(H, "inspect_container", return_value=container), \
              mock.patch.object(H, "classify_running", return_value=(True, "stale-bind:/data")), \
+             mock.patch.object(H, "prove_fresh_views", return_value=(True, "")), \
              mock.patch.object(H, "backup_phantom", side_effect=lambda _root, name, _binds: (events.append(name) or (1, 1))), \
              mock.patch.object(H, "recreate", side_effect=lambda _flags, service: events.append("recreate:" + service)), \
              mock.patch.object(H, "verify", return_value=(True, "ok")) as verify:
@@ -612,6 +619,200 @@ class TestRecreateFlags(Base):
             ok, reason = H.verify(["-f", "x.yml"], "a", binds)
         self.assertTrue(ok, reason)
         self.assertEqual(reason, "ok")
+
+
+IMAGE = "sha256:" + "ab" * 32
+OTHER_IMAGE = "sha256:" + "cd" * 32
+
+
+class TestFreshContainerProof(Base):
+    """After a WSL restart Docker Desktop brought ODS's containers back with an
+    empty folder where ODS's data belongs (RTX Spark, 2026-10-25). A recreate
+    helps only when a NEW container sees the host files, so that is proved
+    first, with an image already on this machine, never pulled or built."""
+
+    SOURCE = "/home/owner/ods/data"
+
+    def setUp(self):
+        super().setUp()
+        self.host_meta = {"device": 2080, "inode": 655361, "filetype": "dir"}
+        host = mock.patch.object(H, "host_stat", return_value=self.host_meta)
+        host.start()
+        self.addCleanup(host.stop)
+
+    def fresh_run(self, seen=None, fs="ext2/ext3", host_fs="ext2/ext3", calls=None, fail=False):
+        seen = seen if seen is not None else self.host_meta
+
+        def fake_run(argv, timeout, check=True, capture=True, binary=False):
+            if calls is not None:
+                calls.append(list(argv))
+            if argv[:2] == ["docker", "run"]:
+                if fail:
+                    raise subprocess.CalledProcessError(125, argv, "", "No such image")
+                if "-f" in argv:
+                    return cp(fs + "\n")
+                return cp(stat_line(seen["device"], seen["inode"], DIR_MODE))
+            if argv[:1] == ["stat"]:
+                return cp(host_fs + "\n")
+            raise AssertionError(argv)
+        return fake_run
+
+    def test_probe_is_a_throwaway_offline_container_of_the_local_image(self):
+        calls = []
+        with mock.patch.object(H, "run", side_effect=self.fresh_run(calls=calls)):
+            self.assertTrue(H.fresh_view_matches(IMAGE, self.SOURCE))
+        self.assertEqual(len(calls), 1)
+        argv = calls[0]
+        self.assertEqual(argv[:3], ["docker", "run", "--rm"])
+        self.assertEqual(argv[argv.index("--pull") + 1], "never")
+        self.assertEqual(argv[argv.index("--network") + 1], "none")
+        self.assertEqual(argv[argv.index("--entrypoint") + 1], "stat")
+        self.assertEqual(argv[argv.index("-v") + 1], f"{self.SOURCE}:{H.PROBE_MOUNT}:ro")
+        self.assertEqual(argv[argv.index(IMAGE) + 1:], ["-Lc", "%d:%i:%f", "--", H.PROBE_MOUNT])
+        self.assertNotIn("build", argv)
+
+    def test_a_new_container_that_sees_another_folder_is_no_proof(self):
+        empty = {**self.host_meta, "inode": self.host_meta["inode"] + 1}
+        with mock.patch.object(H, "run", side_effect=self.fresh_run(seen=empty)):
+            self.assertFalse(H.fresh_view_matches(IMAGE, self.SOURCE))
+
+    def test_windows_v9fs_device_drift_is_proof_only_on_v9fs(self):
+        drift = {**self.host_meta, "device": self.host_meta["device"] + 7}
+        with mock.patch.object(H, "run", side_effect=self.fresh_run(seen=drift, fs="v9fs", host_fs="v9fs")):
+            self.assertTrue(H.fresh_view_matches(IMAGE, self.SOURCE))
+        with mock.patch.object(H, "run", side_effect=self.fresh_run(seen=drift, fs="ext2/ext3", host_fs="ext2/ext3")):
+            self.assertFalse(H.fresh_view_matches(IMAGE, self.SOURCE))
+
+    def test_a_probe_that_cannot_run_is_an_error_not_a_verdict(self):
+        with mock.patch.object(H, "run", side_effect=self.fresh_run(fail=True)):
+            with self.assertRaisesRegex(RuntimeError, "could not check"):
+                H.fresh_view_matches(IMAGE, self.SOURCE)
+
+    def test_a_source_the_probe_syntax_cannot_carry_is_refused(self):
+        for source in ("relative/data", "/home/o:wner/data", "/home/owner/a,b"):
+            with self.subTest(source=source), mock.patch.object(H, "run") as run:
+                with self.assertRaisesRegex(RuntimeError, "cannot probe bind source"):
+                    H.fresh_view_matches(IMAGE, source)
+                run.assert_not_called()
+
+    def test_sources_shared_by_services_are_probed_once_with_each_services_image(self):
+        src = str(self.host)
+        stale = [("a", "ca", [(src, "/data", False)], "running", IMAGE),
+                 ("b", "cb", [(src, "/data", False)], "running", OTHER_IMAGE)]
+        with mock.patch.object(H, "fresh_view_matches", return_value=True) as probe:
+            self.assertEqual(H.prove_fresh_views(stale), (True, ""))
+        probe.assert_called_once_with(IMAGE, src)
+
+    def test_without_a_local_image_id_nothing_is_proved(self):
+        stale = [("a", "ca", [(str(self.host), "/data", False)], "running", "")]
+        with self.assertRaisesRegex(RuntimeError, "no local image id"):
+            H.prove_fresh_views(stale)
+
+    def stale_stack(self, events, proven):
+        cfg = fake_config(services={"a": {"volumes": [bind(str(self.host), "/data")]}})
+        container = {"Image": IMAGE, "State": {"Status": "running"}, "Config": {"Labels": {
+            "com.docker.compose.project": "proj", "com.docker.compose.service": "a"}}}
+        return contextlib.ExitStack(), [
+            mock.patch.object(H, "is_wsl_docker_desktop", return_value=True),
+            mock.patch.object(H, "compose_config_json", return_value=cfg),
+            mock.patch.object(H, "compose_ps", return_value=[{"Service": "a", "Name": "empty"}]),
+            mock.patch.object(H, "inspect_container", return_value=container),
+            mock.patch.object(H, "classify_running", return_value=(True, "stale-bind:/data")),
+            mock.patch.object(H, "fresh_view_matches", side_effect=lambda image, src: (
+                events.append(("probe", image, src)) or proven)),
+            mock.patch.object(H, "backup_phantom", side_effect=lambda _root, name, _binds: (
+                events.append(("backup", name)) or (0, 0))),
+            mock.patch.object(H, "recreate", side_effect=lambda _flags, service: events.append(("recreate", service))),
+            mock.patch.object(H, "verify", return_value=(True, "ok")),
+        ]
+
+    def run_stale(self, proven, argv=None):
+        events = []
+        stack, patches = self.stale_stack(events, proven)
+        with stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            code = H.main(argv or ["--install-dir", str(self.install), "--", "-f", "fixture.yml"])
+        return code, events
+
+    def test_proof_comes_before_any_backup_or_recreate(self):
+        code, events = self.run_stale(proven=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(events, [("probe", IMAGE, str(self.host)), ("backup", "empty"), ("recreate", "a")])
+
+    def test_without_proof_nothing_is_backed_up_or_recreated(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code, events = self.run_stale(proven=False)
+        self.assertEqual(code, H.EXIT_NOT_PROVEN)
+        self.assertEqual(events, [("probe", IMAGE, str(self.host))])
+        self.assertIn("Restart Docker Desktop", stderr.getvalue())
+        self.assertIn("ods repair mounts", stderr.getvalue())
+
+    def test_check_mode_reports_stale_without_probing_or_changing(self):
+        code, events = self.run_stale(proven=True, argv=["--install-dir", str(self.install), "--check", "--", "-f", "x.yml"])
+        self.assertEqual(code, H.EXIT_STALE)
+        self.assertEqual(events, [])
+
+    def test_an_unusable_lock_directory_does_not_stop_a_recovery(self):
+        def unusable(*_args, **_kwargs):
+            raise RuntimeError("unsafe backup directory ownership or type")
+
+        stderr = io.StringIO()
+        with mock.patch.object(H, "recovery_lock", unusable), \
+             mock.patch.object(H, "is_wsl_docker_desktop", return_value=True), \
+             mock.patch.object(H.shutil, "which", return_value="docker"), \
+             mock.patch.object(H, "compose_config_json", return_value=fake_config(services={})), \
+             mock.patch.object(H, "compose_ps", return_value=[]), \
+             contextlib.redirect_stderr(stderr):
+            self.assertEqual(H.main(["--install-dir", str(self.install), "--", "-f", "x.yml"]), 0)
+        self.assertIn("continuing without the recovery lock", stderr.getvalue())
+
+    def test_repeated_service_options_select_only_those_services(self):
+        cfg = fake_config(services={name: {"volumes": [bind(str(self.host), "/data")]} for name in ("a", "b", "c")})
+        rows = [{"Service": name, "Name": "c" + name} for name in ("a", "b", "c")]
+
+        def container(name):
+            return {"Image": IMAGE, "State": {"Status": "running"}, "Config": {"Labels": {
+                "com.docker.compose.project": "proj", "com.docker.compose.service": name[1:]}}}
+
+        with mock.patch.object(H, "is_wsl_docker_desktop", return_value=True), \
+             mock.patch.object(H, "compose_config_json", return_value=cfg), \
+             mock.patch.object(H, "compose_ps", return_value=rows), \
+             mock.patch.object(H, "inspect_container", side_effect=container) as inspect, \
+             mock.patch.object(H, "classify_running", return_value=(False, "healthy")):
+            code = H.main(["--install-dir", str(self.install), "--service", "a", "--service", "c",
+                           "--service", "", "--", "-f", "x.yml"])
+        self.assertEqual(code, 0)
+        self.assertEqual(inspect.call_args_list, [mock.call("ca"), mock.call("cc")])
+
+
+@unittest.skipUnless(hasattr(os, "getuid"), "the recovery lock is flock, which WSL (Linux) provides")
+class TestRecoveryLock(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.install = make_install(self.tmp.name)
+
+    def test_a_second_recovery_waits_then_reports_busy(self):
+        with H.recovery_lock(self.install):
+            with self.assertRaises(H.RecoveryBusy):
+                with H.recovery_lock(self.install, wait_seconds=0):
+                    self.fail("two recoveries held the lock at once")
+        with H.recovery_lock(self.install, wait_seconds=0):
+            pass  # Released when the first one finished.
+        root = self.install / "data" / "wsl-bind-recovery"
+        self.assertEqual(statmod.S_IMODE(root.stat().st_mode) & 0o077, 0)
+
+    def test_main_exits_busy_while_another_recovery_holds_the_lock(self):
+        with H.recovery_lock(self.install), \
+             mock.patch.object(H, "LOCK_WAIT", 0), \
+             mock.patch.object(H, "is_wsl_docker_desktop", return_value=True), \
+             mock.patch.object(H.shutil, "which", return_value="docker"), \
+             mock.patch.object(H, "compose_config_json") as config:
+            code = H.main(["--install-dir", str(self.install), "--", "-f", "x.yml"])
+        self.assertEqual(code, H.EXIT_BUSY)
+        config.assert_not_called()
 
 
 if __name__ == "__main__":

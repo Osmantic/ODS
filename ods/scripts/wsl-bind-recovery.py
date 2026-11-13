@@ -3,11 +3,23 @@
 
 Runs only under real WSL + Docker Desktop. Compares fresh host bind metadata
 against the ORIGINAL RUNNING container's bind view via `docker exec stat`.
-Recreates only services whose bind view is provably stale, using the exact
+Recreates only services whose bind view is provably stale, and only after a
+new throwaway container, made from the stale service's own image already on
+this machine, sees each of its bind sources as this host does. Without that
+proof Docker Desktop is not sharing the files yet and a recreated container
+would be just as empty, so nothing is recreated (exit 3). Uses the exact
 compose flags the caller already resolved. Never touches volumes, auth, or
-unrelated projects. Never prints secrets.
+unrelated projects. Never prints secrets. One recovery runs at a time per
+installation: `ods start`, `ods repair mounts` and the host agent's check
+after a WSL restart can overlap.
+
+Exit codes: 0 healthy, or repaired and verified (and every non-WSL host);
+1 error; 2 stale views found (--check); 3 stale views, but a new container
+does not see the host files either, so nothing was recreated; 4 another
+recovery kept the lock.
 """
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
@@ -28,8 +40,20 @@ BACKUP_ROOT_REL = "data/wsl-bind-recovery"
 BACKUP_MAX_BYTES = 1024 * 1024 * 1024
 BACKUP_MAX_ENTRIES = 10000
 RECOVERY_TIMEOUT = 120
+# How long a recovery waits for another one to finish before its own budget.
+LOCK_WAIT = 60
+LOCK_NAME = "recovery.lock"
+# Where a fresh probe container sees a bind source (read-only).
+PROBE_MOUNT = "/ods-bind-probe"
+EXIT_STALE = 2
+EXIT_NOT_PROVEN = 3
+EXIT_BUSY = 4
 _deadline = None
 _install_dir = None
+
+
+class RecoveryBusy(RuntimeError):
+    """Another recovery of this installation kept the lock."""
 
 
 def log(msg):
@@ -223,6 +247,29 @@ def host_stat(source):
     }
 
 
+def parse_stat_line(line, where):
+    """{device,inode,filetype} from `stat -Lc %d:%i:%f` output."""
+    line = (line or "").strip()
+    if not line:
+        raise RuntimeError(f"empty stat output for {where}")
+    parts = line.split(":")
+    if len(parts) != 3:
+        raise RuntimeError(f"unexpected stat output for {where}")
+    try:
+        device = int(parts[0], 10)
+        inode = int(parts[1], 10)
+        mode = int(parts[2], 16)
+    except ValueError as exc:
+        raise RuntimeError(f"unparseable stat output for {where}: {exc}")
+    if statmod.S_ISDIR(mode):
+        filetype = "dir"
+    elif statmod.S_ISREG(mode):
+        filetype = "file"
+    else:
+        filetype = "other"
+    return {"device": device, "inode": inode, "filetype": filetype}
+
+
 def exec_stat(container_name, target):
     """Return {device,inode,filetype} or {error} for target inside container."""
     argv = [
@@ -233,25 +280,71 @@ def exec_stat(container_name, target):
         out = run(argv, PROBE_TIMEOUT)
     except subprocess.SubprocessError as exc:
         raise RuntimeError(f"docker exec stat failed for {container_name}:{target}: {exc}")
-    line = (out.stdout or "").strip()
-    if not line:
-        raise RuntimeError(f"empty stat output for {container_name}:{target}")
-    parts = line.split(":")
-    if len(parts) != 3:
-        raise RuntimeError(f"unexpected stat output for {container_name}:{target}")
+    return parse_stat_line(out.stdout, f"{container_name}:{target}")
+
+
+def fresh_stat(image, src, filesystem=False):
+    """stat a host path inside a NEW throwaway container of a local image.
+
+    Docker Desktop shares a WSL path with a container when that container is
+    created from this distribution, so a new container shows what a
+    recreated service would see. --pull never: only an image already here.
+    """
+    if not os.path.isabs(src) or any(ch in src for ch in ":,\n"):
+        raise RuntimeError(f"cannot probe bind source {src!r} with a new container")
+    query = ["-f", "-c", "%T"] if filesystem else ["-Lc", "%d:%i:%f"]
+    argv = [
+        "docker", "run", "--rm", "--pull", "never", "--network", "none",
+        "--label", "ods.wsl-bind-probe=1", "--entrypoint", "stat",
+        "-v", f"{src}:{PROBE_MOUNT}:ro", image, *query, "--", PROBE_MOUNT,
+    ]
     try:
-        device = int(parts[0], 10)
-        inode = int(parts[1], 10)
-        mode = int(parts[2], 16)
-    except ValueError as exc:
-        raise RuntimeError(f"unparseable stat output for {container_name}:{target}: {exc}")
-    if statmod.S_ISDIR(mode):
-        filetype = "dir"
-    elif statmod.S_ISREG(mode):
-        filetype = "file"
-    else:
-        filetype = "other"
-    return {"device": device, "inode": inode, "filetype": filetype}
+        out = run(argv, PROBE_TIMEOUT)
+    except subprocess.SubprocessError as exc:
+        raise RuntimeError(f"a new container from {image} could not check {src}: {exc}")
+    return (out.stdout or "").strip()
+
+
+def fresh_view_matches(image, src):
+    """True when a new container sees the same host object at src as this host."""
+    host = host_stat(src)
+    if "error" in host:
+        raise RuntimeError(f"missing host source {src}")
+    seen = parse_stat_line(fresh_stat(image, src), f"a new container of {image}:{src}")
+    if (host["device"], host["inode"], host["filetype"]) == (
+            seen["device"], seen["inode"], seen["filetype"]):
+        return True
+    if host["inode"] != seen["inode"] or host["filetype"] != seen["filetype"]:
+        return False
+    # The probe mounts read-only. A Windows (v9fs) path keeps its inode while
+    # its st_dev differs across mount namespaces (see bind_view_matches).
+    try:
+        host_fs = run(["stat", "-f", "-c", "%T", "--", src], PROBE_TIMEOUT).stdout.strip()
+    except subprocess.SubprocessError as exc:
+        raise RuntimeError(f"filesystem probe failed for {src}: {exc}")
+    return host_fs == "v9fs" and fresh_stat(image, src, filesystem=True) == "v9fs"
+
+
+def prove_fresh_views(stale_services):
+    """(True, "") when a new container sees every bind source of every stale
+    service as this host does; else (False, the first source it does not).
+
+    Each probe uses the stale service's own image, which is on this machine
+    because a container was made from it. A recreate is only worth doing
+    after this proof: without it the new containers would be as empty.
+    """
+    proven = set()
+    for svc, _name, binds, _state, image in stale_services:
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", image or ""):
+            raise RuntimeError(f"no local image id for service {svc}; cannot prove a new container sees its data")
+        for src, _dst, _ro in binds:
+            if src in proven:
+                continue
+            if not fresh_view_matches(image, src):
+                return False, src
+            proven.add(src)
+            log(f"a new container sees {src} as this host does")
+    return True, ""
 
 
 def prevalidate_binds(binds):
@@ -395,13 +488,8 @@ def _bounded_tar_stream(container_name, argv, archive_path, deadline):
     return total, members
 
 
-def backup_phantom(install_dir, container_name, binds):
-    """Preserve RW phantom data from the CURRENT container view.
-
-    Only backs up binds whose container view is provably stale relative to
-    the host. Archives are streamed from the container's own view, never
-    copied from the host filesystem.
-    """
+def private_recovery_root(install_dir):
+    """data/wsl-bind-recovery: created owner-private, never a link or foreign."""
     parent = install_dir
     for component in Path(BACKUP_ROOT_REL).parts:
         parent = parent / component
@@ -412,9 +500,42 @@ def backup_phantom(install_dir, container_name, binds):
         metadata = parent.lstat()
         if not statmod.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid():
             raise RuntimeError("unsafe backup directory ownership or type")
-    root = parent
-    if statmod.S_IMODE(root.stat().st_mode) & 0o077:
+    if statmod.S_IMODE(parent.stat().st_mode) & 0o077:
         raise RuntimeError("backup directory must be owner-private")
+    return parent
+
+
+@contextlib.contextmanager
+def recovery_lock(install_dir, wait_seconds=None):
+    """Hold this installation's recovery lock; RecoveryBusy after the wait."""
+    import fcntl  # Like every step here, WSL (Linux) only.
+
+    path = private_recovery_root(install_dir) / LOCK_NAME
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        give_up = time.monotonic() + (LOCK_WAIT if wait_seconds is None else wait_seconds)
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= give_up:
+                    raise RecoveryBusy(
+                        "another ODS mount recovery is still running; try again when it finishes")
+                time.sleep(0.5)
+        yield
+    finally:
+        os.close(descriptor)  # Closing the descriptor releases the lock.
+
+
+def backup_phantom(install_dir, container_name, binds):
+    """Preserve RW phantom data from the CURRENT container view.
+
+    Only backs up binds whose container view is provably stale relative to
+    the host. Archives are streamed from the container's own view, never
+    copied from the host filesystem.
+    """
+    root = private_recovery_root(install_dir)
     txn = root / uuid.uuid4().hex
     txn.mkdir(mode=0o700)
     os.chmod(txn, 0o700)
@@ -509,7 +630,8 @@ def main(argv=None):
     _install_dir = None
     parser = argparse.ArgumentParser()
     parser.add_argument("--install-dir", required=True)
-    parser.add_argument("--service", default="")
+    # Repeatable; `ods start <service>` passes one, possibly empty.
+    parser.add_argument("--service", action="append", default=[])
     parser.add_argument("--check", action="store_true")
     parser.add_argument("flags", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -526,11 +648,31 @@ def main(argv=None):
     if not is_wsl_docker_desktop():
         log("not WSL+DockerDesktop; skipping")
         return 0
-    _deadline = time.monotonic() + RECOVERY_TIMEOUT
 
     if shutil.which("docker") is None:
         return fail("docker not found")
 
+    requested = {service.strip() for service in args.service if service.strip()}
+    held = contextlib.ExitStack()
+    try:
+        held.enter_context(recovery_lock(install_dir))
+    except RecoveryBusy as exc:
+        log(str(exc))
+        return EXIT_BUSY
+    except (RuntimeError, OSError) as exc:
+        # The lock only keeps two recoveries from overlapping; the proof and
+        # the verification keep each one safe. Without a usable lock
+        # directory (another user's data/, as under sudo) recovery runs as
+        # it did before the lock existed.
+        log(f"continuing without the recovery lock: {exc}")
+    with held:
+        # The budget starts once this recovery holds the lock.
+        _deadline = time.monotonic() + RECOVERY_TIMEOUT
+        return recover(install_dir, flags, requested, args.check)
+
+
+def recover(install_dir, flags, requested, check):
+    """Classify the selected services' bind views and repair the stale ones."""
     try:
         config = compose_config_json(flags)
     except RuntimeError as exc:
@@ -541,7 +683,6 @@ def main(argv=None):
         return fail("compose config missing project name")
 
     profiles, wildcard = active_profiles(flags)
-    requested = args.service.strip()
 
     try:
         rows = compose_ps(flags)
@@ -555,7 +696,7 @@ def main(argv=None):
         # or disabled. Only the caller's selected manifest authorizes recovery.
         if svc not in config["services"]:
             continue
-        if requested and svc != requested:
+        if requested and svc not in requested:
             continue
         name = row.get("Name")
         if not name:
@@ -612,7 +753,7 @@ def main(argv=None):
             return fail(str(exc))
         if stale:
             log(f"service {svc} ({name}) stale: {reason}")
-            stale_services.append((svc, name, binds, state))
+            stale_services.append((svc, name, binds, state, str(container.get("Image") or "")))
         else:
             log(f"service {svc} ({name}) {reason}")
 
@@ -620,12 +761,26 @@ def main(argv=None):
         log("all bind views healthy")
         return 0
 
-    if args.check:
+    if check:
         log(f"check mode: {len(stale_services)} stale service(s)")
-        return 2
+        return EXIT_STALE
+
+    # Prove before any backup or recreate: a new container from the same
+    # image must see the host's files. If it does not, Docker Desktop is not
+    # sharing this distribution's files yet and new containers would be as
+    # empty as these, so nothing is changed.
+    try:
+        proven, unseen = prove_fresh_views(stale_services)
+    except RuntimeError as exc:
+        return fail(str(exc))
+    if not proven:
+        log(f"a new container does not see {unseen} as this host does either, so nothing was recreated")
+        log("Docker Desktop is not sharing this Ubuntu's files with new containers. Restart Docker Desktop, "
+            "then run: ods repair mounts")
+        return EXIT_NOT_PROVEN
 
     backup_bytes = backup_entries = 0
-    for svc, name, binds, state in stale_services:
+    for svc, name, binds, state, _image in stale_services:
         if state != "running":
             continue
         try:
@@ -639,7 +794,7 @@ def main(argv=None):
 
     # Compose recreates the entire service, including its replicas. Preserve
     # every original stale view above, then recreate and verify each service once.
-    service_binds = {svc: binds for svc, _name, binds, _state in stale_services}
+    service_binds = {svc: binds for svc, _name, binds, _state, _image in stale_services}
     for svc in service_binds:
         log(f"recreating {svc}")
         try:

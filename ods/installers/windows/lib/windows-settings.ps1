@@ -61,16 +61,18 @@ function Complete-ODSWindowsPageFileChange([int]$SizeGB) {
     Write-ODSWindowsRestoreScript
 }
 
-function Save-ODSWindowsWslConfigChange([int]$Value, [bool]$HadFile, [string]$Backup, [string]$WrittenSha256) {
+function Save-ODSWindowsWslConfigChange($Value, [bool]$HadFile, [string]$Backup, [string]$WrittenSha256, [string]$Reclaim = '') {
     # The first change keeps the owner's original file (HadFile, Backup);
-    # later ones update only the value and what ODS wrote.
+    # later ones update only the values and what ODS wrote. Value is ODS's
+    # memory= in GB ($null when ODS owns none), Reclaim its autoMemoryReclaim=.
     $settings = Read-ODSWindowsSettings
     $record = Get-ODSWindowsSettingsValue $settings 'WslConfig'
     if ($null -ne $record) {
         $HadFile = [bool]$record.HadFile
         $Backup = [string]$record.Backup
     }
-    $settings['WslConfig'] = [ordered]@{ Value = $Value; HadFile = $HadFile; Backup = $Backup; WrittenSha256 = $WrittenSha256
+    $settings['WslConfig'] = [ordered]@{ Value = $(if ($null -ne $Value) { [int]$Value } else { $null }); HadFile = $HadFile
+        Backup = $Backup; WrittenSha256 = $WrittenSha256; Reclaim = $(if ($Reclaim) { $Reclaim } else { $null })
         SetAt = [datetime]::UtcNow.ToString('o') }
     Save-ODSWindowsSettings $settings
     Write-ODSWindowsRestoreScript
@@ -100,7 +102,8 @@ function Get-ODSWindowsRestoreScriptText {
     # The restore script: generic code, no machine paths (it finds them from
     # its own folder and %USERPROFILE%), ASCII only so Windows PowerShell 5.1
     # reads it in any code page. It carries the pure helpers it needs.
-    $helpers = @("`$script:ODSWslConfigMarker = '" + ([string]$script:ODSWslConfigMarker).Replace("'", "''") + "'`r`n")
+    $helpers = @("`$script:ODSWslConfigMarker = '" + ([string]$script:ODSWslConfigMarker).Replace("'", "''") + "'`r`n" +
+        "`$script:ODSWslReclaimMarker = '" + ([string]$script:ODSWslReclaimMarker).Replace("'", "''") + "'`r`n")
     $helpers += foreach ($name in @('Get-ODSWslConfigLines', 'Remove-ODSWslConfigMemoryText', 'Format-ODSPagingFilesDescription')) {
         "function $name {`r`n" + (Get-Item -LiteralPath "Function:$name").Definition.Trim("`r", "`n") + "`r`n}`r`n"
     }
@@ -141,10 +144,10 @@ if ($wsl) {
     } elseif ($exists) {
         $text = [Text.UTF8Encoding]::new($false).GetString($bytes)
         $kept = Remove-ODSWslConfigMemoryText $text
-        if ($kept -cne $text) { $action = "remove only the memory limit ODS added to $wslConfigPath (the file changed since, so the rest is kept)" }
+        if ($kept -cne $text) { $action = "remove only the lines ODS added to $wslConfigPath (the file changed since, so the rest is kept)" }
     }
     if (-not $action) {
-        Write-Host "ODS's WSL memory limit is no longer in $wslConfigPath; nothing to restore there."
+        Write-Host "ODS's WSL settings are no longer in $wslConfigPath; nothing to restore there."
     } elseif ($Yes -or (Read-Host "Restore: $action? [y/N]") -match '^(y|yes)$') {
         if ($action.StartsWith('delete')) { Remove-Item -LiteralPath $wslConfigPath -Force }
         elseif ($action.StartsWith('put back')) { [IO.File]::WriteAllBytes($wslConfigPath, [IO.File]::ReadAllBytes($wsl.Backup)) }

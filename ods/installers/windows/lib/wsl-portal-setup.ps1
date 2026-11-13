@@ -2,6 +2,7 @@
 . (Join-Path $PSScriptRoot 'wsl-portal-prereqs.ps1')
 . (Join-Path $PSScriptRoot 'wsl-portal-amd.ps1')
 . (Join-Path $PSScriptRoot 'wsl-portal-spark.ps1')
+. (Join-Path $PSScriptRoot 'wsl-memory-budget.ps1')
 
 function Get-ODSPortalWindowsBuild {
     return [Environment]::OSVersion.Version.Build
@@ -426,7 +427,16 @@ function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDi
     if ($null -eq $route) { return [pscustomobject]@{ Arguments = @($LinuxArgs); Environment = @{} } }
     $amdArgs = @($route.Arguments)
     if (-not $Options['Tier']) { $amdArgs += @('--tier', $plan.LinuxTier) }
-    return [pscustomobject]@{ Arguments = @($LinuxArgs + $amdArgs); Environment = $route.Environment }
+    return [pscustomobject]@{ Arguments = @($LinuxArgs + $amdArgs); Environment = $route.Environment; Memory = $route.Memory }
+}
+
+function Set-ODSPortalWslMemoryForRoute($Memory) {
+    # A model on Windows in memory Windows also lends to WSL (an AMD APU, an
+    # RTX Spark) keeps WSL within a budget (wsl-memory-budget.ps1). Every
+    # other route leaves .wslconfig alone. Returns the budget's result or $null.
+    if (-not $Memory -or -not $Memory.SharesSystemMemory) { return $null }
+    $version = (Invoke-ODSPortalWsl -Arguments @('--version')).Output
+    return (Invoke-ODSPortalWslMemoryBudget -EngineCommitGiB ([double]$Memory.EngineCommitGiB) -Engine ([string]$Memory.Engine) -WslVersionText $version)
 }
 
 function Get-ODSPortalInitProcess([string]$Distro) {
@@ -455,7 +465,7 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     Write-Host '  Your workspace runs in Ubuntu. Open Portal from Windows.'
     if ($Options['DryRun']) {
         Write-Host 'Dry run: no features, distributions, tasks, services or files will be changed.'
-        Write-Host 'Plan: check disk space and virtualization; prepare WSL2, Ubuntu and Docker Desktop when missing (continuing after a restart); verify the Ubuntu user, systemd, Docker integration and, with an NVIDIA driver, GPU access; with an AMD GPU, download the pinned llama.cpp Vulkan server to Windows and load the model on the GPU; run the Linux installer; verify Pixel ingress and Portal readiness; open Portal.'
+        Write-Host 'Plan: check disk space and virtualization; prepare WSL2, Ubuntu and Docker Desktop when missing (continuing after a restart); verify the Ubuntu user, systemd, Docker integration and, with an NVIDIA driver, GPU access; with an AMD GPU, download the pinned llama.cpp Vulkan server to Windows and load the model on the GPU; when that model shares Windows'' memory with WSL, limit WSL''s memory in %USERPROFILE%\.wslconfig (your own values are kept); run the Linux installer; verify Pixel ingress and Portal readiness; open Portal.'
         Write-Host ('Linux flags: ' + ($linuxArgs -join ' '))
         Write-Host ('A new installation also gets: ' + ($script:ODSPortalNewInstallationArguments -join ' ') + '. A rerun keeps the installed Hermes selection.')
         return 0
@@ -506,6 +516,7 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     if ($null -ne $stop) { return $stop }
     $forwardEnvironment = @{}
     $windowsModelRoute = $false
+    $modelMemory = $null
     if ($Options['ExternalLlmUrl'] -and $Options['ExternalLlmKeyFile']) {
         $forwardEnvironment['ODS_EXTERNAL_LLM_API_KEY'] = Read-ODSPortalExternalLlmKey ([string]$Options['ExternalLlmKeyFile'])
     }
@@ -518,8 +529,10 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
             $linuxArgs = @($route.Arguments)
             $forwardEnvironment = $route.Environment
             $windowsModelRoute = $forwardEnvironment.Count -gt 0
+            $modelMemory = $route.Memory
         }
     }
+    $wslMemory = if ($windowsModelRoute) { Set-ODSPortalWslMemoryForRoute $modelMemory } else { $null }
     # Ubuntu sees its virtual disk's growth limit, not the Windows drive that
     # stores the disk; ODS checks that drive before model downloads.
     $wslDiskDrive = Get-ODSPortalDistroDrive $distro
@@ -535,6 +548,11 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
         # The Windows model server already moved to llama.cpp; the WSL side
         # reaches it only after its installer finishes.
         Write-Host '         The GPU model server on Windows is ready, but the Linux installer did not finish, so chat stays unavailable until it does. Rerun the same install.ps1 command.'
+    }
+    if ($wslMemory -and $wslMemory.RestartNeeded) {
+        # Setup never restarts WSL itself: that would stop Ubuntu and every container mid-work.
+        Write-Host ''
+        Write-Host "         $(Get-ODSWslRestartNotice)" -ForegroundColor Yellow
     }
     return $exitCode
 }

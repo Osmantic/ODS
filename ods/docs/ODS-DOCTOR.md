@@ -108,6 +108,22 @@ ods doctor --json > report.json
   binary that does not report `sm_121` support in `llama-server` logs. The
   installer selects the CUDA 13 image `config/backends/nvidia.json` pins for
   such a GPU, so a rerun of the installer fixes an install made before that.
+- **runtime.wsl_host** (ODS in WSL only, from `scripts/wsl-host-check.py`,
+  read-only):
+  - `windows`: Windows' commit limit and commit headroom from
+    `GlobalMemoryStatusEx` (`ullTotalPageFile`, `ullAvailPageFile`) through
+    WSL interop. This is the memory Windows can still lend; when it reaches
+    zero, Windows fails allocations and can crash WSL itself. A model server's
+    own budget figure is not this number. Also the `memory=` and
+    `autoMemoryReclaim=` values in `%USERPROFILE%\.wslconfig`, and whether
+    Windows reaches each running ODS HTTP service on `localhost`.
+  - `wsl`: this WSL VM's `MemTotal` and `MemFree`. A `MemTotal` above the
+    `.wslconfig` limit means WSL has not restarted since the limit was set.
+  - `bindMounts`: whether `ods-dashboard-api`'s `/data` is the host's
+    `data/` directory (device and inode, as `scripts/wsl-bind-recovery.py`
+    compares them).
+  - `selfHeal`: the host agent's record (`data/wsl-self-heal.json`) of its
+    container repair after this WSL boot.
 - **summary**: Aggregate status (blockers, warnings, runtime_ready)
 - **autofix_hints**: Prioritized remediation actions
 
@@ -134,6 +150,24 @@ Current install diagnoses include:
 - `ODS-WINDOWS-FILE-SHARING-PROBE-IMAGE`: Windows file-sharing probe evidence is
   mixed with an Alpine probe image pull failure, so the report calls out both
   prerequisites.
+
+ODS in WSL adds these runtime diagnoses (`scripts/wsl-host-check.py`):
+
+- `ODS-WINDOWS-COMMIT-LOW` (warn, under 8 GiB) and
+  `ODS-WINDOWS-COMMIT-EXHAUSTED` (blocker, under 2 GiB): Windows' commit
+  headroom. App installs and image turns can use the rest and crash WSL.
+- `ODS-WSL-CAN-EXHAUST-COMMIT` (warn): WSL's free memory exceeds what Windows
+  has left, so WSL alone can use it up. Set a WSL memory limit.
+- `ODS-WSL-MEMORY-LIMIT-PENDING` (warn): `.wslconfig` sets a limit that WSL
+  does not run with yet; WSL must restart.
+- `ODS-WSL-BIND-MOUNTS-STALE` (blocker): `ods-dashboard-api` sees an empty or
+  different folder at `/data`. Fix: `ods repair mounts`.
+- `ODS-DOCKER-DESKTOP-PORTS-DEAD` (blocker for the dashboard, else warn):
+  Windows gets a refused or closed connection on a running container's port.
+  Fix: restart Docker Desktop.
+- `ODS-WSL-SELF-HEAL-NEEDS-HELP` and `ODS-WSL-PORTS-STILL-DEAD` (warn): the host
+  agent's repair after this WSL boot could not finish; the next step is in the
+  diagnosis.
 
 These diagnoses are additive. Existing `autofix_hints`, `runtime`, and
 `preflight` fields remain available for scripts that already consume Doctor
