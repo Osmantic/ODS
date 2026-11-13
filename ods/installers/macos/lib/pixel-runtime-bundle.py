@@ -594,13 +594,54 @@ def _scoped_inventory(root, root_info, *, exclude_manifest, normalize_modes, ope
     return entries
 
 
+def _fused_inventory(root, *, exclude_manifest, normalize_modes, operation):
+    """Current custody and content through the same held FDs; no proof cache."""
+    from pixel_macos_custody import protected_tree_metadata
+    entries = {}
+    def observe(directory, name, relative, info, fd):
+        relative = _relative(relative)
+        if exclude_manifest and relative == MANIFEST:
+            return
+        if stat.S_ISLNK(info.st_mode):
+            target = os.readlink(name, dir_fd=directory)
+            if target.startswith('/') or any(ord(c) < 32 for c in target):
+                raise BundleError('bundle-link-escapes')
+            entries[relative] = ['link', target]
+        elif stat.S_ISDIR(info.st_mode):
+            if info.st_mode & 0o7000:
+                raise BundleError('unsupported-bundle-directory')
+            entries[relative] = ['directory', 0o755 if normalize_modes else stat.S_IMODE(info.st_mode)]
+        else:
+            entries[relative] = _file_descriptor(os.dup(fd), root, relative, _operation=operation)
+            if not normalize_modes:
+                entries[relative][1] = stat.S_IMODE(info.st_mode)
+        if len(entries) > MAX_ENTRIES:
+            raise BundleError('bundle-too-many-entries')
+    protected_tree_metadata(root, _visitor=observe)
+    return entries
+
+
 def inventory(root, *, exclude_manifest=False, normalize_modes=True, _operation=None):
     root = Path(root)
+    fused = False
     if _operation is not None:
-        _operation_cache(_operation, root, metadata=True)
+        from pixel_macos_custody import protected_tree_metadata
+        import inspect
+        parameter = inspect.signature(protected_tree_metadata).parameters.get('_visitor')
+        fused = (parameter is not None and parameter.kind is inspect.Parameter.KEYWORD_ONLY
+            and parameter.default is None)
+        _operation_cache(_operation, root, metadata=not fused)
     root_info = root.lstat()
     if not stat.S_ISDIR(root_info.st_mode):
         raise BundleError('bundle-directory-required')
+    if _operation is not None and fused:
+        from pixel_access_bridge import AccessError
+        from pixel_macos_custody import CustodyError
+        try:
+            return _fused_inventory(root, exclude_manifest=exclude_manifest,
+                normalize_modes=normalize_modes, operation=_operation)
+        except (AccessError, CustodyError):
+            raise BundleError('bundle-operation-unqualified') from None
     if _operation is not None:
         return _scoped_inventory(root, root_info, exclude_manifest=exclude_manifest,
             normalize_modes=normalize_modes, operation=_operation)

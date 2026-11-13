@@ -109,7 +109,7 @@ def metadata_tree_driver(namespace, owner):
     module.os = local
     module._require_no_acl = lambda fd: custody._acl(fd)
 
-    def check(path):
+    def check(path, *, _visitor=None):
         path = Path(path)
         if path != namespace and namespace not in path.parents:
             raise AssertionError('metadata fixture cannot qualify outside its namespace')
@@ -117,7 +117,7 @@ def metadata_tree_driver(namespace, owner):
         state = {'root': path, 'fds': set()}
         token = active.set(state)
         try:
-            return module.protected_tree_metadata(path)
+            return module.protected_tree_metadata(path, _visitor=_visitor)
         except module.CustodyError as error:
             raise mac_custody.CustodyError(str(error)) from None
         finally:
@@ -232,6 +232,29 @@ def test_root_and_owner_rederive_same_immutable_paths_from_actual_inventories(de
                                    plugin_paths=f.value.document['pluginPaths'])
     assert str(f.root / 'plugins/0') in planned['plugins']['load']['paths']
     assert not any('/current/plugin' in path and path.endswith('/plugin') for path in planned['plugins']['load']['paths'])
+
+
+@pytest.mark.parametrize('change', ['inode', 'bytes', 'namespace'])
+def test_metadata_visitor_cannot_hide_changes_while_fd_is_held(deployment, change):
+    f = deployment
+    target = f.root/'runtime/openclaw.mjs'
+    seen = []
+    def visitor(directory, name, relative, info, fd):
+        if relative != 'runtime/openclaw.mjs': return
+        seen.append(fd)
+        assert fd is not None and os.fstat(fd).st_ino == info.st_ino
+        if change == 'inode':
+            replacement = target.with_suffix('.next')
+            replacement.write_bytes(target.read_bytes())
+            replacement.chmod(0o644)
+            os.replace(replacement,target)
+        elif change == 'bytes':
+            target.write_bytes(b'changed while checked FD is held')
+        else:
+            (target.parent/'new-entry').write_bytes(b'preserve')
+    with pytest.raises(mac_custody.CustodyError, match='entry-changed'):
+        f.metadata_tree.check(f.root,_visitor=visitor)
+    assert seen
 
 
 @pytest.mark.parametrize('legacy', [False, True])

@@ -7,6 +7,7 @@ only verified immutable-file hashes may be reused inside one Root operation.
 # ruff: noqa: E402
 import contextvars
 import copy
+from collections import Counter
 from contextlib import contextmanager
 import hashlib
 import importlib.util
@@ -444,9 +445,9 @@ def code_loader_driver(n, monkeypatch):
     def read(path, **kwargs):
         trace.reads.append(Path(path))
         return _actual_protected_bytes(path, **kwargs)
-    def tree(path):
+    def tree(path, *, _visitor=None):
         trace.trees.append(Path(path))
-        return actual_tree(path)
+        return actual_tree(path, _visitor=_visitor)
     monkeypatch.setattr(builtins, 'compile', compile_body)
     monkeypatch.setattr(planner.importlib.util, 'module_from_spec', module)
     monkeypatch.setattr(mac, 'protected_bytes', read)
@@ -461,15 +462,55 @@ def test_planner_code_hit_keeps_fresh_reads_tree_proof_and_module_globals(code_l
         first = n.f.bridge.connection_deployment()
         trace.modules[-1].fixture_poison = object()
         before = (trace.reads.count(path), len(trace.trees), len(n.acl_reads))
+        checked = Counter(n.acl_reads)
         assert n.f.bridge.connection_deployment() == first
         assert trace.compiles.count(str(path)) == 1
-        assert trace.reads.count(path) > before[0] and len(trace.trees) > before[1]
+        assert trace.reads.count(path) > before[0]
+        # The fused inventory must qualify every real file/directory again,
+        # including ACLs, rather than merely call a particular tree helper.
+        current = Counter(n.acl_reads)
+        for entry in (n.f.root, *n.f.root.rglob('*')):
+            if not entry.is_symlink():
+                assert current[entry] > checked[entry], entry
         assert len(n.acl_reads) > before[2]
         assert trace.modules[-2] is not trace.modules[-1]
         assert not hasattr(trace.modules[-1], 'fixture_poison')
         module = trace.modules[-1]
         assert module.__file__ == str(path) and module.__spec__.origin == str(path)
         assert module.__loader__ is module.__spec__.loader and module.__package__ == module.__spec__.parent
+
+
+@pytest.mark.parametrize('relative', ['.', 'plugins', 'plugins/0', 'runtime/openclaw.mjs'])
+def test_fused_inventory_refuses_fresh_acl_after_warm_hashes(native_runtime, relative):
+    n = native_runtime
+    module = helper(n, 'fused_current_custody')
+    with n.f.bridge._native_runtime_operation():
+        select(n)
+        lease = bridge.LaunchdAccessBridge._native_runtime_lease(n.f.bridge)
+        module.verify(n.f.root, expected_digest=n.f.root.name, _operation=lease)
+        n.rejected_acls.add(n.f.root / relative)
+        with pytest.raises(module.BundleError, match='operation-unqualified'):
+            module.verify(n.f.root, expected_digest=n.f.root.name, _operation=lease)
+
+
+def test_older_metadata_reader_keeps_full_separate_custody_proof(native_runtime, monkeypatch):
+    n = native_runtime
+    actual = mac.protected_tree_metadata
+    checked = []
+    def legacy(root):
+        checked.append(Path(root))
+        return actual(root)
+    monkeypatch.setattr(mac, 'protected_tree_metadata', legacy)
+    module = helper(n, 'legacy_metadata_reader')
+    with n.f.bridge._native_runtime_operation():
+        select(n)
+        lease = bridge.LaunchdAccessBridge._native_runtime_lease(n.f.bridge)
+        before = len(checked)
+        module.verify(n.f.root, expected_digest=n.f.root.name, _operation=lease)
+        assert len(checked) > before
+        n.rejected_acls.add(n.target)
+        with pytest.raises(module.BundleError, match='operation-unqualified'):
+            module.verify(n.f.root, expected_digest=n.f.root.name, _operation=lease)
 
 
 @pytest.mark.parametrize('change', ['bytes', 'inode', 'acl', 'mode', 'symlink', 'missing'])

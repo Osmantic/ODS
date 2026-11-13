@@ -3364,8 +3364,14 @@ def _initial_generation_static_view(selection):
                 if record['phase'] in ('generation', 'committed'):
                     allowed |= {'source-jobs-prepare.json', 'native-source-jobs'}
             allowed |= history['metadata'] | initial_boot_names(selection)
-            from pixel_connections import native_executor
-            allowed |= native_executor.initial_quiesce_names(selection)
+            # Absence grants no historical name or process-control authority.
+            # The full history proof is needed only when such names exist;
+            # unknown/malformed names still fail the namespace check below.
+            if any(name == 'source-boot-quiesce.json' or
+                    re.fullmatch(r'\.source-boot-quiesce-[a-f0-9]{32}\.json', name)
+                    for name in os.listdir(metadata)):
+                from pixel_connections import native_executor
+                allowed |= native_executor.initial_quiesce_names(selection)
             if (any(name.startswith(('source-', '.source-', 'native-source-', '.native-source-')) and name not in allowed
                     for name in os.listdir(metadata)) or custody._native_at_inode(metadata, 'retirement.json') is not None):
                 raise ValueError('native-source-initial-history-preserved')

@@ -189,45 +189,64 @@ def protected_directory(filename, *, create=False):
         os.close(fd)
 
 
-def protected_tree_metadata(root):
-    """Require root custody of every entry; content/link topology is separate.
+def protected_tree_metadata(root, *, _visitor=None):
+    """Fresh complete Root/ACL/link custody, optionally reading through held FDs.
 
-    Internal links are allowed only to other entries under this verified tree.
-    Target files/directories are checked independently, including their ACLs.
-    This does not authorize any executable or verify manifest hashes.
+    The internal visitor can inventory bytes while each checked FD is open;
+    results are never cached as qualification. Every entry and namespace is
+    rechecked on every traversal. Symlinks resolve only after directory custody.
     """
     from pathlib import Path
+    if _visitor is not None and not callable(_visitor):
+        raise CustodyError('macos-custody-visitor-invalid')
     root = Path(root)
+    links = []
+    def stamp(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
     with protected_directory(root) as root_fd:
-        def visit(directory):
-            for name in os.listdir(directory):
+        initial = _verify_fd(root_fd, directory=True)
+        def visit(directory, prefix):
+            for name in sorted(os.listdir(directory)):
+                relative = prefix + name
                 info = os.stat(name, dir_fd=directory, follow_symlinks=False)
                 if stat.S_ISLNK(info.st_mode):
                     if info.st_uid != 0 or info.st_nlink != 1:
                         raise CustodyError('macos-root-custody-required')
-                    continue
-                is_directory = stat.S_ISDIR(info.st_mode)
-                flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
-                fd = os.open(name, flags | (os.O_DIRECTORY if is_directory else 0), dir_fd=directory)
-                try:
-                    _verify_fd(fd, directory=is_directory)
-                    if is_directory:
-                        visit(fd)
-                finally:
-                    os.close(fd)
-        visit(root_fd)
-        # Resolve only after all directories are root verified. The publication
-        # caller holds the root deployment lock while checking this tree.
-        for directory, folders, files in os.walk(root, followlinks=False):
-            for name in folders + files:
-                path = Path(directory) / name
-                if path.is_symlink():
+                    target = os.readlink(name, dir_fd=directory)
+                    links.append((relative,info,target))
+                    if _visitor is not None:
+                        _visitor(directory,name,relative,info,None)
+                else:
+                    is_directory = stat.S_ISDIR(info.st_mode)
+                    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                    fd = os.open(name, flags | (os.O_DIRECTORY if is_directory else 0), dir_fd=directory)
                     try:
-                        target = path.resolve(strict=True)
-                    except (OSError, RuntimeError):
-                        raise CustodyError('macos-custody-link-invalid') from None
-                    if os.readlink(path).startswith('/') or (target != root and root not in target.parents):
-                        raise CustodyError('macos-custody-link-invalid')
+                        opened = _verify_fd(fd, directory=is_directory)
+                        if stamp(opened) != stamp(info):
+                            raise CustodyError('macos-custody-entry-changed')
+                        if _visitor is not None:
+                            _visitor(directory,name,relative,opened,fd)
+                        if is_directory:
+                            visit(fd,relative+'/')
+                        if stamp(opened) != stamp(os.fstat(fd)):
+                            raise CustodyError('macos-custody-entry-changed')
+                    finally:
+                        os.close(fd)
+                if stamp(info) != stamp(os.stat(name,dir_fd=directory,follow_symlinks=False)):
+                    raise CustodyError('macos-custody-entry-changed')
+        visit(root_fd,'')
+        for relative,info,target in links:
+            path = root / relative
+            try:
+                resolved = path.resolve(strict=True)
+            except (OSError,RuntimeError):
+                raise CustodyError('macos-custody-link-invalid') from None
+            if (target.startswith('/') or (resolved != root and root not in resolved.parents)
+                    or os.readlink(path) != target or stamp(os.stat(path,follow_symlinks=False)) != stamp(info)):
+                raise CustodyError('macos-custody-link-invalid')
+        if stamp(initial) != stamp(os.fstat(root_fd)) or stamp(initial) != stamp(os.stat(root,follow_symlinks=False)):
+            raise CustodyError('macos-custody-entry-changed')
 
 
 def protected_bytes(filename, *, limit=1024 * 1024):

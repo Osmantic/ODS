@@ -14,8 +14,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_native_source_initial_backend import (initial, material, native, deployment, built, source,
     package, publication, helper, qualification_operation, fresh_file_metadata)
 from test_native_source_installer_withdrawal import files
-from pixel_connections import custody as c
+from pixel_connections import custody as c, native_executor as ex
 from test_native_source_custody import AppleACL
+
+
+@pytest.mark.parametrize('history', ['absent', 'malformed-name', 'unbound-record'])
+def test_initial_names_absence_grants_no_history_but_existing_names_still_qualify(initial, monkeypatch, history):
+    n = initial
+    n.backend.prepare(reader=n.f.bridge.owner.pw_name)
+    read = ex.initial_quiesce_names
+    calls = []
+    def names(selection):
+        calls.append(selection)
+        return read(selection)
+    monkeypatch.setattr(ex, 'initial_quiesce_names', names)
+    if history == 'absent':
+        helper._initial_generation_view(n.selected)
+        assert calls == []
+    else:
+        leaf = '.source-boot-quiesce-invalid.json' if history == 'malformed-name' else '.source-boot-quiesce-'+'a'*32+'.json'
+        path = n.metadata/leaf
+        path.write_bytes(b'{}')
+        path.chmod(0o600)
+        with pytest.raises((ValueError, c.CustodyError)):
+            helper._initial_generation_view(n.selected)
+        assert bool(calls) == (history == 'unbound-record')
+        assert path.read_bytes() == b'{}'
 
 
 def test_initial_unqualified_new_inode_does_not_retain_a_retired_environment_acl(tmp_path, monkeypatch):
