@@ -183,20 +183,27 @@ const wordCode = c => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 &
 // one that opened it counts.
 function codeLineStarts(source) {
   const starts = [true], templates = [];
-  let mode = CODE, depth = 0, regex = true, opened = 0;
+  let mode = CODE, depth = 0, regex = true, opened = 0, continuedLine = false;
   for (let i = 0; i < source.length; i++) {
     const c = source.charCodeAt(i);
     if (c === 10) {
-      // A quoted string ends at its line unless the line ends with a backslash.
+      // Only an unescaped backslash continues a quoted string across LF/CRLF.
       if (mode === LINE || mode === REGEX || mode === CLASS ||
-          ((mode === SINGLE || mode === DOUBLE) && source.charCodeAt(i - 1) !== 92)) mode = CODE;
+          ((mode === SINGLE || mode === DOUBLE) && !continuedLine)) mode = CODE;
+      continuedLine = false;
       starts.push(mode === CODE);
       continue;
     }
     if (mode === LINE) continue;
     if (mode === BLOCK) { if (c === 42 && source.charCodeAt(i + 1) === 47) { mode = CODE; i++; } continue; }
     if (mode !== CODE) {
-      if (c === 92) { if (source.charCodeAt(i + 1) !== 10) i++; continue; }
+      if (c === 92) {
+        const next = source.charCodeAt(i + 1);
+        continuedLine = next === 10 || (next === 13 && source.charCodeAt(i + 2) === 10);
+        // Leave the LF for the newline branch: every physical line needs an entry.
+        if (next !== 10) i++;
+        continue;
+      }
       if (mode === SINGLE || mode === DOUBLE) { if (c === (mode === SINGLE ? 39 : 34)) { mode = CODE; regex = false; } continue; }
       if (mode === TEMPLATE) {
         if (c === 96) { mode = CODE; regex = false; }
