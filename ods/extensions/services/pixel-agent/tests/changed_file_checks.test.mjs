@@ -75,6 +75,42 @@ test('debug globals are writes to globalThis, window or self properties named __
     'globalThis.__REPLAY': 1});
 });
 
+test('quoted continuations preserve LF and CRLF line positions and escape parity', async () => {
+  const slash = String.fromCharCode(92);
+  for (const eol of ['\r\n', '\n']) {
+    for (const quote of ["'", '"']) {
+      for (const count of [1, 3]) {
+        const source = [
+          `const text = ${quote}start${slash.repeat(count)}`,
+          `function hidden() {}${slash}`,
+          `window.__hidden = 1;${quote};`,
+          'function after() {}',
+          'window.__shown = 1;',
+          '',
+        ].join(eol);
+        assert.deepEqual(await parseCheck(source, 'continued.js'), {ok: true});
+        assert.deepEqual(Object.fromEntries(topLevelDefinitions(source)), {text: 1, after: 1});
+        assert.deepEqual(Object.fromEntries(debugGlobalWrites(source)), {'window.__shown': 1});
+      }
+      // Invalid unterminated strings still recover at the physical newline;
+      // an escaped backslash is not a continuation. Parsing reports the error.
+      for (const count of [0, 2, 4]) {
+        const source = [`const text = ${quote}start${slash.repeat(count)}`,
+          'function recovered() {}', 'window.__recovered = 1;', ''].join(eol);
+        assert.equal((await parseCheck(source, 'unterminated.js')).ok, false);
+        assert.deepEqual(Object.fromEntries(topLevelDefinitions(source)), {text: 1, recovered: 1});
+        assert.deepEqual(Object.fromEntries(debugGlobalWrites(source)), {'window.__recovered': 1});
+      }
+    }
+    const otherModes = [`// comment${slash}`, 'function visible() {}',
+      `const template = \`start${slash}`, 'function hidden() {}', '\`;',
+      'function afterTemplate() {}', ''].join(eol);
+    assert.deepEqual(await parseCheck(otherModes, 'other.js'), {ok: true});
+    assert.deepEqual(Object.fromEntries(topLevelDefinitions(otherModes)),
+      {visible: 1, template: 1, afterTemplate: 1});
+  }
+});
+
 test('a new entry is reported when it looks like scratch; conventional dotfiles are not', () => {
   for (const name of ['.crop-return.txt', '.crop_actual.js', '.crop', '.tmp-out', '.scratch', '.debug.log', '.notes.json',
     '.frame.png', 'chars.js.bak', 'chars.js.orig', 'out.tmp', 'tmp-build', 'tmp-crops', 'chars-tmp.js', 'build-tmp2', 'NOTES.BAK',
