@@ -380,7 +380,8 @@ while true; do
 
     read -r choice
 
-    case "${choice,,}" in
+    choice_lc="$(printf '%s' "$choice" | tr '[:upper:]' '[:lower:]')"
+    case "$choice_lc" in
         1) demo_chat ;;
         2) demo_voice ;;
         3) demo_rag ;;
