@@ -43,6 +43,8 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
       - name: Bind source identity, archive hashes and SBOM
+        env:
+          ODS_PORTAL_GOOGLE_RELEASE_PAYLOAD: ${{ secrets.ODS_PORTAL_GOOGLE_RELEASE_PAYLOAD }}
         run: python .github/scripts/release_source.py finalize --output "$RUNNER_TEMP/ods-release"
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -53,6 +55,7 @@ jobs:
             ${{ runner.temp }}/ods-release/ODS-*-source.zip
             ${{ runner.temp }}/ods-release/ODS-*-source.tar.gz
             ${{ runner.temp }}/ods-release/source.spdx.json
+            ${{ runner.temp }}/ods-release/portal-google-desktop.json
             ${{ runner.temp }}/ods-release/release-manifest.json
             ${{ runner.temp }}/ods-release/SHA256SUMS
 
@@ -82,6 +85,7 @@ jobs:
             ${{ runner.temp }}/ods-release/ODS-*-source.zip
             ${{ runner.temp }}/ods-release/ODS-*-source.tar.gz
             ${{ runner.temp }}/ods-release/source.spdx.json
+            ${{ runner.temp }}/ods-release/portal-google-desktop.json
             ${{ runner.temp }}/ods-release/release-manifest.json
             ${{ runner.temp }}/ods-release/SHA256SUMS
       - name: Preserve the exact attestation bundle
@@ -121,7 +125,11 @@ jobs:
           python3 -c 'import json,os; m=json.load(open("release-manifest.json")); assert (m["repository"],m["tag"],m["commit"]) == ("Osmantic/ODS",os.environ["GITHUB_REF"].removeprefix("refs/tags/"),os.environ["GITHUB_SHA"])'
           args=()
           if [[ "$tag" == *-* ]]; then args+=(--prerelease); fi
+          assets=("ODS-$tag-source.zip" "ODS-$tag-source.tar.gz"
+            source.spdx.json release-manifest.json SHA256SUMS provenance.sigstore.jsonl)
+          if grep -qxE '[a-f0-9]{64}  portal-google-desktop\.json' SHA256SUMS; then
+            assets+=(portal-google-desktop.json)
+          fi
           gh release create "$tag" --repo Osmantic/ODS --verify-tag --draft \
             --title "$tag" --notes 'Signed source candidate. Maintainer validation and publication required. The SBOM covers source dependencies, not container OS layers or model weights.' \
-            "${args[@]}" "ODS-$tag-source.zip" "ODS-$tag-source.tar.gz" \
-            source.spdx.json release-manifest.json SHA256SUMS provenance.sigstore.jsonl
+            "${args[@]}" "${assets[@]}"

@@ -82,17 +82,32 @@ def services(source):
 
 def test_complete_legacy_service_bundle_remains_readable_but_partial_inspection_does_not(source):
     manifest = services(source)
+    assert bundle.validate_service_manifest_provenance(manifest)['odsSource']['commit'] == source.ref
     old = json.loads(json.dumps(manifest))
-    for name in bundle.INSPECTION_SERVICE_ARTIFACTS:
-        old['files'].pop(name)
-        old['sourceProvenance']['sourceBindings'].pop(name, None)
-        old['sourceProvenance']['generatedArtifacts'].pop(name, None)
+
+    def remove(value, names):
+        for name in names:
+            value['files'].pop(name)
+            value['sourceProvenance']['sourceBindings'].pop(name, None)
+            value['sourceProvenance']['generatedArtifacts'].pop(name, None)
+
+    # Legacy snapshots have exactly the original three service roles. Keeping
+    # integrations while dropping inspection is an incomplete new snapshot.
+    remove(old, bundle.INTEGRATION_SERVICE_ARTIFACTS)
     assert bundle.validate_service_manifest_provenance(old)['odsSource']['commit'] == source.ref
-    for missing in bundle.INSPECTION_SERVICE_ARTIFACTS:
-        partial = json.loads(json.dumps(manifest))
-        partial['files'].pop(missing)
-        with pytest.raises(bundle.BundleError):
-            bundle.validate_service_manifest_provenance(partial)
+    without_inspection = json.loads(json.dumps(old))
+    remove(without_inspection, bundle.INSPECTION_SERVICE_ARTIFACTS)
+    assert bundle.validate_service_manifest_provenance(without_inspection)['odsSource']['commit'] == source.ref
+    partial_new = json.loads(json.dumps(manifest))
+    remove(partial_new, bundle.INSPECTION_SERVICE_ARTIFACTS)
+    with pytest.raises(bundle.BundleError):
+        bundle.validate_service_manifest_provenance(partial_new)
+    for complete in (manifest, old):
+        for missing in bundle.INSPECTION_SERVICE_ARTIFACTS:
+            partial = json.loads(json.dumps(complete))
+            remove(partial, (missing,))
+            with pytest.raises(bundle.BundleError):
+                bundle.validate_service_manifest_provenance(partial)
 
 
 def staged(source, manifest=None, *, selected=None):

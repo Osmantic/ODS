@@ -8,8 +8,10 @@ import {pathToFileURL} from 'node:url';
 import {subagentCwd,withPixelSubagentWorkspace} from '../plugin/subagent-workspace.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
 import {withCronCommandPayloadBlock} from '../plugin/cron-command-payload-guard.mjs';
+import {withSleepReminderBlock} from '../plugin/sleep-reminder-guard.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
+import {nativeIntegrationHookState} from './native-integration-hook-state.mjs';
 
 const source = fs.readFileSync(process.env.PIXEL_PLUGIN_ENTRY ?? new URL('../plugin/index.js',import.meta.url),'utf8');
 const start=source.indexOf('    api.on("before_tool_call",');
@@ -28,12 +30,13 @@ function fixture(t) {
   const callbacks={};let admitted=0;
   const runtime={isProbe:()=>false,beforeTool:()=>{admitted++;}};
   vm.runInNewContext(source.slice(start,end),{
+    ...nativeIntegrationHookState(),
     api:{config,on:(name,callback)=>{callbacks[name]=callback;}},
     AGENT_ID:'pixel',toolLoopGuard:guard,accessRuntime:runtime,
     goalProgress:{before(){}},bundleAdmission:{before(){}},taskActivity:{before(){}},
     projectRunControl:createProjectRunControl(),artifactAdmission:{before(){}},projectSnapshots:{before(){},end(){}},
     delegationDelivery:{blocked(){},before(){},hasPendingChildren(){return false; }},
-    withPixelCronDeliveryDefault,withPixelSubagentWorkspace,withCronCommandPayloadBlock,
+    withPixelCronDeliveryDefault,withPixelSubagentWorkspace,withCronCommandPayloadBlock,withSleepReminderBlock,
     getSessionEntry:scope=>{assert.equal(scope.sessionKey,ctx.sessionKey);return session;},
     resolveStorePath:()=>'/fixture/session-store',
     resolveUserPath:value=>value==='~'?root:value.startsWith('~/')?path.join(root,value.slice(2)):path.resolve(value),

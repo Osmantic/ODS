@@ -34,6 +34,8 @@ assert.equal(checksum(candidate), manifest.patchedSha256);
 process.env.VITEST = 'true'; // Disable the periodic lock watchdog, not physical locking.
 const load = name => import(pathToFileURL(path.join(root, 'dist', name)));
 const {t: acquireSessionWriteLock} = await load('session-write-lock-qJaTPAUi.js');
+const {t: SessionManager} = await load('session-manager-3lTZxT-y.js');
+const {R: guardSessionManager} = await load('attempt.model-diagnostic-events-DqqiPQPY.js');
 const deps = {
   AsyncLocalStorage, createHash, isDeepStrictEqual, fs$1: fsp,
   readFileSync: fs.readFileSync, statSync: fs.statSync, createReadStream: fs.createReadStream,
@@ -57,12 +59,12 @@ function runtime(source, overrides = {}) {
 
 const fixtureHeader = '{"type":"session","id":"fixture"}\n';
 
-async function fixture(t, source = candidate, overrides = {}) {
+async function fixture(t, source = candidate, overrides = {}, acquire = acquireSessionWriteLock) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ods-compaction-lock-'));
   const sessionFile = path.join(dir, 'session.jsonl');
   await fsp.writeFile(sessionFile, fixtureHeader);
   const api = runtime(source, overrides);
-  const controller = await api.createEmbeddedAttemptSessionLockController({acquireSessionWriteLock,
+  const controller = await api.createEmbeddedAttemptSessionLockController({acquireSessionWriteLock: acquire,
     lockOptions: {sessionFile, timeoutMs: 200, staleMs: 30000, maxHoldMs: 30000}});
   t.after(async () => {
     await controller.dispose();
@@ -70,6 +72,261 @@ async function fixture(t, source = candidate, overrides = {}) {
   });
   return {api, controller, sessionFile};
 }
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return {promise, resolve};
+}
+
+// Control only entry to the real pinned physical lock. The native controller,
+// fences, retained-use scope and non-reentrant sidecar manager remain intact.
+function pendingReacquisition(failure) {
+  let calls = 0;
+  const entered = deferred(), resume = deferred(), nativeSettled = deferred();
+  const acquire = async options => {
+    const ordinal = ++calls;
+    if (ordinal === 2) {
+      entered.resolve();
+      await resume.promise;
+    } else if (ordinal > 2) await nativeSettled.promise;
+    try {
+      if (ordinal === 2 && failure) throw failure;
+      return await acquireSessionWriteLock(options);
+    } finally {
+      if (ordinal === 2) nativeSettled.resolve();
+    }
+  };
+  return {acquire, entered, resume, count: () => calls};
+}
+
+test('a writer joins pending prompt reacquisition before borrowing its retained lock', async t => {
+  const gate = pendingReacquisition();
+  const {controller, sessionFile} = await fixture(t, candidate, {}, gate.acquire);
+  await controller.releaseForPrompt();
+  const reacquiring = controller.reacquireAfterPrompt();
+  await gate.entered.promise;
+  let writes = 0;
+  const writing = controller.withSessionWriteLock(() => { writes++; });
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(gate.count(), 2, 'initial + prompt reacquire; a borrower must not acquire physically');
+    gate.resume.resolve();
+    await reacquiring;
+    await bounded(writing);
+    assert.equal(writes, 1);
+    assert.equal(gate.count(), 2);
+    assert.equal(fs.existsSync(sessionFile + '.lock'), true, 'writer completes before controller disposal');
+    await assert.rejects(acquireSessionWriteLock({sessionFile, timeoutMs: 30}), /session file locked/);
+  } finally {
+    gate.resume.resolve();
+    await reacquiring.catch(() => {});
+    await controller.dispose();
+    await writing.catch(() => {});
+  }
+});
+
+test('a joining writer propagates prompt reacquisition rejection without a new physical acquire', async t => {
+  const failure = new Error('fixture native acquisition failure');
+  const gate = pendingReacquisition(failure);
+  const {controller, sessionFile} = await fixture(t, candidate, {}, gate.acquire);
+  await controller.releaseForPrompt();
+  const reacquiring = controller.reacquireAfterPrompt();
+  const reacquired = reacquiring.then(() => ({ok: true}), error => ({error}));
+  await gate.entered.promise;
+  let writes = 0;
+  const writing = controller.withSessionWriteLock(() => { writes++; });
+  const written = writing.then(() => ({ok: true}), error => ({error}));
+  gate.resume.resolve();
+  assert.equal((await reacquired).error, failure);
+  assert.equal((await written).error, failure);
+  assert.equal(writes, 0);
+  assert.equal(gate.count(), 2);
+  assert.equal(fs.existsSync(sessionFile + '.lock'), false);
+});
+
+for (const method of ['releaseHeldLockForAbort', 'dispose']) {
+  test(`${method} waits for a joined retained writer before releasing physical ownership`, async t => {
+    const gate = pendingReacquisition();
+    const {controller, sessionFile} = await fixture(t, candidate, {}, gate.acquire);
+    await controller.releaseForPrompt();
+    const reacquiring = controller.reacquireAfterPrompt();
+    await gate.entered.promise;
+    const writerEntered = deferred(), finishWriter = deferred();
+    const writing = controller.withSessionWriteLock(async () => {
+      writerEntered.resolve();
+      await finishWriter.promise;
+    });
+    let drained = false;
+    let draining;
+    try {
+      gate.resume.resolve();
+      await reacquiring;
+      await bounded(writerEntered.promise);
+      draining = controller[method]().then(() => { drained = true; });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(drained, false);
+      assert.equal(fs.existsSync(sessionFile + '.lock'), true);
+      finishWriter.resolve();
+      await bounded(Promise.all([writing, draining]));
+      assert.equal(drained, true);
+      assert.equal(gate.count(), 2);
+      assert.equal(fs.existsSync(sessionFile + '.lock'), false);
+    } finally {
+      gate.resume.resolve();
+      finishWriter.resolve();
+      await reacquiring.catch(() => {});
+      await controller.dispose();
+      await writing.catch(() => {});
+      await draining?.catch(() => {});
+    }
+  });
+}
+
+test('joining is controller-local and never permits another controller to retain the same physical key', async t => {
+  const {api, controller, sessionFile} = await fixture(t);
+  await assert.rejects(api.createEmbeddedAttemptSessionLockController({acquireSessionWriteLock,
+    lockOptions: {sessionFile, timeoutMs: 30, staleMs: 30000, maxHoldMs: 30000}}), /session file locked/);
+  await controller.dispose();
+  const other = await api.createEmbeddedAttemptSessionLockController({acquireSessionWriteLock,
+    lockOptions: {sessionFile, timeoutMs: 200, staleMs: 30000, maxHoldMs: 30000}});
+  await other.dispose();
+  assert.equal(fs.existsSync(sessionFile + '.lock'), false);
+});
+
+async function pausedOwnedRefresh(t, failure) {
+  let armed = false, controller, target, published = 0, refreshing;
+  const captured = deferred(), resume = deferred();
+  t.after(async () => {
+    resume.resolve();
+    await refreshing?.catch(() => {});
+  });
+  const selected = await fixture(t, candidate, {fs$1: {...fsp, stat: async (file, options) => {
+    const snapshot = await fsp.stat(file, options);
+    if (armed && path.resolve(file) === target) {
+      armed = false;
+      captured.resolve(snapshot);
+      await resume.promise;
+      if (failure) throw failure;
+    }
+    return snapshot;
+  }}});
+  ({controller, sessionFile: target} = selected);
+  let manager;
+  await controller.withSessionWriteLock(() => {
+    manager = guardSessionManager(SessionManager.open(target), {
+      onMessagePersisted() {
+        published++;
+        controller.refreshAfterOwnedSessionWrite();
+      },
+    });
+  });
+  await controller.releaseForPrompt();
+  await controller.reacquireAfterPrompt();
+  const message = text => ({role: 'assistant', content: [{type: 'text', text}],
+    api: 'openai-completions', provider: 'fixture', model: 'fixture',
+    usage: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+      cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}},
+    stopReason: 'stop', timestamp: Date.now()});
+  let owned;
+  refreshing = controller.withSessionWriteLock(() => {
+    manager.appendMessage(message('An earlier owned publication.'));
+    armed = true;
+    // The actual native guarded manager publishes under the inherited owned
+    // lock scope while its sibling's older asynchronous stat is held back.
+    owned = (async () => {
+      await captured.promise;
+      await controller.withSessionWriteLock(() => manager.appendMessage(message('A newer owned publication.')));
+    })();
+  });
+  refreshing.catch(() => {});
+  const olderSnapshot = await captured.promise;
+  await owned;
+  assert.equal(published, 2, 'actual native onMessagePersisted supplied both owned fences');
+  assert.ok(fs.statSync(target, {bigint: true}).size > olderSnapshot.size);
+  return {...selected, refreshing, resume,
+    publish: text => controller.withSessionWriteLock(() => manager.appendMessage(message(text)))};
+}
+
+test('newer synchronous owned publication survives an older asynchronous refresh snapshot', async t => {
+  const {controller, refreshing, resume} = await pausedOwnedRefresh(t);
+  resume.resolve();
+  await refreshing;
+  let writes = 0;
+  await controller.withSessionWriteLock(() => { writes++; });
+  assert.equal(writes, 1);
+  assert.equal(controller.hasSessionTakeover(), false);
+});
+
+test('an ordinary fresh owned refresh still publishes its current snapshot', async t => {
+  const {controller, sessionFile} = await fixture(t);
+  await controller.releaseForPrompt();
+  await controller.reacquireAfterPrompt();
+  await controller.withSessionWriteLock(() => fsp.appendFile(sessionFile,
+    '{"type":"custom","id":"owned-fresh","parentId":null,"customType":"fixture","data":{}}\n'));
+  let writes = 0;
+  await controller.withSessionWriteLock(() => { writes++; });
+  assert.equal(writes, 1);
+  assert.equal(controller.hasSessionTakeover(), false);
+});
+
+for (const mutation of ['append', 'replace']) {
+  test(`a foreign ${mutation} after the newer owned publication still rejects takeover`, async t => {
+    const {controller, sessionFile, refreshing, resume} = await pausedOwnedRefresh(t);
+    if (mutation === 'append') fs.appendFileSync(sessionFile, '{"type":"foreign","id":"untrusted"}\n');
+    else {
+      fs.writeFileSync(sessionFile + '.replacement', '{"type":"session","id":"foreign"}\n');
+      fs.renameSync(sessionFile + '.replacement', sessionFile);
+    }
+    resume.resolve();
+    await refreshing;
+    let writes = 0;
+    await assert.rejects(controller.withSessionWriteLock(() => { writes++; }),
+      error => error.name === 'EmbeddedAttemptSessionTakeoverError');
+    assert.equal(writes, 0);
+    assert.equal(controller.hasSessionTakeover(), true);
+  });
+}
+
+test('a failed older snapshot preserves the newer owned fence and propagates its error', async t => {
+  const failure = new Error('fixture asynchronous snapshot failure');
+  const {controller, refreshing, resume} = await pausedOwnedRefresh(t, failure);
+  const failed = refreshing.then(() => ({ok: true}), error => ({error}));
+  resume.resolve();
+  assert.equal((await failed).error, failure);
+  let writes = 0;
+  await controller.withSessionWriteLock(() => { writes++; });
+  assert.equal(writes, 1);
+  assert.equal(controller.hasSessionTakeover(), false);
+});
+
+for (const method of ['releaseHeldLockForAbort', 'dispose']) {
+  test(`${method} waits for an older refresh without reviving or rolling back its owned fence`, async t => {
+    const {controller, sessionFile, refreshing, resume} = await pausedOwnedRefresh(t);
+    let drained = false;
+    const draining = controller[method]().then(() => { drained = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(drained, false, 'the still-active owned scope retains the physical lock');
+    resume.resolve();
+    await bounded(Promise.all([refreshing, draining]));
+    assert.equal(drained, true);
+    assert.equal(controller.hasSessionTakeover(), false);
+    assert.equal(fs.existsSync(sessionFile + '.lock'), false);
+    const external = await acquireSessionWriteLock({sessionFile, timeoutMs: 100});
+    await external.release();
+  });
+}
+
+test('a later owned refresh completing first cannot be overwritten by an older snapshot', async t => {
+  const {controller, refreshing, resume, publish} = await pausedOwnedRefresh(t);
+  await publish('An even later owned publication and completed refresh.');
+  resume.resolve();
+  await refreshing;
+  let writes = 0;
+  await controller.withSessionWriteLock(() => { writes++; });
+  assert.equal(writes, 1);
+  assert.equal(controller.hasSessionTakeover(), false);
+});
 
 test('unpatched runtime reproduces the split-summary self-lock timeout', async t => {
   const {controller} = await fixture(t, original);

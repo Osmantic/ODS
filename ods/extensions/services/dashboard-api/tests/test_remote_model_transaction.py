@@ -50,6 +50,9 @@ def runtime(tmp_path, monkeypatch):
             # A refused apply whose native status still shows the previous
             # contract: _PixelModelTransaction cannot tell it from a lost reply.
             if state.failure=='apply-refused':raise _mod._PixelModelTransactionUncertain('apply refused')
+            # A transition-busy refusal the controller proves never started:
+            # the real _PixelModelTransaction re-raises it as a definite refusal.
+            if state.failure=='apply-busy':raise _mod._PixelModelTransactionRejected('busy',code='transition-busy')
             state.native=deepcopy(target)
             if state.failure=='apply':raise _mod._PixelModelTransactionUncertain('apply unknown')
             return 'reconciled'
@@ -395,6 +398,20 @@ def test_rejected_replacement_refreshes_consumer_after_restoring_provider_files(
         assert runtime.native == previous and not runtime.held
     assert files(runtime.root) == before
     assert runtime.events.count('refresh-restored') == 1
+
+
+def test_a_busy_controller_refusal_restores_the_previous_route_and_releases_portal(runtime):
+    # Laptop fleet run 2026-11-11: enabling the remote route right after an update met
+    # the controller's transition lock. The activation must restore its files and roll
+    # the transaction back, not leave Portal held behind an "applying" journal.
+    before=files(runtime.root)
+    runtime.failure='apply-busy'
+    with pytest.raises(RuntimeError) as failed:configure(runtime)
+    assert not isinstance(failed.value,_mod._PixelModelTransactionUncertain)
+    assert files(runtime.root)==before
+    assert runtime.env.read_text().startswith('ODS_MODE=local\n')
+    assert runtime.events[-2:]==['prove-previous','finish-rollback']
+    assert runtime.native==runtime.transactions[0].previous and not runtime.held
 
 
 @pytest.mark.parametrize('failure',['apply','finish','ownership'])

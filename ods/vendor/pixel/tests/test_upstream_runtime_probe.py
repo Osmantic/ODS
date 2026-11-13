@@ -19,6 +19,12 @@ FIXTURE_VERSION = ".".join(("2026", "6", "34"))
 
 
 class RuntimeProbeTests(unittest.TestCase):
+    def test_probe_catalog_matches_its_enabled_source_tools_including_counts(self):
+        source = json.loads((ROOT / "plugin" / "openclaw.plugin.json").read_text(encoding="utf-8"))
+        disabled = {"pixel_social_feed", "pixel_social_search", "pixel_web_browse", "pixel_gmail_draft_propose"}
+        self.assertEqual(PROBE.EXPECTED_SOURCE_TOOLS, set(source["contracts"]["tools"]) - disabled)
+        self.assertTrue({"pixel_gmail_count", "pixel_calendar_count"} <= PROBE.EXPECTED_SOURCE_TOOLS)
+
     def artifact(self, path: Path, contents: bytes) -> dict[str, str]:
         path.write_bytes(contents)
         return {

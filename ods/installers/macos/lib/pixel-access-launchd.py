@@ -158,7 +158,10 @@ def access_daemon_document(*, program=ACCESS_PROGRAM, log=ACCESS_LOG):
         "RunAtLoad": True,
         "KeepAlive": True,
         "ThrottleInterval": 3,
-        "ProcessType": "Background",
+        # This coordinator answers owner requests under fixed deadlines. Darwin
+        # throttles Background jobs even while a browser is waiting for their
+        # custody proof; the service is part of the interactive Portal path.
+        "ProcessType": "Interactive",
         "StandardOutPath": log,
         "StandardErrorPath": log,
     }

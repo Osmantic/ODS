@@ -56,7 +56,7 @@ async function fixture(t, { content = '', verification = { status: 'none', task:
         observed.verificationReads++;
         onVerification();
         if (holdVerification) return;
-        result = verification;
+        result = typeof verification === 'function' ? verification(req.headers) : verification;
         break;
       case '/pixel-ods/subagent-delivery':
         result={schemaVersion:1,kind:'ods-subagent-delivery',runId:body.runId,status:'not-delegated'};
@@ -272,5 +272,27 @@ for (const stage of ['completion', 'verification']) {
     assert.doesNotMatch(body, /request is incomplete|pixel_outcome|"finish_reason":"stop"/);
     assert.equal(f.observed.aborts, 1);
     assertOneUnchangedRequest(f);
+  });
+}
+
+for (const stream of [false, true]) {
+  test(`silent note receipt is requested only for a missing owner reply (stream=${stream})`, async t => {
+    const notice = 'ODS confirmed a note edit during this request.';
+    for (const content of ['NO_REPLY', 'The note was saved.']) {
+      let asked;
+      const f = await fixture(t, {content, verification: headers => {
+        asked = headers['x-ods-silent-completion'] === '1';
+        return asked ? {status: 'none', integrationNotice: notice} : {status: 'none'};
+      }});
+      const result = await complete(f, {stream});
+      assert.equal(asked, content === 'NO_REPLY');
+      if (asked) {
+        assert.ok(result.text.includes(notice));
+        assert.doesNotMatch(result.text, /Earlier tool activity may have completed/);
+      } else {
+        assert.equal(result.text, content);
+      }
+      assertOneUnchangedRequest(f);
+    }
   });
 }

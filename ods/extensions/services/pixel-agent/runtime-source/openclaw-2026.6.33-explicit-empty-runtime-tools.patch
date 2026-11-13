@@ -1,0 +1,7 @@
+--- selection-BEwSQKM-.js (reviewed ODS recipe)
++++ selection-BEwSQKM-.js (explicit runtime NONE)
+@@ -11785 +11785,3 @@
+-			disableTools: params.disableTools
++			// An explicit empty runtime cap intentionally exposes no tools. Higher-level
++			// allowlists still constrain ordinary/nonempty caps; they cannot reopen NONE.
++			disableTools: params.disableTools === true || (Array.isArray(params.toolsAllow) && params.toolsAllow.length === 0)

@@ -6,21 +6,28 @@ from __future__ import annotations
 import base64
 import argparse
 import hashlib
+import hmac
+import http.client
 import json
+import math
 import os
 import re
 import stat
 import tempfile
+import time
 import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
+from email.policy import SMTP
 from email.utils import parseaddr
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # <<<PIXEL-BUNDLED-JOURNAL-VENDOR-SECRETS-BEGIN>>>
 # Bundled from deploy/action_journal/__init__.py and deploy/vendor_secrets.py by
@@ -509,12 +516,63 @@ except ImportError:  # pragma: no cover - Windows unit-test compatibility
 
 
 SCHEMA_VERSION = 1
-SANITIZER_REVISION = 2
+SANITIZER_REVISION = 3
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
 CALENDAR_API = "https://www.googleapis.com/calendar/v3"
 SAFE_TEXT_LIMIT = 800
 MAX_SOURCE_CHARS = 200_000
 DEFINITE_REJECTION_CODES = {400, 401, 403, 412, 422}
+GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
+GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
+GOOGLE_REVOKE_URI = "https://oauth2.googleapis.com/revoke"
+CALENDAR_PAGE_SIZE = 250
+STATUS_KIND = "pixel-source-broker-status"
+STATUS_BOUNDARY = {"contentFree": True, "credentialsIncluded": False}
+# Error classes name the owner's fix, never provider message text.
+SOURCE_ERROR_CLASSES = frozenset({
+    "not-connected", "invalid-grant", "missing-scope", "api-disabled", "rate-limited",
+    "network", "client-invalid", "blocked-by-admin", "unknown",
+})
+OAUTH_ERROR_CLASSES = SOURCE_ERROR_CLASSES | {
+    "invalid-flow", "flow-expired", "state-mismatch", "redirect-mismatch", "no-refresh-token",
+}
+ERROR_REASON = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+RATE_LIMIT_REASONS = frozenset({
+    "rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded", "dailyLimitExceeded",
+    "RESOURCE_EXHAUSTED", "RATE_LIMIT_EXCEEDED",
+})
+API_DISABLED_REASONS = frozenset({"accessNotConfigured", "SERVICE_DISABLED"})
+MISSING_SCOPE_REASONS = frozenset({"insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT", "insufficient_scope"})
+CLIENT_INVALID_REASONS = frozenset({"invalid_client", "unauthorized_client", "deleted_client"})
+EMAIL_READ_SCOPES = frozenset({
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://mail.google.com/",
+})
+CALENDAR_READ_SCOPES = frozenset({
+    "https://www.googleapis.com/auth/calendar.events.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar",
+})
+GOOGLE_SCOPE = re.compile(r"^(?:https://www\.googleapis\.com/auth/[a-z0-9._-]{1,100}|https://mail\.google\.com/|openid|email|profile)$")
+OAUTH_FLOW_ID = re.compile(r"^[a-f0-9]{32}$")
+OAUTH_STATE = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
+PKCE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
+OAUTH_CODE = re.compile(r"^[\x21-\x7e]{1,2048}$")
+OAUTH_REDIRECT = re.compile(
+    r"^(?:http://(?:127\.0\.0\.1|localhost|\[::1\]):[0-9]{2,5}"
+    r"|https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{2,5})?)"
+    r"(?:/[A-Za-z0-9._~/-]{0,200})?$"
+)
+OAUTH_FLOW_MAX_SECONDS = 15 * 60
+OAUTH_FILE_MAX_BYTES = 64 * 1024
+OAUTH_FLOW_KEYS = {
+    "schemaVersion", "kind", "flowId", "state", "codeVerifier", "redirectUri", "client",
+    "requestedScopes", "account", "createdAt", "expiresAt",
+}
+OAUTH_CODE_KEYS = {"schemaVersion", "kind", "flowId", "state", "code"}
 
 SIGNAL_PATTERNS = {
     "agent-targeting": re.compile(r"\b(system prompt|developer message|system\s+(?:agent|assistant))\b|\b(pixel|assistant|agent)\b.{0,100}\b(ignore|instruction|rule|policy|prompt|command|tool|must|should|run|execute|memory)\b|\b(ignore|override)\b.{0,100}\b(pixel|assistant|agent)\b", re.I),
@@ -550,9 +608,18 @@ LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t"
 
 
 class UpstreamHTTPError(RuntimeError):
-    def __init__(self, code: int) -> None:
+    def __init__(self, code: int, reasons: frozenset[str] = frozenset()) -> None:
         super().__init__(f"upstream request failed with HTTP {code}")
         self.code = code
+        self.reasons = reasons
+
+
+class SourceUnavailable(RuntimeError):
+    """A source cannot be read for a recorded, content-free reason."""
+
+    def __init__(self, error_class: str, message: str) -> None:
+        super().__init__(message)
+        self.error_class = error_class
 
 
 class TextExtractor(HTMLParser):
@@ -688,7 +755,24 @@ def base64url_decode(value: str) -> str:
         return ""
 
 
-def collect_message_parts(part: dict[str, Any], output: dict[str, list[Any]]) -> None:
+def _attachment_disposition(part: dict[str, Any]) -> bool:
+    headers = part.get("headers") or []
+    if not isinstance(headers, list):
+        return False
+    # Any attachment declaration wins, including duplicate or folded headers.
+    for header in headers:
+        if not isinstance(header, dict) or str(header.get("name") or "").strip().lower() != "content-disposition":
+            continue
+        try:
+            disposition = SMTP.header_factory("Content-Disposition", str(header.get("value") or ""))
+            if disposition.content_disposition == "attachment":
+                return True
+        except (TypeError, ValueError, IndexError):
+            return True  # An unparseable disposition cannot qualify body text.
+    return False
+
+
+def collect_message_parts(part: dict[str, Any], output: dict[str, list[Any]], *, include_content: bool = True) -> None:
     if not isinstance(part, dict):
         return
     mime_type = str(part.get("mimeType") or "")
@@ -706,14 +790,17 @@ def collect_message_parts(part: dict[str, Any], output: dict[str, list[Any]]) ->
             "mimeType": bounded_text(mime_type, 100),
             "size": size,
         })
-    data = body.get("data")
+    body_allowed = include_content and not filename and not _attachment_disposition(part)
+    data = body.get("data") if body_allowed else None
     if data and mime_type in {"text/plain", "text/html"}:
         output["plain" if mime_type == "text/plain" else "html"].append(base64url_decode(str(data)))
     children = part.get("parts") or []
     if isinstance(children, list):
         for child in children:
             if isinstance(child, dict):
-                collect_message_parts(child, output)
+                # Keep existing filename/type/size metadata, but never let an
+                # attachment's descendants become body text or content hashes.
+                collect_message_parts(child, output, include_content=body_allowed)
 
 
 def email_projection(message: dict[str, Any], *, requested_mailbox: str = "inbox", include_content: bool = True) -> dict[str, Any]:
@@ -900,21 +987,100 @@ def social_projection(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def request_json(url: str, *, method: str = "GET", headers: dict[str, str] | None = None, body: bytes | None = None) -> dict[str, Any]:
-    request = urllib.request.Request(url, method=method, headers=headers or {}, data=body)
+def error_reasons(raw: bytes) -> frozenset[str]:
+    """Return Google's machine-readable error tokens, never its message text."""
     try:
-        with urllib.request.urlopen(request, timeout=25) as response:
-            raw = response.read()
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        return frozenset()
+    found: list[Any] = []
+    error = value.get("error") if isinstance(value, dict) else None
+    if isinstance(error, str):
+        found.append(error)
+    elif isinstance(error, dict):
+        found.append(error.get("status"))
+        for key in ("errors", "details"):
+            items = error.get(key)
+            if isinstance(items, list):
+                found.extend(item.get("reason") for item in items[:20] if isinstance(item, dict))
+    return frozenset(item for item in found if isinstance(item, str) and ERROR_REASON.fullmatch(item))
+
+
+MAX_JSON_RESPONSE_BYTES = 64 * 1024 * 1024
+HTTP_READ_CHUNK_BYTES = 64 * 1024
+
+
+def _bounded_response(response, *, deadline: float, maximum: int) -> bytes:
+    """Check elapsed time between socket reads, not just each socket's timeout.
+
+    read1 returns available bytes without waiting to fill a large chunk. One
+    already-started socket read can still run to its own finite timeout; the
+    service watchdog is the final backstop, not an assertion of exact timing.
+    64MiB is a resource ceiling within the 512MiB service, not a completeness
+    promise for arbitrarily large provider messages.
+    """
+    declared = (getattr(response, 'headers', None) or {}).get('Content-Length')
+    expected = int(declared) if isinstance(declared, str) and declared.isdigit() else None
+    if expected is not None and expected > maximum:
+        raise SourceUnavailable('unknown', 'Google response exceeds the broker resource bound')
+    raw = bytearray()
+    reader = response.read1
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Google response exceeded its read budget')
+        chunk = reader(min(HTTP_READ_CHUNK_BYTES, maximum + 1 - len(raw)))
+        if not chunk:
+            if expected is not None and len(raw) != expected:
+                raise http.client.IncompleteRead(bytes(raw), expected - len(raw))
+            return bytes(raw)
+        raw.extend(chunk)
+        if len(raw) > maximum:
+            raise SourceUnavailable('unknown', 'Google response exceeds the broker resource bound')
+
+
+def request_json(url: str, *, method: str = "GET", headers: dict[str, str] | None = None,
+                 body: bytes | None = None, timeout: float = 25,
+                 maximum: int = MAX_JSON_RESPONSE_BYTES) -> dict[str, Any]:
+    request = urllib.request.Request(url, method=method, headers=headers or {}, data=body)
+    deadline = time.monotonic() + timeout
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = _bounded_response(response, deadline=deadline, maximum=maximum)
             return json.loads(raw.decode("utf-8")) if raw else {}
     except urllib.error.HTTPError as error:
-        raise UpstreamHTTPError(error.code) from error
+        try:
+            raw = _bounded_response(error, deadline=deadline, maximum=OAUTH_FILE_MAX_BYTES)
+        except (OSError, http.client.HTTPException, SourceUnavailable):
+            raw = b""
+        raise UpstreamHTTPError(error.code, error_reasons(raw or b"")) from error
 
 
-def access_token(token_path: Path) -> str:
-    credentials = json.loads(token_path.read_text(encoding="utf-8"))
+def read_credentials(token_path: Path) -> dict[str, Any]:
+    try:
+        credentials = json.loads(token_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise SourceUnavailable("not-connected", "No Google connection is stored for the Source Broker") from error
+    except ValueError as error:
+        raise SourceUnavailable("not-connected", "The stored Google connection is unreadable") from error
+    if not isinstance(credentials, dict):
+        raise SourceUnavailable("not-connected", "The stored Google connection is unreadable")
     for key in ("client_id", "client_secret", "refresh_token"):
         if not credentials.get(key):
-            raise RuntimeError(f"OAuth credential is missing {key}")
+            raise SourceUnavailable("not-connected", f"OAuth credential is missing {key}")
+    if credentials.get("token_uri") not in (None, "", GOOGLE_TOKEN_URI):
+        raise SourceUnavailable("client-invalid", "OAuth credential does not use Google's fixed token endpoint")
+    return credentials
+
+
+def granted_scopes(credentials: dict[str, Any]) -> frozenset[str] | None:
+    """Scopes Google reported at sign-in; None for credentials that predate that record."""
+    value = credentials.get("grantedScope")
+    if not isinstance(value, str):
+        return None
+    return frozenset(item for item in value.split() if GOOGLE_SCOPE.fullmatch(item))
+
+
+def refresh_access_token(credentials: dict[str, Any]) -> str:
     body = urllib.parse.urlencode({
         "client_id": credentials["client_id"],
         "client_secret": credentials["client_secret"],
@@ -922,7 +1088,7 @@ def access_token(token_path: Path) -> str:
         "grant_type": "refresh_token",
     }).encode("ascii")
     response = request_json(
-        str(credentials.get("token_uri") or "https://oauth2.googleapis.com/token"),
+        GOOGLE_TOKEN_URI,
         method="POST",
         headers={"content-type": "application/x-www-form-urlencoded"},
         body=body,
@@ -933,10 +1099,50 @@ def access_token(token_path: Path) -> str:
     return token
 
 
-def google_get(base: str, path: str, token: str, params: dict[str, Any]) -> dict[str, Any]:
+def access_token(token_path: Path) -> str:
+    return refresh_access_token(read_credentials(token_path))
+
+
+def classify_source_error(error: BaseException) -> str:
+    """Map a failed read or sign-in step to the owner-facing fix it needs."""
+    if isinstance(error, SourceUnavailable):
+        return error.error_class
+    if isinstance(error, UpstreamHTTPError):
+        reasons = error.reasons
+        if "invalid_grant" in reasons:
+            return "invalid-grant"
+        if "admin_policy_enforced" in reasons:
+            return "blocked-by-admin"
+        if "redirect_uri_mismatch" in reasons:
+            return "redirect-mismatch"
+        if reasons & CLIENT_INVALID_REASONS:
+            return "client-invalid"
+        if error.code == 429 or reasons & RATE_LIMIT_REASONS:
+            return "rate-limited"
+        if reasons & API_DISABLED_REASONS:
+            return "api-disabled"
+        if reasons & MISSING_SCOPE_REASONS:
+            return "missing-scope"
+        return "network" if error.code >= 500 else "unknown"
+    if isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException)):
+        return "network"
+    return "unknown"
+
+
+def failure_record(error: BaseException) -> dict[str, Any]:
+    """A content-free description of one failure: class, HTTP status and exception type."""
+    error_type = type(error).__name__
+    return {
+        "errorClass": classify_source_error(error),
+        "httpStatus": error.code if isinstance(error, UpstreamHTTPError) else None,
+        "errorType": error_type if ERROR_TYPE.fullmatch(error_type) else "Error",
+    }
+
+
+def google_get(base: str, path: str, token: str, params: dict[str, Any], *, timeout: float = 25) -> dict[str, Any]:
     filtered = {key: value for key, value in params.items() if value not in (None, "")}
     url = f"{base}{path}?{urllib.parse.urlencode(filtered, doseq=True)}"
-    return request_json(url, headers={"authorization": f"Bearer {token}"})
+    return request_json(url, headers={"authorization": f"Bearer {token}"}, timeout=timeout)
 
 
 def google_call(base: str, path: str, token: str, *, method: str, params: dict[str, Any], value: dict[str, Any] | None = None, extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -1095,19 +1301,549 @@ def gmail_records(token: str, cached_records: list[dict[str, Any]] | None = None
     }
 
 
-def calendar_records(token: str) -> list[dict[str, Any]]:
+GMAIL_SYNC_KIND = "pixel-gmail-sync-progress"
+GMAIL_SYNC_MAX_BYTES = 64 * 1024 * 1024
+GMAIL_SYNC_ID = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
+
+
+class GmailBatchPaused(Exception):
+    """A bounded read batch ended; its durable cursor continues next refresh."""
+
+
+class CredentialGenerationChanged(Exception):
+    """An old refresh must not publish into a newly authorized connection."""
+
+
+def credential_generation(credentials: dict[str, Any]) -> str:
+    # Only this digest crosses into private progress/public coverage. Never
+    # serialize credentials, the account address or an access token there.
+    selected = {key: credentials.get(key) for key in ('client_id', 'refresh_token', 'grantedScope')}
+    return hashlib.sha256(json.dumps(selected, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def gmail_sync_options() -> dict[str, dict[str, Any]]:
+    inbox = os.environ.get('PIXEL_SOURCE_GMAIL_QUERY', 'in:inbox')
+    sent = os.environ.get('PIXEL_SOURCE_GMAIL_SENT_QUERY', 'in:sent')
+    result = {}
+    for name, query, prefix in (('sent', sent, 'SENT_'), ('inbox', inbox, ''), ('unread', f'{inbox} is:unread', '')):
+        page_size = min(max(int(os.environ.get(f'PIXEL_SOURCE_GMAIL_{prefix}PAGE_SIZE',
+            os.environ.get(f'PIXEL_SOURCE_GMAIL_{prefix}MAX', '100'))), 1), 100)
+        pages = min(max(int(os.environ.get(f'PIXEL_SOURCE_GMAIL_{prefix}MAX_PAGES', '1000')), 1), 10000)
+        result[name] = {'query': query, 'pageSize': page_size, 'maxPages': pages}
+    return result
+
+
+def gmail_sync_binding(generation: str, options: dict[str, Any] | None = None) -> str:
+    return hashlib.sha256(json.dumps({'generation': generation, 'options': options or gmail_sync_options(),
+        'sanitizerRevision': SANITIZER_REVISION}, sort_keys=True).encode()).hexdigest()
+
+
+def _gmail_new_progress(binding: str, options: dict[str, Any], last_complete: str | None = None) -> dict[str, Any]:
+    return {'schemaVersion': 1, 'kind': GMAIL_SYNC_KIND, 'binding': binding,
+        'sanitizerRevision': SANITIZER_REVISION, 'cycleId': os.urandom(16).hex(),
+        'startedAt': iso(utc_now()), 'lastCompleteAt': last_complete, 'cycleDone': False, 'turn': 0,
+        'processed': [], 'gone': [], 'folders': {name: {
+            **spec, 'ids': [], 'cursor': 0, 'pageToken': '', 'seenPageTokens': [], 'pagesFetched': 0,
+            'resultSizeEstimate': 0, 'listingDone': False, 'truncated': False, 'truncationReason': ''}
+            for name, spec in options.items()}}
+
+
+def _gmail_progress(path: Path, binding: str, options: dict[str, Any]) -> dict[str, Any]:
+    """Read only broker-private bounded metadata; never follow a checkpoint link."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return _gmail_new_progress(binding, options)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1
+                or info.st_mode & 0o077 or info.st_size > GMAIL_SYNC_MAX_BYTES):
+            raise SourceUnavailable('unknown', 'Gmail progress is not private broker state')
+        with os.fdopen(descriptor, 'rb', closefd=False) as handle:
+            raw = handle.read(GMAIL_SYNC_MAX_BYTES + 1)
+        value = json.loads(raw)
+        if (type(value) is not dict or value.get('schemaVersion') != 1 or value.get('kind') != GMAIL_SYNC_KIND
+                or value.get('sanitizerRevision') != SANITIZER_REVISION or value.get('binding') != binding):
+            return _gmail_new_progress(binding, options)
+        if (set(value) != {'schemaVersion', 'kind', 'binding', 'sanitizerRevision', 'cycleId', 'startedAt',
+                          'lastCompleteAt', 'cycleDone', 'turn', 'processed', 'gone', 'folders'}
+                or not re.fullmatch(r'[a-f0-9]{32}', value['cycleId']) or not valid_iso_timestamp(value['startedAt'])
+                or value['lastCompleteAt'] is not None and not valid_iso_timestamp(value['lastCompleteAt'])
+                or type(value['cycleDone']) is not bool or type(value['turn']) is not int or not 0 <= value['turn'] < 3
+                or type(value['folders']) is not dict or set(value['folders']) != set(options)):
+            raise ValueError()
+        maximum = sum(spec['pageSize'] * spec['maxPages'] for spec in options.values())
+        for key in ('processed', 'gone'):
+            items = value[key]
+            if (type(items) is not list or len(items) > maximum or len(items) != len(set(items))
+                    or any(type(item) is not str or not GMAIL_SYNC_ID.fullmatch(item) for item in items)):
+                raise ValueError()
+        for name, spec in options.items():
+            folder = value['folders'][name]
+            if (type(folder) is not dict or set(folder) != {
+                    *spec, 'ids', 'cursor', 'pageToken', 'seenPageTokens', 'pagesFetched',
+                    'resultSizeEstimate', 'listingDone', 'truncated', 'truncationReason'}
+                    or any(folder[key] != item for key, item in spec.items())
+                    or type(folder['ids']) is not list or len(folder['ids']) > spec['pageSize'] * spec['maxPages']
+                    or len(folder['ids']) != len(set(folder['ids']))
+                    or any(type(item) is not str or not GMAIL_SYNC_ID.fullmatch(item) for item in folder['ids'])
+                    or type(folder['cursor']) is not int or not 0 <= folder['cursor'] <= len(folder['ids'])
+                    or type(folder['pagesFetched']) is not int or not 0 <= folder['pagesFetched'] <= spec['maxPages']
+                    or type(folder['resultSizeEstimate']) is not int or folder['resultSizeEstimate'] < 0
+                    or type(folder['listingDone']) is not bool or type(folder['truncated']) is not bool
+                    or folder['truncationReason'] not in ('', 'safety-page-limit', 'repeated-page-token')
+                    or type(folder['seenPageTokens']) is not list or len(folder['seenPageTokens']) > spec['maxPages']
+                    or any(type(item) is not str or len(item) > 4096 for item in [folder['pageToken'], *folder['seenPageTokens']])):
+                raise ValueError()
+        if value['cycleDone']:
+            return _gmail_new_progress(binding, options, value['lastCompleteAt'])
+        return value
+    except (ValueError, TypeError, KeyError, UnicodeError):
+        raise SourceUnavailable('unknown', 'Gmail progress is invalid') from None
+    finally:
+        os.close(descriptor)
+
+
+def gmail_incremental_records(token: str, cached: dict[str, Any] | None, *, progress_path: Path,
+                              generation: str) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """One fair, bounded batch. The caller publishes projection BEFORE cursor.
+
+    A crash may repeat a read, but cannot skip unpublished messages. Listing and
+    hydration interleave across folders so Sent history cannot starve Inbox.
+    """
+    options = gmail_sync_options()
+    binding = gmail_sync_binding(generation, options)
+    progress = _gmail_progress(progress_path, binding, options)
+    cached_sync = ((cached or {}).get('coverage') or {}).get('sync') or {}
+    records = {str(item['id']): dict(item) for item in (cached or {}).get('records', [])
+        if cached_sync.get('binding') == binding and type(item) is dict and item.get('id')}
+    if any(item not in records and item not in progress['gone'] for item in progress['processed']):
+        # A deleted/mismatched projection cannot satisfy an advanced cursor.
+        progress = _gmail_new_progress(binding, options)
+    processed, gone = set(progress['processed']), set(progress['gone'])
+    observed = set(processed)
+    folder_ids = {name: set(item['ids']) for name, item in progress['folders'].items()}
+    page_tokens = {name: set(item['seenPageTokens']) for name, item in progress['folders'].items()}
+    requests = 0
+    detail_requests = 0
+    reused = 0
+    request_limit = min(max(int(os.environ.get('PIXEL_SOURCE_GMAIL_REQUEST_BUDGET', '64')), 4), 256)
+    seconds = float(os.environ.get('PIXEL_SOURCE_GMAIL_TIME_BUDGET_SECONDS', '90'))
+    if not math.isfinite(seconds):
+        raise SourceUnavailable('unknown', 'Gmail time budget must be finite')
+    seconds = min(max(seconds, 1), 120)
+    deadline = time.monotonic() + seconds
+    paused = ''
+
+    def get(path, params):
+        nonlocal requests, detail_requests
+        remaining = deadline - time.monotonic()
+        if requests >= request_limit or remaining <= 0:
+            raise GmailBatchPaused()
+        requests += 1
+        if path != '/messages':
+            detail_requests += 1
+        return google_get(GMAIL_API, path, token, params, timeout=min(25, remaining))
+
+    def listing(name, folder):
+        params = {'q': folder['query'], 'maxResults': folder['pageSize']}
+        if folder['pageToken']:
+            params['pageToken'] = folder['pageToken']
+        value = get('/messages', params)
+        ids = folder_ids[name]
+        items = value.get('messages') or []
+        if type(items) is not list or len(items) > folder['pageSize']:
+            raise SourceUnavailable('unknown', 'Gmail listing exceeded its requested page bound')
+        for item in items:
+            message_id = item.get('id') if type(item) is dict else None
+            if type(message_id) is not str or not GMAIL_SYNC_ID.fullmatch(message_id):
+                raise SourceUnavailable('unknown', 'Gmail listing returned an invalid message identifier')
+            if message_id not in ids:
+                folder['ids'].append(message_id)
+                ids.add(message_id)
+        folder['pagesFetched'] += 1
+        try:
+            folder['resultSizeEstimate'] = max(folder['resultSizeEstimate'], max(0, int(value.get('resultSizeEstimate') or 0)))
+        except (ValueError, TypeError):
+            pass
+        following = value.get('nextPageToken') or ''
+        if type(following) is not str or len(following) > 4096:
+            raise SourceUnavailable('unknown', 'Gmail cursor is invalid')
+        if not following:
+            folder['listingDone'] = True
+        elif following in page_tokens[name]:
+            folder.update(listingDone=True, truncated=True, truncationReason='repeated-page-token')
+        elif folder['pagesFetched'] >= folder['maxPages']:
+            folder.update(listingDone=True, truncated=True, truncationReason='safety-page-limit')
+        else:
+            folder['seenPageTokens'].append(following)
+            page_tokens[name].add(following)
+            folder['pageToken'] = following
+        if name == 'unread':
+            folder['cursor'] = len(folder['ids'])
+
+    def hydrate(name, folder):
+        nonlocal reused
+        message_id = folder['ids'][folder['cursor']]
+        previous = records.get(message_id)
+        if message_id in gone:
+            folder['cursor'] += 1
+            return
+        if message_id in observed and previous and (name != 'sent' or previous.get('contentProjection') == 'metadata-only'):
+            reused += 1
+        else:
+            path = '/messages/' + urllib.parse.quote(message_id, safe='')
+            try:
+                message = get(path, {'format': 'metadata', 'metadataHeaders': ['From', 'To', 'Cc', 'Subject', 'Date']})
+                if message.get('id') != message_id:
+                    raise SourceUnavailable('unknown', 'Gmail detail does not match its listed identifier')
+                record = email_projection(message, requested_mailbox=name, include_content=False)
+                if name != 'sent' and 'sent' not in record['mailboxes']:
+                    if previous and previous.get('contentProjection') == 'sanitized-summary':
+                        record.update(summary=previous.get('summary', ''), attachments=previous.get('attachments', []),
+                            contentProjection='sanitized-summary', bodyFetchedByBroker=True,
+                            sourceHash=previous.get('sourceHash', record['sourceHash']))
+                        signals = sorted(set(record['risk']['signals'] + previous.get('risk', {}).get('signals', [])))
+                        record['risk'] = {'quarantined': bool(signals), 'signals': signals}
+                        reused += 1
+                    else:
+                        full = get(path, {'format': 'full'})
+                        if full.get('id') != message_id:
+                            raise SourceUnavailable('unknown', 'Gmail content does not match its listed identifier')
+                        record = email_projection(full, requested_mailbox=name, include_content='SENT' not in (full.get('labelIds') or []))
+                record.update(observedAt=iso(utc_now()), retainedFromEarlierScan=False)
+                records[message_id] = record
+                observed.add(message_id)
+            except UpstreamHTTPError as error:
+                if error.code != 404:
+                    raise
+                gone.add(message_id)
+                records.pop(message_id, None)
+        folder['cursor'] += 1
+
+    names = ('sent', 'inbox', 'unread')
+    try:
+        while True:
+            if time.monotonic() >= deadline:
+                raise GmailBatchPaused()
+            worked = False
+            for _ in names:
+                name = names[progress['turn']]
+                progress['turn'] = (progress['turn'] + 1) % len(names)
+                folder = progress['folders'][name]
+                if folder['cursor'] < len(folder['ids']):
+                    hydrate(name, folder)
+                    worked = True
+                elif not folder['listingDone']:
+                    listing(name, folder)
+                    worked = True
+            if not worked:
+                break
+    except GmailBatchPaused:
+        paused = 'run-budget'
+    # Other errors retain the previous projection/cursor. At most one bounded
+    # batch is repeated, never the whole mailbox or a provider-side action.
+    progress['processed'] = sorted(observed)
+    progress['gone'] = sorted(gone)
+    folders = progress['folders']
+    progress['cycleDone'] = all(item['listingDone'] and item['cursor'] == len(item['ids']) for item in folders.values())
+    complete = progress['cycleDone'] and not any(item['truncated'] for item in folders.values())
+    if complete:
+        keep = folder_ids['sent'] | folder_ids['inbox']
+        records = {key: item for key, item in records.items() if key in keep and key not in gone}
+        progress['lastCompleteAt'] = iso(utc_now())
+    retained = 0
+    for key, record in records.items():
+        record['retainedFromEarlierScan'] = key not in observed
+        if record['retainedFromEarlierScan']:
+            retained += 1
+            record.setdefault('observedAt', (cached or {}).get('generatedAt'))
+        if complete:
+            labels = [label for label in record.get('labelIds', []) if label not in ('INBOX', 'SENT', 'UNREAD')]
+            mailboxes = [name for name in ('inbox', 'sent') if key in folder_ids[name]]
+            record['mailboxes'] = mailboxes
+            record['labelIds'] = labels + (['INBOX'] if 'inbox' in mailboxes else []) + (['SENT'] if 'sent' in mailboxes else []) + (['UNREAD'] if key in folder_ids['unread'] else [])
+            record['direction'] = 'outbound' if 'sent' in mailboxes else 'inbound'
+    coverage = {'bounded': True, 'folders': {name: {
+        **options[name], 'pagesFetched': item['pagesFetched'], 'fetched': len(item['ids']),
+        'indexed': item['cursor'], 'resultSizeEstimate': item['resultSizeEstimate'],
+        'truncated': item['truncated'], 'truncationReason': item['truncationReason'],
+        'completeWithinQuery': item['listingDone'] and item['cursor'] == len(item['ids']) and not item['truncated']}
+        for name, item in folders.items()},
+        'cache': {'sanitizerRevision': SANITIZER_REVISION, 'reused': reused, 'detailRequests': detail_requests},
+        'sync': {'state': 'complete' if complete else 'limited' if progress['cycleDone'] else 'in-progress',
+            'binding': binding, 'cycleId': progress['cycleId'], 'startedAt': progress['startedAt'],
+            'lastCompleteAt': progress['lastCompleteAt'], 'requestsThisRun': requests, 'requestBudget': request_limit,
+            'timeBudgetSeconds': seconds, 'retainedRecords': retained, 'pauseReason': paused}}
+    return sorted(records.values(), key=lambda item: item.get('messageAt', ''), reverse=True), coverage, progress
+
+
+def calendar_time_zone(value: Any) -> str | None:
+    """Validate provider metadata; never infer it from the host or event fields."""
+    if type(value) is not str or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_+\-/]{0,127}', value):
+        return None
+    try:
+        return ZoneInfo(value).key
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+
+
+def calendar_page_time_zone(progress: dict[str, Any], page: dict[str, Any]) -> None:
+    zone = calendar_time_zone(page.get('timeZone'))
+    if progress['pagesFetched'] == 0:
+        progress['calendarTimeZone'] = zone
+        progress['calendarTimeZoneState'] = 'consistent' if zone else 'unknown'
+    elif progress.get('calendarTimeZoneState') == 'consistent' and zone != progress.get('calendarTimeZone'):
+        progress['calendarTimeZone'] = None
+        progress['calendarTimeZoneState'] = 'inconsistent'
+    # Unknown legacy/first-page metadata or drift is latched for this cycle.
+    # A later page cannot certify metadata for earlier pages it did not observe.
+
+
+def calendar_records(token: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     now = utc_now()
     past_days = min(max(int(os.environ.get("PIXEL_SOURCE_CALENDAR_PAST_DAYS", "7")), 0), 365)
     future_days = min(max(int(os.environ.get("PIXEL_SOURCE_CALENDAR_FUTURE_DAYS", "90")), 1), 730)
+    max_pages = min(max(int(os.environ.get("PIXEL_SOURCE_CALENDAR_MAX_PAGES", "20")), 1), 400)
     calendar_id = urllib.parse.quote(os.environ.get("PIXEL_SOURCE_CALENDAR_ID", "primary"), safe="")
-    result = google_get(CALENDAR_API, f"/calendars/{calendar_id}/events", token, {
-        "timeMin": iso(now - timedelta(days=past_days)),
-        "timeMax": iso(now + timedelta(days=future_days)),
-        "singleEvents": "true",
-        "orderBy": "startTime",
-        "maxResults": 250,
-    })
-    return [calendar_projection(item) for item in result.get("items") or []]
+    window_start = iso(now - timedelta(days=past_days))
+    window_end = iso(now + timedelta(days=future_days))
+    items: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    seen_page_tokens: set[str] = set()
+    page_token = ""
+    pages_fetched = 0
+    truncated = False
+    truncation_reason = ""
+    zone_progress = {'pagesFetched': 0, 'calendarTimeZone': None, 'calendarTimeZoneState': 'unknown'}
+    while pages_fetched < max_pages:
+        params: dict[str, Any] = {
+            "timeMin": window_start,
+            "timeMax": window_end,
+            "singleEvents": "true",
+            "orderBy": "startTime",
+            "maxResults": CALENDAR_PAGE_SIZE,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        result = google_get(CALENDAR_API, f"/calendars/{calendar_id}/events", token, params)
+        calendar_page_time_zone(zone_progress, result)
+        pages_fetched += 1
+        zone_progress['pagesFetched'] = pages_fetched
+        for item in result.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "")
+            if item_id and item_id in seen_ids:
+                continue
+            seen_ids.add(item_id)
+            items.append(item)
+        next_page_token = str(result.get("nextPageToken") or "")
+        if not next_page_token:
+            break
+        if next_page_token in seen_page_tokens:
+            truncated = True
+            truncation_reason = "repeated-page-token"
+            break
+        if pages_fetched >= max_pages:
+            truncated = True
+            truncation_reason = "safety-page-limit"
+            break
+        seen_page_tokens.add(next_page_token)
+        page_token = next_page_token
+    return [calendar_projection(item) for item in items], {
+        "bounded": True,
+        "windowStart": window_start,
+        "windowEnd": window_end,
+        "pastDays": past_days,
+        "futureDays": future_days,
+        "pageSize": CALENDAR_PAGE_SIZE,
+        "maxPages": max_pages,
+        "pagesFetched": pages_fetched,
+        "fetched": len(items),
+        "truncated": truncated,
+        "truncationReason": truncation_reason,
+        "completeWithinWindow": not truncated,
+        "calendarTimeZone": zone_progress['calendarTimeZone'],
+        "calendarTimeZoneState": zone_progress['calendarTimeZoneState'],
+    }
+
+
+CALENDAR_SYNC_KIND = 'pixel-calendar-sync-progress'
+
+
+def calendar_sync_options() -> dict[str, Any]:
+    return {'calendarId': os.environ.get('PIXEL_SOURCE_CALENDAR_ID', 'primary'),
+        'pastDays': min(max(int(os.environ.get('PIXEL_SOURCE_CALENDAR_PAST_DAYS', '7')), 0), 365),
+        'futureDays': min(max(int(os.environ.get('PIXEL_SOURCE_CALENDAR_FUTURE_DAYS', '90')), 1), 730),
+        'maxPages': min(max(int(os.environ.get('PIXEL_SOURCE_CALENDAR_MAX_PAGES', '20')), 1), 400),
+        'pageSize': CALENDAR_PAGE_SIZE}
+
+
+def calendar_sync_binding(generation: str, options: dict[str, Any] | None = None) -> str:
+    return hashlib.sha256(json.dumps({'generation': generation, 'options': options or calendar_sync_options(),
+        'sanitizerRevision': SANITIZER_REVISION}, sort_keys=True).encode()).hexdigest()
+
+
+def _calendar_new_progress(binding: str, options: dict[str, Any], last_complete: str | None = None) -> dict[str, Any]:
+    now = utc_now()
+    return {'schemaVersion': 1, 'kind': CALENDAR_SYNC_KIND, 'binding': binding,
+        'sanitizerRevision': SANITIZER_REVISION, 'options': options, 'cycleId': os.urandom(16).hex(),
+        'startedAt': iso(now), 'lastCompleteAt': last_complete, 'cycleDone': False,
+        'windowStart': iso(now - timedelta(days=options['pastDays'])),
+        'windowEnd': iso(now + timedelta(days=options['futureDays'])),
+        'ids': [], 'pageToken': '', 'seenPageTokens': [], 'pagesFetched': 0,
+        'truncated': False, 'truncationReason': '',
+        'calendarTimeZone': None, 'calendarTimeZoneState': 'unknown'}
+
+
+def _calendar_progress(path: Path, binding: str, options: dict[str, Any]) -> dict[str, Any]:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return _calendar_new_progress(binding, options)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1
+                or info.st_mode & 0o077 or info.st_size > GMAIL_SYNC_MAX_BYTES):
+            raise SourceUnavailable('unknown', 'Calendar progress is not private broker state')
+        with os.fdopen(descriptor, 'rb', closefd=False) as handle:
+            value = json.loads(handle.read(GMAIL_SYNC_MAX_BYTES + 1))
+        if (type(value) is not dict or value.get('schemaVersion') != 1 or value.get('kind') != CALENDAR_SYNC_KIND
+                or value.get('sanitizerRevision') != SANITIZER_REVISION or value.get('binding') != binding):
+            return _calendar_new_progress(binding, options)
+        legacy_keys = {'schemaVersion', 'kind', 'binding', 'sanitizerRevision', 'options', 'cycleId',
+                'startedAt', 'lastCompleteAt', 'cycleDone', 'windowStart', 'windowEnd', 'ids', 'pageToken',
+                'seenPageTokens', 'pagesFetched', 'truncated', 'truncationReason'}
+        zone_keys = {'calendarTimeZone', 'calendarTimeZoneState'}
+        if (set(value) not in (legacy_keys, legacy_keys | zone_keys) or value['options'] != options
+                or type(value['cycleId']) is not str or not re.fullmatch(r'[a-f0-9]{32}', value['cycleId'])
+                or not valid_iso_timestamp(value['startedAt']) or not valid_iso_timestamp(value['windowStart'])
+                or not valid_iso_timestamp(value['windowEnd'])
+                or value['lastCompleteAt'] is not None and not valid_iso_timestamp(value['lastCompleteAt'])
+                or type(value['cycleDone']) is not bool or type(value['truncated']) is not bool
+                or value['truncationReason'] not in ('', 'safety-page-limit', 'repeated-page-token')
+                or type(value['pagesFetched']) is not int or not 0 <= value['pagesFetched'] <= options['maxPages']
+                or type(value['ids']) is not list or len(value['ids']) > options['maxPages'] * options['pageSize']
+                or len(value['ids']) != len(set(value['ids']))
+                or any(type(item) is not str or not 1 <= len(item) <= 1024 for item in value['ids'])
+                or type(value['seenPageTokens']) is not list or len(value['seenPageTokens']) > options['maxPages']
+                or any(type(item) is not str or len(item) > 4096 for item in [value['pageToken'], *value['seenPageTokens']])):
+            raise ValueError()
+        if not zone_keys <= value.keys():
+            value.update(calendarTimeZone=None, calendarTimeZoneState='unknown')
+        if (value['calendarTimeZoneState'] not in ('consistent', 'unknown', 'inconsistent')
+                or value['calendarTimeZoneState'] == 'consistent'
+                    and (calendar_time_zone(value['calendarTimeZone']) is None or value['pagesFetched'] == 0)
+                or value['calendarTimeZoneState'] != 'consistent' and value['calendarTimeZone'] is not None):
+            raise ValueError()
+        started = datetime.fromisoformat(value['startedAt'].replace('Z', '+00:00'))
+        if (value['windowStart'] != iso(started - timedelta(days=options['pastDays']))
+                or value['windowEnd'] != iso(started + timedelta(days=options['futureDays']))):
+            raise ValueError()
+        if value['cycleDone']:
+            return _calendar_new_progress(binding, options, value['lastCompleteAt'])
+        return value
+    except (ValueError, TypeError, KeyError, UnicodeError):
+        raise SourceUnavailable('unknown', 'Calendar progress is invalid') from None
+    finally:
+        os.close(descriptor)
+
+
+def calendar_incremental_records(token: str, cached: dict[str, Any] | None, *, progress_path: Path,
+                                 generation: str) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """A bounded page batch, with a frozen query window until its cycle ends."""
+    options = calendar_sync_options()
+    binding = calendar_sync_binding(generation, options)
+    progress = _calendar_progress(progress_path, binding, options)
+    cached_sync = ((cached or {}).get('coverage') or {}).get('sync') or {}
+    records = {str(item['id']): dict(item) for item in (cached or {}).get('records', [])
+        if cached_sync.get('binding') == binding and type(item) is dict and item.get('id')}
+    seen = set(progress['ids'])
+    if any(item not in records for item in seen):
+        progress = _calendar_new_progress(binding, options)
+        seen = set()
+    current = set(seen)
+    page_tokens = set(progress['seenPageTokens'])
+    request_limit = min(max(int(os.environ.get('PIXEL_SOURCE_CALENDAR_REQUEST_BUDGET', '8')), 1), 32)
+    seconds = float(os.environ.get('PIXEL_SOURCE_CALENDAR_TIME_BUDGET_SECONDS', '45'))
+    if not math.isfinite(seconds):
+        raise SourceUnavailable('unknown', 'Calendar time budget must be finite')
+    seconds = min(max(seconds, 1), 60)
+    deadline = time.monotonic() + seconds
+    requests = 0
+    pages_before = progress['pagesFetched']
+    failure = None
+    while not progress['cycleDone'] and requests < request_limit and time.monotonic() < deadline:
+        params = {'timeMin': progress['windowStart'], 'timeMax': progress['windowEnd'],
+            'singleEvents': 'true', 'orderBy': 'startTime', 'maxResults': options['pageSize']}
+        if progress['pageToken']:
+            params['pageToken'] = progress['pageToken']
+        try:
+            requests += 1
+            value = google_get(CALENDAR_API, '/calendars/' + urllib.parse.quote(options['calendarId'], safe='') + '/events',
+                token, params, timeout=min(25, max(.001, deadline - time.monotonic())))
+            items = value.get('items') or []
+            if type(items) is not list or len(items) > options['pageSize']:
+                raise SourceUnavailable('unknown', 'Calendar page exceeded its requested bound')
+            calendar_page_time_zone(progress, value)
+            projected = {}
+            for item in items:
+                if type(item) is not dict or type(item.get('id')) is not str or not 1 <= len(item['id']) <= 1024:
+                    raise SourceUnavailable('unknown', 'Calendar returned an invalid event identifier')
+                record = calendar_projection(item)
+                if record['id'] != item['id']:
+                    raise SourceUnavailable('unknown', 'Calendar event identifier changed during projection')
+                record.update(observedAt=iso(utc_now()), retainedFromEarlierScan=False)
+                projected[record['id']] = record
+            following = value.get('nextPageToken') or ''
+            if type(following) is not str or len(following) > 4096:
+                raise SourceUnavailable('unknown', 'Calendar cursor is invalid')
+            records.update(projected)
+            current.update(projected)
+            progress['pagesFetched'] += 1
+            if not following:
+                progress['cycleDone'] = True
+            elif following in page_tokens:
+                progress.update(cycleDone=True, truncated=True, truncationReason='repeated-page-token')
+            elif progress['pagesFetched'] >= options['maxPages']:
+                progress.update(cycleDone=True, truncated=True, truncationReason='safety-page-limit')
+            else:
+                progress['seenPageTokens'].append(following)
+                page_tokens.add(following)
+                progress['pageToken'] = following
+        except Exception as error:
+            if progress['pagesFetched'] == pages_before:
+                raise  # No new page to checkpoint: retain the prior snapshot unchanged.
+            # Preserve successful pages in THIS bounded batch and let Gmail
+            # continue. The failed page's cursor is not advanced or replayed as
+            # if it succeeded; the next timer can retry that read.
+            failure = failure_record(error)
+            break
+    progress['ids'] = sorted(current)
+    complete = progress['cycleDone'] and not progress['truncated'] and failure is None
+    if complete:
+        records = {key: item for key, item in records.items() if key in current}
+        progress['lastCompleteAt'] = iso(utc_now())
+    retained = 0
+    for key, record in records.items():
+        record['retainedFromEarlierScan'] = key not in current
+        if record['retainedFromEarlierScan']:
+            retained += 1
+            record.setdefault('observedAt', (cached or {}).get('generatedAt'))
+    coverage = {'bounded': True, 'windowStart': progress['windowStart'], 'windowEnd': progress['windowEnd'],
+        'pastDays': options['pastDays'], 'futureDays': options['futureDays'], 'pageSize': options['pageSize'],
+        'maxPages': options['maxPages'], 'pagesFetched': progress['pagesFetched'], 'fetched': len(current),
+        'truncated': progress['truncated'], 'truncationReason': progress['truncationReason'],
+        'completeWithinWindow': complete,
+        'calendarTimeZone': progress['calendarTimeZone'], 'calendarTimeZoneState': progress['calendarTimeZoneState'],
+        'sync': {'state': 'complete' if complete else 'limited' if progress['cycleDone'] else 'in-progress',
+            'binding': binding, 'cycleId': progress['cycleId'], 'startedAt': progress['startedAt'],
+            'lastCompleteAt': progress['lastCompleteAt'], 'requestsThisRun': requests, 'requestBudget': request_limit,
+            'timeBudgetSeconds': seconds, 'retainedRecords': retained,
+            'pagesThisRun': progress['pagesFetched'] - pages_before, 'failure': failure}}
+    return sorted(records.values(), key=lambda item: str((item.get('start') or {}).get('dateTime') or
+        (item.get('start') or {}).get('date') or '')), coverage, progress
 
 
 def social_records(path: Path | None) -> list[dict[str, Any]]:
@@ -1119,7 +1855,7 @@ def social_records(path: Path | None) -> list[dict[str, Any]]:
     return [social_projection(item) for item in value[:500] if isinstance(item, dict)]
 
 
-def atomic_json(path: Path, value: dict[str, Any]) -> None:
+def atomic_json(path: Path, value: dict[str, Any], *, mode: int = 0o640) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
@@ -1129,7 +1865,7 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary, 0o640)
+        os.chmod(temporary, mode)
         os.replace(temporary, path)
         if os.name != "nt":
             directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -1405,7 +2141,10 @@ def calendar_create_event_id(proposal_id: str, proposal_hash: str) -> str:
     return "p1e1" + hashlib.sha256(f"{proposal_id}:{proposal_hash}".encode("ascii")).hexdigest()
 
 
-def claim_proposal(path: Path, proposal_id: str, proposal_hash: str, *, expected_event_id: str | None = None) -> None:
+def claim_proposal(
+    path: Path, proposal_id: str, proposal_hash: str, *, expected_event_id: str | None = None,
+    recovery: str | None = None,
+) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags, 0o600)
@@ -1422,6 +2161,8 @@ def claim_proposal(path: Path, proposal_id: str, proposal_hash: str, *, expected
     if expected_event_id is not None:
         record["expectedEventId"] = expected_event_id
         record["recovery"] = "Do not retry automatically; reconcile the exact provider event ID from the actuator journal."
+    if recovery is not None:
+        record["recovery"] = recovery
     payload = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(payload)
@@ -1480,7 +2221,7 @@ def _definite_provider_rejection(error: Exception) -> bool:
 def projection(
     source: str,
     records: list[dict[str, Any]],
-    generated_at: str,
+    generated_at: str | None,
     enabled: bool = True,
     coverage: dict[str, Any] | None = None,
     *,
@@ -1499,44 +2240,276 @@ def projection(
             "instructionsAuthorized": False,
             "projectionOnly": True,
         },
+        "sanitizerRevision": SANITIZER_REVISION,
     }
-    if source == "gmail":
-        value["sanitizerRevision"] = SANITIZER_REVISION
     if coverage is not None:
         value["coverage"] = coverage
     return value
 
 
+def retained_projection(path: Path, source: str) -> dict[str, Any] | None:
+    """The last good projection of an enabled source, kept while that source cannot refresh."""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(value, dict)
+        or value.get("schemaVersion") != SCHEMA_VERSION
+        or value.get("source") != source
+        or value.get("enabled") is not True
+        or value.get("sanitizerRevision") != SANITIZER_REVISION
+        or not valid_iso_timestamp(value.get("generatedAt"))
+        or not isinstance(value.get("records"), list)
+        or not isinstance(value.get("boundary"), dict)
+        or value["boundary"].get("projectionOnly") is not True
+    ):
+        return None
+    return value
+
+
+def previous_status(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(value, dict) or value.get("kind") != STATUS_KIND or not isinstance(value.get("sources"), dict):
+        return {}
+    return {name: item for name, item in value["sources"].items() if isinstance(item, dict)}
+
+
+def source_status(prior: dict[str, Any], *, enabled: bool, attempted_at: str,
+                  failure: dict[str, Any] | None = None, record_count: int = 0,
+                  complete: bool | None = None, kept_generated_at: str | None = None) -> dict[str, Any]:
+    """Content-free state for one source: when it last worked and why it does not now."""
+    if not enabled:
+        return {"enabled": False, "state": "disabled", "errorClass": None, "httpStatus": None,
+                "errorType": None, "lastAttemptAt": None, "lastSuccessAt": None,
+                "failingSince": None, "recordCount": 0, "complete": None}
+    if failure is None:
+        return {"enabled": True, "state": "ok", "errorClass": None, "httpStatus": None,
+                "errorType": None, "lastAttemptAt": attempted_at, "lastSuccessAt": attempted_at,
+                "failingSince": None, "recordCount": record_count, "complete": complete}
+    # Without an earlier status (the first refresh after an upgrade), the kept snapshot's
+    # own time is when this source last worked.
+    last_success = (prior.get("lastSuccessAt") if valid_iso_timestamp(prior.get("lastSuccessAt"))
+                    else kept_generated_at)
+    failing_since = (prior.get("failingSince") if prior.get("state") == "error"
+                     and valid_iso_timestamp(prior.get("failingSince")) else attempted_at)
+    return {"enabled": True, "state": "error", **failure, "lastAttemptAt": attempted_at,
+            "lastSuccessAt": last_success, "failingSince": failing_since,
+            "recordCount": record_count, "complete": complete}
+
+
+def cached_email_records(path: Path) -> list[dict[str, Any]]:
+    try:
+        previous = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if (
+        isinstance(previous, dict)
+        and previous.get("schemaVersion") == SCHEMA_VERSION
+        and previous.get("sanitizerRevision") == SANITIZER_REVISION
+        and isinstance(previous.get("boundary"), dict)
+        and previous["boundary"].get("projectionOnly") is True
+        and isinstance(previous.get("records"), list)
+    ):
+        return previous["records"]
+    return []
+
+
+def coverage_complete(name: str, coverage: dict[str, Any]) -> bool:
+    if name == "email":
+        folders = coverage.get("folders") or {}
+        return bool(folders) and all(folder.get("completeWithinQuery") is True for folder in folders.values())
+    if name == "calendar":
+        return coverage.get("completeWithinWindow") is True
+    return True
+
+
 def refresh() -> int:
+    """Refresh each source on its own; a failing source marks only itself in status.json."""
     token_path = Path(os.environ.get("PIXEL_SOURCE_TOKEN_PATH", "/var/lib/pixel-source-broker/private/google-token.json"))
     output_dir = Path(os.environ.get("PIXEL_SOURCE_PROJECTION_DIR", "/var/lib/pixel-source-broker/projection"))
     social_path_value = os.environ.get("PIXEL_SOURCE_SOCIAL_INPUT", "")
-    email_enabled = env_enabled("PIXEL_LIMB_EMAIL_ENABLED", True)
-    calendar_enabled = env_enabled("PIXEL_LIMB_CALENDAR_ENABLED", True)
-    social_enabled = env_enabled("PIXEL_LIMB_SOCIAL_ENABLED", False)
-    token = access_token(token_path) if email_enabled or calendar_enabled else ""
+    enabled = {
+        "email": env_enabled("PIXEL_LIMB_EMAIL_ENABLED", True),
+        "calendar": env_enabled("PIXEL_LIMB_CALENDAR_ENABLED", True),
+        "social": env_enabled("PIXEL_LIMB_SOCIAL_ENABLED", False),
+    }
     started_at = iso(utc_now())
-    cached_email: list[dict[str, Any]] = []
-    email_path = output_dir / "email.json"
+    prior = previous_status(output_dir / "status.json")
+    granted: frozenset[str] | None = None
+    generation: str | None = None
+    credentials: dict[str, Any] | None = None
+    token = ""
+    token_failure: BaseException | None = None
+    if enabled["email"] or enabled["calendar"]:
+        try:
+            credentials = read_credentials(token_path)
+            granted = granted_scopes(credentials)
+            generation = credential_generation(credentials)
+        except Exception as error:  # Recorded for each Google source below; social still refreshes.
+            token_failure = error
+    fetchers = {
+        "calendar": ("google-calendar", CALENDAR_READ_SCOPES, None),
+        "email": ("gmail", EMAIL_READ_SCOPES, None),
+        "social": ("social", None, lambda: (social_records(Path(social_path_value) if social_path_value else None), None)),
+    }
+    def current_cache(name, label):
+        value = retained_projection(output_dir / f'{name}.json', label)
+        if name == 'social':
+            return value
+        if generation is None or value is None:
+            return None
+        if name == 'email':
+            try:
+                binding = ((value.get('coverage') or {}).get('sync') or {}).get('binding')
+                return value if binding == gmail_sync_binding(generation) else None
+            except (ValueError, TypeError, AttributeError):
+                return None  # A bad Gmail option/cache must not block Calendar.
+        try:
+            binding = ((value.get('coverage') or {}).get('sync') or {}).get('binding')
+            return value if binding == calendar_sync_binding(generation) else None
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    for name, label in (('email', 'gmail'), ('calendar', 'google-calendar')):
+        if enabled[name] and current_cache(name, label) is None:
+            prior.pop(name, None)
+    # Publish content-free progress before network work and after EACH source.
+    # Calendar is independent of Gmail's much larger historical scan.
+    def starting_source(name):
+        previous = prior.get(name, {})
+        if not enabled[name]:
+            return source_status(previous, enabled=False, attempted_at=started_at)
+        count = previous.get('recordCount', 0)
+        count = count if type(count) is int and count >= 0 else 0
+        failure = None
+        if previous.get('state') == 'error':
+            code, status, error_type = (previous.get(key) for key in ('errorClass', 'httpStatus', 'errorType'))
+            failure = {'errorClass': code if code in SOURCE_ERROR_CLASSES else 'unknown',
+                'httpStatus': status if type(status) is int and 100 <= status <= 599 else None,
+                'errorType': error_type if isinstance(error_type, str) and ERROR_TYPE.fullmatch(error_type) else 'Error'}
+        value = source_status(previous, enabled=True, attempted_at=started_at, failure=failure,
+                              record_count=count, complete=False)
+        value['lastSuccessAt'] = previous.get('lastSuccessAt') if valid_iso_timestamp(previous.get('lastSuccessAt')) else None
+        return value
+
+    sources = {name: starting_source(name) for name in enabled}
+
+    def assert_generation():
+        if not (enabled['email'] or enabled['calendar']):
+            return
+        try:
+            current = credential_generation(read_credentials(token_path))
+        except Exception:
+            if generation is not None:
+                raise CredentialGenerationChanged() from None
+            return
+        if generation is None or current != generation:
+            raise CredentialGenerationChanged()
+
+    def publish(path, value, *, mode=0o640):
+        assert_generation()
+        atomic_json(path, value, mode=mode)
+
+    def checkpoint_status():
+        publish(output_dir / 'status.json', {
+            'schemaVersion': SCHEMA_VERSION, 'kind': STATUS_KIND, 'startedAt': started_at,
+            'generatedAt': iso(utc_now()), 'grantedScopes': sorted(granted) if granted is not None else None,
+            'sources': sources, 'boundary': STATUS_BOUNDARY})
+
     try:
-        previous = json.loads(email_path.read_text(encoding="utf-8"))
-        if (
-            previous.get("schemaVersion") == SCHEMA_VERSION
-            and previous.get("sanitizerRevision") == SANITIZER_REVISION
-            and previous.get("boundary", {}).get("projectionOnly") is True
-            and isinstance(previous.get("records"), list)
-        ):
-            cached_email = previous["records"]
-    except (OSError, ValueError, TypeError):
-        pass
-    email, email_coverage = gmail_records(token, cached_email) if email_enabled else ([], {"bounded": True, "folders": {}})
-    calendar = calendar_records(token) if calendar_enabled else []
-    social = social_records(Path(social_path_value) if social_path_value else None) if social_enabled else []
+        checkpoint_status()
+    except CredentialGenerationChanged:
+        return 1
+    if credentials is not None:
+        try:
+            token = refresh_access_token(credentials)
+        except Exception as error:
+            token_failure = error
+    for name, (label, required_scopes, fetch) in fetchers.items():
+        path = output_dir / f"{name}.json"
+        attempted_at = iso(utc_now())
+        if not enabled[name]:
+            coverage = {"bounded": True, "folders": {}} if name == "email" else None
+            try:
+                publish(path, projection(label, [], attempted_at, False, coverage, started_at=started_at))
+            except CredentialGenerationChanged:
+                return 1
+            sources[name] = source_status(prior.get(name, {}), enabled=False, attempted_at=attempted_at)
+            try:
+                checkpoint_status()
+            except CredentialGenerationChanged:
+                return 1
+            continue
+        try:
+            if required_scopes is not None and token_failure is not None:
+                raise token_failure
+            if required_scopes is not None and granted is not None and not granted & required_scopes:
+                raise SourceUnavailable("missing-scope", f"Google did not grant {name} read access")
+            progress = None
+            if name == 'email':
+                records, coverage, progress = gmail_incremental_records(token,
+                    current_cache(name, label), progress_path=output_dir / '.gmail-sync-progress.json',
+                    generation=generation)
+            elif name == 'calendar':
+                records, coverage, progress = calendar_incremental_records(token,
+                    current_cache(name, label), progress_path=output_dir / '.calendar-sync-progress.json',
+                    generation=generation)
+            else:
+                records, coverage = fetch()
+        except Exception as error:  # One source failing must not stale or block the others.
+            failure = failure_record(error)
+            # A removed sign-in means the owner disconnected: never keep serving that data.
+            kept = None if failure["errorClass"] == "not-connected" else current_cache(name, label)
+            if kept is None:
+                unavailable = {"bounded": True, "available": False, "reason": failure["errorClass"]}
+                try:
+                    publish(path, projection(label, [], None, True, unavailable, started_at=started_at))
+                except CredentialGenerationChanged:
+                    return 1
+            sources[name] = source_status(
+                prior.get(name, {}), enabled=True, attempted_at=attempted_at, failure=failure,
+                record_count=len(kept["records"]) if kept else 0, complete=False,
+                kept_generated_at=kept["generatedAt"] if kept else None,
+            )
+            try:
+                checkpoint_status()
+            except CredentialGenerationChanged:
+                return 1
+            continue
+        generated_at = iso(utc_now())
+        try:
+            value = projection(label, records, generated_at, True, coverage, started_at=started_at)
+            if name in ('email', 'calendar'):
+                value['credentialGeneration'] = generation
+            publish(path, value)
+            if progress is not None:
+                # Projection first: interruption can repeat a read, never skip
+                # rows by advancing a cursor before publishing their projection.
+                publish(output_dir / f'.{"gmail" if name == "email" else "calendar"}-sync-progress.json', progress, mode=0o600)
+        except CredentialGenerationChanged:
+            return 1
+        sources[name] = source_status(
+            prior.get(name, {}), enabled=True, attempted_at=generated_at,
+            record_count=len(records), complete=coverage_complete(name, coverage or {}),
+            failure=((coverage or {}).get('sync') or {}).get('failure'),
+        )
+        try:
+            checkpoint_status()
+        except CredentialGenerationChanged:
+            return 1
     generated_at = iso(utc_now())
-    atomic_json(output_dir / "email.json", projection("gmail", email, generated_at, email_enabled, email_coverage, started_at=started_at))
-    atomic_json(output_dir / "calendar.json", projection("google-calendar", calendar, generated_at, calendar_enabled, started_at=started_at))
-    atomic_json(output_dir / "social.json", projection("social", social, generated_at, social_enabled, started_at=started_at))
-    print(json.dumps({"startedAt": started_at, "generatedAt": generated_at, "limbs": {"email": email_enabled, "calendar": calendar_enabled, "social": social_enabled}, "email": len(email), "calendar": len(calendar), "social": len(social)}))
+    print(json.dumps({
+        "startedAt": started_at,
+        "generatedAt": generated_at,
+        "limbs": enabled,
+        "states": {name: item["state"] for name, item in sources.items()},
+        "errors": {name: item["errorClass"] for name, item in sources.items() if item["state"] == "error"},
+        **{name: item["recordCount"] for name, item in sources.items()},
+    }))
     return 0
 
 
@@ -1840,8 +2813,12 @@ def projection_placeholders(value: Any, path: str = "values") -> list[str]:
 
 
 def approve(proposal_id: str, *, required_status: str = "pending-operator-approval") -> int:
+    if DRAFT_ID.fullmatch(proposal_id) and required_status == "pending-operator-approval":
+        return approve_draft(proposal_id)
     if not env_enabled("PIXEL_LIMB_CALENDAR_ENABLED", True):
         raise RuntimeError("Calendar limb is disabled")
+    if not env_enabled("PIXEL_LIMB_CALENDAR_WRITE_ENABLED", True):
+        raise RuntimeError("Calendar changes are turned off for this deployment")
     if not re.fullmatch(r"calendar-[0-9]{13}-[a-f0-9]{8}", proposal_id):
         raise RuntimeError("unsafe proposal ID")
     result_dir = Path(os.environ.get("PIXEL_ACTION_RESULT_DIR", "/var/lib/pixel-source-broker/results"))
@@ -2224,6 +3201,8 @@ def reconcile_update(proposal_id: str) -> int:
 
 def reconcile(proposal_id: str) -> int:
     """Dispatch recovery by the exact protected proposal action."""
+    if DRAFT_ID.fullmatch(proposal_id):
+        return reconcile_draft(proposal_id)
     if not re.fullmatch(r"calendar-[0-9]{13}-[a-f0-9]{8}", proposal_id):
         raise RuntimeError("unsafe proposal ID")
     result_dir = Path(os.environ.get("PIXEL_ACTION_RESULT_DIR", "/var/lib/pixel-source-broker/results"))
@@ -2236,9 +3215,322 @@ def reconcile(proposal_id: str) -> int:
     raise RuntimeError("only an indeterminate Calendar create or update can be reconciled")
 
 
+# ---------------------------------------------------------------------------
+# Gmail drafts. The owner approves one exact draft; Gmail creates it in the
+# owner's Drafts folder. Pixel has no send capability: the owner reviews and
+# sends the draft from Gmail.
+
+DRAFT_ID = re.compile(r"^gmail-draft-[0-9]{13}-[a-f0-9]{8}$")
+DRAFT_BOUNDARY = "This file is a proposal only. No Gmail draft has been created."
+DRAFT_FIELDS = {"to", "cc", "subject", "body", "replyToMessageId"}
+DRAFT_MAX_RECIPIENTS = 50
+DRAFT_MAX_BODY = 100_000
+GMAIL_OBJECT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+MESSAGE_ID_HEADER = re.compile(r"<[^<>\s]{1,900}>")
+DRAFT_RECOVERY = "Do not create the draft again; reconcile by its exact Message-ID from the actuator journal."
+
+
+def validated_recipients(fields: dict[str, Any], key: str, *, required: bool) -> list[str]:
+    value = fields.get(key)
+    if value is None and not required:
+        return []
+    if not isinstance(value, list) or (required and not value) or len(value) > DRAFT_MAX_RECIPIENTS:
+        raise RuntimeError(f"draft {key} must list 1 to {DRAFT_MAX_RECIPIENTS} addresses")
+    result: list[str] = []
+    observed: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"email"}:
+            raise RuntimeError(f"draft {key} entries may contain only email")
+        email = proposal_string(item, "email", 320, required=True)
+        if not EMAIL_PATTERN.fullmatch(email) or email.casefold() in observed:
+            raise RuntimeError(f"draft {key} contains an invalid or repeated address")
+        observed.add(email.casefold())
+        result.append(email)
+    return result
+
+
+def validate_draft_proposal(value: dict[str, Any], proposal_id: str) -> dict[str, Any]:
+    """The exact draft an owner may approve; RuntimeError for anything else."""
+    required_top = {"schemaVersion", "proposalId", "source", "action", "status", "createdAt", "values", "boundary"}
+    if set(value) != required_top:
+        raise RuntimeError("draft proposal contains missing or unknown top-level fields")
+    if value.get("schemaVersion") != 1 or value.get("proposalId") != proposal_id or not DRAFT_ID.fullmatch(proposal_id):
+        raise RuntimeError("draft proposal schema or identity is invalid")
+    if value.get("source") != "pixel-owner-conversation" or value.get("status") != "pending-operator-approval":
+        raise RuntimeError("draft proposal source or status is invalid")
+    if value.get("boundary") != DRAFT_BOUNDARY or not isinstance(value.get("createdAt"), str):
+        raise RuntimeError("draft proposal boundary or creation time is invalid")
+    fields = value.get("values")
+    if value.get("action") != "create-draft" or not isinstance(fields, dict) or not set(fields) <= DRAFT_FIELDS:
+        raise RuntimeError("draft proposal action or values are invalid")
+    to = validated_recipients(fields, "to", required=True)
+    cc = validated_recipients(fields, "cc", required=False)
+    if len(to) + len(cc) > DRAFT_MAX_RECIPIENTS or {item.casefold() for item in to} & {item.casefold() for item in cc}:
+        raise RuntimeError("draft recipients exceed the limit or repeat an address")
+    subject = proposal_string(fields, "subject", 998) or ""
+    if "\r" in subject or "\n" in subject:
+        raise RuntimeError("draft subject must be one line")
+    body = proposal_string(fields, "body", DRAFT_MAX_BODY, required=True)
+    reply = fields.get("replyToMessageId")
+    if reply is not None and (not isinstance(reply, str) or not GMAIL_OBJECT_ID.fullmatch(reply)):
+        raise RuntimeError("draft replyToMessageId is invalid")
+    cleaned = {"to": to, "cc": cc, "subject": subject, "body": body, "replyToMessageId": reply}
+    placeholders = projection_placeholders(cleaned)
+    if placeholders:
+        raise RuntimeError(f"draft contains projection placeholders: {', '.join(placeholders)}")
+    found = find_vendor_secret(subject, body)
+    if found:
+        raise RuntimeError(f"draft content contains what looks like a {found}; a credential must not be written to email")
+    return cleaned
+
+
+def draft_message_id(proposal_id: str, proposal_hash: str) -> str:
+    """A Message-ID fixed before any Gmail call, so an unconfirmed draft can be found without creating another."""
+    if not DRAFT_ID.fullmatch(proposal_id) or not re.fullmatch(r"[a-f0-9]{64}", proposal_hash):
+        raise RuntimeError("draft identity inputs are invalid")
+    return "<pixel-draft-" + hashlib.sha256(f"{proposal_id}:{proposal_hash}".encode("ascii")).hexdigest()[:32] + "@pixel.invalid>"
+
+
+def draft_reply_headers(token: str, message_id: str) -> dict[str, str]:
+    """Threading headers for a reply, read from the original message before anything is written."""
+    original = google_get(GMAIL_API, f"/messages/{urllib.parse.quote(message_id, safe='')}", token, {
+        "format": "metadata", "metadataHeaders": ["Message-ID", "References"],
+    })
+    headers: dict[str, str] = {}
+    for item in (original.get("payload") or {}).get("headers") or []:
+        if isinstance(item, dict) and isinstance(item.get("name"), str) and isinstance(item.get("value"), str):
+            headers.setdefault(item["name"].casefold(), item["value"])
+    own = headers.get("message-id", "").strip()
+    thread = original.get("threadId")
+    if not MESSAGE_ID_HEADER.fullmatch(own) or not isinstance(thread, str) or not GMAIL_OBJECT_ID.fullmatch(thread):
+        raise RuntimeError("the message to reply to has no usable Message-ID or thread")
+    chain = MESSAGE_ID_HEADER.findall(headers.get("references", ""))[-20:]
+    return {"inReplyTo": own, "references": " ".join(dict.fromkeys([*chain, own])), "threadId": thread}
+
+
+def draft_mime(fields: dict[str, Any], message_id: str, reply: dict[str, str] | None) -> bytes:
+    message = EmailMessage(policy=SMTP)
+    message["To"] = ", ".join(fields["to"])
+    if fields["cc"]:
+        message["Cc"] = ", ".join(fields["cc"])
+    message["Subject"] = fields["subject"]
+    message["Message-ID"] = message_id
+    if reply:
+        message["In-Reply-To"] = reply["inReplyTo"]
+        message["References"] = reply["references"]
+    message.set_content(fields["body"])
+    return message.as_bytes()
+
+
+def draft_completed_result(
+    proposal_id: str, proposal_hash: str, message_id: str, gmail_message_id: str, *,
+    reconciliation: str, provider_observation_sha256: str, action_journal_head_sha256: str,
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "proposalId": proposal_id,
+        "status": "applied",
+        "action": "create-draft",
+        "affectedMessageId": bounded_text(gmail_message_id, 128),
+        "messageIdHeader": message_id,
+        "emailSent": False,
+        "proposalSha256": proposal_hash,
+        "providerObservationSha256": provider_observation_sha256,
+        "actionJournalHeadSha256": action_journal_head_sha256,
+        "approvalBinding": "sha256-protected-proposal-snapshot",
+        "reconciliation": reconciliation,
+        "appliedAt": iso(utc_now()),
+    }
+
+
+def draft_rejected_result(
+    proposal_id: str, proposal_hash: str, message_id: str, *,
+    provider_observation_sha256: str, action_journal_head_sha256: str,
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "proposalId": proposal_id,
+        "status": "rejected",
+        "action": "create-draft",
+        "messageIdHeader": message_id,
+        "emailSent": False,
+        "retryAllowed": False,
+        "nextAction": "none",
+        "reasonCode": "provider-definite-rejection",
+        "proposalSha256": proposal_hash,
+        "providerObservationSha256": provider_observation_sha256,
+        "actionJournalHeadSha256": action_journal_head_sha256,
+        "approvalBinding": "sha256-protected-proposal-snapshot",
+        "reconciliation": "definitive-provider-rejection",
+        "handledAt": iso(utc_now()),
+        "boundary": "Gmail definitively rejected the exact approved draft; nothing was created and it must not be retried.",
+    }
+
+
+def validate_draft_terminal_result(result_dir: Path, proposal_id: str, proposal_hash: str, message_id: str) -> dict[str, Any] | None:
+    """An existing result, only when it is bound to this exact draft and its terminal journal."""
+    result_path = result_dir / f"{proposal_id}.json"
+    if not os.path.lexists(result_path):
+        return None
+    settled, _settled_hash = protected_proposal(result_path)
+    if (
+        settled.get("schemaVersion") != 1
+        or settled.get("proposalId") != proposal_id
+        or settled.get("proposalSha256") != proposal_hash
+        or settled.get("action") != "create-draft"
+        or settled.get("messageIdHeader") != message_id
+        or settled.get("approvalBinding") != "sha256-protected-proposal-snapshot"
+        or settled.get("status") not in {"applied", "rejected"}
+        or settled.get("emailSent") is not False
+    ):
+        raise RuntimeError("existing draft result is not bound to the exact approved draft")
+    status = ExternalActionJournal(result_dir / ".journal").status(proposal_id)
+    if (
+        not status["terminal"]
+        or status["proposalSha256"] != proposal_hash
+        or settled.get("providerObservationSha256") != status["observationSha256"]
+        or settled.get("actionJournalHeadSha256") != status["headSha256"]
+        or (settled.get("status") == "applied") != (status["state"] == "succeeded")
+    ):
+        raise RuntimeError("existing draft result differs from the terminal shared action journal")
+    return settled
+
+
+def draft_journal(result_dir: Path, proposal_id: str, proposal_hash: str, message_id: str) -> tuple[ExternalActionJournal, dict[str, Any]]:
+    journal = ExternalActionJournal(result_dir / ".journal")
+    state = journal.propose(
+        action_id=proposal_id,
+        connector="google-gmail",
+        operation="create-draft",
+        proposal_sha256=proposal_hash,
+        idempotency_key_sha256=journal_sha256(message_id),
+        idempotency_mode="provider-reconciliation-marker",
+        provider_target_sha256=journal_sha256("users/me/drafts"),
+    )
+    return journal, state
+
+
+def _draft_paths(proposal_id: str) -> tuple[Path, Path, Path]:
+    result_dir = Path(os.environ.get("PIXEL_ACTION_RESULT_DIR", "/var/lib/pixel-source-broker/results"))
+    return result_dir, result_dir / f"{proposal_id}.json", result_dir / f"{proposal_id}.processing.json"
+
+
+def approve_draft(proposal_id: str) -> int:
+    """Create exactly the Gmail draft the owner approved, once. Nothing is ever sent."""
+    if not env_enabled("PIXEL_LIMB_EMAIL_ENABLED", True):
+        raise RuntimeError("Email limb is disabled")
+    if not env_enabled("PIXEL_LIMB_EMAIL_DRAFTS_ENABLED", False):
+        raise RuntimeError("Gmail drafts are turned off for this deployment")
+    result_dir, result_path, claim_path = _draft_paths(proposal_id)
+    value, proposal_hash = protected_proposal(result_dir / f"{proposal_id}.approved.json")
+    fields = validate_draft_proposal(value, proposal_id)
+    message_id = draft_message_id(proposal_id, proposal_hash)
+    settled = validate_draft_terminal_result(result_dir, proposal_id, proposal_hash, message_id)
+    if settled is not None:
+        # Already settled: report it without another Gmail call.
+        claim_path.unlink(missing_ok=True)
+        print(json.dumps(settled))
+        return 0
+    if os.path.lexists(claim_path):
+        raise RuntimeError("a draft processing claim requires reconciliation; the draft was not created again")
+    journal, journal_state = draft_journal(result_dir, proposal_id, proposal_hash, message_id)
+    if journal_state["state"] != "proposed":
+        raise RuntimeError("draft is already processing or requires reconciliation; it was not created again")
+    token_path = Path(os.environ.get("PIXEL_SOURCE_TOKEN_PATH", "/var/lib/pixel-source-broker/private/google-token.json"))
+    token = access_token(token_path)
+    reply = draft_reply_headers(token, fields["replyToMessageId"]) if fields["replyToMessageId"] else None
+    message: dict[str, Any] = {"raw": base64.urlsafe_b64encode(draft_mime(fields, message_id, reply)).decode("ascii").rstrip("=")}
+    if reply:
+        message["threadId"] = reply["threadId"]
+    submission_started = False
+    provider_call_started = False
+    try:
+        try:
+            journal.begin_submit(proposal_id)
+        except JournalError as error:
+            raise RuntimeError("draft is already processing or requires reconciliation; it was not created again") from error
+        submission_started = True
+        claim_proposal(claim_path, proposal_id, proposal_hash, recovery=DRAFT_RECOVERY)
+        provider_call_started = True
+        response = google_call(GMAIL_API, "/drafts", token, method="POST", params={}, value={"message": message})
+        created = (response.get("message") or {}).get("id")
+        if not isinstance(created, str) or not GMAIL_OBJECT_ID.fullmatch(created):
+            raise RuntimeError("Gmail returned no draft message identity")
+        observation = calendar_observation_sha256({"id": response.get("id"), "messageId": created})
+        journal.succeed(proposal_id, observation)
+    except Exception as error:
+        if submission_started:
+            settle_calendar_journal_error(journal, proposal_id, error, definitely_before_provider=not provider_call_started)
+            if provider_call_started and _definite_provider_rejection(error):
+                status = journal.status(proposal_id)
+                rejected = draft_rejected_result(
+                    proposal_id, proposal_hash, message_id,
+                    provider_observation_sha256=status["observationSha256"], action_journal_head_sha256=status["headSha256"],
+                )
+                atomic_json(result_path, rejected)
+                claim_path.unlink(missing_ok=True)
+                print(json.dumps(rejected))
+                return 0
+        raise
+    completed = draft_completed_result(
+        proposal_id, proposal_hash, message_id, created, reconciliation="synchronous-provider-response",
+        provider_observation_sha256=observation, action_journal_head_sha256=journal.status(proposal_id)["headSha256"],
+    )
+    atomic_json(result_path, completed)
+    claim_path.unlink(missing_ok=True)
+    print(json.dumps(completed))
+    return 0
+
+
+def reconcile_draft(proposal_id: str) -> int:
+    """Settle an unconfirmed draft by searching Gmail for its exact Message-ID; nothing is created again."""
+    if not env_enabled("PIXEL_LIMB_EMAIL_ENABLED", True):
+        raise RuntimeError("Email limb is disabled")
+    result_dir, result_path, claim_path = _draft_paths(proposal_id)
+    value, proposal_hash = protected_proposal(result_dir / f"{proposal_id}.approved.json")
+    validate_draft_proposal(value, proposal_id)
+    message_id = draft_message_id(proposal_id, proposal_hash)
+    settled = validate_draft_terminal_result(result_dir, proposal_id, proposal_hash, message_id)
+    if settled is not None:
+        claim_path.unlink(missing_ok=True)
+        print(json.dumps(settled))
+        return 0
+    if not os.path.lexists(claim_path):
+        raise RuntimeError("draft has no processing claim to reconcile")
+    journal = ExternalActionJournal(result_dir / ".journal")
+    journal.begin_reconcile(proposal_id)
+    token_path = Path(os.environ.get("PIXEL_SOURCE_TOKEN_PATH", "/var/lib/pixel-source-broker/private/google-token.json"))
+    token = access_token(token_path)
+    listing = google_get(GMAIL_API, "/messages", token, {
+        "q": f"rfc822msgid:{message_id[1:-1]}", "includeSpamTrash": "true", "maxResults": 5,
+    })
+    found = [item.get("id") for item in listing.get("messages") or [] if isinstance(item, dict)]
+    created = next((item for item in found if isinstance(item, str) and GMAIL_OBJECT_ID.fullmatch(item)), None)
+    if created is None:
+        journal.mark_unknown(proposal_id, "provider-not-observable", calendar_observation_sha256({"found": 0}))
+        print(json.dumps({
+            "schemaVersion": 1, "proposalId": proposal_id, "status": "unknown", "action": "create-draft",
+            "retryAllowed": False, "nextAction": "reconcile-later", "checkedAt": iso(utc_now()),
+            "boundary": "Gmail does not show the draft yet. The original request remains unconfirmed and must not be repeated.",
+        }))
+        return 3
+    observation = calendar_observation_sha256({"messageId": created})
+    journal.succeed(proposal_id, observation, "provider-reconciliation-match")
+    completed = draft_completed_result(
+        proposal_id, proposal_hash, message_id, created, reconciliation="provider-search-after-indeterminate-write",
+        provider_observation_sha256=observation, action_journal_head_sha256=journal.status(proposal_id)["headSha256"],
+    )
+    atomic_json(result_path, completed)
+    claim_path.unlink(missing_ok=True)
+    print(json.dumps(completed))
+    return 0
+
+
 def direct(proposal_id: str) -> int:
     if not env_enabled("PIXEL_CALENDAR_DIRECT_ENABLED", False):
         raise RuntimeError("bounded direct Calendar execution is disabled")
+    if not env_enabled("PIXEL_LIMB_CALENDAR_WRITE_ENABLED", True):
+        raise RuntimeError("Calendar changes are turned off for this deployment")
     if not re.fullmatch(r"calendar-[0-9]{13}-[a-f0-9]{8}", proposal_id):
         raise RuntimeError("unsafe proposal ID")
     proposal_dir = Path(os.environ.get("PIXEL_ACTION_PROPOSAL_DIR", "/var/lib/pixel-source-broker/proposals"))
@@ -2284,6 +3576,225 @@ def drain_direct() -> int:
     return 0
 
 
+def private_handoff(path: Path) -> dict[str, Any]:
+    """Read one root-written sign-in handoff that only the broker identity can read."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError as error:
+        raise SourceUnavailable("invalid-flow", "sign-in handoff is missing") from error
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > OAUTH_FILE_MAX_BYTES:
+            raise SourceUnavailable("invalid-flow", "sign-in handoff is not a bounded regular file")
+        if os.name != "nt" and (info.st_mode & 0o077 or info.st_uid != os.geteuid()):
+            raise SourceUnavailable("invalid-flow", "sign-in handoff is not private to the Source Broker")
+        payload = bytearray()
+        while True:
+            chunk = os.read(descriptor, OAUTH_FILE_MAX_BYTES + 1 - len(payload))
+            if not chunk:
+                break
+            payload.extend(chunk)
+            if len(payload) > OAUTH_FILE_MAX_BYTES:
+                raise SourceUnavailable("invalid-flow", "sign-in handoff exceeds its size limit")
+    finally:
+        os.close(descriptor)
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise SourceUnavailable("invalid-flow", f"sign-in handoff contains duplicate key: {key}")
+            value[key] = item
+        return value
+
+    try:
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=unique_object)
+    except (UnicodeError, ValueError) as error:
+        raise SourceUnavailable("invalid-flow", "sign-in handoff is not strict JSON") from error
+    if not isinstance(value, dict):
+        raise SourceUnavailable("invalid-flow", "sign-in handoff must be a JSON object")
+    return value
+
+
+def oauth_client(value: Any) -> dict[str, str]:
+    """Accept a Google client only when it uses Pixel's fixed Google endpoints."""
+    source = value.get("installed") or value.get("web") or value if isinstance(value, dict) else None
+    if not isinstance(source, dict):
+        raise SourceUnavailable("invalid-flow", "sign-in handoff has no OAuth client")
+    client: dict[str, str] = {}
+    for key, maximum in (("client_id", 2048), ("client_secret", 8192)):
+        item = source.get(key)
+        if not isinstance(item, str) or not 1 <= len(item) <= maximum or CONTROL_CHARS.search(item) or "\n" in item or "\r" in item:
+            raise SourceUnavailable("client-invalid", f"OAuth client {key} is missing or invalid")
+        client[key] = item
+    for key, expected in (("auth_uri", GOOGLE_AUTH_URI), ("token_uri", GOOGLE_TOKEN_URI)):
+        if source.get(key) not in (None, expected):
+            raise SourceUnavailable("client-invalid", f"OAuth client {key} is not Google's fixed endpoint")
+    return client
+
+
+def parsed_instant(value: Any) -> datetime:
+    if not valid_iso_timestamp(value):
+        raise SourceUnavailable("invalid-flow", "sign-in handoff time is invalid")
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def validated_oauth_flow(flow: dict[str, Any], completion: dict[str, Any], flow_id: str) -> dict[str, Any]:
+    if set(flow) != OAUTH_FLOW_KEYS or flow.get("schemaVersion") != 1 or flow.get("kind") != "pixel-source-oauth-flow":
+        raise SourceUnavailable("invalid-flow", "sign-in flow record has missing or unknown fields")
+    if set(completion) != OAUTH_CODE_KEYS or completion.get("schemaVersion") != 1 or completion.get("kind") != "pixel-source-oauth-code":
+        raise SourceUnavailable("invalid-flow", "sign-in completion has missing or unknown fields")
+    if flow.get("flowId") != flow_id or completion.get("flowId") != flow_id:
+        raise SourceUnavailable("invalid-flow", "sign-in handoff names another flow")
+    state, verifier = flow.get("state"), flow.get("codeVerifier")
+    redirect_uri, code = flow.get("redirectUri"), completion.get("code")
+    if not isinstance(state, str) or not OAUTH_STATE.fullmatch(state):
+        raise SourceUnavailable("invalid-flow", "sign-in flow state is invalid")
+    if not isinstance(verifier, str) or not PKCE_VERIFIER.fullmatch(verifier):
+        raise SourceUnavailable("invalid-flow", "sign-in flow PKCE verifier is invalid")
+    if not isinstance(redirect_uri, str) or not OAUTH_REDIRECT.fullmatch(redirect_uri):
+        raise SourceUnavailable("invalid-flow", "sign-in flow redirect address is not allowed")
+    if not isinstance(code, str) or not OAUTH_CODE.fullmatch(code):
+        raise SourceUnavailable("invalid-flow", "sign-in completion code is invalid")
+    returned_state = completion.get("state")
+    if not isinstance(returned_state, str) or not hmac.compare_digest(returned_state.encode(), state.encode()):
+        raise SourceUnavailable("state-mismatch", "sign-in completion does not belong to this flow")
+    created, expires = parsed_instant(flow.get("createdAt")), parsed_instant(flow.get("expiresAt"))
+    now = utc_now()
+    if not created <= expires <= created + timedelta(seconds=OAUTH_FLOW_MAX_SECONDS) or created > now + timedelta(minutes=2):
+        raise SourceUnavailable("invalid-flow", "sign-in flow lifetime is invalid")
+    if now >= expires:
+        raise SourceUnavailable("flow-expired", "sign-in flow expired")
+    scopes = flow.get("requestedScopes")
+    if (not isinstance(scopes, list) or not 1 <= len(scopes) <= 20 or len(set(scopes)) != len(scopes)
+            or any(not isinstance(item, str) or not GOOGLE_SCOPE.fullmatch(item) for item in scopes)):
+        raise SourceUnavailable("invalid-flow", "sign-in flow scopes are invalid")
+    account = flow.get("account")
+    if account is not None and (not isinstance(account, str) or len(account) > 320 or not EMAIL_PATTERN.fullmatch(account)):
+        raise SourceUnavailable("invalid-flow", "sign-in flow account hint is invalid")
+    return {
+        "client": oauth_client(flow.get("client")), "code": code, "verifier": verifier,
+        "redirectUri": redirect_uri, "requestedScopes": scopes, "account": account or "",
+    }
+
+
+def id_token_email(token: Any, client_id: str) -> str:
+    """The account email Google verified, read from an ID token the token endpoint returned.
+
+    The token came straight from Google's fixed token endpoint over TLS, so its claims
+    are read without a signature check (OpenID Connect Core 3.1.3.7). An absent,
+    malformed or unverified token gives no account; an owner-typed hint never does.
+    """
+    if not isinstance(token, str) or len(token) > 16384 or token.count(".") != 2:
+        return ""
+    payload = token.split(".")[1]
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (ValueError, UnicodeError):
+        return ""
+    if (not isinstance(claims, dict) or claims.get("aud") != client_id
+            or claims.get("iss") not in ("https://accounts.google.com", "accounts.google.com")
+            or claims.get("email_verified") is not True):
+        return ""
+    email = claims.get("email")
+    if not isinstance(email, str) or len(email) > 320 or not EMAIL_PATTERN.fullmatch(email):
+        return ""
+    return email
+
+
+def oauth_result(path: Path, kind: str, value: dict[str, Any]) -> None:
+    atomic_json(path, {"schemaVersion": SCHEMA_VERSION, "kind": kind, "finishedAt": iso(utc_now()), **value}, mode=0o600)
+
+
+def exchange(flow_id: str) -> int:
+    """Exchange one owner sign-in code for a refresh token held only by this identity."""
+    if not OAUTH_FLOW_ID.fullmatch(flow_id or ""):
+        raise RuntimeError("unsafe OAuth flow ID")
+    oauth_dir = Path(os.environ.get("PIXEL_SOURCE_OAUTH_DIR", "/var/lib/pixel-source-broker/private/oauth"))
+    token_path = Path(os.environ.get("PIXEL_SOURCE_TOKEN_PATH", "/var/lib/pixel-source-broker/private/google-token.json"))
+    flow_path, code_path = oauth_dir / f"{flow_id}.flow.json", oauth_dir / f"{flow_id}.code.json"
+    result_path = oauth_dir / f"{flow_id}.result.json"
+    try:
+        try:
+            flow, completion = private_handoff(flow_path), private_handoff(code_path)
+        finally:
+            # The handoff is single-use whether or not the exchange succeeds.
+            for path in (flow_path, code_path):
+                path.unlink(missing_ok=True)
+        handoff = validated_oauth_flow(flow, completion, flow_id)
+        client = handoff["client"]
+        response = request_json(GOOGLE_TOKEN_URI, method="POST", headers={"content-type": "application/x-www-form-urlencoded"}, body=urllib.parse.urlencode({
+            "code": handoff["code"],
+            "code_verifier": handoff["verifier"],
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"],
+            "redirect_uri": handoff["redirectUri"],
+            "grant_type": "authorization_code",
+        }).encode("ascii"))
+        refresh_token = response.get("refresh_token")
+        if not isinstance(refresh_token, str) or not 1 <= len(refresh_token) <= 4096 or not OAUTH_CODE.fullmatch(refresh_token):
+            raise SourceUnavailable("no-refresh-token", "Google returned no refresh token")
+        reported = response.get("scope")
+        granted = sorted({item for item in reported.split() if GOOGLE_SCOPE.fullmatch(item)}) if isinstance(reported, str) else []
+        account = id_token_email(response.get("id_token"), client["client_id"])
+        atomic_json(token_path, {
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"],
+            "refresh_token": refresh_token,
+            "token_uri": GOOGLE_TOKEN_URI,
+            "scope": " ".join(granted),
+            "grantedScope": " ".join(granted),
+            "requestedScope": " ".join(handoff["requestedScopes"]),
+            "email": account,
+            "obtainedAt": iso(utc_now()),
+        }, mode=0o600)
+    except Exception as error:  # Every failure leaves a content-free result for the custodian.
+        failure = failure_record(error)
+        oauth_result(result_path, "pixel-source-oauth-result", {"flowId": flow_id, "outcome": "failed", **failure, "grantedScopes": [], "account": None})
+        print(json.dumps({"flowId": flow_id, "outcome": "failed", "errorClass": failure["errorClass"]}))
+        return 1
+    oauth_result(result_path, "pixel-source-oauth-result", {"flowId": flow_id, "outcome": "connected", "errorClass": None, "httpStatus": None, "errorType": None, "grantedScopes": granted, "account": account or None})
+    print(json.dumps({"flowId": flow_id, "outcome": "connected", "grantedScopes": granted}))
+    return 0
+
+
+def revoke() -> int:
+    """Revoke the stored Google grant at Google, then delete it here whatever Google says."""
+    oauth_dir = Path(os.environ.get("PIXEL_SOURCE_OAUTH_DIR", "/var/lib/pixel-source-broker/private/oauth"))
+    token_path = Path(os.environ.get("PIXEL_SOURCE_TOKEN_PATH", "/var/lib/pixel-source-broker/private/google-token.json"))
+    outcome, failure = "revoked", {"errorClass": None, "httpStatus": None, "errorType": None}
+    refresh_token = None
+    try:
+        try:
+            stored = json.loads(token_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            outcome = "not-connected"
+        except (OSError, ValueError) as error:
+            outcome, failure = "local-only", failure_record(error)
+        else:
+            # Revoking needs only the refresh token, whatever else the file holds.
+            candidate = stored.get("refresh_token") if isinstance(stored, dict) else None
+            if isinstance(candidate, str) and candidate:
+                refresh_token = candidate
+            else:
+                outcome, failure = "local-only", failure_record(SourceUnavailable("not-connected", "no refresh token"))
+        if refresh_token is not None:
+            try:
+                request_json(GOOGLE_REVOKE_URI, method="POST", headers={"content-type": "application/x-www-form-urlencoded"},
+                             body=urllib.parse.urlencode({"token": refresh_token}).encode("ascii"))
+            except UpstreamHTTPError as error:
+                # Google answers invalid_token for a grant that is already revoked or expired.
+                if not (error.code == 400 and "invalid_token" in error.reasons):
+                    outcome, failure = "local-only", failure_record(error)
+            except Exception as error:  # Any other failure still ends with the sign-in deleted here.
+                outcome, failure = "local-only", failure_record(error)
+    finally:
+        token_path.unlink(missing_ok=True)
+        oauth_result(oauth_dir / "revoke.result.json", "pixel-source-oauth-revoke-result", {"outcome": outcome, **failure})
+    print(json.dumps({"outcome": outcome, "errorClass": failure["errorClass"]}))
+    return 0
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--approve", metavar="PROPOSAL_ID")
@@ -2292,7 +3803,9 @@ if __name__ == "__main__":
     parser.add_argument("--reconcile-create", metavar="PROPOSAL_ID")
     parser.add_argument("--reconcile-update", metavar="PROPOSAL_ID")
     parser.add_argument("--drain-direct", action="store_true")
+    parser.add_argument("--exchange", metavar="FLOW_ID")
+    parser.add_argument("--revoke", action="store_true")
     arguments = parser.parse_args()
-    if sum(bool(item) for item in (arguments.approve, arguments.direct, arguments.reconcile, arguments.reconcile_create, arguments.reconcile_update, arguments.drain_direct)) > 1:
+    if sum(bool(item) for item in (arguments.approve, arguments.direct, arguments.reconcile, arguments.reconcile_create, arguments.reconcile_update, arguments.drain_direct, arguments.exchange, arguments.revoke)) > 1:
         parser.error("choose exactly one action")
-    raise SystemExit(drain_direct() if arguments.drain_direct else reconcile(arguments.reconcile) if arguments.reconcile else reconcile_update(arguments.reconcile_update) if arguments.reconcile_update else reconcile_create(arguments.reconcile_create) if arguments.reconcile_create else direct(arguments.direct) if arguments.direct else approve(arguments.approve) if arguments.approve else refresh())
+    raise SystemExit(exchange(arguments.exchange) if arguments.exchange else revoke() if arguments.revoke else drain_direct() if arguments.drain_direct else reconcile(arguments.reconcile) if arguments.reconcile else reconcile_update(arguments.reconcile_update) if arguments.reconcile_update else reconcile_create(arguments.reconcile_create) if arguments.reconcile_create else direct(arguments.direct) if arguments.direct else approve(arguments.approve) if arguments.approve else refresh())

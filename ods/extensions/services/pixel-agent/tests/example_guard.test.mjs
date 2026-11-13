@@ -203,6 +203,23 @@ const outsideFolder = () => scratch('ods-example-guard-outside-');
 const posix = value => value.replaceAll('\\', '/');
 const escaped = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+test('discarding a review-only run never restores a concurrent external example change', () => {
+  const {root,example}=workspace();
+  const guard=createExampleGuard();
+  guard.begin('review-candidate',root,false,60000);
+  const file=path.join(example,'index.html');
+  fs.writeFileSync(file,'Owned external change during the integration check.');
+  guard.discard('review-candidate');
+  assert.equal(guard.check('review-candidate'),undefined);
+  assert.equal(guard.end('review-candidate'),undefined);
+  assert.equal(fs.readFileSync(file,'utf8'),'Owned external change during the integration check.');
+  assert.deepEqual(recoveries(root),[]);
+  // A later ordinary turn observes the current owner data as its baseline.
+  guard.begin('next-normal-owner',root,false,60000);
+  assert.equal(guard.end('next-normal-owner'),undefined);
+  assert.deepEqual(recoveries(root),[]);
+});
+
 // One model command, run for real in the workspace.
 function shell(root, command, env = {}) {
   const result = spawnSync(BASH, ['-c', `export PATH="/usr/bin:$PATH"; ${command}`], {cwd: root, encoding: 'utf8',

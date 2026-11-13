@@ -9,6 +9,7 @@ import socket as socket
 import socketserver
 import stat
 import sys
+import threading
 
 sys.dont_write_bytecode = True
 
@@ -35,16 +36,59 @@ for name in ("access_mode_server.py", "unix_peer.py", "pixel_access_bridge.py", 
     protected(PROGRAM / name)
 for name in ("pixel_model_contract.py", "pixel_model_coordinator.py", "model_transaction.py"):
     protected(PROGRAM / name)
+for name in ('pixel_schedules.py', 'scheduled_tasks_owner.py', 'scheduled_tasks_gateway.mjs'):
+    protected(PROGRAM / name)
 if platform.system() == "Linux":
     protected(PROGRAM / "pixel_source_upgrade.py")
+if platform.system() in ("Linux", "Darwin"):
+    protected(PROGRAM / "pixel_connection_agent_status.py")
+    for name in ("__init__.py", "state.py", "status.py", "catalog.py", "oauth.py", "custody.py",
+                 "planner.py", "coordinator.py", "source_backend.py", "lifecycle.py", "approvals.py", "activity.py", "drafts.py", "plugins.py",
+                 "native_mcp.py", "native_apps.py", "native_enrollment.py", "native_contract.py", "native_public.py", "native_access.py", "google_app.py"):
+        protected(PROGRAM / "pixel_connections" / name)
+    protected(PROGRAM / "connection_transaction.py")
+    protected(PROGRAM / "native_mcp_owner.py")
+    protected(PROGRAM / "native_mcp_oauth.mjs")
 if platform.system() == "Darwin":
     for name in ("pixel_macos_custody.py", "pixel_macos_process.py", "pixel_macos_policy.py"):
         protected(PROGRAM / name)
+    for name in ("native_executor.py", "native_retirement.py"):
+        protected(PROGRAM / "pixel_connections" / name)
 sys.path.insert(0, str(PROGRAM))
 from pixel_access_bridge import (AccessError, LaunchdAccessBridge,
                                  SystemdAccessBridge, private_json)
 from pixel_access_protocol import control_request, decode_frame
 from unix_peer import peer_ids
+
+
+def connections_platform_enabled():
+    if platform.system() == 'Linux':
+        return True
+    if platform.system() == 'Darwin':
+        from pixel_connections.catalog import supports_surface
+        return supports_surface('darwin')
+    return False
+
+
+def follow_connections(adapter):
+    """After an access-mode change, let Portal's gateway catch up with its calendar pause, in the background.
+
+    The selected request-local backend follows the record; a catch-up that
+    cannot run now keeps its reason in the connection journal, and Settings offers Finish.
+    """
+    from pixel_connections.coordinator import follow_access_mode
+    try:
+        if not follow_access_mode(adapter):
+            return
+    except AccessError:
+        return  # An unusable record renders nothing; Connected apps status explains why.
+
+    def catch_up():
+        try:
+            adapter.connection_control("connection-activate", {})
+        except AccessError:
+            pass  # Recorded in the connection journal, where Settings shows it.
+    threading.Thread(target=catch_up, daemon=True).start()
 
 
 def main(*, reprove_installer_access=False):
@@ -108,9 +152,10 @@ def main(*, reprove_installer_access=False):
             try:
                 uid, _gid = peer_ids(self.connection)
                 if uid not in (0, owner.pw_uid): raise PermissionError()
-                raw = self.rfile.readline(2049)
-                if len(raw) > 2048 or not raw.endswith(b"\n"): raise ValueError()
-                request = control_request(decode_frame(raw.decode("utf-8"), 2048))
+                raw = self.rfile.readline(16385)
+                if len(raw) > 16384 or not raw.endswith(b"\n"): raise ValueError()
+                request = control_request(decode_frame(raw.decode("utf-8"), 16384))
+                if request['operation'] not in ('schedules', 'connection-app-complete') and len(raw) > 2048: raise ValueError()
                 if request["operation"] in ("model-begin", "model-route-begin", "installer-source-begin"):
                     self.connection.settimeout(1850)
                 adapter = make_adapter()
@@ -118,8 +163,46 @@ def main(*, reprove_installer_access=False):
                     status, body = 200, adapter.status()
                 elif request == {"operation": "model-status"}:
                     status, body = 200, adapter.model_status()
+                elif request['operation'] == 'schedules':
+                    if platform.system() not in ('Linux', 'Darwin'):
+                        status, body = 503, {'error': 'scheduler-platform-unavailable'}
+                    else:
+                        status, body = 200, adapter.schedules(request['request'], source=request['source'])
+                elif request == {"operation": "connection-agent-status"}:
+                    if not connections_platform_enabled():
+                        status, body = 503, {"error": "connection-status-unavailable"}
+                    elif platform.system() == 'Darwin':
+                        from pixel_connections.status import native_agent_report
+                        status, body = 200, native_agent_report(adapter)
+                    else:
+                        from pixel_connections.status import agent_report
+                        surface = "wsl-systemd" if "microsoft" in platform.release().lower() else "linux-systemd"
+                        status, body = 200, agent_report(surface=surface)
+                elif request == {"operation": "connection-status"} and connections_platform_enabled():
+                    from pixel_connections.google_app import public_status as google_app_status
+                    if platform.system() == 'Darwin':
+                        from pixel_connections.status import native_report
+                        connection_status = native_report(adapter)
+                    else:
+                        from pixel_connections.status import report as connection_report
+                        surface = "wsl-systemd" if "microsoft" in platform.release().lower() else "linux-systemd"
+                        connection_status = connection_report(surface=surface)
+                    # Only Root reads deployment configuration. Windows/host
+                    # relays receive this credential-free metadata, not a file.
+                    status, body = 200, dict(connection_status, googleAuth=google_app_status())
+                elif request["operation"].startswith("connection-") and connections_platform_enabled():
+                    status, body = 200, adapter.connection_control(request["operation"], request["request"])
                 elif set(request) == {"operation", "request"} and request["operation"] == "change":
-                    status, body = 200, adapter.change(request["request"])
+                    connected_platform = connections_platform_enabled()
+                    if connected_platform and request["request"].get("mode") == "full-access":
+                        # Decision 4: Portal makes no calendar change by itself while it has Full Access.
+                        from pixel_connections.coordinator import pause_for_full_access
+                        pause_for_full_access(adapter)
+                    try:
+                        status, body = 200, adapter.change(request["request"])
+                    finally:
+                        if connected_platform:
+                            follow_connections(adapter)
                 elif request == {"operation": "model-begin"}:
                     status, body = 200, adapter.model_begin()
                 elif request['operation'] == 'installer-source-begin':
@@ -182,10 +265,27 @@ def main(*, reprove_installer_access=False):
         os.unlink(address)
     class Server(socketserver.ThreadingUnixStreamServer):
         daemon_threads = True
+    trigger_stop = trigger_worker = None
+    native_executor = Path(__file__).resolve().parent / 'pixel_connections/native_executor.py'
+    if platform.system() == 'Darwin' and native_executor.is_file():
+        # Old complete deployments have no executor file or execution journal.
+        # The optional worker never provisions state or enables a default grant.
+        from pixel_macos_custody import protected_bytes
+        protected_bytes(native_executor, limit=1024 * 1024)
+        from pixel_connections.native_executor import trigger_loop
+        import threading
+        trigger_stop = threading.Event()
+        trigger_worker = threading.Thread(target=trigger_loop, args=(make_adapter, trigger_stop), daemon=True)
+        trigger_worker.start()
     with Server(address, Handler) as server:
         os.chown(address, 0, owner.pw_gid)
         os.chmod(address, 0o660)
-        server.serve_forever()
+        try:
+            server.serve_forever()
+        finally:
+            if trigger_stop is not None:
+                trigger_stop.set()
+                trigger_worker.join(timeout=5)
 
 
 if __name__ == "__main__":

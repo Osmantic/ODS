@@ -1,4 +1,8 @@
 import '@testing-library/jest-dom'
+import {beforeEach} from 'vitest'
+
+// Each test starts a fresh tab; remounts inside a test retain tab selection.
+beforeEach(() => globalThis.sessionStorage?.clear())
 
 // Provide a working localStorage for jsdom environments that lack one
 if (typeof globalThis.localStorage === 'undefined' || typeof globalThis.localStorage.getItem !== 'function') {

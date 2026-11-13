@@ -55,6 +55,16 @@ links. The job always prints the remaining known count. Do not increase the
 baseline merely to make a failing change pass; document the underlying source
 boundary and planned repair in review.
 
+The 4.3.39 status regeneration at `9d9658f57` received a separate, page-specific
+review. Its current-candidate row now links the existing public ODS
+qualification, removing one historical missing target. The Supported 4.3.26
+row and its omitted audit target are byte-identical to the earlier review.
+Only this page's hash was renewed and its target set narrowed from two to one;
+the scanner and global baseline review were not relaxed. The resulting scan
+reports 35 known missing links, not a clean repository. Export-aware wording
+for historical private evidence remains a coordinated source/bundle repair;
+the upstream release gates still require their actual evidence.
+
 ## Public-record conventions
 
 - Bind release claims to an exact source revision and distinguish source tests,

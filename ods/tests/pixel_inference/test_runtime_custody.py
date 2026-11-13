@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'bin'))
 from pixel_access_bridge import AccessError, atomic_json
 from pixel_provider import runtime_custody as r
 from pixel_provider.managed_deployment import required_policy
+from pixel_access_bridge import LaunchdAccessBridge, SystemdAccessBridge
 
 
 @pytest.fixture
@@ -168,6 +169,47 @@ def test_fixed_descriptor_uses_canonical_host_path(monkeypatch, system, expected
     assert r._descriptor_path() == Path('/operator/selected.json')
 
 
+def native_schedule_adapter(artifact):
+    adapter = object.__new__(LaunchdAccessBridge)
+    adapter.binary = str(artifact.launcher)
+    adapter.owner = SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid())
+    adapter.gateway_process = {'uid': os.getuid(), 'gid': os.getgid(), 'executable': str(artifact.node)}
+    return adapter
+
+
+def test_native_schedule_selects_real_qualified_package_not_validator_wrapper(artifact):
+    adapter = native_schedule_adapter(artifact)
+    env = {'PATH': str(artifact.root)}
+    assert adapter._worker_executable('schedules', env) == str(artifact.runtime / 'openclaw.mjs')
+    for operation in ('settings-status', 'status', 'model-apply'):
+        assert adapter._worker_executable(operation, env) == str(artifact.launcher)
+    linux = object.__new__(SystemdAccessBridge)
+    linux.binary = str(artifact.launcher)
+    assert linux._worker_executable('schedules', env) == str(artifact.launcher)
+
+
+@pytest.mark.parametrize('changed', ['runtime', 'manifest', 'launcher', 'node', 'gateway-node', 'path-node', 'missing-descriptor'])
+def test_native_schedule_runtime_drift_refuses_before_owner_launch(artifact, monkeypatch, changed):
+    adapter = native_schedule_adapter(artifact)
+    env = {'PATH': str(artifact.root)}
+    if changed in ('runtime', 'manifest', 'launcher', 'node'):
+        target = artifact.runtime / 'openclaw.mjs' if changed == 'runtime' else getattr(artifact, changed)
+        target.write_bytes(target.read_bytes() + b'\n# changed\n')
+    elif changed == 'gateway-node':
+        adapter.gateway_process['executable'] = '/unrelated/node'
+    elif changed == 'path-node':
+        env['PATH'] = '/usr/bin:/bin'
+    else:
+        artifact.descriptor.unlink()
+    # Actual RuntimeCustody.inspect still checks every disposable file/hash;
+    # the existing artifact fixture explicitly simulates root metadata only.
+    monkeypatch.setattr(adapter, 'worker_environment', lambda: env)
+    monkeypatch.setattr(adapter, '_launch_owner_worker', lambda *_: pytest.fail('unqualified runtime reached owner RPC'))
+    with pytest.raises(AccessError):
+        adapter.worker('schedules', config_hash='a' * 64, gateway_port=18789,
+                       schedule_request={'action': 'list', 'offset': 0})
+
+
 @pytest.mark.skipif(sys.platform != 'darwin', reason='Real Darwin ACL API required')
 @pytest.mark.parametrize('target', ['entry', 'directory', 'descriptor', 'manifest', 'node', 'launcher'])
 def test_real_acl_revokes_cached_runtime_qualification(artifact, target):
@@ -233,6 +275,31 @@ def test_missing_worker_receipt_does_not_start_owner_probe(artifact):
         a.custody.require_worker(a.root, a.custody.qualify())
 
 
+def darwin_public_metadata(artifact, monkeypatch):
+    """Process test only: simulate Root metadata, retain the actual reader.
+
+    Real distinct-UID DAC is qualified separately; this fixture does not claim
+    Root ownership or Apple's ACL kernel behavior on a non-root Linux runner.
+    """
+    monkeypatch.setattr(r, 'NATIVE_MANIFEST', artifact.manifest)
+    monkeypatch.setattr(r, 'ROOT_UID', 0)
+    files = (artifact.descriptor, artifact.manifest)
+    for path in files:
+        path.chmod(0o644)
+    identities = {(path.stat().st_dev, path.stat().st_ino)
+                  for path in artifact.root.rglob('*') if path.is_file()}
+    original_lstat, original_fstat, original_stat = os.lstat, os.fstat, os.stat
+    def root_metadata(info):
+        if (info.st_dev, info.st_ino) not in identities:
+            return info
+        fields = {name: getattr(info, name) for name in dir(info) if name.startswith('st_')}
+        fields.update(st_uid=0, st_gid=0)
+        return SimpleNamespace(**fields)
+    monkeypatch.setattr(os, 'lstat', lambda *args, **kwargs: root_metadata(original_lstat(*args, **kwargs)))
+    monkeypatch.setattr(os, 'stat', lambda *args, **kwargs: root_metadata(original_stat(*args, **kwargs)))
+    monkeypatch.setattr(os, 'fstat', lambda *args, **kwargs: root_metadata(original_fstat(*args, **kwargs)))
+
+
 def test_macos_runtime_process_is_bound_to_launchd_plist_and_libproc_identity(artifact, monkeypatch):
     import grp
     from pixel_settings import coordinator as settings
@@ -250,6 +317,7 @@ def test_macos_runtime_process_is_bound_to_launchd_plist_and_libproc_identity(ar
     artifact.custody.bridge.gateway_service = SimpleNamespace(plist=plist)
     monkeypatch.setattr(settings, '_identity', lambda _bridge: identity)
     monkeypatch.setattr(r.platform, 'system', lambda: 'Darwin')
+    darwin_public_metadata(artifact, monkeypatch)
     if sys.platform != 'darwin':
         # This fixture simulates Darwin process APIs on Linux, not Darwin ACLs.
         monkeypatch.setattr('pixel_macos_custody._require_no_acl', lambda fd: os.fstat(fd))
@@ -276,6 +344,7 @@ def test_macos_runtime_process_rejects_launchd_command_drift(artifact, monkeypat
     artifact.custody.bridge.gateway_service = SimpleNamespace(plist=plist)
     monkeypatch.setattr(settings, '_identity', lambda _bridge: identity)
     monkeypatch.setattr(r.platform, 'system', lambda: 'Darwin')
+    darwin_public_metadata(artifact, monkeypatch)
     if sys.platform != 'darwin':
         monkeypatch.setattr('pixel_macos_custody._require_no_acl', lambda fd: os.fstat(fd))
     monkeypatch.setattr('pixel_macos_custody.protected_bytes', lambda _path: plist.read_bytes())

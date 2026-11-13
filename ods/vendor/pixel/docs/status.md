@@ -17,10 +17,10 @@ This page reports repository and release-contract facts. It does **not** report 
 
 | Surface | Source-derived status | Evidence boundary |
 |---|---|---|
-| Repository version | `4.3.27` | `VERSION` and `RELEASE-MANIFEST.json` agree |
-| Repository compatibility row | **candidate** | [LIVE-AUDIT-4.3.27.md](../LIVE-AUDIT-4.3.27.md) binds source `5983c27edb1c41d6e944abd13b6e6f780dd6cb4c` |
+| Repository version | `4.3.46` | `VERSION` and `RELEASE-MANIFEST.json` agree |
+| Repository compatibility row | **candidate** | [ODS-QUALIFICATION-4.3.46.md](../ODS-QUALIFICATION-4.3.46.md) binds source `b8cb7c444699092dd027eadaa0b34f30a5e6b442` |
 | OpenClaw compatibility | Canonical release pin is maintained in [OPENCLAW-COMPATIBILITY.json](../OPENCLAW-COMPATIBILITY.json) | This page does not duplicate an authored release pin |
-| Latest Supported compatibility row | Pixel `4.3.26` | [LIVE-AUDIT-4.3.26.md](../LIVE-AUDIT-4.3.26.md) |
+| Latest Supported compatibility row | Pixel `4.3.26` | `LIVE-AUDIT-4.3.26.md` (not included in this source export) |
 | Deep Work runtime | **development-disabled** | `deepWorkCapability.runtimeEnabled` is `false`; source presence and admission do not imply runtime authority |
 | Documented host scope | Ubuntu 24.04 LTS; Debian 12 | Manifest and qualification matrix agree; this is not a fresh clean-host qualification |
 

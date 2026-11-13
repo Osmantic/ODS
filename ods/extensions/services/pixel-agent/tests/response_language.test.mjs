@@ -8,7 +8,7 @@ import {
   TEAM_TURN_LANGUAGE_NOTE, inResponseLanguage, readResponseLanguage, responseLanguageContract, responseLanguageTurnContext,
 } from '../plugin/response-language.mjs';
 import {GOAL_CONTRACT} from '../plugin/goal-progress.mjs';
-import {promptContractForAgent} from '../plugin/prompt-contract.mjs';
+import {promptContractForAgent, PORTAL_INTEGRATION_TURN_CONTEXT} from '../plugin/prompt-contract.mjs';
 import {createAskUserTool} from '../plugin/ask-user.mjs';
 import {ACTIVITY_CONTRACT} from '../plugin/activity-display.mjs';
 import {STOP_SYNTHESIS_INSTRUCTION, synthesisRequest} from '../plugin/stop-synthesis.mjs';
@@ -118,21 +118,22 @@ test('English-only reads ambiguous answer dates month-first and keeps the Englis
 // The actual prompt hook from index.js, with its collaborators stubbed.
 const promptHook = (language, goal, clarificationNote = undefined, prompt = undefined) =>
   promptHookAlone({language, goal, clarificationNote, prompt});
+const besideOwner = (...parts) => [...parts, PORTAL_INTEGRATION_TURN_CONTEXT].filter(Boolean).join('\n\n');
 
 test('English-only puts the reminder beside the owner message on every turn, after goal mode', async () => {
   const goal = inResponseLanguage(GOAL_CONTRACT, 'en');
   const english = await promptHook('en', false);
-  assert.equal(english.appendContext, ENGLISH_TURN_REMINDER);
+  assert.equal(english.appendContext, besideOwner(ENGLISH_TURN_REMINDER));
   assert.ok(english.appendSystemContext.includes(ENGLISH_RESPONSE_CONTRACT));
   assert.ok(english.appendSystemContext.includes(inResponseLanguage(ACTIVITY_CONTRACT, 'en')));
   assert.ok(english.appendSystemContext.includes(inResponseLanguage(executionContext(), 'en')));
   assert.doesNotMatch(english.appendSystemContext, /reply language/);
-  assert.equal((await promptHook('en', true)).appendContext, `${goal}\n\n${ENGLISH_TURN_REMINDER}`);
+  assert.equal((await promptHook('en', true)).appendContext, besideOwner(goal, ENGLISH_TURN_REMINDER));
   const plain = await promptHook(undefined, false);
-  assert.equal(plain.appendContext, undefined, 'the default adds nothing beside an ordinary owner message');
+  assert.equal(plain.appendContext, PORTAL_INTEGRATION_TURN_CONTEXT, 'the default adds no language reminder');
   assert.ok(plain.appendSystemContext.includes(ACTIVITY_CONTRACT));
   assert.ok(plain.appendSystemContext.includes(RESPONSE_LANGUAGE_CONTRACT));
-  assert.equal((await promptHook(undefined, true)).appendContext, `${GOAL_CONTRACT}\n\n${GOAL_TURN_LANGUAGE_NOTE}`);
+  assert.equal((await promptHook(undefined, true)).appendContext, besideOwner(GOAL_CONTRACT, GOAL_TURN_LANGUAGE_NOTE));
   // The reminder replaces the default team and goal notes, never joins them.
   assert.equal(responseLanguageTurnContext(undefined), '');
   assert.equal(responseLanguageTurnContext(undefined, {teamRole: 'Coordinator'}), '');
@@ -144,10 +145,10 @@ test('English-only puts the reminder beside the owner message on every turn, aft
 test('a clarification answer note follows the goal contract and the language note or reminder', async () => {
   const note = '[ODS Portal clarification note]';
   const goal = inResponseLanguage(GOAL_CONTRACT, 'en');
-  assert.equal((await promptHook('en', true, note)).appendContext, `${goal}\n\n${ENGLISH_TURN_REMINDER}\n\n${note}`);
-  assert.equal((await promptHook('en', false, note)).appendContext, `${ENGLISH_TURN_REMINDER}\n\n${note}`);
-  assert.equal((await promptHook(undefined, true, note)).appendContext, `${GOAL_CONTRACT}\n\n${GOAL_TURN_LANGUAGE_NOTE}\n\n${note}`);
-  assert.equal((await promptHook(undefined, false, note)).appendContext, note);
+  assert.equal((await promptHook('en', true, note)).appendContext, besideOwner(goal, ENGLISH_TURN_REMINDER, note));
+  assert.equal((await promptHook('en', false, note)).appendContext, besideOwner(ENGLISH_TURN_REMINDER, note));
+  assert.equal((await promptHook(undefined, true, note)).appendContext, besideOwner(GOAL_CONTRACT, GOAL_TURN_LANGUAGE_NOTE, note));
+  assert.equal((await promptHook(undefined, false, note)).appendContext, besideOwner(note));
 });
 
 test('the plugin entry reads the setting once and hands it to the guard and the clarification tool', () => {
@@ -220,7 +221,7 @@ test('team and goal turns: English-only replaces the language note with the remi
     assert.doesNotMatch(prompt, /language|English/i, `${kind}: the owner message leaves the language to Pixel's rule`);
     const built = await plain(prompt, messages);
     const note = noteFor(kind);
-    assert.equal(built.appendContext, [kind.startsWith('goal') ? GOAL_CONTRACT : '', note].filter(Boolean).join('\n\n') || undefined,
+    assert.equal(built.appendContext, besideOwner(kind.startsWith('goal') ? GOAL_CONTRACT : '', note),
       `${kind}: by default the note, exactly once`);
     assert.ok(!built.appendContext?.includes(ENGLISH_TURN_REMINDER), kind);
     assert.equal(built.appendSystemContext.split(RESPONSE_LANGUAGE_CONTRACT).length, kind === 'coordinator' ? 1 : 2, `${kind}: one rule`);
@@ -229,7 +230,7 @@ test('team and goal turns: English-only replaces the language note with the remi
   for (const [kind, prompt, messages = []] of turns) {
     const built = await english(prompt, messages);
     assert.equal(built.appendContext,
-      [kind.startsWith('goal') ? inResponseLanguage(GOAL_CONTRACT, 'en') : '', ENGLISH_TURN_REMINDER].filter(Boolean).join('\n\n'),
+      besideOwner(kind.startsWith('goal') ? inResponseLanguage(GOAL_CONTRACT, 'en') : '', ENGLISH_TURN_REMINDER),
       `${kind}: English-only, the reminder and no note`);
     const seen = [built.prependContext, prompt, built.appendContext, built.appendSystemContext].filter(Boolean).join('\n');
     assert.ok(!seen.includes(TEAM_TURN_LANGUAGE_NOTE) && !seen.includes(GOAL_TURN_LANGUAGE_NOTE), kind);
@@ -238,7 +239,7 @@ test('team and goal turns: English-only replaces the language note with the remi
     assert.ok(!built.appendSystemContext.includes(RESPONSE_LANGUAGE_CONTRACT), kind);
     assert.equal(built.appendSystemContext.includes(ENGLISH_RESPONSE_CONTRACT), kind !== 'coordinator', kind);
   }
-  // An ordinary turn: nothing by default, the reminder in English-only mode.
-  assert.equal((await plain('Create a nice web page for me')).appendContext, undefined);
-  assert.equal((await english('Create a nice web page for me')).appendContext, ENGLISH_TURN_REMINDER);
+  // An ordinary turn adds a language reminder only in English-only mode.
+  assert.equal((await plain('Create a nice web page for me')).appendContext, PORTAL_INTEGRATION_TURN_CONTEXT);
+  assert.equal((await english('Create a nice web page for me')).appendContext, besideOwner(ENGLISH_TURN_REMINDER));
 });

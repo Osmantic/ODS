@@ -16,6 +16,29 @@ ACCESS_FIELDS = (('sandbox', 'mode'), ('tools', 'exec', 'host'), ('tools', 'exec
     ('tools', 'exec', 'ask'), ('tools', 'fs', 'workspaceOnly'))
 
 
+def verify_context_preservation(previous, candidate):
+    """Check owner caps on new admission without reinterpreting old journals."""
+    try:
+        scopes = []
+        for document in (previous, candidate):
+            agents = document['agents']
+            selected = [agent for agent in agents['list'] if agent.get('id') == 'pixel']
+            if len(selected) != 1:
+                raise ValueError()
+            scopes.append((agents.get('defaults', {}), selected[0]))
+        for old, new in zip(*scopes):
+            if type(old) is not dict or type(new) is not dict:
+                raise ValueError()
+            if ('contextTokens' in old) != ('contextTokens' in new):
+                raise ValueError()
+            if 'contextTokens' in old and (type(old['contextTokens']) is not int
+                    or old['contextTokens'] < 1 or type(new['contextTokens']) is not int
+                    or old['contextTokens'] != new['contextTokens']):
+                raise ValueError()
+    except (KeyError, TypeError, AttributeError, ValueError):
+        raise ValueError('native-migration-owner-context-changed') from None
+
+
 def check_plugin_transition(previous, candidate):
     # Candidate plugins are subsequently qualified against the pinned runtime.
     # Never silently remove an existing plugin or restore its old runtime path.
@@ -62,6 +85,8 @@ def verify_state_preservation(previous, candidate_bytes, record, *, state_dir):
                    old.get('model', old_defaults.get('model'))
                 or candidate['gateway']['auth'] != previous['gateway']['auth']
                 or candidate['gateway']['port'] != previous['gateway']['port']
+                or ('mcp' in candidate) != ('mcp' in previous)
+                or candidate.get('mcp') != previous.get('mcp')
                 or candidate.get('session', {}).get('store') != previous.get('session', {}).get('store')):
             raise ValueError()
         for name, value in previous['models']['providers'].items():
@@ -132,6 +157,13 @@ def preserve_state(candidate, previous, *, state_dir):
     for key, value in old.items():
         if key not in CONTROLLED_AGENT_FIELDS:
             target[key] = copy.deepcopy(value)
+    # Context caps are owner preferences, independent of the renderer's policy
+    # and provider-derived budgets. Keep their scope and explicit absence too.
+    for source, destination in ((defaults, target_defaults), (old, target)):
+        destination.pop('contextTokens', None)
+        if 'contextTokens' in source:
+            destination['contextTokens'] = copy.deepcopy(source['contextTokens'])
+    verify_context_preservation(previous, result)
     # Preserve the owner's selected access mode, not the legacy tool allowlist
     # or sandbox image. Resetting these fields breaks receipt relocation and
     # silently changes an existing full-access installation into sandbox mode.

@@ -40,12 +40,21 @@ of the release workflow remain part of the trust boundary.
 | `ODS-<tag>-source.tar.gz` / `.zip` | Committed source only, including installer entrypoints; untracked and working-tree changes are excluded. |
 | `source.spdx.json` | Syft SPDX 2.3 dependency inventory of the archived source tree. |
 | `release-manifest.json` | Repository, full commit, signed tag object, file sizes and SHA-256 digests. |
-| `SHA256SUMS` | Digests of both source archives, the SBOM and the manifest. |
+| `portal-google-desktop.json` | Optional installed-app runtime payload for the exact stable tag pinned in reviewed source. |
+| `SHA256SUMS` | Digests of the source archives, SBOM, manifest and any approved installed-app payload. |
 | `provenance.sigstore.jsonl` | GitHub OIDC attestation bundle covering the archives, inventory, manifest and checksum file. |
 
 The source SBOM is **not** an audit of the OS packages in every pulled image,
 downloaded model weight, or optional binary fetched later by an installer.
 Those dependencies need their own digest/lock and provenance checks.
+
+For a release approved to ship [Connect Google](PORTAL-GOOGLE-APP.md), supply
+the exact canonical envelope as the release workflow secret
+`ODS_PORTAL_GOOGLE_RELEASE_PAYLOAD`. Only the matching signed stable tag uses
+it. The separate asset is hashed and attested with the release and kept outside
+the source archives. A missing or different envelope fails packaging for that
+tag. Do not set a release pin or upload an actual payload while Google review
+and packaging review are pending.
 
 Archives preserve reviewed repository attributes and executable file modes.
 The build host's `core.autocrlf` setting cannot silently change source bytes.

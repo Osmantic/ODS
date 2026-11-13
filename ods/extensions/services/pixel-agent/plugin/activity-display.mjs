@@ -48,8 +48,24 @@ function source(value) {
 export function displayForActivity(event, context, previous=null) {
   const name=activityToolName(event,context), args=argsFor(event,context) || {};
   const display=previous ? structuredClone(previous) : {type:'tool',label:'Using a tool',detail:null,sources:[],steps:[],change:null};
-  const labels={read:'Reading a file',ls:'Listing files',glob:'Finding files',grep:'Searching files',write:'Writing a file',edit:'Editing a file',apply_patch:'Applying changes',exec:'Running a command',shell:'Running a command',bash:'Running a command',process:'Checking a process',tool_search:'Finding available tools',tool_describe:'Checking tool parameters',session_status:'Checking the session',pixel_ods_status:'Checking ODS',pixel_ods_workspace_preview:'Publishing a preview',pixel_ods_ask_user:'Asking for your input',sessions_spawn:'Starting an agent',sessions_send:'Coordinating an agent'};
+  const labels={read:'Reading a file',ls:'Listing files',glob:'Finding files',grep:'Searching files',write:'Writing a file',edit:'Editing a file',apply_patch:'Applying changes',exec:'Running a command',shell:'Running a command',bash:'Running a command',process:'Checking a process',tool_search:'Finding available tools',tool_describe:'Checking tool parameters',session_status:'Checking the session',pixel_ods_status:'Checking ODS',pixel_ods_connections_status:'Checking connections',pixel_ods_skill:'Checking task guidance',pixel_ods_workspace_preview:'Publishing a preview',pixel_ods_ask_user:'Asking for your input',sessions_spawn:'Starting an agent',sessions_send:'Coordinating an agent'};
   if(labels[name])display.label=labels[name];
+  if(['pixel_ods_notes','pixel_ods_notify','pixel_ods_mcp'].includes(name)) {
+    let label;
+    if(name==='pixel_ods_notify')label='Sending a notification';
+    if(name==='pixel_ods_notes') {
+      if(args.action==='search')label='Searching notes';
+      else if(args.action==='read')label='Reading a note';
+      else if(args.action==='write' && args.mode==='create')label='Creating a note';
+      else if(args.action==='write' && (args.mode===undefined || args.mode==='append'))label='Adding to a note';
+    }
+    if(name==='pixel_ods_mcp')label=args.action==='list'?'Checking connected tools'
+      :args.action==='call'?'Using a connected tool':undefined;
+    display.label=label ?? (args.action===undefined?previous?.label:undefined) ?? 'Using a tool';
+    // Activity names the operation, never an inferred successful effect or
+    // owner-controlled note text, notification body, server name or arguments.
+    display.type='tool';display.detail=null;display.sources=[];display.steps=[];display.change=null;
+  }
   if(name==='pixel_ods_project_build') {
     display.label=({capabilities:'Checking project runtime compatibility',diagnose:'Checking managed runtime tools',submit:'Starting project tests and build',observe:'Checking project build',cancel:'Requesting build cancellation'})[args.action] || 'Managing project build';
     // Describe the action, not an inferred successful result. Full command

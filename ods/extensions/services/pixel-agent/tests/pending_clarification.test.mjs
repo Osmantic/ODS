@@ -19,10 +19,11 @@ import {createPendingClarifications, answersClarification, clarificationAnswerCo
 import {createToolLoopGuard, userMessageAuthorizesRecursiveDelete, RECURSIVE_DELETE_REQUIRES_OWNER_REASON,
   OWNER_CANCELLED_REQUEST_CONTEXT} from '../plugin/tool-loop-guard.mjs';
 import {createConversationImageLifecycle} from '../plugin/conversation-image-lifecycle.mjs';
-import {promptContractForAgent} from '../plugin/prompt-contract.mjs';
+import {PORTAL_INTEGRATION_TURN_CONTEXT, promptContractForAgent} from '../plugin/prompt-contract.mjs';
 import {createSubagentDelivery} from '../plugin/subagent-delivery.mjs';
 import {GOAL_CONTRACT} from '../plugin/goal-progress.mjs';
 import {GOAL_TURN_LANGUAGE_NOTE} from '../plugin/response-language.mjs';
+import {isolateSdkImports} from './isolated-sdk-imports.mjs';
 
 const USER = 'ods-2c7a1f3b9e0d4c6a8b5e7f9a1c3d5e7f9b1a3c5e7d9f1b3a5c7e9d1f3b5a7c9e';
 const SESSION_KEY = `agent:pixel:openai-user:${USER}`;
@@ -684,6 +685,8 @@ async function loadPlugin(sessions, home, sdkOverrides = {}) {
   fs.mkdirSync(path.join(home, '.openclaw'), {recursive: true, mode: 0o700});
   process.env.HOME = home;
   process.env.USERPROFILE = home;
+  // No integrations service answers this instance, whatever runs on the test machine.
+  process.env.ODS_PIXEL_INTEGRATIONS_SOCKET = path.join(home, 'no-integrations.sock');
   const entry = new URL('../plugin/index.js', import.meta.url);
   const source = fs.readFileSync(entry, 'utf8').replace(/from\s+(['"])([^'"]+)\1/g, (match, _quote, specifier) =>
     specifier.startsWith('.') ? `from ${JSON.stringify(new URL(specifier, entry).href)}` : match);
@@ -695,11 +698,7 @@ async function loadPlugin(sessions, home, sdkOverrides = {}) {
     if (!Object.hasOwn(sdk, name)) throw new Error(`Unexpected SDK call: ${name}`);
     return sdk[name](...args);
   };
-  const stubbed = source.replace(/import\s*\{([^}]+)\}\s*from\s*['"]openclaw\/plugin-sdk\/[^'"]+['"];?/g, (_match, names) =>
-    names.split(',').map(name => name.trim()).filter(Boolean).map(name => name === 'definePluginEntry'
-      ? 'const definePluginEntry = entry => entry;' : name === 'OPENCLAW_VERSION' ? 'const OPENCLAW_VERSION = "2026.6.33";'
-        : `const ${name} = (...args) => globalThis.__odsClarificationSdk(${JSON.stringify(name)}, args);`).join('\n'));
-  assert.doesNotMatch(stubbed, /from\s*['"]openclaw\//, 'all SDK imports are isolated');
+  const stubbed = isolateSdkImports(source, '__odsClarificationSdk');
   const {default: plugin} = await import(`data:text/javascript;base64,${Buffer.from(
     `${stubbed}\n//# sourceURL=${entry.href}?clarification-${++pluginLoads}`).toString('base64')}`);
   const hooks = new Map(), tools = new Map();
@@ -724,6 +723,7 @@ async function loadPlugin(sessions, home, sdkOverrides = {}) {
 }
 
 test('the real plugin entry: the note goes beside the owner turn only and the run that ends well settles it', async t => {
+  const besideOwner = (...parts) => [...parts, PORTAL_INTEGRATION_TURN_CONTEXT].filter(Boolean).join('\n\n');
   const root = fs.mkdtempSync(path.join(tmpdir(), 'ods-clarify-plugin-'));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   const sessions = path.join(root, 'sessions'), dir = path.join(root, 'state', '.ods-pending-clarifications');
@@ -771,22 +771,22 @@ test('the real plugin entry: the note goes beside the owner turn only and the ru
   await ask(await gateway(), turn(1, 'session-02269765'));
   assert.equal(records(dir).length, 1);
   const restarted = await gateway();
-  assert.equal(await answer(restarted, turn(2, 'session-8b4c4b17'), FIELD_ANSWER, false), FIELD_CONTEXT, 'model-only, after the owner text');
+  assert.equal(await answer(restarted, turn(2, 'session-8b4c4b17'), FIELD_ANSWER, false), besideOwner(FIELD_CONTEXT), 'model-only, after the owner text');
   assert.equal(records(dir).length, 1, 'a failed answer keeps its card');
-  assert.equal(await answer(restarted, turn(3, 'session-8b4c4b17')), FIELD_CONTEXT, 'the resend is understood');
+  assert.equal(await answer(restarted, turn(3, 'session-8b4c4b17')), besideOwner(FIELD_CONTEXT), 'the resend is understood');
   assert.deepEqual(records(dir), [], 'settled by the run that ended well');
-  assert.equal(await answer(restarted, turn(4, 'session-8b4c4b17')), undefined, 'never twice');
-  assert.equal(await answer(restarted, turn(5, 'session-8b4c4b17'), 'Thanks!'), undefined);
+  assert.equal(await answer(restarted, turn(4, 'session-8b4c4b17')), besideOwner(), 'never repeats the settled clarification');
+  assert.equal(await answer(restarted, turn(5, 'session-8b4c4b17'), 'Thanks!'), besideOwner());
   // Only the card's answer: an unrelated turn consumes the card unused.
   await ask(restarted, turn(6, 'session-8b4c4b17'));
-  assert.equal(await answer(restarted, turn(7, 'session-8b4c4b17'), 'Increase them by 20% instead'), undefined);
+  assert.equal(await answer(restarted, turn(7, 'session-8b4c4b17'), 'Increase them by 20% instead'), besideOwner());
   assert.deepEqual(records(dir), []);
 
-  // /goal: the goal contract and its language note are the run's only
-  // appended context. A card asked in a goal task is answered with the
+  // /goal: preserve the goal contract and its language note before the
+  // shared turn context. A card asked in a goal task is answered with the
   // dashboard's goal continuation, which carries the objective itself; it
   // consumes the card with no clarification note.
-  const goalContext = `${GOAL_CONTRACT}\n\n${GOAL_TURN_LANGUAGE_NOTE}`;
+  const goalContext = besideOwner(GOAL_CONTRACT, GOAL_TURN_LANGUAGE_NOTE);
   assert.equal(await ask(restarted, turn(8, 'session-8b4c4b17'), `/goal ${REQUEST}`), goalContext);
   assert.equal(records(dir).length, 1);
   const continueGoal = '/goal Continue the goal from the preceding conversation using the existing work. Inspect uncertain ' +
@@ -812,13 +812,13 @@ test('the real plugin entry: the note goes beside the owner turn only and the ru
     await delegating.fire('after_tool_call', {toolName: 'sessions_spawn', toolCallId: 'call_spawn', params, durationMs: 1,
       result: {details: {status: 'accepted', runId: childRun, childSessionKey: child}}}, toolCtx);
   };
-  assert.equal(await answer(delegating, turn(11, session), FIELD_ANSWER, true, spawn), FIELD_CONTEXT);
+  assert.equal(await answer(delegating, turn(11, session), FIELD_ANSWER, true, spawn), besideOwner(FIELD_CONTEXT));
   assert.deepEqual(records(dir), [], 'the answer run ended well');
   const announce = {agentId: 'pixel', runId: `announce:v1:${child}:${childRun}`, sessionId: session, sessionKey: SESSION_KEY,
     trigger: 'user', inputProvenance: {kind: 'inter_session', sourceTool: 'subagent_announce', sourceSessionKey: child}};
   const report = await delegating.promptBuild({prompt: 'Child result: world.js holds ROSTER_SCALE = 1.3.', messages: []}, announce);
   assert.match(report.prependContext ?? '', /ODS delegation delivery state: 1\/1/, 'the delivery chain admitted the continuation');
-  assert.equal(report.appendContext, FIELD_CONTEXT, 'the continuation keeps the request in view');
+  assert.equal(report.appendContext, besideOwner(FIELD_CONTEXT), 'the continuation keeps the request in view');
 });
 
 test('index.js hands conversation deletion the same store the guard records into', t => {

@@ -8,6 +8,7 @@ import http from 'node:http';
 import {createIngressServer,computeSessionUser} from '../host/pixel_ingress.mjs';
 import {createChatHistoryLedger} from '../host/chat_history_ledger.mjs';
 import {createContextCompaction} from '../plugin/context-compaction.mjs';
+import {nativeIntegrationHookState} from './native-integration-hook-state.mjs';
 const rawUser='native-stop-fixture',user=computeSessionUser({user:rawUser});
 const key=`agent:pixel:openai-user:${user}`;
 const u=content=>({role:'user',content});
@@ -22,10 +23,12 @@ function abortHandler(compactor,delegated={tracked:false,aborted:false}) {
   const end=source.indexOf('    api.registerHttpRoute({',start+1);
   assert.ok(start>0 && end>start);
   let route;
-  new Function('api','readAbortUser','sendJson','delegationDelivery','contextCompaction','toolLoopGuard',source.slice(start,end))(
+  const {integrationOutcomes,integrationReviewRecovery}=nativeIntegrationHookState();
+  new Function('api','readAbortUser','sendJson','delegationDelivery','contextCompaction','toolLoopGuard',
+    'integrationOutcomes','integrationReviewRecovery','AGENT_ID',source.slice(start,end))(
     {registerHttpRoute:value=>{route=value;}},async()=>({status:200,user}),
     (res,status,body)=>{res.statusCode=status;res.end(JSON.stringify(body));},
-    {cancel:async()=>delegated},compactor,{abortUserRun:async()=>false});
+    {cancel:async()=>delegated},compactor,{abortUserRun:async()=>false},integrationOutcomes,integrationReviewRecovery,'pixel');
   return route.handler;
 }
 async function fixture(t,mode) {

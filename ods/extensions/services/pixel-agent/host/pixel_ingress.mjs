@@ -22,7 +22,7 @@ import { parseQuestions } from "./questions_schema.mjs";
 import {createChatHistoryLedger,HistoryError} from './chat_history_ledger.mjs';
 import {createChatImageStore,createChatImageReadHandler,ChatImageError} from './chat_image_store.mjs';
 import {currentImageNote,decodeChatImageTurn,nativeHistoryMessages,validateImageRoute} from './chat_image_transport.mjs';
-import {handleAccessMode, handleModelControl, publicModelControl, readAccessOwnerKey, requestAccessController} from './access_mode_relay.mjs';
+import {handleAccessMode, handleSchedules, handleConnections, handleModelControl, publicModelControl, readAccessOwnerKey, requestAccessController} from './access_mode_relay.mjs';
 import {ownerForbidsTools} from './owner_tool_policy.mjs';
 
 // ---------------------------------------------------------------------------
@@ -42,6 +42,7 @@ const MAX_VERIFICATION_TEXT = 32 * 1024;
 // One host line for the owner after the delivered reply (the plugin's
 // shipped-example guard, plugin/example-guard.mjs).
 const MAX_VERIFICATION_NOTICE = 1024;
+const MAX_INTEGRATION_NOTICE = 2048;
 // The limits that may stop a failed response (verification `stop`).
 const VERIFICATION_STOPS = new Set(['tool-limit', 'run-deadline']);
 const MAX_VERIFICATION_RESPONSE = 1024 * 1024;
@@ -848,6 +849,8 @@ export function parseVerificationResponse(value, runId) {
   // A pending question card carries no notice.
   const hasNotice = status !== 'pending' && Object.hasOwn(value, 'notice');
   if (hasNotice) expectedKeys.push('notice');
+  const hasIntegrationNotice = Object.hasOwn(value, 'integrationNotice');
+  if (hasIntegrationNotice) expectedKeys.push('integrationNotice');
   // Which limit stopped a failed response (tool-loop-guard.mjs), for goal
   // mode's controller: it continues a goal after these stops.
   const hasStop = status === 'failed' && Object.hasOwn(value, 'stop');
@@ -911,6 +914,8 @@ export function parseVerificationResponse(value, runId) {
     (hasQuestions && (status !== 'pending' || !parseQuestions(value.questions))) ||
     (hasNotice && (typeof value.notice !== 'string' || !value.notice.trim() ||
       value.notice.length > MAX_VERIFICATION_NOTICE || /[\u0000-\u001f\u007f]/.test(value.notice))) ||
+    (hasIntegrationNotice && (typeof value.integrationNotice !== 'string' || !value.integrationNotice.trim() ||
+      value.integrationNotice.length > MAX_INTEGRATION_NOTICE || /[\u0000-\u0009\u000b-\u001f\u007f]/.test(value.integrationNotice))) ||
     (hasStop && !VERIFICATION_STOPS.has(value.stop))
   ) {
     throw new HttpError(502, "verification state unavailable");
@@ -918,7 +923,7 @@ export function parseVerificationResponse(value, runId) {
   return value;
 }
 
-async function readVerificationForRun(runId, token, gatewayPort, signal, deps) {
+async function readVerificationForRun(runId, token, gatewayPort, signal, deps, silentCompletion) {
   if (typeof runId !== "string" || !OPENAI_RUN_ID.test(runId)) {
     throw new HttpError(502, "invalid upstream response");
   }
@@ -930,6 +935,7 @@ async function readVerificationForRun(runId, token, gatewayPort, signal, deps) {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
         accept: "application/json",
+        ...(silentCompletion ? {"x-ods-silent-completion": "1"} : {}),
       },
       body: JSON.stringify({ runId }),
       redirect: "error",
@@ -954,12 +960,14 @@ async function readVerificationForRun(runId, token, gatewayPort, signal, deps) {
   return parseVerificationResponse(parsed, runId);
 }
 
-async function verificationForRun(runId, token, gatewayPort, signal, deps) {
+async function verificationForRun(completion, token, gatewayPort, signal, deps) {
+  const runId = completion?.id;
+  const silentCompletion = completion?.choices?.length === 1 && silentFinalReply(completion.choices[0]);
   // Only re-read the same host receipt. Never resubmit the model request or
   // replay tools when finalization and receipt availability briefly overlap.
   for (let attempt = 0; ; attempt++) {
     try {
-      return await readVerificationForRun(runId, token, gatewayPort, signal, deps);
+      return await readVerificationForRun(runId, token, gatewayPort, signal, deps, silentCompletion);
     } catch (error) {
       if (signal.aborted || attempt >= 2 || !OPENAI_RUN_ID.test(runId ?? '')) throw error;
       await new Promise(resolve => {
@@ -1031,6 +1039,10 @@ function validDeliveredArtifacts(items) {
     new Set(items.map(item=>item.siteId+'/'+item.file.path)).size === items.length;
 }
 
+function silentFinalReply(choice) {
+  return missingVisibleAssistantText(choice?.message?.content) && choice.finish_reason !== 'tool_calls' && !choice.message.tool_calls?.length;
+}
+
 function deliveryVerification(completion, verification) {
   const choice = completion?.choices?.length === 1 ? completion.choices[0] : undefined;
   const content = choice?.message?.content;
@@ -1041,9 +1053,11 @@ function deliveryVerification(completion, verification) {
   // skip before_agent_finalize for an empty assistant message, so classify its
   // terminal result here, after reading the same run's trusted evidence. This
   // never resubmits the owner request or repeats a possibly completed effect.
-  if (!missingVisibleAssistantText(content) || choice.finish_reason === 'tool_calls' ||
-      choice.message.tool_calls?.length || verification.text || verification.status === 'pending') return verification;
+  if (!silentFinalReply(choice) || verification.text || verification.status === 'pending') return verification;
   const { suppressStaleExecWarning, ...evidence } = verification;
+  if (verification.integrationNotice && !verification.artifacts?.length) {
+    return {...evidence, status:'failed', text:'Portal returned no written answer. Check the recorded integration status before repeating the request.'};
+  }
   return {
     ...evidence, status:'failed',
     text:(verification.artifacts?.length ? 'Verified file downloads are attached, but Portal ended without a written answer. This request may be incomplete. ' : 'Portal ended without a visible answer or a delivered result. This request is incomplete. ') +
@@ -1054,10 +1068,17 @@ function deliveryVerification(completion, verification) {
 
 // Exported for tests of the exact delivery path.
 export function applyVerificationToCompletion(completion, verification) {
-  const result=withNotice(baseApplyVerificationToCompletion(completion,verification),verification.notice);
+  const result=withIntegrationNotice(withNotice(baseApplyVerificationToCompletion(completion,verification),verification.notice),verification.integrationNotice);
   const {pixel_artifacts: _untrustedArtifacts, ...clean}=result;
   return verification.artifacts?.length
     ? {...clean,pixel_artifacts:{schemaVersion:1,artifacts:verification.artifacts}} : clean;
+}
+
+function withIntegrationNotice(completion, notice) {
+  const choice = completion?.choices?.[0], content = choice?.message?.content;
+  if (!notice || typeof content !== 'string' || content.endsWith(notice)) return completion;
+  return {...completion, choices:[{...choice, message:{...choice.message,
+    content:`${content}${content.trim() ? '\n\n' : ''}${notice}`}}, ...completion.choices.slice(1)]};
 }
 
 // The host's one owner line follows the reply as delivered (kept, appended
@@ -1434,7 +1455,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
         completion = delegated.completion;
         deliveryStage = "verification";
         const verification = deliveryVerification(completion, delegated.verification ?? await verificationForRun(
-          completion?.id,
+          completion,
           token,
           gatewayPort,
           controller.signal,
@@ -1473,7 +1494,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     const delegated = await awaitSubagentDelivery(completion,outgoing.user,token,gatewayPort,controller.signal,deps);
     completion = delegated.completion;
     const verification = deliveryVerification(completion, delegated.verification ?? await verificationForRun(
-      completion?.id,
+      completion,
       token,
       gatewayPort,
       controller.signal,
@@ -2153,6 +2174,14 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
     }
     if (pathname === '/v1/access-mode') {
       void handleAccessMode(req, res, {ownerKey:typeof accessOwnerKey === 'function' ? accessOwnerKey() : accessOwnerKey});
+      return;
+    }
+    if (pathname === '/v1/schedules') {
+      void handleSchedules(req,res,{ownerKey:typeof accessOwnerKey === 'function' ? accessOwnerKey() : accessOwnerKey});
+      return;
+    }
+    if (pathname === '/v1/connections') {
+      void handleConnections(req, res, {ownerKey:typeof accessOwnerKey === 'function' ? accessOwnerKey() : accessOwnerKey});
       return;
     }
 

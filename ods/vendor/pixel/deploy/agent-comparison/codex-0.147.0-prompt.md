@@ -148,7 +148,7 @@ If completing the user's task requires writing or modifying files, your code and
 
 ## Validating your work
 
-If the codebase has tests or the ability to build or run, consider using them to verify that your work is complete.
+If the codebase has tests or the ability to build or run, consider using them to verify that your work is complete. 
 
 When testing, your philosophy should be to start as specific as possible to the code you changed so that you can catch issues efficiently, then make your way to broader tests as you build confidence. If there's no test for the code you changed, and if the adjacent patterns in the codebases show that there's a logical place for you to add a test, you may do so. However, do not add tests to codebases with no tests.
 

@@ -89,3 +89,4 @@ def test_root_access_daemon_uses_fixed_interpreter_and_no_owner_environment():
     assert document["UserName"] == "root"
     assert document["ProgramArguments"] == ["/usr/bin/python3", "-I", str(launchd.ACCESS_PROGRAM)]
     assert document["EnvironmentVariables"] == {"PYTHONNOUSERSITE": "1"}
+    assert document["ProcessType"] == "Interactive"

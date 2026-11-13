@@ -232,6 +232,9 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .pixel-chat-options > summary:hover { background:#232426; color:#ddd; }
 .pixel-chat-options-menu { position:absolute; right:0; top:100%; width:220px; padding:8px; display:flex; flex-direction:column; gap:6px; border:1px solid #323438; border-radius:10px; background:#1b1c1e; z-index:40; box-shadow:0 10px 30px #0004; }
 .pixel-chat-options-menu > button { text-align:left; width:100%; border:0; }
+/* On a phone the header wraps and ••• can sit near the left edge: keep the menu inside the screen. */
+/* A fixed box does not scroll with the page, so a tall menu (Advanced tools open) scrolls inside itself. */
+@media (max-width: 640px) { .pixel-chat-options-menu { position:fixed; top:auto; left:auto; right:max(16px, env(safe-area-inset-right, 0px)); width:min(260px, calc(100vw - 32px)); max-height:calc(100dvh - 140px); overflow-y:auto; overscroll-behavior:contain; } }
 .pixel-welcome { width:min(100%,740px); padding:64px 16px 24px; }
 .pixel-welcome h2 { font-size:28px; color:#dedfe3; letter-spacing:-.04em; margin:12px 0 8px; }
 .pixel-welcome-character,.pixel-pet-button > .pixel-welcome-character { width:60px; height:60px; flex-basis:60px; }
@@ -448,7 +451,7 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .dashboard-view-tabs button:hover,.dashboard-pagination button:hover { background:#222527; color:#e3e6e9; }
 .dashboard-pagination { display:flex; gap:4px; justify-content:center; flex-wrap:wrap; margin-top:auto; padding:8px 0 0; }
 .dashboard-service-list summary { min-height:36px; }
-.pixel-preview-panel { position:relative; width:var(--preview-width,440px); max-width:60%; min-width:0; min-height:0; border-left:1px solid var(--pixel-border); background:var(--pixel-canvas); }
+.pixel-preview-panel { position:relative; width:var(--preview-width,440px); max-width:60%; min-width:0; min-height:0; border:0; background:var(--pixel-canvas); }
 .pixel-preview-panel.is-collapsed { width:48px; }
 .pixel-preview-panel.is-collapsed > div:not(.portal-panel-resizer) { flex-direction:column; padding:8px 4px; }
 .pixel-preview-panel.is-collapsed :is(details,a,button[title='Reload preview']) { display:none; }
@@ -481,13 +484,13 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 }
 @container portal-chat (max-width:680px) {
   .pixel-chat-preview-layout { flex-direction:column; overflow-y:auto; }
-  .pixel-preview-panel { width:100%; max-width:100%; height:42vh; min-height:240px; border-left:0; border-top:1px solid #303232; }
+  .pixel-preview-panel { width:100%; max-width:100%; height:42vh; min-height:240px; border:0; }
   .pixel-preview-panel > .portal-panel-resizer { display:none; }
   .pixel-preview-panel.is-collapsed { width:100%; height:48px; min-height:48px; }
   .pixel-preview-panel.is-collapsed > div { flex-direction:row!important; justify-content:flex-end; }
 }
 @media(max-width:1023px) {
-  .pixel-preview-panel { width:100%; max-width:100%; height:46vh; border-left:0; border-top:1px solid #303232; }
+  .pixel-preview-panel { width:100%; max-width:100%; height:46vh; border:0; }
   .pixel-preview-panel > .portal-panel-resizer { display:none; }
   .pixel-preview-panel.is-collapsed { width:100%; height:48px; }
   .pixel-preview-panel.is-collapsed > div { flex-direction:row!important; justify-content:flex-end; }

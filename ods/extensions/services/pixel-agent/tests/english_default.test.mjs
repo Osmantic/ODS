@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {promptContractForAgent} from '../plugin/prompt-contract.mjs';
+import {promptContractForAgent, PORTAL_INTEGRATION_TURN_CONTEXT} from '../plugin/prompt-contract.mjs';
 import {GOAL_TURN_LANGUAGE_NOTE, managedTurnOwnerWords, RESPONSE_LANGUAGE_CONTRACT,
   TEAM_TURN_LANGUAGE_NOTE} from '../plugin/response-language.mjs';
 import {createAskUserTool} from '../plugin/ask-user.mjs';
@@ -18,6 +18,7 @@ import {createCompletionAssurance, executionContext, portugueseDateHint, UNREAD_
 import {createToolLoopGuard, managedTeamRole, RECURSIVE_DELETE_REQUIRES_OWNER_REASON} from '../plugin/tool-loop-guard.mjs';
 import {dashboardApiTurns, dashboardContinueGoal, promptHookAlone, PYTHON_AVAILABLE,
   realPromptBuild} from './prompt-build-harness.mjs';
+const besideOwner = (...parts) => [...parts, PORTAL_INTEGRATION_TURN_CONTEXT].filter(Boolean).join('\n\n');
 
 const SERVICES = fileURLToPath(new URL('../../', import.meta.url));
 const PLUGIN = path.join(SERVICES, 'pixel-agent', 'plugin');
@@ -364,7 +365,7 @@ test("team and goal turns carry one note that points the language rule at the ow
     const built = await build(prompt, messages);
     // Exactly once, beside the owner's message; the Coordinator only counts workers.
     const note = goal ? GOAL_TURN_LANGUAGE_NOTE : coordinator ? '' : TEAM_TURN_LANGUAGE_NOTE;
-    assert.equal(built.appendContext, [goal ? GOAL_CONTRACT : '', note].filter(Boolean).join('\n\n') || undefined, kind);
+    assert.equal(built.appendContext, besideOwner(goal ? GOAL_CONTRACT : '', note), kind);
     assert.ok(!`${built.prependContext ?? ''}${built.appendSystemContext}`.includes('[ODS language:'), kind);
     assert.equal(built.appendSystemContext.split(RESPONSE_LANGUAGE_CONTRACT).length, coordinator ? 1 : 2, `${kind}: one rule`);
     // Outside the owner's words and the one rule, no fixed text names a language.
@@ -374,9 +375,9 @@ test("team and goal turns carry one note that points the language rule at the ow
     assert.doesNotMatch(fixed, /\b(?:English|Portuguese|Spanish|French|German|Chinese)\b|owner(?:'s)? language|same language/i, kind);
     assert.doesNotMatch(fixed, PORTUGUESE, kind);
   }
-  // An ordinary turn, in either language, gets nothing beside the owner's message.
+  // Ordinary turns in either language add no extra language note.
   for (const prompt of ['Create a nice web page for me', 'Crie uma página web bonita para mim', ENGLISH_REQUESTS[0]]) {
-    assert.equal((await build(prompt)).appendContext, undefined, prompt);
+    assert.equal((await build(prompt)).appendContext, PORTAL_INTEGRATION_TURN_CONTEXT, prompt);
   }
 });
 
@@ -386,11 +387,11 @@ test('beside the owner turn: the goal contract, then the team or goal note, then
   const note = '[ODS Portal clarification note]';
   const team = "You are the Reviewer in the owner's Portal team. Your assignment: review.\n\nOwner's requested outcome:\nCrie um site.";
   assert.equal((await promptHookAlone({goal: true, clarificationNote: note})).appendContext,
-    `${GOAL_CONTRACT}\n\n${GOAL_TURN_LANGUAGE_NOTE}\n\n${note}`);
-  assert.equal((await promptHookAlone({prompt: team, clarificationNote: note})).appendContext, `${TEAM_TURN_LANGUAGE_NOTE}\n\n${note}`);
-  assert.equal((await promptHookAlone({clarificationNote: note})).appendContext, note);
-  assert.equal((await promptHookAlone({goal: true})).appendContext, `${GOAL_CONTRACT}\n\n${GOAL_TURN_LANGUAGE_NOTE}`);
-  assert.equal((await promptHookAlone()).appendContext, undefined);
+    besideOwner(GOAL_CONTRACT, GOAL_TURN_LANGUAGE_NOTE, note));
+  assert.equal((await promptHookAlone({prompt: team, clarificationNote: note})).appendContext, besideOwner(TEAM_TURN_LANGUAGE_NOTE, note));
+  assert.equal((await promptHookAlone({clarificationNote: note})).appendContext, besideOwner(note));
+  assert.equal((await promptHookAlone({goal: true})).appendContext, besideOwner(GOAL_CONTRACT, GOAL_TURN_LANGUAGE_NOTE));
+  assert.equal((await promptHookAlone()).appendContext, PORTAL_INTEGRATION_TURN_CONTEXT);
 });
 
 test('the prompt-build harness puts HOME, USERPROFILE and OPENCLAW_STATE_DIR back after two loads in one test', async t => {

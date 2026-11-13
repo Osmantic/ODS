@@ -86,20 +86,21 @@ def until(terminal, text=None):
 
 
 def gone_or_zombie(proc):
-    # The child can be reaped between exists() and read_text(). Read once;
-    # only an absent proc entry or an observed zombie satisfies cleanup.
+    # The child can be reaped before open or between open and read. Read once;
+    # only an absent process or an observed zombie satisfies cleanup.
     try:
         return proc.read_text().split()[2] == "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return True
 
 
-def test_reaped_proc_during_observation_is_gone(monkeypatch):
+@pytest.mark.parametrize("error", [FileNotFoundError, ProcessLookupError])
+def test_reaped_proc_during_observation_is_gone(monkeypatch, error):
     proc = Path("/proc/12345/stat")
     monkeypatch.setattr(Path, "exists", lambda _self: True)
 
     def reaped(_self):
-        raise FileNotFoundError("fixture: reaped before read")
+        raise error("fixture: reaped before or during read")
 
     monkeypatch.setattr(Path, "read_text", reaped)
     assert gone_or_zombie(proc)

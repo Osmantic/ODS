@@ -724,6 +724,287 @@ class NativeLifecycleVolumeTests(unittest.TestCase):
                     self.assert_refused()
 
 
+CLIENT_FAILURE = "Native client update ownership could not be proven"
+PRIVATE_STORE_KEYS = ("dashboard-pixel-images", "dashboard-pixel-chat-results")
+
+
+@unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "native macOS custody requires POSIX file semantics")
+class NativeClientUpdateVolumeTests(unittest.TestCase):
+    """A completed native update leaves the Portal clients on its frozen recipe.
+
+    The update directory and recipe path reproduce the fleet Mac's labels. The
+    recipe and journal come from the client updater's own serializer; their
+    contents are synthetic, following its apply() and complete() schema.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="ods-client-update-uninstall-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve() / "ods"
+        for relative in ("docker-compose.base.yml", "installers/macos/dashboard-private-state.compose.yaml"):
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, path)
+        self.directory = self.root / "data/pixel-native/update-5dbsunm6/clients"
+        self.directory.mkdir(parents=True, mode=0o700)
+        self.path, self.journal = self.directory / "candidate.compose.json", self.directory / "journal.json"
+        spec = importlib.util.spec_from_file_location(
+            "native_client_update_writer", ROOT / "installers/macos/owner/pixel-native-client-update.py")
+        self.writer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.writer)
+        self.snapshot = Path(self.temp.name) / "snapshot.json"
+        self.snapshot.touch()
+        self.fake = FakeDocker(self.root)
+        self.fake.volumes = {f"ods_{key}": FakeDocker._volume(f"ods_{key}", key) for key in PRIVATE_STORE_KEYS}
+        data = str(self.root / "data")
+        mounts = {"dashboard-api": [
+            {"type": "bind", "source": str(self.root), "target": "/ods", "read_only": True, "bind": {"selinux": "z"}},
+            {"type": "bind", "source": data, "target": "/data", "bind": {"selinux": "z"}},
+            *({"type": "volume", "source": key, "target": "/data/" + key.removeprefix("dashboard-"),
+               "volume": {"nocopy": True}} for key in PRIVATE_STORE_KEYS)],
+            "dashboard": [{"type": "bind", "source": data, "target": "/data", "read_only": True,
+                           "bind": {"selinux": "z"}}]}
+        # The resolved candidate stack, as apply() reads it from Compose.
+        candidate = {"name": "ods", "networks": {"default": {"name": "ods-network"}},
+                     "volumes": {key: {"name": "ods_" + key} for key in PRIVATE_STORE_KEYS}, "services": {
+                         service: {"build": {"context": str(self.root / "extensions/services" / service),
+                                             "dockerfile": "Dockerfile"},
+                                   "container_name": "ods-" + service, "pull_policy": "build",
+                                   "environment": {"DASHBOARD_API_KEY": "fixture-private-value"},
+                                   "networks": {"default": None}, "volumes": mounts[service]}
+                         for service in self.writer.SERVICES}}
+        previous = {service: {"Id": str(index + 3) * 64, "Image": "sha256:" + str(index + 1) * 64,
+                              "Config": {"Image": "ods-" + service, "Labels": {
+                                  "com.docker.compose.config-hash": "e" * 64}}, "Mounts": []}
+                    for index, service in enumerate(self.writer.SERVICES)}
+        self.recipe = self.writer.replay_document(
+            candidate, previous, {service: "ods-" + service for service in self.writer.SERVICES})
+        self.images = {service: "sha256:" + str(index + 7) * 64 for index, service in enumerate(self.writer.SERVICES)}
+        self.record = {"schemaVersion": 1, "installDir": str(self.root), "phase": "ready",
+            "transport": {"docker": "/opt/homebrew/bin/docker", "project": "ods",
+                          "image": "sha256:" + "f" * 64, "user": "501:20"},
+            "dockerEndpoint": "unix:///Users/owner/.colima/ods/docker.sock", "sourceDigest": "a" * 64,
+            "previous": {service: self.writer.container_identity(value) for service, value in previous.items()},
+            "previousImages": {service: value["Image"] for service, value in previous.items()},
+            "rollbackImages": {service: "ods-native-rollback:" + "c" * 32 + "-" + service
+                               for service in self.writer.SERVICES},
+            "images": self.images, "binding": {"token": "b" * 64, "revision": "c" * 64},
+            "candidateClients": candidate["services"], "previousClients": candidate["services"],
+            "candidateHashes": {service: self.fake.frozen_hash for service in self.writer.SERVICES}}
+        self.write_records()
+        self.fake.containers = []
+        for index, service in enumerate(self.writer.SERVICES):
+            self.fake.containers.append({"Id": str(index + 1) * 64, "Image": self.images[service],
+                "Config": {"Image": "ods-" + service, "User": "odser", "Labels": {
+                    "com.docker.compose.project": "ods", "com.docker.compose.service": service,
+                    "com.docker.compose.project.working_dir": str(self.root),
+                    "com.docker.compose.project.config_files": str(self.path),
+                    "com.docker.compose.config-hash": self.fake.frozen_hash}},
+                "State": {"Status": "running"},
+                "Mounts": [{"Type": item["type"], "Destination": item["target"],
+                            "RW": not item.get("read_only", False),
+                            **({"Name": "ods_" + item["source"]} if item["type"] == "volume"
+                               else {"Source": item["source"]})}
+                           for item in self.recipe["services"][service]["volumes"]]})
+        self.api = self.fake.containers[0]
+        patcher = patch.object(MODULE, "docker", self.fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write_records(self):
+        self.writer.write(self.path, self.recipe)
+        self.record["candidateRecipeSha256"] = self.writer.digest(self.recipe)
+        self.writer.write(self.journal, self.record)
+
+    def preflight(self):
+        MODULE.preflight(self.root, self.snapshot, ["-f", "docker-compose.base.yml"])
+
+    def assert_refused(self, message=CLIENT_FAILURE):
+        with self.assertRaisesRegex(ValueError, message):
+            self.preflight()
+        self.assertEqual(self.snapshot.stat().st_size, 0)
+        self.assertFalse(self.fake.removed)
+        self.assertFalse((self.root / MODULE.RESUME_RECORD).exists())
+
+    def test_completed_update_proves_clients_and_private_stores_before_purge(self):
+        self.assertEqual(MODULE.native_client_update_provenance(self.root, "ods", self.api, str(self.path)),
+                         [str(self.root / "docker-compose.base.yml"),
+                          str(self.root / "installers/macos/dashboard-private-state.compose.yaml")])
+        self.fake.hash_commands.clear()
+        # Base-only flags leave the private stores unselected: only the
+        # returned recipe provenance can prove them.
+        self.preflight()
+        self.assertEqual(set(json.loads(self.snapshot.read_text())["volumes"]), set(self.fake.volumes))
+        self.assertEqual(self.fake.hash_commands, [(
+            "compose", "--project-directory", str(self.root), "--project-name", "ods",
+            "--env-file", "/dev/null", "-f", str(self.path), "config", "--hash", service,
+        ) for service in MODULE.CLIENT_UPDATE_SERVICES])
+        self.fake.containers = []
+        MODULE.postflight_containers(self.root, self.snapshot)
+        MODULE.complete(self.root, self.snapshot)
+        self.assertEqual(set(self.fake.removed), {"ods_" + key for key in PRIVATE_STORE_KEYS})
+        self.assertEqual(self.fake.foreign, {"ods-pixel-retired-research", "ods-unrelated"})
+
+    def test_selected_private_stores_with_completed_clients_are_accepted(self):
+        # The fleet Mac's .compose-flags selects the private-store recipe.
+        self.fake.config["volumes"] = {key: {"name": "ods_" + key} for key in PRIVATE_STORE_KEYS}
+        self.preflight()
+        self.assertEqual(set(json.loads(self.snapshot.read_text())["volumes"]), set(self.fake.volumes))
+
+    def test_missing_or_tampered_journal_is_refused(self):
+        self.journal.unlink()
+        self.assert_refused()
+        self.write_records()
+        for target, key, value in ((self.record, "installDir", "/other/ods"), (self.record, "schemaVersion", 2),
+                                   (self.record["transport"], "project", "other"),
+                                   (self.record["images"], "dashboard-api", "ods-dashboard-api:latest"),
+                                   (self.record["candidateHashes"], "dashboard-api", "unproven")):
+            with self.subTest(key=key, value=value):
+                old = target[key]
+                target[key] = value
+                self.write_records()
+                self.assert_refused()
+                target[key] = old
+        self.write_records()
+        self.journal.chmod(0o644)
+        self.assert_refused()
+        self.journal.chmod(0o600)
+        link = self.directory / "journal-link.json"
+        os.link(self.journal, link)
+        self.assert_refused()
+        link.unlink()
+        saved = self.journal.with_name("journal.saved.json")
+        self.journal.rename(saved)
+        self.journal.symlink_to(saved)
+        self.assert_refused()
+
+    def test_recipe_hash_mismatch_is_refused(self):
+        original = json.loads(json.dumps(self.recipe))
+        self.recipe["services"]["dashboard-api"]["environment"]["DASHBOARD_API_KEY"] = "changed"
+        self.writer.write(self.path, self.recipe)
+        self.assert_refused()
+        self.recipe = original
+        self.write_records()
+        # Equal JSON in other bytes is not what the writer recorded.
+        self.path.write_text(json.dumps(self.recipe, sort_keys=True, indent=1) + "\n", encoding="utf-8")
+        self.assert_refused()
+        self.write_records()
+        self.record["candidateRecipeSha256"] = "f" * 64
+        self.writer.write(self.journal, self.record)
+        self.assert_refused()
+        self.write_records()
+        self.path.chmod(0o644)
+        self.assert_refused()
+
+    def test_unexpected_service_is_refused(self):
+        labels = self.api["Config"]["Labels"]
+        for service in ("open-webui", "pixel-native-ingress"):
+            with self.subTest(service=service):
+                labels["com.docker.compose.service"] = service
+                self.assert_refused()
+        labels["com.docker.compose.service"] = "dashboard-api"
+        self.recipe["services"]["open-webui"] = dict(self.recipe["services"]["dashboard"])
+        self.write_records()
+        self.assert_refused()
+
+    def test_interrupted_or_restored_update_is_refused(self):
+        for phase in ("building", "prepared", "acquiring", "publishing", "published",
+                      "applying", "verified", "failed", "restored"):
+            with self.subTest(phase=phase):
+                self.record["phase"] = phase
+                self.write_records()
+                self.assert_refused()
+        # A failed apply restores the clients from the retained rollback recipe.
+        previous = self.directory / "previous.compose.json"
+        self.writer.write(previous, self.recipe)
+        for container in self.fake.containers:
+            container["Config"]["Labels"]["com.docker.compose.project.config_files"] = str(previous)
+        self.assert_refused("another installation")
+
+    def test_live_container_drift_is_refused(self):
+        labels = self.api["Config"]["Labels"]
+        files = "com.docker.compose.project.config_files"
+        changes = [(self.api, "Image", "sha256:" + "f" * 64), (self.api["Config"], "Image", "ods-other"),
+                   (labels, "com.docker.compose.config-hash", "f" * 64),
+                   (self.api["Mounts"][2], "Name", "ods_unrelated"), (self.api["Mounts"][0], "RW", True),
+                   (self.api["Mounts"][1], "Source", "/other/ods/data"),
+                   (labels, files, str(self.root / "data/custom/clients/candidate.compose.json")),
+                   (labels, files, str(self.root / "data/pixel-native/update-5dbsunm6x/clients/candidate.compose.json")),
+                   (labels, files, str(self.root.parent / "other/data/pixel-native/update-5dbsunm6/clients/candidate.compose.json"))]
+        for target, key, value in changes:
+            with self.subTest(key=key, value=value):
+                old = target[key]
+                target[key] = value
+                self.assert_refused()
+                target[key] = old
+        labels[files] = str(self.path) + "," + str(self.root / "docker-compose.base.yml")
+        self.assert_refused("another installation")
+        labels[files] = str(self.path)
+        self.api["Mounts"].append({"Type": "volume", "Name": "ods_unrelated", "Destination": "/extra", "RW": True})
+        self.assert_refused()
+        self.api["Mounts"].pop()
+        self.fake.frozen_hash = "f" * 64
+        self.assert_refused()
+
+    def test_unknown_volume_or_foreign_consumer_is_not_blessed(self):
+        self.recipe["volumes"]["unrelated"] = {"name": "ods_unrelated", "external": True}
+        self.write_records()
+        self.assert_refused()
+        del self.recipe["volumes"]["unrelated"]
+        self.recipe["volumes"]["dashboard-pixel-images"]["name"] = "owner-images"
+        self.write_records()
+        self.assert_refused()
+        self.recipe["volumes"]["dashboard-pixel-images"]["name"] = "ods_dashboard-pixel-images"
+        self.write_records()
+        recipe = self.root / "installers/macos/dashboard-private-state.compose.yaml"
+        saved = recipe.with_name("elsewhere.yaml")
+        recipe.rename(saved)
+        self.assert_refused()
+        recipe.symlink_to(saved)
+        self.assert_refused()
+        recipe.unlink()
+        saved.rename(recipe)
+        self.fake.foreign_consumers["ods_dashboard-pixel-images"] = ["f" * 64]
+        self.assert_refused("outside this installation")
+
+    def test_index_image_store_manifest_proves_the_built_image(self):
+        manifest = {"digest": "sha256:" + "9" * 64, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "platform": {"architecture": "arm64", "os": "linux"}, "size": 2950}
+        # Some image stores report the config ID for a container of the built index.
+        self.api["Image"] = "sha256:" + "c" * 64
+        self.api["ImageManifestDescriptor"] = json.loads(json.dumps(manifest))
+        selected, inspected = json.loads(json.dumps(manifest)), []
+
+        def image_store(root, *args):
+            if args[:3] == ("image", "inspect", "--platform"):
+                inspected.append(args)
+                return json.dumps(selected)
+            return self.fake(root, *args)
+        with patch.object(MODULE, "docker", image_store):
+            MODULE.project_containers(self.root, "ods")
+            # The recorded image, never the movable tag, selects the manifest.
+            self.assertEqual(inspected, [("image", "inspect", "--platform", "linux/arm64", "--format",
+                                          "{{json .Descriptor}}", self.images["dashboard-api"])])
+            selected["digest"] = "sha256:" + "7" * 64
+            self.assert_refused()
+            selected["digest"] = manifest["digest"]
+            self.api["ImageManifestDescriptor"]["platform"]["architecture"] = "../arm64"
+            self.assert_refused()
+
+    def test_records_changed_during_compose_hash_are_refused(self):
+        for path in (self.path, self.journal):
+            with self.subTest(path=path):
+                self.write_records()
+
+                def changing(root, *args, path=path):
+                    value = self.fake(root, *args)
+                    if args[-3:-1] == ("config", "--hash"):
+                        path.write_bytes(path.read_bytes() + b" ")
+                    return value
+                with patch.object(MODULE, "docker", changing):
+                    self.assert_refused()
+
+
 class UninstallVolumeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="ods-uninstall-volume-test-")

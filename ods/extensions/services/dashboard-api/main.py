@@ -85,12 +85,15 @@ from routers import (
     pixel,
     pixel_teams,
     pixel_providers,
+    pixel_connections,
     pixel_settings,
+    pixel_schedules,
     portal_identity,
     pixel_advice,
     pixel_handoff,
     pixel_scopes,
     pixel_advice_runtime,
+    pixel_integrations,
     pixel_sharing,
     pixel_model_failure,
     opencode_app,
@@ -1288,13 +1291,16 @@ app.include_router(pixel_approval_terminal.router)
 app.include_router(pixel.router)
 app.include_router(pixel_teams.router)
 app.include_router(pixel_providers.router)
+app.include_router(pixel_connections.router)
 app.include_router(pixel_settings.router)
+app.include_router(pixel_schedules.router)
 app.include_router(portal_identity.router)
 app.include_router(pixel_advice.router)
 app.include_router(pixel_handoff.router)
 app.include_router(pixel_scopes.router)
 app.include_router(pixel_advice_runtime.router)
 app.include_router(pixel_sharing.router)
+app.include_router(pixel_integrations.router)
 app.include_router(pixel_model_failure.router)
 app.include_router(opencode_app.router)
 

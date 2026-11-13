@@ -537,6 +537,123 @@ def native_lifecycle_provenance(root: Path, project: str, row: dict, files: str)
     return original_files
 
 
+# installers/macos/owner/pixel-native-client-update.py recreates only these
+# shipped Portal clients, from a frozen recipe beside its private journal.
+CLIENT_UPDATE_SERVICES = ("dashboard-api", "dashboard")
+CLIENT_UPDATE_RECIPES = ("docker-compose.base.yml", "docker-compose.yml",
+                         "installers/macos/dashboard-private-state.compose.yaml")
+OCI_MANIFEST_TYPES = ("application/vnd.oci.image.manifest.v1+json",
+                      "application/vnd.docker.distribution.manifest.v2+json")
+
+
+def client_update_image_matches(root: Path, row: dict, image: str) -> bool:
+    """Bind the container to the image its completed update built.
+
+    Some Docker image stores report a config ID for the container but the
+    built index for the image. Then the container's platform manifest must be
+    the one the recorded index selects. Never consult the movable tag.
+    """
+    if row["Image"] == image:
+        return True
+    descriptor = row.get("ImageManifestDescriptor")
+    platform = descriptor.get("platform") if isinstance(descriptor, dict) else None
+    if not isinstance(platform, dict):
+        return False
+    parts = [platform.get("os"), platform.get("architecture")]
+    if platform.get("variant") is not None:
+        parts.append(platform["variant"])
+    if (any(not isinstance(part, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", part) for part in parts)
+            or not re.fullmatch(r"sha256:[a-f0-9]{64}", str(descriptor.get("digest", "")))
+            or descriptor.get("mediaType") not in OCI_MANIFEST_TYPES):
+        return False
+    selected = json.loads(docker(root, "image", "inspect", "--platform", "/".join(parts),
+                                 "--format", "{{json .Descriptor}}", image))
+    return (isinstance(selected, dict) and selected.get("digest") == descriptor["digest"]
+            and selected.get("mediaType") == descriptor["mediaType"] and selected.get("platform") == platform)
+
+
+def native_client_update_provenance(root: Path, project: str, row: dict, files: str) -> list[str]:
+    """Prove the Portal clients that a completed native update recreated.
+
+    A native update replaces dashboard-api and dashboard from the frozen
+    recipe beside its private journal. Accept only the completed journal of
+    this installation that binds the exact recipe, image and Compose hash.
+    Earlier phases, an interrupted apply and a restored rollback stay refused.
+    """
+    failure = "Native client update ownership could not be proven"
+    path = Path(files)
+    if ("," in files or path.name != "candidate.compose.json" or path.parent.name != "clients"
+            or path.parent.parent.parent != root / "data/pixel-native"
+            or not re.fullmatch(r"update-[a-z0-9_]{8}", path.parent.parent.name)):
+        raise ValueError(failure)
+    journal = path.parent / "journal.json"
+
+    def private_document(selected: Path) -> bytes:
+        # The writer's own private_read limit for its journal and recipe.
+        return native_custody_document(root, selected, 8 * 1024 * 1024, failure)
+
+    try:
+        journal_body, body = private_document(journal), private_document(path)
+        record, recipe = json.loads(journal_body), json.loads(body)
+        service = row["Config"]["Labels"]["com.docker.compose.service"]
+        definition = recipe["services"][service]
+        image, expected = record["images"][service], record["candidateHashes"][service]
+        tag = record["previous"][service]["tag"]
+        if (service not in CLIENT_UPDATE_SERVICES
+                or record.get("schemaVersion") != 1 or record.get("phase") != "ready"
+                or record.get("installDir") != str(root) or record["transport"]["project"] != project
+                # The writer's exact bytes, so Compose reads what the digest binds.
+                or body != (json.dumps(recipe, sort_keys=True) + "\n").encode()
+                or record["candidateRecipeSha256"] != hashlib.sha256(json.dumps(
+                    recipe, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                or set(recipe) != {"name", "services", "volumes", "networks"} or recipe["name"] != project
+                or set(recipe["services"]) != set(CLIENT_UPDATE_SERVICES)
+                or (definition.get("image") or project + "-" + service) != tag
+                or row["Config"]["Image"] != tag or not re.fullmatch(r"sha256:[a-f0-9]{64}", image)
+                or not CONTAINER_RE.fullmatch(expected)
+                or row["Config"]["Labels"].get("com.docker.compose.config-hash") != expected):
+            raise ValueError(failure)
+        # The recipe externalizes only the shipped private stores; never bless
+        # arbitrary external data.
+        private_state = root / "installers/macos/dashboard-private-state.compose.yaml"
+        keys = trusted_plain_volume_keys(root, only_file=private_state)
+        for key, value in recipe["volumes"].items():
+            if key not in keys or value != {"name": f"{project}_{key}", "external": True}:
+                raise ValueError(failure)
+        mounts, declared = row["Mounts"], definition.get("volumes", [])
+        if not isinstance(mounts, list) or not isinstance(declared, list) or len(mounts) != len(declared):
+            raise ValueError(failure)
+        targets = set()
+        for mount in declared:
+            target = mount["target"]
+            actual = [value for value in mounts if value.get("Destination") == target]
+            if (target in targets or len(actual) != 1 or actual[0]["Type"] != mount["type"]
+                    or actual[0]["RW"] is not (not mount.get("read_only", False))):
+                raise ValueError(failure)
+            targets.add(target)
+            if mount["type"] == "volume":
+                if actual[0]["Name"] != recipe["volumes"][mount["source"]]["name"]:
+                    raise ValueError(failure)
+            elif mount["type"] != "bind" or actual[0]["Source"] != mount["source"].replace("$$", "$"):
+                raise ValueError(failure)
+        if not client_update_image_matches(root, row, image):
+            raise ValueError(failure)
+        hashed = docker(root, "compose", "--project-directory", str(root), "--project-name", project,
+                        "--env-file", "/dev/null", "-f", str(path), "config", "--hash", service).strip()
+        if (hashed != service + " " + expected or private_document(journal) != journal_body
+                or private_document(path) != body):
+            raise ValueError(failure)
+        # The shipped recipes that declare this service, as a base-file label
+        # would name them, so the private stores keep their recipe provenance.
+        recipes = [root / name for name in CLIENT_UPDATE_RECIPES]
+        return [str(selected.resolve()) for selected in recipes
+                if not selected.is_symlink() and selected.is_file() and service in compose_service_names(selected)]
+    except (OSError, KeyError, TypeError, AttributeError, ValueError):
+        # The frozen recipe holds the clients' resolved environment. Neither it
+        # nor the journal's admission binding may reach an uninstall log.
+        raise ValueError(failure) from None
+
+
 def project_containers(
     root: Path, project: str,
 ) -> tuple[set[str], set[str], dict[str, set[tuple[str, str]]]]:
@@ -573,9 +690,12 @@ def project_containers(
                 raise ValueError("Compose project contains a container from another installation")
             provenance_files = files.split(",")
             if os.path.realpath(provenance_files[0]) not in base_files:
-                provenance_files = (native_lifecycle_provenance(root, project, row, files)
-                    if Path(files).name == "lifecycle.compose.json" else
-                    [native_ingress_rollback_provenance(root, project, row, files)])
+                if Path(files).name == "lifecycle.compose.json":
+                    provenance_files = native_lifecycle_provenance(root, project, row, files)
+                elif Path(files).name == "candidate.compose.json":
+                    provenance_files = native_client_update_provenance(root, project, row, files)
+                else:
+                    provenance_files = [native_ingress_rollback_provenance(root, project, row, files)]
             mounts = row.get("Mounts") or []
             if not isinstance(mounts, list):
                 raise ValueError("Docker returned invalid container mounts")

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import subprocess
 import sys
@@ -32,10 +33,25 @@ SANDBOX_GUIDANCE = {
 }
 SANDBOX_ERRORS = frozenset(SANDBOX_GUIDANCE)
 HELP = 'Need help? https://discord.gg/4ntNp9MAwC'
+# Protected activation runs as the installer's protected CLI child; it must not
+# be killed before that child's own PROTECTED_CLI_SECONDS (6,300) bound.
+ACTIVATION_TIMEOUT_SECONDS = 6300
 
 
 def helper(name):
     spec = importlib.util.spec_from_file_location('native_update_' + name, HERE / (name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def owner_clients():
+    # Owner-only deployment code is deliberately outside the protected Source
+    # installer-support capsule. Never import it on a Root activation path.
+    if sys.platform != 'darwin' or os.geteuid() == 0:
+        raise ValueError('native-macos-owner-required')
+    spec = importlib.util.spec_from_file_location('native_update_clients',
+        HERE.parent / 'owner/pixel-native-client-update.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -146,10 +162,21 @@ def log_example_projects(work, outcome):
         return
 
 
-def update(*, install_dir, ods_source, prepare_only=False, prompt_for_sudo=False):
+def update(*, install_dir, ods_source, prepare_only=False, prompt_for_sudo=False, resume_preparation=None):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
     install_dir, ods_source = Path(install_dir).resolve(strict=True), Path(ods_source).resolve(strict=True)
+    if resume_preparation is not None:
+        if prepare_only:
+            raise ValueError('native-update-resume-conflicts-with-preparation')
+        preparation = Path(resume_preparation).resolve(strict=True)
+        prepared = helper('pixel-native-config').private_json(preparation / 'preparation.json')
+        if (preparation.name != 'preparation' or preparation.parent.parent != install_dir / 'data/pixel-native'
+                or prepared.get('installDir') != str(install_dir) or prepared.get('status') != 'prepared'):
+            raise ValueError('native-update-resume-preparation-required')
+        # This proves that Core activation already completed. It never replays
+        # the protected activation or creates a second source preparation.
+        return helper('pixel-native-finalize').finalize_update(preparation)
     stack = helper('pixel-native-stack')
     stack.resolve_files(install_dir, [])
     previous, _ = stack.read_selection(install_dir / 'data/pixel-native/preparation')
@@ -191,9 +218,16 @@ def update(*, install_dir, ods_source, prepare_only=False, prompt_for_sudo=False
         prepared = config.private_json(preparation / 'preparation.json')
         command = activation_command(preparation, prepared, install_dir=install_dir,
             ods_source=ods_source, owner=owner, transport=transport)
+        clients = None
+        if ods_source != install_dir:
+            clients = owner_clients().prepare(install_dir=install_dir, ods_source=ods_source,
+                destination=work / 'clients', transport=transport)
         if prepare_only:
-            return {'status': 'prepared', 'preparation': str(preparation)}
-        subprocess.run(command, check=True, timeout=1800)
+            return {'status': 'prepared', 'preparation': str(preparation),
+                'clients': 'prepared' if clients is not None else 'installed-source'}
+        if clients is not None:
+            owner_clients().validate_pre_activation(work / 'clients')
+        subprocess.run(command, check=True, timeout=ACTIVATION_TIMEOUT_SECONDS)
         outcome = helper('pixel-native-finalize').finalize_update(preparation)
         outcome['portalIdentityMigration'] = migrate_public_identity(
             source=source, preparation=preparation, node=node)
@@ -213,12 +247,19 @@ def main():
     parser.add_argument('--install-dir', required=True)
     parser.add_argument('--ods-source', required=True)
     parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--resume-preparation',
+        help='Resume owner client finalization of this exact preparation after verified Core activation')
     parser.add_argument('--prompt-for-sudo', action='store_true',
         help='Allow read-only protected verification to prompt on a controlling terminal')
     args = parser.parse_args()
     try:
         print(json.dumps(update(**vars(args))))
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        # Fixed categories are useful evidence; arbitrary OS exceptions may
+        # include private paths or records and must not reach a shared log.
+        code = str(error)
+        if isinstance(error, ValueError) and re.fullmatch(r'native-[a-z0-9-]{1,100}', code):
+            print('Native update error: ' + code, file=sys.stderr)
         if str(error) == 'native-migration-proof-or-authorization-failed':
             print('Protected runtime verification or sudo authorization failed. Retain the preparation; '
                 'review the protected runtime, or run sudo -v and retry from the same terminal. '

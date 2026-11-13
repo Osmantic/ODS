@@ -167,10 +167,13 @@ def retained(tmp_path, monkeypatch):
     return preparation, receipt, activation
 
 
+@pytest.mark.parametrize('phase', ['final-health', 'protected-activation'])
 @pytest.mark.parametrize('fault', [None, 'proof', 'reproof', 'health', 'client', 'route',
     'changed', 'foreign-selection', 'legacy-host', 'lock-link', 'ingress-refresh'])
-def test_recovery_preserves_failed_attempt_and_never_reactivates(retained, monkeypatch, tmp_path, fault):
+def test_recovery_preserves_failed_attempt_and_never_reactivates(retained, monkeypatch, tmp_path, fault, phase):
     preparation, receipt, activation = retained
+    activation = dict(activation, phase=phase)
+    (preparation / 'activation.json').write_text(json.dumps(activation))
     originals = {name: (preparation / name).read_bytes() for name in ('preparation.json', 'activation.json')}
     destination = preparation / 'selection-update.json'
     if fault == 'foreign-selection':
@@ -187,7 +190,7 @@ def test_recovery_preserves_failed_attempt_and_never_reactivates(retained, monke
         events.append('proof')
         proof_count += 1
         if fault == 'changed':
-            (preparation / 'activation.json').write_text(json.dumps(dict(activation, phase='protected-activation')))
+            (preparation / 'activation.json').write_text(json.dumps(dict(activation, phase='infrastructure')))
         return dict(status='unknown' if fault == 'proof' or fault == 'reproof' and proof_count == 2 else 'active',
                     runtimeDigest=receipt['runtimeDigest'], serviceDigest=receipt['serviceDigest'])
     def health(run):
@@ -250,9 +253,9 @@ def test_recovery_preserves_failed_attempt_and_never_reactivates(retained, monke
         assert (preparation / name).read_bytes() == value
 
 
-@pytest.mark.parametrize('field,value', [('phase', 'protected-activation'), ('phase', 'infrastructure'),
+@pytest.mark.parametrize('field,value', [('phase', 'infrastructure'),
     ('status', 'activating'), ('requiresRecovery', False), ('runtimeDigest', 'd' * 64), ('schemaVersion', True)])
-def test_only_matching_late_initial_failures_can_resume(retained, field, value):
+def test_only_matching_initial_failures_can_resume(retained, field, value):
     _, receipt, activation = retained
     with pytest.raises(ValueError):
         module.selection(receipt, dict(activation, **{field: value}))
@@ -408,7 +411,9 @@ read_env_value() {
 }
 """)
     (library / 'bridge-manager.sh').write_text('macos_configure_port_bridge() { test "$1" = false; }\n')
-    (library / 'host-agent-listener.sh').write_text('macos_retire_owned_host_agent_listener() { return 0; }\n')
+    (library / 'host-agent-listener.sh').write_text(
+        'macos_check_host_agent_port() { return 0; }\n'
+        'macos_retire_owned_host_agent_listener() { return 0; }\n')
     scripts = {
         'launchctl': 'printf "%s\\n" "$*" >> "$HOME/launchctl.calls"\n',
         'curl': 'exit 0\n',
@@ -1331,6 +1336,7 @@ def test_acceptance_preview_destination_never_uses_arbitrary_model_host(url, val
     ('chat', 'empty-error', False),
     ('chat', 'wrong-answer', False), ('chat', 'malformed', False), ('chat', 'redirect', False),
     ('chat', 'wrong-type', False), ('chat', 'oversize', False), ('chat', 'stall', False),
+    ('chat', 'startup-stall', False),
     ('preview', None, True), ('preview', 'wrong-page', False), ('preview', 'preview-redirect', False),
     ('cancel', None, True),
 ])
@@ -1352,7 +1358,7 @@ def test_acceptance_worker_bounds_stream_and_keeps_credentials_on_api(mode, faul
                 if fault == 'stall':
                     self.wfile.write(b'data: ')
                     self.wfile.flush()
-                    release.wait(3)
+                    release.wait()
                     return
                 answer = marker if fault != 'wrong-answer' else 'wrong'
                 if mode == 'preview': answer = f'http://site-abc.localhost:{self.server.server_port}/site-abc/'
@@ -1376,21 +1382,44 @@ def test_acceptance_worker_bounds_stream_and_keeps_credentials_on_api(mode, faul
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    original = acceptance.subprocess.run
+    original, original_popen = acceptance.subprocess.run, acceptance.subprocess.Popen
+    children, timeouts = [], []
+    def popen(*args, **kwargs):
+        child = original_popen(*args, **kwargs)
+        children.append(child)
+        return child
     def run(command, **kwargs):
         assert 'd' * 64 not in ' '.join(command)
         assert json.loads(kwargs['input'])['key'] == 'd' * 64
-        return original(command, **kwargs)
+        if fault == 'startup-stall':
+            command = [*command[:2], '-c',
+                "import runpy, sys, time; time.sleep(10); path = sys.argv[1]; "
+                "sys.argv = sys.argv[1:]; runpy.run_path(path, run_name='__main__')", *command[2:]]
+        try:
+            return original(command, **kwargs)
+        except subprocess.TimeoutExpired:
+            timeouts.append(kwargs['timeout'])
+            raise
+    monkeypatch.setattr(acceptance.subprocess, 'Popen', popen)
     monkeypatch.setattr(acceptance.subprocess, 'run', run)
     try:
         payload = {'port': server.server_port, 'previewPort': server.server_port, 'mode': mode,
             'key': 'd' * 64, 'chatId': 'b' * 32, 'marker': marker}
         started = time.monotonic()
-        result = acceptance.worker(payload, 0.4 if fault == 'stall' else 3)
+        # The deadline includes interpreter startup. Give the stream test the
+        # normal startup budget and exercise a pre-dispatch timeout separately.
+        timeout = 0.4 if fault == 'startup-stall' else 3
+        result = acceptance.worker(payload, timeout)
         assert result.get('aborted' if mode == 'cancel' else 'passed') is passed
         assert time.monotonic() - started < 4
-        assert requests[0][:3] == ('POST', '/api/pixel/chat/' + ('cancel' if mode == 'cancel' else 'stream'), 'Bearer ' + 'd' * 64)
-        assert len(requests) == (2 if mode == 'preview' else 1)
+        assert timeouts == ([timeout] if fault in ('stall', 'startup-stall') else [])
+        assert len(children) == 1 and children[0].poll() is not None
+        if fault == 'startup-stall':
+            assert requests == []
+        else:
+            assert requests, 'Worker exited before the API POST was observed; stream handling was not exercised'
+            assert len(requests) == (2 if mode == 'preview' else 1)
+            assert requests[0][:3] == ('POST', '/api/pixel/chat/' + ('cancel' if mode == 'cancel' else 'stream'), 'Bearer ' + 'd' * 64)
         if mode == 'preview':
             assert requests[1] == ('GET', '/site-abc/', None, f'site-abc.localhost:{server.server_port}')
         assert 'private-upstream-detail' not in json.dumps(result) and 'd' * 64 not in json.dumps(result)

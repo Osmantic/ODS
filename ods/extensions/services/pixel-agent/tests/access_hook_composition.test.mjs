@@ -7,7 +7,9 @@ import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
 import {withCronCommandPayloadBlock} from '../plugin/cron-command-payload-guard.mjs';
+import {SLEEP_REMINDER_REASON, withSleepReminderBlock} from '../plugin/sleep-reminder-guard.mjs';
 import {withPixelSubagentWorkspace} from '../plugin/subagent-workspace.mjs';
+import {nativeIntegrationHookState} from './native-integration-hook-state.mjs';
 
 // Exercise the actual registration callbacks without importing the installed
 // OpenClaw SDK. This is a source composition fixture, not gateway qualification.
@@ -29,6 +31,7 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
     finish: () => { calls.push('run-finish'); },
   };
   vm.runInNewContext(source.slice(start, end), {
+    ...nativeIntegrationHookState(),
     api: {on: (name, callback) => { callbacks[name] = callback; }, logger: {warn: message => warnings.push(message)}},
     toolLoopGuard: {
       beforeToolCall: () => { calls.push('guard'); return guardResult; },
@@ -43,7 +46,7 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
     },
     goalProgress: {before() {}, update() {}, finish() {}},
     conversationImageLifecycle,
-    bundleAdmission, artifactAdmission, projectRunControl, projectSnapshots: {before() {}, end() {}}, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, withCronCommandPayloadBlock,
+    bundleAdmission, artifactAdmission, projectRunControl, projectSnapshots: {before() {}, end() {}}, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, withCronCommandPayloadBlock, withSleepReminderBlock,
     delegationDelivery:{end(){lifecycleCalls.push('delegation');},blocked(){},before(){},after(){},admission(){},hasPendingChildren(){return false;},...delivery},
     withPixelSubagentWorkspace, resolveUserPath: value=>value,
     resolveAgentWorkspaceDir:config=>config?.agents?.list?.find(agent=>agent.id==='pixel')?.workspace,
@@ -54,16 +57,25 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
 }
 const context = {agentId: 'pixel', runId: 'cron-request', toolName: 'cron'};
 const event = {toolCallId: 'cron-1', toolName: 'cron', params: {
-  action: 'add', payload: {kind: 'agentTurn', message: 'Check disk space'},
+  action: 'add', payload: {kind: 'agentTurn', message: 'Check disk space',toolsAllow:['read']},delivery:{mode:'none'},
 }};
 
-test('native tracking preserves the committed cron delivery repair', async () => {
+test('native tracking preserves explicit future cron policy without rewriting it', async () => {
   const {callbacks, calls, activity} = hooks();
   const result = await callbacks.before_tool_call(event, context);
-  assert.equal(result?.params?.delivery?.mode, 'none');
+  assert.equal(result,undefined);
+  assert.equal(event.params.delivery.mode, 'none');
   assert.deepEqual(calls, ['guard', 'admit']);
   assert.deepEqual(activity, ['before']);
-  assert.equal(event.params.delivery, undefined);
+});
+
+test('missing future cron policy is refused before native tool admission and is not defaulted',async()=>{
+  const {callbacks,calls,activity}=hooks();
+  const params={action:'add',payload:{kind:'agentTurn',message:'Calculate 14 + 8.'}};
+  const result=await callbacks.before_tool_call({...event,params},context);
+  assert.equal(result.block,true);assert.match(result.blockReason,/payload.toolsAllow/);
+  assert.deepEqual(calls,['guard']);assert.deepEqual(activity,['blocked']);
+  assert.equal(params.delivery,undefined);assert.equal(params.payload.toolsAllow,undefined);
 });
 
 test('guard denials never acquire a native tool slot', async () => {
@@ -74,13 +86,13 @@ test('guard denials never acquire a native tool slot', async () => {
   assert.deepEqual(activity, ['blocked']);
 });
 
-test('guard rewritten cron params survive admission and receive the default', async () => {
+test('guard rewritten explicit cron params survive admission unchanged', async () => {
   const params = {...event.params, name: 'guard-approved'};
   const {callbacks} = hooks({params});
   const result = await callbacks.before_tool_call(event, context);
   assert.equal(result.params.name, 'guard-approved');
   assert.equal(result.params.delivery.mode, 'none');
-  assert.equal(params.delivery, undefined);
+  assert.equal(result.params,params);
 });
 
 test('agent cron calls cannot create command jobs through the actual hook', async () => {
@@ -150,6 +162,7 @@ test('cancelled announcement is fenced before actual prompt hook registers guard
   assert.ok(begin>=0 && finish>begin);
   let callback;const calls=[];
   vm.runInNewContext(source.slice(begin,finish),{
+    ...nativeIntegrationHookState(),
     api:{config:{},on:(_name,fn)=>{callback=fn;}},AGENT_ID:'pixel',
     privateBrowserAccessForAgent:()=>false,executionHostForAgent:()=> 'gateway',
     toolLoopGuard:{observeRun:()=>calls.push('guard'),ownerIntentEventForRun:(_id,e)=>e,promptContextForRun:()=>undefined,verificationStatus:()=>undefined},
@@ -206,4 +219,21 @@ test('project job binding follows actual admission and cannot survive denied or 
     callbacks.after_tool_call(event,ctx);
     assert.throws(()=>projectRunControl.bind('project',args,ctx,()=>{}),/not bound/);
   }
+});
+
+test('a reminder faked with a background sleep is refused before admission (#7794)', async () => {
+  const {callbacks, calls, activity} = hooks();
+  const sleepEvent = {toolCallId: 'exec-1', toolName: 'exec', params: {command: '(sleep 120 && echo "Time to stretch!") &'}};
+  const result = await callbacks.before_tool_call(sleepEvent, {agentId: 'pixel', runId: 'remind', toolName: 'exec'});
+  assert.deepEqual(result, {block: true, blockReason: SLEEP_REMINDER_REASON});
+  assert.deepEqual(calls, ['guard']);
+  assert.deepEqual(activity, ['blocked']);
+});
+
+test('a short wait while a server starts still runs', async () => {
+  const {callbacks, calls} = hooks();
+  const result = await callbacks.before_tool_call({toolCallId: 'exec-2', toolName: 'exec', params: {command: 'npm start > server.log 2>&1 & sleep 2 && curl -s localhost:3000'}},
+    {agentId: 'pixel', runId: 'serve', toolName: 'exec'});
+  assert.notEqual(result?.block, true);
+  assert.deepEqual(calls, ['guard', 'admit']);
 });

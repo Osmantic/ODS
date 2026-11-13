@@ -45,7 +45,10 @@ def fixture(tmp_path):
         if not code:
             for name in args[1:]:
                 if name in document['services']:
-                    reference = document['services'][name]['image']
+                    definition = document['services'][name]
+                    if args[0] == 'pull' and '--ignore-buildable' in args and definition.get('build'):
+                        continue
+                    reference = definition.get('image') or document['name'] + '-' + name
                     missing.discard(reference)
                     tags[reference] = IMAGE
         return SimpleNamespace(returncode=code, stdout='')
@@ -130,6 +133,31 @@ def test_missing_image_start_builds_under_same_preparation_and_pins_result(tmp_p
     assert saved['inputs']['buildInputs']['pixel-edge']['entries']['payload']['sha256']
     f.freeze('start')
     assert len([call for call in f.calls if call[0] == 'build']) == 1
+
+
+@pytest.mark.parametrize(('action', 'image', 'policy', 'rebuild'), [
+    ('update', None, None, True),
+    ('start', None, None, False),
+    ('restart', None, None, False),
+    ('update', 'named:release', None, False),
+    ('update', None, 'never', False),
+])
+def test_existing_source_image_selection(tmp_path, action, image, policy, rebuild):
+    f = fixture(tmp_path)
+    add_build(f)
+    definition = f.document['services']['pixel-edge']
+    del definition['image']
+    if image:
+        definition['image'] = image
+    if policy:
+        definition['pull_policy'] = policy
+    reference = image or 'ods-pixel-edge'
+    f.tags[reference] = NEW_IMAGE
+    saved = f.freeze(action)
+    expected = IMAGE if rebuild else NEW_IMAGE
+    assert saved['images']['pixel-edge'] == expected
+    assert f.freeze(action) == saved
+    assert f.calls.count(('build', 'pixel-edge')) == int(rebuild)
 
 
 def test_restart_keeps_no_build_even_when_local_image_is_missing(tmp_path):

@@ -322,8 +322,8 @@ function Initialize-ODSPortalWindowsFoundation([System.Collections.IDictionary]$
     Assert-ODSPortalWindowsBuild
     $present = [bool](Get-Command wsl.exe -ErrorAction SilentlyContinue)
     $ready = $present -and ((Invoke-ODSPortalWsl -Arguments @('--status')).Code -eq 0)
-    Assert-ODSPortalHostCapacity $ready
     if ($ready) { return $null }
+    Assert-ODSPortalHostCapacity $false
     if (-not $present) {
         if (-not (Confirm-ODSPortalPreparation 'WSL is not installed. Enable Windows Subsystem for Linux and Virtual Machine Platform? Windows will ask for administrator permission, then a restart is needed.' $NonInteractive)) { return 1 }
         $featureCode = Install-ODSPortalWslFeatures -MissingExecutable
@@ -471,7 +471,9 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     $names = Get-ODSPortalDistroNames
     $distro = Resolve-ODSPortalDistro ([string]$Options['Distro']) $names
     Write-Host "Selected Ubuntu distribution: $distro"
-    if ($distro -notin $names) {
+    $reuseUbuntu = $distro -in $names
+    Assert-ODSPortalHostCapacity $true $reuseUbuntu
+    if (-not $reuseUbuntu) {
         $stop = Install-ODSPortalUbuntu $distro $Options $InstallerRoot $nonInteractive
         if ($null -ne $stop) { return $stop }
         $distro = Resolve-ODSPortalDistro $distro (Get-ODSPortalDistroNames)

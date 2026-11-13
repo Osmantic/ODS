@@ -1120,3 +1120,42 @@ Real-model checks should include an initial research request, a short continuati
 after a promise, missing citations, unavailable search, greetings and a small
 workspace action. Passing these cases is not certification for all models,
 languages, operating systems or tasks.
+
+## Integration action status
+
+The integration factory records only the native host reply for its exact
+current run, session, tool call and normalized request. An approval request
+adds a short factual notice to the final reply: the call requested approval
+and did not execute the action. An ambiguous result instead asks the owner to
+check the destination before retrying. Provider content, model prose and
+`after_tool_call` text cannot manufacture either status. Labels use a closed
+set of action names; note paths, URLs, messages, credentials and approval IDs
+are never included in the notice. A later settled identical request in the
+same run supersedes its pending notice without hiding other pending actions.
+An approved action inspected during review-only recovery gets a separate
+ready notice: approval exists, but recovery did not execute it or consume the
+approval. This is neither a pending request nor a completed action.
+
+This is an append-only factual overlay through the existing verification and
+final-channel payload paths. It preserves unrelated response content; it does
+not identify or rewrite contradictory model prose. Canceled, superseded or
+different runs cannot attach old notices to a new reply.
+
+After an unverified result, both native tool admission and the actual
+integration factory refuse further effectful integrations in that run,
+including changed arguments, notes writes, notifications and opaque custom
+MCP calls. Closed built-in reads and the catalog remain available. Model
+fallbacks and internal continuations do not clear this uncertainty. A new
+native user-triggered outer run in the same session renews eligibility;
+the hook does not prove that a physical human clicked. The fence is bounded,
+in-process admission for these integrations, not durable global exactly-once
+execution or a replacement for Sandbox. Full Access retains its existing
+owner-wide access boundary.
+
+`integration_outcomes.test.mjs` covers identity, mixed replies, forged text,
+secret/output bounds and admission. `test_integration_unknown_outcomes.py`
+uses owned HTTP/stdio sinks that consume one effect and lose its reply.
+`test_native_integration_outcomes.py` uses the pinned SDK, actual production
+factories/hooks, an owned Unix service and invented SSE responses; it calls
+no model or external provider. Runtime bundle tests publish the added module
+through both Linux/WSL and native macOS source-custody paths.

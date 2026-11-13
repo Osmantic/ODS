@@ -16,6 +16,8 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
+from contextlib import nullcontext
+import errno
 import grp
 import hashlib
 import importlib.util
@@ -35,6 +37,7 @@ import time
 import urllib.request
 import urllib.error
 
+sys.dont_write_bytecode = True
 
 HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("pixel_macos_launchd", HERE / "pixel-access-launchd.py")
@@ -70,8 +73,14 @@ HOST_FILES = (
     "model_transaction.py", "access_release_transaction.py", "pixel_access_bridge.py", "pixel_gateway_service.py",
     "pixel_access_client.py", "pixel_access_reconcile.py", "pixel_model_transition.py",
     "pixel_access_protocol.py", "pixel_macos_custody.py", "pixel_macos_process.py",
-    "pixel_model_contract.py", "pixel_model_coordinator.py", "pixel_macos_policy.py",
+    "pixel_model_contract.py", "pixel_model_coordinator.py", "pixel_source_upgrade.py", "pixel_macos_policy.py",
+    "pixel_schedules.py", "scheduled_tasks_owner.py", "scheduled_tasks_gateway.mjs",
 )
+SOURCE_HOST_FILES = ('connection_transaction.py', 'native_mcp_owner.py', 'native_mcp_oauth.mjs', 'pixel_connection_agent_status.py')
+CONNECTION_FILES = ('__init__.py', 'activity.py', 'approvals.py', 'catalog.py', 'converge.py',
+    'coordinator.py', 'custody.py', 'drafts.py', 'google_app.py', 'host_api.py', 'lifecycle.py',
+    'native_access.py', 'native_apps.py', 'native_contract.py', 'native_enrollment.py', 'native_host_api.py',
+    'native_mcp.py', 'native_public.py', 'native_executor.py', 'native_retirement.py', 'source_backend.py', 'oauth.py', 'planner.py', 'plugins.py', 'state.py', 'status.py')
 SETTINGS_FILES = ("__init__.py", "contract.py", "projection.py", "runtime.py", "coordinator.py")
 PROVIDER_FILES = ("__init__.py", "config.py", "store.py", "activation_config.py", "managed_deployment.py",
                   "service_environment.py", "service_activation.py", "runtime_custody.py", "coordinator.py")
@@ -80,6 +89,18 @@ ACCESS_FILES = {
     "key": _launchd.ACCESS_KEY,
     "plist": _launchd.ACCESS_PLIST,
 }
+# Every Source publication guard re-proves the protected deployment and bundle,
+# walking each complete runtime tree again (measured at 4.6 and 3.6 seconds on an
+# M4 Mac mini with the shipped 34,651-entry runtime). From those proof counts the
+# first inert kit takes about 800-970 seconds there and the next update's
+# code-only kit about 2,000, since each code-only authority also re-proves its
+# selection after reading the shared history. The bound keeps twice that. The
+# earlier 180-second bound expired mid-staging. The enclosing locked transaction
+# keeps its previous 900 seconds for all other work, and the protected CLI child
+# must outlive it.
+SOURCE_FINISH_SECONDS = 4500
+SOURCE_TRANSACTION_SECONDS = SOURCE_FINISH_SECONDS + 900
+PROTECTED_CLI_SECONDS = SOURCE_TRANSACTION_SECONDS + 900
 
 
 class InstallError(ValueError):
@@ -194,7 +215,7 @@ def _env_file(path):
 
 
 def _policy_deployment(environment, document, node, entrypoint, owner, *, bundle_plan=None,
-                       native_services=False):
+                       native_services=False, integrations_required=False):
     def runtime_path(key):
         try:
             return _path(environment[key]).resolve(strict=True)
@@ -235,6 +256,7 @@ def _policy_deployment(environment, document, node, entrypoint, owner, *, bundle
     readable = [_path(document['WorkingDirectory']).resolve(strict=True)]
     readable.extend(_policy.system_python_readable_paths())
     sockets = [socket]
+    sealed = []
     if native_services:
         state = Path('/private/var/lib/pixel-ops-broker')
         layout = _native_services.helper('ops-state')
@@ -244,6 +266,11 @@ def _policy_deployment(environment, document, node, entrypoint, owner, *, bundle
         readable.extend(state / name for name in (*layout.PROJECTIONS, 'inventory.json'))
         sockets.extend([Path('/private/var/lib/ods-pixel-manager/extension-manager.sock'),
                         Path('/private/var/lib/ods-pixel-artifact-promoter/promoter.sock')])
+        if integrations_required:
+            integrations = _native_services.helper('integrations-service')
+            sealed.extend([integrations.state_directory(pwd.getpwnam(owner.pw_name)),
+                           integrations.AUTH_ROOT, integrations.LOGS])
+            sockets.append(integrations.RUNTIME / 'control.sock')
         if environment.get('PIXEL_HISTORY_DOCKER'):
             docker = _path(environment['PIXEL_HISTORY_DOCKER']).resolve(strict=True)
             readable.append(docker.parent)
@@ -251,6 +278,7 @@ def _policy_deployment(environment, document, node, entrypoint, owner, *, bundle
     policies = {mode: _policy.render_policy(
         mode=mode, writable=writable, protected=protected,
         readable=readable, sockets=sockets,
+        **({'sealed': sealed} if sealed else {}),
         probe=Path('/private/var/lib/ods-pixel-access-probes') / str(owner.pw_uid))
         for mode in _policy.MODES}
     receipt = _policy.deployment_receipt('/private/etc/ods', policies)
@@ -276,6 +304,36 @@ def _configuration_bytes(path, uid):
         return body
 
 
+def _configured_bundle_plugins(source, manifest, config, *, current=None, _recovery=False):
+    """Select active paths without admitting unknown unloaded bundle payloads."""
+    plugins = config.get('plugins', {})
+    paths = plugins.get('load', {}).get('paths', [])
+    available = manifest['plugins']
+    if (type(paths) is not list or any(type(path) is not str for path in paths)
+            or len(set(paths)) != len(paths) or len(paths) > len(available) or plugins.get('installs')):
+        raise InstallError('bundle-plugin-mapping-unqualified')
+    # New candidates put active plugins first, unchanged, then fixed dormant
+    # connection payloads. Existing runtimes may have enabled a subset later.
+    selected = available[:len(paths)]
+    if current is not None:
+        selected = []
+        for path in paths:
+            if _path(path).parent.parent != current or _path(path).relative_to(current).as_posix() not in available:
+                raise InstallError('active-plugin-upgrade-source-mismatch')
+            selected.append(_path(path).relative_to(current).as_posix())
+    if 'native-source' in manifest['entries'] and (not _recovery or set(selected) != set(available)):
+        required = _bundle.connection_plugins(source, manifest)
+        inactive = set(available) - set(selected)
+        allowed = plugins.get('allow')
+        if (type(allowed) is not list or any(type(item) is not str for item in allowed)
+                or len(set(allowed)) != len(allowed) or inactive - set(required.values())
+                or any(name in allowed and relative in inactive for name, relative in required.items())):
+            raise InstallError('bundle-plugin-mapping-unqualified')
+    elif selected != available:
+        raise InstallError('bundle-plugin-mapping-unqualified')
+    return selected
+
+
 def _bundle_plan(source, digest, environment, owner, *, upgrade=None):
     if not isinstance(digest, str) or not re.fullmatch('[a-f0-9]{64}', digest):
         raise InstallError('approved-bundle-digest-required')
@@ -297,12 +355,10 @@ def _bundle_plan(source, digest, environment, owner, *, upgrade=None):
     config = json.loads(body)
     plugins = config.get('plugins', {})
     paths = plugins.get('load', {}).get('paths', [])
-    if (type(paths) is not list or len(paths) != len(manifest['plugins'])
-            or plugins.get('installs')):
-        raise InstallError('bundle-plugin-mapping-unqualified')
+    selected_plugins = _configured_bundle_plugins(source, manifest, config, current=current)
     # Match the approved plugin bytes to the configured paths, not only the
     # number or package names. Plugin order and all entry settings are retained.
-    for path, relative in zip(paths, manifest['plugins']):
+    for path, relative in zip(paths, selected_plugins):
         if current is not None and _path(path) != current / relative:
             raise InstallError('active-plugin-upgrade-source-mismatch')
         actual = _bundle.inventory(_path(path).resolve(strict=True))
@@ -312,12 +368,35 @@ def _bundle_plan(source, digest, environment, owner, *, upgrade=None):
             raise InstallError('bundle-plugin-content-mismatch')
     destination = _bundle.INSTALL_ROOT / checksum
     if paths:
-        plugins['load']['paths'] = [str(destination / path) for path in manifest['plugins']]
+        plugins['load']['paths'] = [str(destination / path) for path in selected_plugins]
     config_target = RUNTIME_CONFIG_ROOT / str(owner.pw_uid) / 'openclaw.json'
-    return {'source': str(source), 'digest': checksum, 'destination': str(destination),
+    result = {'source': str(source), 'digest': checksum, 'destination': str(destination),
             'source_config': str(config_path), 'source_config_bytes': body,
             'config_path': str(config_target),
             'config_bytes': (json.dumps(config, indent=2, ensure_ascii=True) + '\n').encode()}
+    if 'native-source' in manifest['entries']:
+        candidate = None
+        if upgrade is None:
+            # Explicit initial/migration output of native-config.prepare.
+            candidate = json.loads(_configuration_bytes(config_path.with_name('candidate.json'), owner.pw_uid))
+            selection = _bundle._read_release_selection(source, manifest['entries'])
+            if (type(candidate) is not dict or candidate.get('status') != 'staged'
+                    or candidate.get('pixelSourceRef') != selection['pixelSourceRevision']
+                    or type(candidate.get('connectionSidefiles')) is not dict
+                    or set(candidate['connectionSidefiles']) != {'gateway.env', 'onboarding.json'}):
+                raise InstallError('native-connection-sidefile-producer-required')
+        # A narrow qualified patch leaves the Source component unchanged.
+        # Its active owner directory need not retain a staging candidate.json.
+        # These are only planning inputs: the locked old-runtime preflight
+        # independently captures the currently admitted images before context.
+        sidefiles = {}
+        for name in ('gateway.env', 'onboarding.json'):
+            data = _configuration_bytes(config_path.with_name(name), owner.pw_uid)
+            if len(data) > 131072 or candidate is not None and hashlib.sha256(data).hexdigest() != candidate['connectionSidefiles'][name]:
+                raise InstallError('native-connection-sidefile-producer-changed')
+            sidefiles[name] = data.decode('utf-8')
+        result['connection_sidefiles'] = sidefiles
+    return result
 
 
 def make_plan(*, install_dir, owner_name, source_plist, openclaw_bin, gateway_port,
@@ -424,7 +503,7 @@ def _bind_services(plan, *, bundle, digest, source_ref):
     selection = {'bundle': str(_path(bundle).resolve(strict=True)), 'expected_digest': digest,
         'expected_ref': source_ref, 'expected_config_digest': hashlib.sha256(
             plan['runtime_bundle']['source_config_bytes']).hexdigest()}
-    _native_services.helper('config').verified_services(selection['bundle'],
+    snapshots = _native_services.helper('config').verified_services(selection['bundle'],
         **{key: value for key, value in selection.items() if key != 'bundle'})
     values = _env_file(Path(plan['access_settings']['install_dir']) / '.env')
     port = values.get('DASHBOARD_API_PORT', '3002')
@@ -436,7 +515,8 @@ def _bind_services(plan, *, bundle, digest, source_ref):
     environment['OPENCLAW_CONFIG_PATH'] = plan['runtime_bundle']['source_config']
     receipt, policies = _policy_deployment(environment,
         plistlib.loads(plan['source_bytes']), plan['node'], plan['entrypoint'], plan['owner'],
-        bundle_plan=plan['runtime_bundle'], native_services=True)
+        bundle_plan=plan['runtime_bundle'], native_services=True,
+        integrations_required='integrations' in _native_services.snapshot_order(snapshots))
     plan['access_settings']['gateway_policy'] = receipt
     plan['policies'] = policies
 
@@ -491,7 +571,7 @@ def _activate_new_services(plan):
         atomic_json(journal, value)
         raise
     def rollback():
-        _native_services.stop_new(services=services, attempted=['manager', 'promoter', 'operations'],
+        _native_services.stop_new(services=services, attempted=list(_native_services.service_order(services)),
             checkpoint=checkpoint)
     return rollback
 
@@ -506,9 +586,12 @@ def _verify_new_services(plan):
     recovery = record['recovery']
     adapters = _native_services.recovery_adapters(recovery, owner=plan['owner'].pw_name,
         save_stop=None, load_stop=None)
+    if set(adapters) != set(_managed_service_order(record['selection'])):
+        raise InstallError('native-service-selection-role-mismatch')
     inspection_required = _managed_inspection_required(record['selection'])
     checks = _native_services.readiness_checks(owner=plan['owner'].pw_name,
-        identity=recovery['identity'], python=recovery['python'], inspection_required=inspection_required)
+        identity=recovery['identity'], python=recovery['python'], inspection_required=inspection_required,
+        integrations_required='integrations' in adapters)
     for name, service in adapters.items():
         service.process_identity()
         if checks[name]() is not True:
@@ -536,14 +619,14 @@ def _restore_new_services(plan):
         # A healthy prior deployment must remain running during gateway rollback.
         if (not plan.get('migration_qualification') or record.get('requiresRecovery')
                 or record.get('progress', {}).get('phase') != 'services-active'
-                or record['attempted'] != ['manager', 'promoter', 'operations']):
+                or record['attempted'] != list(_managed_service_order(record['selection']))):
             raise InstallError('native-service-recovery-selection-changed')
         _verify_new_services(dict(plan, native_services=record['selection']))
         if private_json(journal, 0, 2 * 1024 * 1024) != record:
             raise InstallError('native-service-recovery-journal-changed')
         return
     attempted = record['attempted']
-    if attempted != ['manager', 'promoter', 'operations'][:len(attempted)]:
+    if attempted != list(_managed_service_order(record['selection']))[:len(attempted)]:
         raise InstallError('native-service-recovery-attempts-invalid')
     if not attempted:
         return
@@ -665,6 +748,7 @@ def qualify_migration_selection(*, owner_name, current_digest, gateway_port, can
         raise InstallError('active-native-state-directory-required')
     preservation = migration.verify_state_preservation(json.loads(before), candidate_body,
         json.loads(record_body), state_dir=state)
+    migration.verify_context_preservation(json.loads(before), json.loads(candidate_body))
     selected_runtime = _bundle_plan(runtime_bundle, bundle_digest,
         {'OPENCLAW_CONFIG_PATH': str(candidate_path)}, owner)
     _bundle.verify_service_binding(runtime_bundle, services_digest)
@@ -735,6 +819,7 @@ def make_migration_plan(*, install_dir, owner_name, openclaw_bin, gateway_port, 
             bundle_digest=bundle_digest, services_bundle=services_bundle,
             services_digest=services_digest, source_ref=source_ref) != selection:
         raise InstallError('native-migration-selection-changed')
+    _bind_source_upgrade_plan(plan)
     return plan
 
 
@@ -768,6 +853,7 @@ def make_upgrade_plan(*, install_dir, owner_name, openclaw_bin, gateway_port,
     _version_upgrade_config(plan)
     plan['upgrade_qualification'] = qualification
     plan['upgrade_kind'] = upgrade_kind
+    _bind_source_upgrade_plan(plan)
     return plan
 
 
@@ -917,6 +1003,149 @@ def _write_exact(path, data, *, mode, uid=0, gid=0):
             os.unlink(temporary)
 
 
+def _source_flat_files(selection):
+    """New flat Source workers come from the exact approved protected copy."""
+    manifest, _checksum = _bundle.verify(selection['source'], expected_digest=selection['digest'])
+    result = []
+    for relative in (*SOURCE_HOST_FILES, *('pixel_connections/' + name for name in CONNECTION_FILES)):
+        origin = 'ods-source/bin/' + relative
+        expected = manifest['entries'].get(origin)
+        if type(expected) is not list or expected[:2] != ['file', 0o644] or expected[2] > 8 * 1024 * 1024:
+            raise InstallError('native-source-flat-file-unqualified')
+        with os.fdopen(_bundle._open_file(selection['source'], origin), 'rb') as stream:
+            body = stream.read(8 * 1024 * 1024 + 1)
+        if expected != ['file', 0o644, len(body), hashlib.sha256(body).hexdigest()]:
+            raise InstallError('native-source-flat-file-changed')
+        result.append((relative, body))
+    return result
+
+
+def _source_family_files(plan):
+    """Render the fixed Source family from the exact approved bundle only."""
+    selection = plan.get('runtime_bundle')
+    if not selection or selection.get('connection_sidefiles') is None:
+        return []
+    files = [(_destination(ACCESS_PROGRAM_ROOT / relative), body, dict(mode=0o644, uid=0, gid=0))
+             for relative, body in _source_flat_files(selection)]
+    spec = importlib.util.spec_from_file_location('source_runtime_family', HERE / 'pixel-native-source-broker.py')
+    publisher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(publisher)
+    _manifest, _checksum = _bundle.verify(selection['source'], expected_digest=selection['digest'])
+    with os.fdopen(_bundle._open_file(selection['source'], 'native-source/component.json'), 'rb') as stream:
+        component = json.load(stream)
+    python = _native_services.helper('ops-service').select_python()
+    if component['hostPython'] != str(python):
+        raise InstallError('native-source-python-changed')
+    destination = Path(selection['destination'])
+    launcher = _launcher_bytes(destination / 'node', destination / 'runtime/openclaw.mjs')
+    if plan.get('launcher', launcher) != launcher:
+        raise InstallError('native-source-launcher-changed')
+    previous_policy = None
+    descriptor = _destination(Path('/private/etc/ods/pixel-provider-runtime.json'))
+    if plan.get('upgrade_qualification') and os.path.lexists(descriptor):
+        from pixel_macos_custody import protected_bytes
+        current = json.loads(protected_bytes(descriptor, limit=65536))
+        if type(current) is not dict or 'policy' not in current:
+            raise InstallError('native-source-runtime-policy-invalid')
+        previous_policy = current['policy']
+    for path, body, mode in publisher.runtime_files(selection['source'], selection['digest'], launcher, str(python),
+            previous_policy=previous_policy):
+        files.append((_destination(path), body, dict(mode=mode, uid=0, gid=0)))
+    records = [dict(path=str(path), before=None, after=body, mode=attrs['mode'], gid=attrs['gid'])
+               for path, body, attrs in files]
+    _upgrade.source_family_hash(records)
+    return files
+
+
+def _source_snapshot_read(path, *, limit=8 * 1024 * 1024):
+    """Readonly absence at the closed Source code family; never private data."""
+    from pixel_macos_custody import protected_inspection_bytes
+    value = str(_destination(path))
+    if value not in _upgrade.SOURCE_ADDITIONS:
+        return protected_inspection_bytes(path, limit=limit)
+    if not os.path.lexists(value):
+        _preflight_directory(Path(value).parent)
+        if not os.path.lexists(value):
+            return None
+    from pixel_macos_custody import protected_bytes
+    return protected_bytes(value, limit=limit)
+
+
+def _source_code_change(path, *, expected, replacement, mode, gid):
+    """CAS an originally absent candidate code image, under fresh caller proof.
+
+    The sequencer requires its separate custody verifier immediately before
+    this callback. This fixed writer is deliberately incapable of addressing
+    broker state, token, environment, logs, identity or job definitions.
+    """
+    from pixel_macos_custody import protected_directory, _verify_fd
+    value = str(_destination(path))
+    body = replacement if expected is None else expected
+    expected_mode = 0o600 if value == _upgrade.SOURCE_PRIVATE_RECEIPT else 0o644
+    if (value not in _upgrade.SOURCE_ADDITIONS or type(body) is not bytes
+            or len(body) > 8 * 1024 * 1024 or type(mode) is not int or mode != expected_mode
+            or type(gid) is not int or gid != 0
+            or (expected is None) == (replacement is None)):
+        raise InstallError('native-source-code-image-invalid')
+    parent, name = value.rsplit('/', 1)
+    if expected is None:
+        _mkdir_deployment_directories(Path(parent))
+    identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+    with protected_directory(parent) as directory:
+        if replacement is None:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                before = _verify_fd(fd, directory=False)
+                if stat.S_IMODE(before.st_mode) != mode or before.st_gid != gid:
+                    raise InstallError('native-source-code-image-changed')
+                with os.fdopen(os.dup(fd), 'rb') as stream:
+                    actual = stream.read(len(expected) + 1)
+                current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if (actual != expected or identity(before) != identity(current)
+                        or identity(before) != identity(os.fstat(fd))):
+                    raise InstallError('native-source-code-image-changed')
+                os.unlink(name, dir_fd=directory)
+                os.fsync(directory)
+            finally:
+                os.close(fd)
+            return
+        def absent():
+            try:
+                os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                return
+            raise InstallError('native-source-code-image-changed')
+        absent()
+        temporary = '.ods-source-add-' + os.urandom(16).hex()
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        try:
+            os.fchown(fd, 0, gid)
+            os.fchmod(fd, mode)
+            _verify_fd(fd, directory=False)
+            with os.fdopen(os.dup(fd), 'wb') as stream:
+                stream.write(replacement)
+                stream.flush()
+            os.fsync(fd)
+            absent()
+            os.rename(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+            temporary = None
+            os.fsync(directory)
+        finally:
+            os.close(fd)
+            if temporary is not None:
+                os.unlink(temporary, dir_fd=directory)
+
+
+def _source_added_write(path, *, expected, replacement, mode, gid):
+    if expected is not None:
+        raise InstallError('native-source-added-code-required')
+    return _source_code_change(path, expected=expected, replacement=replacement, mode=mode, gid=gid)
+
+
+def _source_added_remove(path, *, expected, mode, gid):
+    return _source_code_change(path, expected=expected, replacement=None, mode=mode, gid=gid)
+
+
 def _deployment_files(source, plan):
     """Snapshot every input before the first deployment write or job change."""
     files = []
@@ -933,6 +1162,22 @@ def _deployment_files(source, plan):
         add(target / "pixel_settings" / name, (bin_root / "pixel_settings" / name).read_bytes())
     for name in PROVIDER_FILES:
         add(target / "pixel_provider" / name, (bin_root / "pixel_provider" / name).read_bytes())
+    selection = plan.get('runtime_bundle')
+    if plan.get('source_lifecycle') is not None:
+        source_family = _source_family_files(plan)
+    elif selection and selection.get('connection_sidefiles') is not None:
+        # Initial static metadata has its own existing publication journal.
+        # Prewriting those three files here would look like an unbound
+        # operator runtime to that publisher, bypassing its inode custody.
+        source_family = [(_destination(target / relative), body, dict(mode=0o644, uid=0, gid=0))
+                         for relative, body in _source_flat_files(selection)]
+    else:
+        source_family = []
+    for path, body, attrs in source_family:
+        if str(path) not in {str(Path('/private/etc/ods/pixel-provider-runtime-manifest.json')),
+                             str(Path('/private/etc/ods/pixel-provider-runtime.json')),
+                             str(_launchd.ACCESS_STATE / 'source-runtime-installation.json')}:
+            add(path, body, **attrs)
     add(PROFILE, plan['policies']['sandboxed'])
     for mode, record in plan['access_settings']['gateway_policy']['profiles'].items():
         add(record['path'], plan['policies'][mode])
@@ -959,6 +1204,11 @@ def _deployment_files(source, plan):
         add(_launchd.RELAY_PLIST, _launchd.encode(plan['access_relay']))
     if len({path for path, _, _ in files}) != len(files):
         raise InstallError("duplicate-deployment-destination")
+    for path, body, attrs in source_family:
+        if str(path) in {str(Path('/private/etc/ods/pixel-provider-runtime-manifest.json')),
+                        str(Path('/private/etc/ods/pixel-provider-runtime.json')),
+                        str(_launchd.ACCESS_STATE / 'source-runtime-installation.json')}:
+            add(path, body, **attrs)
     return files
 
 
@@ -1047,8 +1297,67 @@ def _upgrade_policy_mode(plan):
     return _policy.policy_state(settings.get('gateway_policy'))['activeMode']
 
 
+def _candidate_upgrade_policy_mode(plan):
+    """Verify the candidate controller after its journaled files are active."""
+    sys.path.insert(0, str(HERE.parents[2] / 'bin'))
+    from pixel_macos_custody import protected_bytes
+    settings = json.loads(protected_bytes(_destination(ACCESS_FILES['config'])))
+    if (settings != plan['access_settings']
+            or settings.get('gateway_binding') != plan['gateway_binding']
+            or settings.get('gateway_process') != plan['gateway_binding']['process']):
+        raise InstallError('runtime-upgrade-controller-binding-changed')
+    return _policy.policy_state(settings.get('gateway_policy'))['activeMode']
+
+
+def _legacy_upgrade_additions(plan, files, family, codes):
+    """Only a complete new family absent from the approved previous bundle.
+
+    A missing file from a deployment whose bundle ships the family is drift,
+    not permission to repair it. Existing files still undergo the ordinary
+    custody checks. codes: incomplete, invalid, changed and not-legacy refusals.
+    """
+    incomplete, invalid, changed, not_legacy = codes
+    selected = {str(path): attributes for path, _body, attributes in files if str(path) in family}
+    absent = {path for path in selected if not os.path.lexists(path)}
+    if not absent:
+        return frozenset()
+    if (set(selected) != family or absent != family
+            or any(value != dict(mode=0o644, uid=0, gid=0) for value in selected.values())):
+        raise InstallError(incomplete)
+    from pixel_macos_custody import protected_bytes
+    digest = plan['upgrade_qualification']['currentDigest']
+    if type(digest) is not str or not re.fullmatch('[a-f0-9]{64}', digest):
+        raise InstallError(invalid)
+    body = protected_bytes(_bundle.INSTALL_ROOT / digest / _bundle.MANIFEST, limit=_bundle.MAX_MANIFEST)
+    if hashlib.sha256(body).hexdigest() != digest:
+        raise InstallError(changed)
+    manifest = json.loads(body)
+    if (type(manifest) is not dict or type(manifest.get('entries')) is not dict
+            or any('ods-source/bin/' + Path(path).name in manifest['entries'] for path in family)):
+        raise InstallError(not_legacy)
+    return family
+
+
+def _schedule_upgrade_additions(plan, files):
+    return _legacy_upgrade_additions(plan, files, _upgrade.SCHEDULE_ADDITIONS, (
+        'runtime-upgrade-schedule-additions-incomplete', 'runtime-upgrade-schedule-source-invalid',
+        'runtime-upgrade-schedule-source-changed', 'runtime-upgrade-schedule-source-not-legacy'))
+
+
+def _guard_upgrade_additions(plan, files):
+    """The Source admission guard, admitted independently of the schedule family.
+
+    Main never deployed it, nor did the scheduler builds before it. Native
+    update bundles shipped its source before any controller deployed it, so an
+    approved previous bundle without that source predates the guard.
+    """
+    return _legacy_upgrade_additions(plan, files, _upgrade.GUARD_ADDITIONS, (
+        'runtime-upgrade-guard-additions-incomplete', 'runtime-upgrade-guard-source-invalid',
+        'runtime-upgrade-guard-source-changed', 'runtime-upgrade-guard-source-not-legacy'))
+
+
 def _upgrade_file_snapshots(plan, source):
-    """Capture existing root files; only new immutable policy files may be added."""
+    """Capture existing root files and explicitly qualified complete additions."""
     sys.path.insert(0, str(HERE.parents[2] / 'bin'))
     from pixel_macos_custody import protected_bytes
     if not plan.get('upgrade_qualification'):
@@ -1057,7 +1366,19 @@ def _upgrade_file_snapshots(plan, source):
     existing, additions = [], []
     policy_paths = {_destination(record['path'])
                     for record in plan['access_settings']['gateway_policy']['profiles'].values()}
-    for path, after, attributes in _deployment_files(source, plan):
+    files = _deployment_files(source, plan)
+    legacy_additions = _schedule_upgrade_additions(plan, files) | _guard_upgrade_additions(plan, files)
+    source_intent = plan.get('source_lifecycle')
+    if source_intent is not None:
+        qualification = plan['upgrade_qualification']
+        _source_lifecycle_intent(source_intent, owner=plan['owner'],
+            current_digest=qualification['currentDigest'], candidate_digest=qualification['candidateDigest'])
+        candidate = [dict(path=str(path), before=None, after=after,
+            mode=attributes['mode'], gid=attributes.get('gid', 0)) for path, after, attributes in files
+            if str(path) in _upgrade.SOURCE_ADDITIONS]
+        if _upgrade.source_family_hash(candidate) != source_intent['familySha256']:
+            raise InstallError('native-source-installer-family-changed')
+    for path, after, attributes in files:
         if path == _destination(PROFILE):
             after = plan['policies'][mode]
         if attributes.get('uid', 0) != 0:
@@ -1070,6 +1391,11 @@ def _upgrade_file_snapshots(plan, source):
             continue
         _preflight_directory(path.parent)
         if not os.path.lexists(path):
+            if (str(path) in legacy_additions
+                    or source_intent is not None and str(path) in _upgrade.SOURCE_ADDITIONS):
+                existing.append(dict(path=str(path), before=None, after=after,
+                    mode=attributes['mode'], gid=attributes.get('gid', 0)))
+                continue
             if path not in policy_paths:
                 raise InstallError('runtime-upgrade-existing-file-missing')
             additions.append((path, after, attributes))
@@ -1095,6 +1421,12 @@ def _managed_inspection_required(selection):
     return 'helpers/preview-inspection.json' in snapshots
 
 
+def _managed_service_order(selection):
+    snapshots = _native_services.helper('config').verified_services(selection['bundle'],
+        **{key: value for key, value in selection.items() if key != 'bundle'})
+    return _native_services.snapshot_order(snapshots)
+
+
 def _managed_service_contract(selected=None):
     """Fixed native destinations, never derived from a recovery manifest."""
     broker = pwd.getpwnam('_ods_pixel_ops')
@@ -1106,7 +1438,7 @@ def _managed_service_contract(selected=None):
               for name in names}
     result[str(root / 'helpers/preview-inspection.json')] = (0o644, 0)
     result.update({str(Path('/Library/LaunchDaemons') / ('com.ods.pixel-native-' + role + '.plist')):
-        (0o644, 0) for role in ('manager', 'promoter', 'operations')})
+        (0o644, 0) for role in _native_services.INTEGRATIONS_ORDER})
     result[str(_launchd.ACCESS_STATE / 'service-installation.json')] = (0o600, 0)
     if selected is not None:
         additions = set(selected) & _upgrade.INSPECTION_ADDITIONS
@@ -1114,6 +1446,11 @@ def _managed_service_contract(selected=None):
             raise InstallError('native-service-inspection-file-set-incomplete')
         if not additions:
             result = {path: value for path, value in result.items() if path not in _upgrade.INSPECTION_ADDITIONS}
+        integrations = set(selected) & _upgrade.INTEGRATION_ADDITIONS
+        if integrations and (integrations != _upgrade.INTEGRATION_ADDITIONS or not additions):
+            raise InstallError('native-service-integration-file-set-incomplete')
+        if not integrations:
+            result = {path: value for path, value in result.items() if path not in _upgrade.INTEGRATION_ADDITIONS}
     return result
 
 
@@ -1136,7 +1473,7 @@ def _managed_service_snapshots(plan):
     if (type(record) is not dict or type(record.get('schemaVersion')) is not int
             or record['schemaVersion'] != 1 or record.get('owner') != plan['owner'].pw_uid
             or record.get('requiresRecovery') or record.get('progress', {}).get('phase') != 'services-active'
-            or record.get('attempted') != ['manager', 'promoter', 'operations']):
+            or record.get('attempted') != list(_managed_service_order(record['selection']))):
         raise InstallError('native-managed-service-not-ready')
     _verify_new_services(dict(plan, native_services=record['selection']))
     recovery = record['recovery']
@@ -1148,17 +1485,21 @@ def _managed_service_snapshots(plan):
         identity=recovery['identity'], owner=plan['owner'].pw_name,
         environment=Path(plan['access_settings']['install_dir']) / '.env',
         workspace=_path(agents[0]['workspace']), port=plan['native_manager_port'], python=recovery['python'])
+    order = _managed_service_order(plan['native_services'])
+    previous_order = _managed_service_order(record['selection'])
+    if 'integrations' in previous_order and 'integrations' not in order:
+        raise InstallError('native-service-capability-downgrade-refused')
     definitions = {role: {'path': str(path), 'body': base64.b64encode(body).decode('ascii')}
-        for role in ('manager', 'promoter', 'operations') for path, body, _, _ in files
+        for role in order for path, body, _, _ in files
         if path == Path('/Library/LaunchDaemons') / ('com.ods.pixel-native-' + role + '.plist')}
-    if set(definitions) != {'manager', 'promoter', 'operations'}:
+    if set(definitions) != set(order):
         raise InstallError('complete-native-service-bindings-required')
     updated = dict(schemaVersion=1, owner=plan['owner'].pw_uid, selection=plan['native_services'],
         progress={'phase': 'services-active'}, requiresGatewayProof=True,
         recovery=dict(recovery, definitions=definitions), stopWitnesses={},
-        attempted=['manager', 'promoter', 'operations'])
+        attempted=list(order))
     files.append((journal, (json.dumps(updated, sort_keys=True) + '\n').encode(), 0o600, 0))
-    contract = _managed_service_contract()
+    contract = _managed_service_contract({str(path) for path, _, _, _ in files})
     if ({str(path): (mode, gid) for path, _, mode, gid in files} != contract
             or len(files) != len(contract)):
         raise InstallError('native-service-replacement-file-contract-invalid')
@@ -1171,10 +1512,23 @@ def _managed_service_snapshots(plan):
             raise InstallError('native-service-recovery-journal-changed')
         snapshots.append(dict(path=str(path), before=old, after=after, mode=mode, gid=gid))
     absent = {item['path'] for item in snapshots if item['before'] is None}
-    if absent and absent != _upgrade.INSPECTION_ADDITIONS:
-        raise InstallError('native-service-inspection-file-set-incomplete')
-    if bool(absent) == _managed_inspection_required(record['selection']):
-        raise InstallError('native-service-inspection-selection-mismatch')
+    expected_absent = set()
+    if not _managed_inspection_required(record['selection']):
+        expected_absent.update(_upgrade.INSPECTION_ADDITIONS)
+    if 'integrations' in order and 'integrations' not in previous_order:
+        expected_absent.update(_upgrade.INTEGRATION_ADDITIONS)
+        target = 'system/com.ods.pixel-native-integrations'
+        if _job_disabled(target):
+            raise InstallError('runtime-upgrade-disabled-service')
+        try:
+            _command(['/bin/launchctl', 'print', target])
+        except InstallError as error:
+            if error.code != 'host-command-failed' or error.returncode != 113:
+                raise
+        else:
+            raise InstallError('runtime-upgrade-service-still-loaded')
+    if absent != expected_absent:
+        raise InstallError('native-service-additions-selection-mismatch')
     return snapshots
 
 
@@ -1217,12 +1571,26 @@ def _upgrade_services(plan, records):
         'relay': (_launchd.RELAY_TARGET, _launchd.RELAY_PLIST),
     }
     managed = _managed_service_record(records, 'before') is not None
+    added_integrations = False
     if managed:
+        old_record, new_record = (_managed_service_record(records, version) for version in ('before', 'after'))
+        old_order = _native_services.service_order(old_record['recovery']['definitions'])
+        new_order = _native_services.service_order(new_record['recovery']['definitions'])
+        if 'integrations' in old_order and 'integrations' not in new_order:
+            raise InstallError('native-service-capability-downgrade-refused')
+        added_integrations = 'integrations' in new_order and 'integrations' not in old_order
+        if added_integrations and ({name for name in _upgrade.INTEGRATION_ADDITIONS
+                if name in by_path and by_path[name]['before'] is None} != _upgrade.INTEGRATION_ADDITIONS):
+            raise InstallError('native-service-integration-additions-incomplete')
+        if added_integrations:
+            _check_integrations_preservation(plan, records)
         definitions.update({role: ('system/com.ods.pixel-native-' + role,
             Path('/Library/LaunchDaemons') / ('com.ods.pixel-native-' + role + '.plist'))
-            for role in ('operations', 'promoter', 'manager')})
+            for role in ('operations', 'promoter', 'manager', *(('integrations',) if 'integrations' in new_order else ()))})
 
     def create(role, version, target, path):
+        if role == 'integrations' and version == 'previous' and added_integrations:
+            return _PriorAbsentIntegrations(target, path)
         try:
             expected = by_path[str(_destination(path))]['before' if version == 'previous' else 'after']
             document = plistlib.loads(expected)
@@ -1243,7 +1611,7 @@ def _upgrade_services(plan, records):
         process = None
         if role in ('gateway', 'relay'):
             process = plan['source_process'] if version == 'previous' else plan['gateway_binding']['process']
-        if role in ('manager', 'promoter', 'operations'):
+        if role in _native_services.INTEGRATIONS_ORDER:
             record = _managed_service_record(records, 'before' if version == 'previous' else 'after')
             recovery = record['recovery']
             broker = pwd.getpwnam('_ods_pixel_ops')
@@ -1255,7 +1623,8 @@ def _upgrade_services(plan, records):
                         'body': base64.b64encode(expected).decode('ascii')}):
                 raise InstallError('native-service-definition-identity-mismatch')
             user, uid, gid = {'manager': (plan['owner'].pw_name, plan['owner'].pw_uid, plan['owner'].pw_gid),
-                'promoter': ('root', 0, 0), 'operations': ('_ods_pixel_ops', broker.pw_uid, broker.pw_gid)}[role]
+                'promoter': ('root', 0, 0), 'operations': ('_ods_pixel_ops', broker.pw_uid, broker.pw_gid),
+                'integrations': (plan['owner'].pw_name, plan['owner'].pw_uid, plan['owner'].pw_gid)}[role]
             python = recovery['python']
             arguments = document.get('ProgramArguments', [])
             if (document.get('UserName') != user or arguments.count(python) != 1
@@ -1268,12 +1637,126 @@ def _upgrade_services(plan, records):
             atomic_json(witness, value)
         def load():
             return private_json(witness, 0, 1024 * 1024)
-        return LaunchdGatewayService(_command, InstallError, target, verify,
+        service_type = LaunchdGatewayService
+        if role == 'integrations' and version == 'candidate' and added_integrations:
+            class AddedIntegrationsService(LaunchdGatewayService):
+                def assert_never_started(self):
+                    try:
+                        value = self.load_stop()
+                    except FileNotFoundError:
+                        return False
+                    if type(value) is not dict or 'neverStarted' not in value:
+                        return False
+                    if value != {'target': self.target, 'boot': self._boot_identity(),
+                            'definition': launchd_definition_digest(document, InstallError), 'neverStarted': True}:
+                        raise InstallError('native-stop-witness-unavailable')
+                    _assert_integration_job_absent(self.target)
+                    return True
+
+                def assert_stopped(self):
+                    if not self.assert_never_started():
+                        super().assert_stopped()
+            service_type = AddedIntegrationsService
+        return service_type(_command, InstallError, target, verify,
             plist=path, verify_definition=verify_definition, process=process,
             save_stop=save, load_stop=load, allow_root_process=role == 'promoter')
 
-    return tuple({role: create(role, version, *definition) for role, definition in definitions.items()}
-                 for version in ('previous', 'candidate'))
+    previous, candidate = ({role: create(role, version, *definition) for role, definition in definitions.items()}
+        for version in ('previous', 'candidate'))
+    for role in previous:
+        old, new = previous[role], candidate[role]
+        record = by_path[str(_destination(old.plist))]
+        if (getattr(old, 'prior_absent', False) or record['before'] != record['after']
+                or old.process != new.process or old.allow_root_process != new.allow_root_process):
+            continue
+        # These two snapshots describe the same process contract. Keep their
+        # distinct durable slots, but invalidate both before either bootstrap.
+        # Never transfer a valid witness: a pre-bootstrap tree cannot establish
+        # absence of a later instance merely because its plist is unchanged.
+        stores = (old.save_stop, new.save_stop)
+        for index, service in enumerate((old, new)):
+            def save_stop(value, own=stores[index], peer=stores[1 - index]):
+                if value is None:
+                    peer(None)
+                own(value)
+            service.save_stop = save_stop
+        old._upgrade_stop_peer, new._upgrade_stop_peer = new, old
+    return previous, candidate
+
+
+def _assert_integration_job_absent(target):
+    if target != 'system/com.ods.pixel-native-integrations':
+        raise InstallError('native-service-absence-target-invalid')
+    try:
+        _command(['/bin/launchctl', 'print', target])
+    except InstallError as error:
+        if error.code == 'host-command-failed' and error.returncode == 113:
+            return
+        raise
+    raise InstallError('runtime-upgrade-service-still-loaded')
+
+
+class _PriorAbsentIntegrations:
+    """Only the exact legacy-three → four service capability may be absent.
+
+    This is a fixed prior deployment state, never a fabricated process witness.
+    The complete ten-path rollback image is validated before constructing it.
+    """
+    prior_absent = True
+
+    def __init__(self, target, path):
+        if target != 'system/com.ods.pixel-native-integrations' or path != Path(
+                '/Library/LaunchDaemons/com.ods.pixel-native-integrations.plist'):
+            raise InstallError('native-service-absence-target-invalid')
+        self.target, self.plist = target, path
+
+    def verify_definition(self):
+        if os.path.lexists(_destination(self.plist)):
+            raise InstallError('native-deployment-changed')
+
+    def assert_stopped(self):
+        _assert_integration_job_absent(self.target)
+
+
+def _check_integrations_preservation(plan, records):
+    """Read-only admission, including a prior interrupted private preparation."""
+    from pixel_macos_custody import protected_bytes
+    import pixel_macos_custody as custody
+    module = _native_services.helper('integrations-preservation')
+    path = Path(_launchd.ACCESS_STATE) / module.NAME
+    if not os.path.lexists(path):
+        if any(os.path.lexists(root) for root in module.ROOTS):
+            raise InstallError('native-integrations-preservation-unbound-roots')
+        return None
+    value = module.load(_launchd.ACCESS_STATE, custody)
+    by_path = {item['path']: item for item in records}
+    body = module.validate(value, owner=plan['owner'], install_dir=plan['access_settings']['install_dir'],
+        settings=by_path[str(_destination(ACCESS_FILES['config']))]['before'],
+        services=by_path[str(_launchd.ACCESS_STATE / 'service-installation.json')]['before'],
+        installation=protected_bytes(Path(_launchd.ACCESS_STATE) / 'installation.json'))
+    _native_services.helper('integrations-service').validate_preserved(
+        plan['owner'].pw_name, common_body=body, allow_partial=True)
+    return value
+
+
+def _preserve_new_integrations(plan, records, journal):
+    """Durable private-root intent precedes the first provisioning operation."""
+    import pixel_macos_custody as custody
+    module = _native_services.helper('integrations-preservation')
+    value = _check_integrations_preservation(plan, records)
+    if value is None:
+        by_path = {item['path']: item for item in records}
+        value = module.make(owner=plan['owner'], install_dir=plan['access_settings']['install_dir'],
+            settings=by_path[str(_destination(ACCESS_FILES['config']))]['before'],
+            services=by_path[str(_launchd.ACCESS_STATE / 'service-installation.json')]['before'],
+            installation=custody.protected_bytes(Path(_launchd.ACCESS_STATE) / 'installation.json'),
+            current_digest=journal.value['currentDigest'], candidate_digest=journal.value['candidateDigest'],
+            common_body=by_path['/usr/local/libexec/ods-pixel-services/integrations/integrations_common.py']['after'])
+    # Confirm directory durability on reuse too: an earlier writer may have
+    # failed immediately after its atomic rename, before the final fsync.
+    module.publish(_launchd.ACCESS_STATE, value, custody)
+    if module.load(_launchd.ACCESS_STATE, custody) != value:
+        raise InstallError('native-integrations-preservation-publication-unconfirmed')
 
 
 def _runtime_upgrade_stop_witness(candidate_digest, version, role):
@@ -1327,6 +1810,9 @@ def _clear_candidate_stop_witnesses(plan):
 
 
 def _upgrade_service_identity(service):
+    if getattr(service, 'prior_absent', False):
+        service.verify_definition()
+        return service.assert_stopped()
     if service.target != _launchd.ACCESS_TARGET:
         return service.process_identity()
     # The root Python coordinator is bound by its protected/loaded plist,
@@ -1348,7 +1834,13 @@ def _observe_upgrade_service(previous, candidate):
         if error.code == 'host-command-failed' and error.returncode == 113:
             return 'absent'
         raise
-    for version, service in (('previous', previous), ('candidate', candidate)):
+    versions = (('previous', previous), ('candidate', candidate))
+    if (getattr(previous, '_upgrade_stop_peer', None) is candidate
+            and getattr(candidate, '_upgrade_stop_peer', None) is previous):
+        # Absence selects candidate first too. A fresh stop of this equivalent
+        # contract must therefore publish in that same slot, including replay.
+        versions = tuple(reversed(versions))
+    for version, service in versions:
         try:
             service.verify_definition()
         except InstallError as error:
@@ -1363,6 +1855,8 @@ def _observe_upgrade_service(previous, candidate):
 
 def _start_upgrade_service(service):
     service.verify_definition()
+    if getattr(service, 'prior_absent', False):
+        return service.assert_stopped()
     if _job_disabled(service.target):
         raise InstallError('runtime-upgrade-disabled-service')
     # Never kickstart a job whose loaded definition still refers to the old
@@ -1408,6 +1902,8 @@ def _assert_upgrade_absent(previous, candidate):
     """
     if previous.target != candidate.target:
         raise InstallError('runtime-upgrade-target-changed')
+    if getattr(previous, 'prior_absent', False) and candidate.assert_never_started():
+        return
     for service in (candidate, previous):
         try:
             service.verify_definition()
@@ -1421,6 +1917,9 @@ def _assert_upgrade_absent(previous, candidate):
 
 
 def _stop_upgrade_service(service):
+    if getattr(service, 'prior_absent', False):
+        service.verify_definition()
+        return service.assert_stopped()
     _stop_loaded(service)
     # Missing job alone is not sufficient: assert_stopped also checks the
     # persisted process tree and boot identity from the stop witness.
@@ -1580,17 +2079,38 @@ def _require_initial_absence(plan, source):
             raise
     else:
         raise InstallError('initial-install-existing-user-service')
-    sockets = []
+    for port in (plan['access_settings']['gateway_port'], plan['access_port']):
+        _require_free_loopback_port(port)
+
+
+def _require_free_loopback_port(port):
+    """Refuse a live listener or a socket bound to this address, not closed connections.
+
+    The gateway and access services are Node listeners, and libuv binds them with
+    SO_REUSEADDR, so connections a removed install left in TIME_WAIT never stop
+    them. A plain bind fails on those leftovers, and macOS can keep thousands of
+    them on the old gateway port long after it closed. Probe the way the services
+    bind. On Darwin a reuse-address bind can succeed beside a wildcard listener,
+    so a loopback connection must also be refused.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.settimeout(2)
     try:
-        for port in (plan['access_settings']['gateway_port'], plan['access_port']):
-            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sockets.append(listener)
-            listener.bind(('127.0.0.1', port))
+        refused = probe.connect_ex(('127.0.0.1', port)) == errno.ECONNREFUSED
+    except OSError:
+        refused = False
+    finally:
+        probe.close()
+    if not refused:
+        raise InstallError('initial-install-port-unavailable')
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(('127.0.0.1', port))
     except OSError:
         raise InstallError('initial-install-port-unavailable') from None
     finally:
-        for listener in sockets:
-            listener.close()
+        listener.close()
 
 
 def _migration_edge_context(plan):
@@ -1696,7 +2216,7 @@ def _resume_migration_hold(plan):
     return record
 
 
-def _finish_migration_hold(plan, record, *, verify_before_release=None):
+def _finish_migration_hold(plan, record, *, verify_before_release=None, verify_while_held=None):
     path = _edge_hold_journal(plan)
     from pixel_access_bridge import atomic_json, private_json
     if private_json(path, 0, 65536) != record or record.get('phase') not in ('held', 'releasing'):
@@ -1707,6 +2227,13 @@ def _finish_migration_hold(plan, record, *, verify_before_release=None):
             raise InstallError('native-migration-edge-hold-changed')
         if private_json(path, 0, 65536) != record:
             raise InstallError('native-migration-edge-journal-changed')
+        # Source's first inactive generation is proved only while admission is
+        # freshly confirmed held. A prior releasing receipt may be a successful
+        # lost reply, after which owner-approved connection activity is valid.
+        if verify_while_held is not None:
+            verify_while_held()
+            if private_json(path, 0, 65536) != record:
+                raise InstallError('native-migration-edge-journal-changed')
         record = dict(record, phase='releasing')
         atomic_json(path, record)
     # A lost release reply must retry release with the original token. Acquire
@@ -1840,6 +2367,15 @@ def _activate(plan, services, journal):
         raise
 
 
+_LEGACY_UPGRADE_LOCK = '''@contextlib.contextmanager
+def locked(self):
+    with super().locked():
+        if os.path.lexists(self.state / 'runtime-upgrade.json'):
+            raise AccessError('runtime-upgrade-recovery-required')
+        yield
+'''
+
+
 def _previous_upgrade_guard(records):
     """Recognize reviewed guard methods without executing archived Python."""
     path = str(_destination(ACCESS_PROGRAM_ROOT / 'pixel_access_bridge.py'))
@@ -1865,6 +2401,13 @@ def _previous_upgrade_guard(records):
             return False
         current = methods((HERE.parents[2] / 'bin/pixel_access_bridge.py').read_bytes())
         if set(current) == {'locked', 'status'} and previous == current:
+            return True
+        # b0599adb07cedad5f95f8a423180f1407e8c8fdc used this exact guard
+        # before bounded schedule admission added the wait_seconds keyword.
+        # Its journal refusal is identical. Keep the complete status method
+        # and this explicit old lock AST exact; never execute archived code.
+        legacy_lock = ast.dump(ast.parse(_LEGACY_UPGRADE_LOCK).body[0], include_attributes=False)
+        if set(current) == {'locked', 'status'} and previous == dict(current, locked=legacy_lock):
             return True
     except (SyntaxError, ValueError, TypeError):
         pass
@@ -1892,6 +2435,17 @@ def _prepare_candidate_stop_witnesses(previous, candidate, records):
             pass
         else:
             raise InstallError('runtime-upgrade-candidate-witness-exists')
+        if getattr(old, 'prior_absent', False):
+            if ({name for name in _upgrade.INTEGRATION_ADDITIONS
+                    if name in by_path and by_path[name]['before'] is None} != _upgrade.INTEGRATION_ADDITIONS):
+                raise InstallError('native-service-integration-additions-incomplete')
+            if _job_disabled(new.target):
+                raise InstallError('runtime-upgrade-disabled-service')
+            record = by_path[str(_destination(new.plist))]
+            pending.append((new, {'target': new.target, 'boot': new._boot_identity(),
+                'definition': launchd_definition_digest(plistlib.loads(record['after']), InstallError),
+                'neverStarted': True}))
+            continue
         witness = old.load_stop()
         if witness['definition'] != old.definition() or witness['boot'] != old._boot_identity():
             raise InstallError('runtime-upgrade-stop-binding-changed')
@@ -1948,7 +2502,142 @@ def _restore_upgrade_owner(plan, previous, candidate):
     _relocate_upgrade_receipt(plan, previous, candidate, restore=True)
 
 
-def _activate_upgrade(plan, records, journal, *, previous_guard=False):
+def _source_upgrade_file_options(plan, records, journal, bridge):
+    """Fresh fixed custody for every code write, including mixed-image rollback."""
+    if not any(item['path'] in _upgrade.SOURCE_ADDITIONS for item in records):
+        return {}, {}
+    from pixel_connections import custody
+    addition = journal.value.get('sourceAddition')
+    intent = plan.get('source_lifecycle')
+    if intent is None or type(addition) is not dict or bridge is None:
+        raise InstallError('native-source-installer-file-custody-required')
+    qualification = plan['upgrade_qualification']
+    transaction = dict(kind='native-installer-upgrade', transaction=addition['contextSha256'],
+        currentDigest=qualification['currentDigest'], candidateDigest=qualification['candidateDigest'])
+    if (journal.value.get('schemaVersion') not in (4, 5, 6)
+            or addition['familySha256'] != intent['familySha256']
+            or _upgrade.source_family_hash(records) != intent['familySha256']):
+        raise InstallError('native-source-installer-family-changed')
+    if intent['mode'] == 'absent':
+        def fresh():
+            custody.native_verify_installer_absence(bridge, addition['proof'], transaction=transaction)
+    elif intent['mode'] == 'withdrawal' and 'receipt' in addition:
+        def fresh():
+            custody.native_verify_installer_withdrawal(bridge, addition['receipt'], transaction=transaction)
+    else:
+        raise InstallError('native-source-installer-complete-withdrawal-required')
+    shared = dict(source_addition=addition, verify_source=fresh)
+    return (dict(shared, write_source_added=_source_added_write),
+            dict(shared, remove_source_added=_source_added_remove))
+
+
+def _finish_source_upgrade(plan, records, journal):
+    """Rebind only a fully started target, before dropping installer admission.
+
+    A partially rebound candidate is not rollback authority. This operation
+    resumes the publisher's exact protected target transaction, and must leave
+    every new Source role inactive until the owner explicitly connects it.
+    """
+    if plan.get('source_lifecycle') is None:
+        return
+    phase = journal.value.get('phase')
+    if phase not in ('active', 'restored'):
+        raise InstallError('native-source-installer-target-not-ready')
+    addition = journal.value.get('sourceAddition', {})
+    intent = plan['source_lifecycle']
+    if intent['mode'] not in ('absent', 'withdrawal') or intent['mode'] == 'withdrawal' and 'receipt' not in addition:
+        raise InstallError('native-source-installer-complete-withdrawal-required')
+    from pixel_macos_custody import protected_bytes
+    from pixel_connections import custody
+    from pixel_connections.native_executor import _publisher
+    side = 'after' if phase == 'active' else 'before'
+    path = str(_destination(ACCESS_FILES['config']))
+    settings = next((item[side] for item in records if item['path'] == path), None)
+    if settings is None or protected_bytes(path) != settings:
+        raise InstallError('native-source-installer-target-binding-changed')
+    selected_plan = dict(plan, access_settings=json.loads(settings))
+    bridge = _bridge_from_recovery_plan(selected_plan, owner_name=plan['owner'].pw_name)
+    transaction = dict(kind='native-installer-upgrade', transaction=addition['contextSha256'],
+        currentDigest=plan['upgrade_qualification']['currentDigest'],
+        candidateDigest=plan['upgrade_qualification']['candidateDigest'])
+    # A first inert kit and a retained one both cross many independently guarded
+    # inode and publication boundaries; SOURCE_FINISH_SECONDS records what they
+    # cost on a Mac mini. bounded() still intersects the enclosing deadline.
+    with bridge.bounded(SOURCE_FINISH_SECONDS):
+        _discover_source_installer_bridge(bridge)
+        if intent['mode'] == 'absent' and phase == 'restored':
+            custody.native_verify_installer_absence(bridge, addition['proof'], transaction=transaction)
+            return
+        selected = custody.native_source_selection(bridge, bridge.connection_deployment())
+        doc = custody._native_selected(selected, _publication=True)
+        if doc['bundleSha256'] != transaction['candidateDigest' if side == 'after' else 'currentDigest']:
+            raise InstallError('native-source-installer-target-binding-changed')
+        if intent['mode'] == 'absent':
+            publisher = _publisher(selected)
+            # A retained inert kit has its own upgrade journal. It cannot use
+            # first-kit absence or authorize restoring a partial publication.
+            names = (('publish_installer_absent_kit', 'verify_installer_absent_kit')
+                     if addition['proof']['kit'] is None else
+                     ('publish_installer_code_only_kit', 'verify_installer_code_only_kit'))
+            if any(not callable(getattr(publisher, name, None)) for name in names):
+                raise InstallError('native-source-installer-first-kit-not-qualified')
+            result = getattr(publisher, names[0])(selected, transaction=transaction, proof=addition['proof'])
+            if (type(result) is not dict or set(result) != {'status', 'transaction', 'kitSha256'}
+                    or result['status'] != 'prepared-no-jobs' or result['transaction'] != transaction
+                    or type(result['kitSha256']) is not str or not re.fullmatch('[a-f0-9]{64}', result['kitSha256'])):
+                raise InstallError('native-source-installer-first-kit-not-qualified')
+            if getattr(publisher, names[1])(selected, transaction=transaction, proof=addition['proof']) != result:
+                raise InstallError('native-source-installer-first-kit-not-qualified')
+            return
+        result = custody.native_rebind_withdrawn_generation(selected, addition['receipt'], transaction=transaction)
+        if (type(result) is not dict or set(result) != {'status', 'generation', 'environment', 'transaction', 'kitSha256'}
+                or result['status'] != 'inactive' or result['transaction'] != transaction
+                or result['environment'] != addition['receipt']['environment']
+                or type(result['generation']) is not str or not re.fullmatch('[a-f0-9]{32}', result['generation'])
+                or type(result['kitSha256']) is not str or not re.fullmatch('[a-f0-9]{64}', result['kitSha256'])):
+            raise InstallError('native-source-installer-target-not-inactive')
+        # The new inactive child is an intentional lifecycle publication. The
+        # initial kit-only verifier rejects any jobs directory and must retain
+        # that rule; this proof consumes the exact installer rebind instead.
+        publication = _publisher(selected).verify_installer_rebind_generation(selected,
+            transaction=transaction, receipt=addition['receipt'])
+        if publication != result:
+            raise InstallError('native-source-installer-target-not-inactive')
+
+
+def _prepare_source_upgrade_sidefiles(plan, records, journal, bridge):
+    """Publish declared inert owner files only at the typed no-Source boundary.
+
+    Existing connected images are captured and preserved, never rewritten.
+    Newly declared files retain their existing inode journal on failure and
+    rollback; they are not Source code images that rollback may delete.
+    """
+    intent = plan.get('source_lifecycle')
+    if intent is None or intent['mode'] != 'absent':
+        return
+    if journal.value.get('phase') != 'replacing-files':
+        raise InstallError('native-source-installer-sidefiles-phase-invalid')
+    addition = journal.value.get('sourceAddition', {})
+    proof = addition.get('proof', {})
+    if proof.get('kind') != 'ods-native-source-installer-absence' or bridge is None:
+        raise InstallError('native-source-installer-first-kit-not-qualified')
+    retained_kit = proof.get('kit') is not None
+    if retained_kit:
+        if 'source_sidefiles_before' not in plan['runtime_bundle']:
+            raise InstallError('native-source-installer-sidefiles-context-invalid')
+        _source_sidefiles_context(plan)
+    # This exact authority check repeats immediately before and after the
+    # existing fixed producer. It does not publish a kit or private Source data.
+    source_options, _restore = _source_upgrade_file_options(plan, records, journal, bridge)
+    source_options['verify_source']()
+    if not retained_kit:
+        _connection_sidefiles(plan)
+    # Existing owner files stay untouched. The typed kit publisher later
+    # rechecks their actual frozen inodes/bytes before rebinding its receipt.
+    source_options['verify_source']()
+
+
+def _activate_upgrade(plan, records, journal, *, previous_guard=False, source_bridge=None):
     """Activate staged files under the caller's controller lock and journal.
 
     Publication and interrupted-run recovery remain the caller's responsibility.
@@ -1956,12 +2645,13 @@ def _activate_upgrade(plan, records, journal, *, previous_guard=False):
     """
     sys.path.insert(0, str(HERE.parents[2] / 'bin'))
     from pixel_macos_custody import protected_inspection_bytes as protected_bytes, replace_protected_inspection_bytes as replace_protected_bytes
+    source_replace, source_restore = _source_upgrade_file_options(plan, records, journal, source_bridge)
     previous, candidate = _upgrade_services(plan, records)
     mode = _upgrade_policy_mode(plan)
 
     def verify_files(version):
         for item in records:
-            if protected_bytes(item['path'], limit=8 * 1024 * 1024) != item[version]:
+            if read(item['path']) != item[version]:
                 raise InstallError('runtime-upgrade-file-drift')
 
     def verify():
@@ -1973,7 +2663,8 @@ def _activate_upgrade(plan, records, journal, *, previous_guard=False):
         if is_candidate and plan.get('migration_qualification'):
             _verify_new_services(plan)
         elif 'operations' in services:
-            _verify_new_services(dict(plan, native_services=_managed_service_record(records, 'before')['selection']))
+            _verify_new_services(dict(plan, native_services=_managed_service_record(
+                records, 'after' if is_candidate else 'before')['selection']))
         verify_files('after' if is_candidate else 'before')
         for service in services.values():
             _upgrade_service_identity(service)
@@ -1986,14 +2677,24 @@ def _activate_upgrade(plan, records, journal, *, previous_guard=False):
         _ready_access_relay(services['relay'], plan, upgrade_guard=guard)
 
     def read(path):
-        return protected_bytes(path, limit=8 * 1024 * 1024)
+        return _source_snapshot_read(path, limit=8 * 1024 * 1024)
 
     def replace_files():
         _prepare_candidate_stop_witnesses(previous, candidate, records)
-        _upgrade.replace_deployment_files(records, read=read, replace=replace_protected_bytes)
+        _upgrade.replace_deployment_files(records, read=read, replace=replace_protected_bytes, **source_replace)
 
     def migrate_owner():
+        _prepare_source_upgrade_sidefiles(plan, records, journal, source_bridge)
         _relocate_upgrade_receipt(plan, previous, candidate)
+        if 'integrations' in candidate:
+            if getattr(previous['integrations'], 'prior_absent', False):
+                _preserve_new_integrations(plan, records, journal)
+            # The durable complete replacement journal is already held here.
+            # Reuse validates private authority; rollback never erases owner data.
+            recovery = _managed_service_record(records, 'after')['recovery']
+            _native_services.helper('integrations-service').provision(
+                plan['owner'].pw_name, reuse=True, python=recovery['python'],
+                resume_partial=getattr(previous['integrations'], 'prior_absent', False))
         if 'operations' in candidate:
             recovery = _managed_service_record(records, 'after')['recovery']
             _native_services.helper('ops-service').validate_published_policy(
@@ -2019,16 +2720,18 @@ def _activate_upgrade(plan, records, journal, *, previous_guard=False):
             replace_files=replace_files,
             migrate_owner=migrate_owner, restore_owner=restore_owner,
             restore_files=lambda: _upgrade.restore_deployment_files(
-                records, read=read, replace=replace_protected_bytes),
+                records, read=read, replace=replace_protected_bytes, **source_restore),
             start=_start_upgrade_service, stop=_stop_upgrade_service, ready=ready)
     except BaseException:
         if journal.value['phase'] == 'restored':
+            _finish_source_upgrade(plan, records, journal)
             journal.finish(lambda: ready(previous))
             _ready_access(previous['access'])
             _ready_access_relay(previous['relay'], plan)
             _clear_candidate_stop_witnesses(plan)
             _finish_migration_hold(plan, hold)
         raise
+    _finish_source_upgrade(plan, records, journal)
     journal.finish(lambda: ready(candidate))
     # Once the guard is removed, both endpoints must report normal availability
     # before reopening requests. Failure retains the durable edge hold.
@@ -2040,7 +2743,6 @@ def _activate_upgrade(plan, records, journal, *, previous_guard=False):
 
 def _recover_unstarted_upgrade(plan, records, journal, previous, candidate, *, verify_snapshots, previous_guard):
     """Finish a staging-only interruption without stopping healthy old jobs."""
-    from pixel_macos_custody import protected_inspection_bytes as protected_bytes
     hold_path = _edge_hold_journal(plan)
     if os.path.lexists(hold_path):
         return False
@@ -2053,11 +2755,28 @@ def _recover_unstarted_upgrade(plan, records, journal, previous, candidate, *, v
         if os.path.lexists(hold_path):
             raise InstallError('runtime-upgrade-edge-hold-changed')
         for item in records:
-            if protected_bytes(item['path'], limit=8 * 1024 * 1024) != item['before']:
+            if _source_snapshot_read(item['path'], limit=8 * 1024 * 1024) != item['before']:
                 raise InstallError('runtime-upgrade-rollback-file-drift')
         for role, service in previous.items():
-            if _observe_upgrade_service(service, candidate[role]) != 'previous':
-                raise InstallError('runtime-upgrade-original-service-required')
+            if type(service) is _PriorAbsentIntegrations and role == 'integrations':
+                # The approved legacy deployment has six running services and
+                # no integrations definition/job. Absence is its exact old
+                # state, not a missing process that recovery may fabricate.
+                service.verify_definition()
+                service.assert_stopped()
+            else:
+                target = candidate[role]
+                observed = _observe_upgrade_service(service, target)
+                if (observed == 'candidate' and getattr(service, '_upgrade_stop_peer', None) is target
+                        and getattr(target, '_upgrade_stop_peer', None) is service):
+                    # The factory linked byte-identical definitions and process
+                    # contracts. Canonical stop-slot selection prefers candidate,
+                    # even before staging. Re-prove the original live contract;
+                    # this path neither starts/stops it nor adopts a stop witness.
+                    service.verify_definition()
+                    _upgrade_service_identity(service)
+                elif observed != 'previous':
+                    raise InstallError('runtime-upgrade-original-service-required')
         _upgrade_policy_mode(plan)
         _ready_gateway(previous['gateway'], plan['access_settings']['gateway_port'])
         _ready_access(previous['access'], upgrade_guard=previous_guard)
@@ -2065,6 +2784,7 @@ def _recover_unstarted_upgrade(plan, records, journal, previous, candidate, *, v
 
     verify()
     journal.phase('restored')
+    _finish_source_upgrade(plan, records, journal)
     _clear_candidate_stop_witnesses(plan)
     journal.finish(verify)
     _ready_access(previous['access'])
@@ -2072,20 +2792,39 @@ def _recover_unstarted_upgrade(plan, records, journal, previous, candidate, *, v
     return True
 
 
-def _recover_upgrade(plan, records, journal, *, verify_snapshots, previous_guard=False):
+def _recover_upgrade(plan, records, journal, *, verify_snapshots, previous_guard=False, source_bridge=None,
+                     preserve_private=None):
     """Restore an approved recovery journal while caller holds controller lock.
 
     The caller must load/authorize records with recovery_upgrade and supply
     immutable bundle/config verification. Unknown stop witnesses stay blocked.
     """
-    from pixel_macos_custody import protected_inspection_bytes as protected_bytes, replace_protected_inspection_bytes as replace_protected_bytes
+    from pixel_macos_custody import replace_protected_inspection_bytes as replace_protected_bytes
+    if plan.get('source_lifecycle') is not None and journal.value.get('phase') == 'prepared':
+        if source_bridge is None:
+            raise InstallError('native-source-installer-file-custody-required')
+        addition = journal.value.get('sourceAddition', {})
+        qualification = plan['upgrade_qualification']
+        transaction = dict(kind='native-installer-upgrade', transaction=addition['contextSha256'],
+            currentDigest=qualification['currentDigest'], candidateDigest=qualification['candidateDigest'])
+        # Prepared precedes every Core stop. Current live discovery is required
+        # here; later mixed/stopped phases retain their file-only proof path.
+        _discover_source_installer_bridge(source_bridge)
+        # A retained fixed-slot rename can lose its reply before withdrawal.
+        # Resume only this prepared Root transaction while every code image is
+        # still its original before-image; the fixed publisher independently
+        # verifies that boundary. Later phases never re-run rollover.
+        _rollover_source_installer_history(source_bridge, transaction)
+        if plan['source_lifecycle']['mode'] == 'withdrawal' and 'receipt' not in addition:
+            _complete_prepared_source_withdrawal(plan, records, journal, source_bridge, transaction)
+    _source_replace, source_restore = _source_upgrade_file_options(plan, records, journal, source_bridge)
     previous, candidate = _upgrade_services(plan, records)
     if _recover_unstarted_upgrade(plan, records, journal, previous, candidate,
             verify_snapshots=verify_snapshots, previous_guard=previous_guard):
         return
 
     def read(path):
-        return protected_bytes(path, limit=8 * 1024 * 1024)
+        return _source_snapshot_read(path, limit=8 * 1024 * 1024)
 
     def verify():
         verify_snapshots()
@@ -2115,18 +2854,51 @@ def _recover_upgrade(plan, records, journal, *, verify_snapshots, previous_guard
 
     verify()
     hold = _resume_migration_hold(plan)
+    def restore_files():
+        if preserve_private is not None:
+            for role in _upgrade.service_roles(previous, candidate):
+                _assert_upgrade_absent(previous[role], candidate[role])
+            preserve_private()
+        _upgrade.restore_deployment_files(records, read=read, replace=replace_protected_bytes, **source_restore)
     _upgrade.recover_previous(previous=previous, candidate=candidate,
         phase=journal.phase, verify_snapshots=verify,
         observe=_observe_upgrade_service, assert_absent=_assert_upgrade_absent,
         restore_owner=lambda: _restore_upgrade_owner(plan, previous, candidate),
-        restore_files=lambda: _upgrade.restore_deployment_files(
-            records, read=read, replace=replace_protected_bytes),
+        restore_files=restore_files,
         start=_start_upgrade_service, stop=_stop_upgrade_service, ready=ready)
+    _finish_source_upgrade(plan, records, journal)
     _clear_candidate_stop_witnesses(plan)
     journal.finish(lambda: ready(previous))
     _ready_access(previous['access'])
     _ready_access_relay(previous['relay'], plan)
     _finish_migration_hold(plan, hold)
+
+
+def _complete_prepared_source_withdrawal(plan, records, journal, bridge, transaction):
+    """Resume the same actual publisher withdrawal and typed receipt CAS."""
+    from pixel_connections import custody
+    from pixel_connections.source_backend import for_bridge
+    from pixel_connections.native_executor import _publisher
+    if (journal.value.get('schemaVersion') not in (4, 5, 6) or journal.value.get('phase') != 'prepared'
+            or plan.get('source_lifecycle', {}).get('mode') != 'withdrawal'):
+        raise InstallError('native-source-installer-prepared-withdrawal-required')
+    backend = for_bridge(bridge, linux_paths=custody.Paths(), linux_run=custody.system_run)
+    backend.quiesce_for_sign_in()
+    selected = backend.selection
+    publisher = _publisher(selected)
+    if any(not callable(getattr(publisher, name, None)) for name in ('withdraw_installer_generation', 'verify_installer_withdrawal')):
+        raise InstallError('native-source-installer-withdrawal-capability-required')
+    intent = journal.value['sourceAddition']['proof']
+    receipt = publisher.withdraw_installer_generation(selected, transaction=transaction, intent=intent)
+    if publisher.verify_installer_withdrawal(selected, transaction=transaction, intent=intent, receipt=receipt) != receipt:
+        raise InstallError('native-source-installer-withdrawal-unqualified')
+    def verify_withdrawal(*, intent, receipt):
+        if intent != journal.value['sourceAddition']['proof']:
+            raise InstallError('native-source-installer-withdrawal-intent-changed')
+        custody.native_verify_installer_withdrawal(bridge, receipt, transaction=transaction)
+    journal.bind_source_withdrawal(receipt, current_digest=transaction['currentDigest'],
+        candidate_digest=transaction['candidateDigest'], allowed_paths={item['path'] for item in records},
+        verify_withdrawal=verify_withdrawal)
 
 
 def _verify_bundle_selection(plan):
@@ -2215,10 +2987,755 @@ def _runtime_config(plan, *, write=False):
             os.close(fd)
 
 
+def _connection_sidefiles(plan):
+    """Explicit candidate producer -> owner600 files; no preparation adoption."""
+    selection, owner = plan['runtime_bundle'], plan['owner']
+    supplied = selection.get('connection_sidefiles')
+    if supplied is None:
+        return
+    if type(supplied) is not dict or set(supplied) != {'gateway.env', 'onboarding.json'}:
+        raise InstallError('native-connection-sidefiles-invalid')
+    from pixel_macos_custody import protected_directory, _require_no_acl
+    config = Path(selection['config_path'])
+    if config.parent != RUNTIME_CONFIG_ROOT / str(owner.pw_uid):
+        raise InstallError('native-connection-sidefiles-path-invalid')
+    bodies = {name: text.encode('utf-8') for name, text in supplied.items()}
+    if any(not 0 < len(body) <= 131072 for body in bodies.values()):
+        raise InstallError('native-connection-sidefiles-invalid')
+    binding = {'schemaVersion': 1, 'kind': 'ods-native-connection-sidefiles',
+        'ownerUid': owner.pw_uid, 'ownerGid': owner.pw_gid, 'configPath': str(config),
+        'bundleSha256': selection['digest'],
+        'files': {name: hashlib.sha256(body).hexdigest() for name, body in bodies.items()}}
+    record_path = _launchd.ACCESS_STATE / 'source-sidefiles.json'
+    with protected_directory(_launchd.ACCESS_STATE) as metadata:
+        def read_record():
+            try:
+                fd = os.open(record_path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=metadata)
+            except FileNotFoundError:
+                return None
+            with os.fdopen(fd, 'rb') as stream:
+                value = os.fstat(stream.fileno())
+                _require_no_acl(stream.fileno())
+                if (not stat.S_ISREG(value.st_mode) or (value.st_uid, value.st_gid) != (0, 0)
+                        or stat.S_IMODE(value.st_mode) != 0o600 or value.st_nlink != 1 or value.st_size > 8192):
+                    raise InstallError('native-connection-sidefiles-receipt-unsafe')
+                return stream.read(8193)
+        previous = read_record()
+        def save(value):
+            nonlocal previous
+            if read_record() != previous:
+                raise InstallError('native-connection-sidefiles-receipt-changed')
+            body = (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()
+            temporary = '.source-sidefiles-' + os.urandom(16).hex()
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=metadata)
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    _require_no_acl(stream.fileno())
+                    stream.write(body)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                if read_record() != previous:
+                    raise InstallError('native-connection-sidefiles-receipt-changed')
+                if previous is None:
+                    os.link(temporary, record_path.name, src_dir_fd=metadata, dst_dir_fd=metadata, follow_symlinks=False)
+                else:
+                    os.replace(temporary, record_path.name, src_dir_fd=metadata, dst_dir_fd=metadata)
+                os.fsync(metadata)
+                previous = body
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=metadata)
+                except FileNotFoundError:
+                    pass
+        directory = os.open(config.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            parent = os.fstat(directory)
+            _require_no_acl(directory)
+            if ((parent.st_uid, parent.st_gid) != (owner.pw_uid, owner.pw_gid)
+                    or stat.S_IMODE(parent.st_mode) != 0o700):
+                raise InstallError('native-connection-sidefiles-parent-unsafe')
+            parent_id = [parent.st_dev, parent.st_ino]
+            if previous is None:
+                if any(os.path.lexists(config.parent / name) for name in bodies):
+                    raise InstallError('native-connection-sidefiles-unbound')
+                record = {**binding, 'parent': parent_id,
+                    'children': {name: {'inode': None, 'ready': False} for name in bodies}}
+                save(record)
+            else:
+                def unique(rows):
+                    result = {}
+                    for key, value in rows:
+                        if key in result:
+                            raise InstallError('native-connection-sidefiles-receipt-changed')
+                        result[key] = value
+                    return result
+                record = json.loads(previous, object_pairs_hook=unique)
+                if (type(record) is not dict or set(record) != {*binding, 'parent', 'children'}
+                        or any(type(record[key]) is not type(value) or record[key] != value for key, value in binding.items())
+                        or record['parent'] != parent_id or type(record['children']) is not dict
+                        or set(record['children']) != set(bodies)):
+                    raise InstallError('native-connection-sidefiles-receipt-changed')
+            for name, body in bodies.items():
+                child = record['children'][name]
+                if (type(child) is not dict or set(child) != {'inode', 'ready'} or type(child['ready']) is not bool
+                        or child['inode'] is not None and (type(child['inode']) is not list
+                        or len(child['inode']) != 2 or any(type(v) is not int for v in child['inode']))):
+                    raise InstallError('native-connection-sidefiles-receipt-changed')
+                flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+                if child['inode'] is None:
+                    flags |= os.O_CREAT | os.O_EXCL
+                fd = os.open(name, flags, 0o600, dir_fd=directory)
+                with os.fdopen(fd, 'r+b') as stream:
+                    before = os.fstat(stream.fileno())
+                    _require_no_acl(stream.fileno())
+                    identity = [before.st_dev, before.st_ino]
+                    if child['inode'] is not None and child['inode'] != identity:
+                        raise InstallError('native-connection-sidefile-changed')
+                    # Darwin inherits the owner directory's group for an
+                    # exclusively created Root file. Only this empty creation
+                    # (or its already journaled inode) can normalize that group.
+                    # An unrecorded existing name still fails O_EXCL above.
+                    inherited = (not child['ready'] and before.st_uid == 0
+                        and before.st_gid == owner.pw_gid and before.st_gid != 0 and before.st_size == 0)
+                    pairs = {(owner.pw_uid, owner.pw_gid)} if child['ready'] else {(0, 0), (owner.pw_uid, owner.pw_gid)}
+                    if (not stat.S_ISREG(before.st_mode) or not (inherited or (before.st_uid, before.st_gid) in pairs)
+                            or stat.S_IMODE(before.st_mode) != 0o600
+                            or before.st_nlink != 1 or before.st_size > len(body)):
+                        raise InstallError('native-connection-sidefile-unsafe')
+                    if child['inode'] is None:
+                        child['inode'] = identity
+                        save(record)  # Before the first body byte/chown.
+                    if inherited:
+                        os.fchown(stream.fileno(), 0, 0)
+                        os.fsync(stream.fileno())
+                        normalized = os.fstat(stream.fileno())
+                        _require_no_acl(stream.fileno())
+                        if ([normalized.st_dev, normalized.st_ino] != identity
+                                or (normalized.st_uid, normalized.st_gid) != (0, 0)
+                                or stat.S_IMODE(normalized.st_mode) != 0o600
+                                or normalized.st_nlink != 1 or normalized.st_size != 0):
+                            raise InstallError('native-connection-sidefile-unsafe')
+                    existing = stream.read(len(body) + 1)
+                    if (existing != body) if child['ready'] else (not body.startswith(existing)):
+                        raise InstallError('native-connection-sidefile-changed')
+                    if not child['ready']:
+                        stream.seek(0, os.SEEK_END)
+                        stream.write(body[len(existing):])
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                        os.fchown(stream.fileno(), owner.pw_uid, owner.pw_gid)
+                        os.fsync(stream.fileno())
+                        child['ready'] = True
+                        save(record)
+                    current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                    if [current.st_dev, current.st_ino] != identity:
+                        raise InstallError('native-connection-sidefile-changed')
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+
+def _sidefile_archive_inode(value):
+    if (type(value) is not list or len(value) != 2
+            or any(type(part) is not int or part <= 0 for part in value)):
+        raise InstallError('native-sidefiles-archive-selection-invalid')
+    return value
+
+
+def _sidefile_archive_rename(source, name, target, destination):
+    """Darwin exclusive rename; never clobber a preserved inode."""
+    import ctypes
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = libc.renameatx_np
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(source, os.fsencode(name), target, os.fsencode(destination), 0x4):
+        raise OSError(ctypes.get_errno(), 'exclusive-sidefile-archive-rename-failed')
+
+
+def _preserve_unbound_sidefiles(plan, authority, *, expected_receipt, expected_gateway, verify):
+    """Preserve only the explicitly selected empty, unbound first-kit failure.
+
+    No original file is copied, rewritten, chowned or deleted. Capsule copies
+    keep the protected recovery authority available after runtime retirement.
+    The immutable manifest precedes every rename; only the final ledger entry
+    makes it committed history. An incomplete unbound directory is refused.
+    This narrow mutator permits only the first archive or its exact replay;
+    it never appends to or prunes other retained histories.
+    """
+    from pixel_macos_custody import protected_directory, _require_no_acl
+    from pixel_connections import custody
+    owner, selection = plan['owner'], plan['runtime_bundle']
+    expected_receipt, expected_gateway = map(_sidefile_archive_inode, (expected_receipt, expected_gateway))
+    candidate, current = selection['digest'], plan['upgrade_qualification']['currentDigest']
+    config = Path(selection['config_path'])
+    names = {'context': 'runtime-upgrade-context-' + candidate + '.json',
+             'restored': 'runtime-upgrade-' + candidate + '.completed.json'}
+    archive_name = 'source-sidefiles-archive-' + candidate
+    ledger_name = 'source-sidefiles-archives.json'
+    bodies = selection['connection_sidefiles']
+    expected_binding = {'schemaVersion': 1, 'kind': 'ods-native-connection-sidefiles',
+        'ownerUid': owner.pw_uid, 'ownerGid': owner.pw_gid, 'configPath': str(config),
+        'bundleSha256': candidate,
+        'files': {name: hashlib.sha256(value.encode()).hexdigest() for name, value in bodies.items()}}
+    empty = hashlib.sha256(b'').hexdigest()
+    if (type(owner.pw_uid) is not int or owner.pw_uid <= 0
+            or type(owner.pw_gid) is not int or owner.pw_gid <= 0
+            or config.parent != RUNTIME_CONFIG_ROOT / str(owner.pw_uid)
+            or set(bodies) != {'gateway.env', 'onboarding.json'}):
+        raise InstallError('native-sidefiles-archive-selection-invalid')
+
+    def fail():
+        raise InstallError('native-sidefiles-archive-image-changed')
+    def encoded(value):
+        return (json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n').encode()
+    def unique(rows):
+        value = {}
+        for key, item in rows:
+            if key in value: fail()
+            value[key] = item
+        return value
+    def inode(directory, name):
+        try: info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError: return None
+        return [info.st_dev, info.st_ino]
+    def image(directory, name, *, gid=0, maximum=32 * 1024 * 1024):
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            before = os.fstat(fd)
+            _require_no_acl(fd)
+            if (not stat.S_ISREG(before.st_mode) or (before.st_uid, before.st_gid) != (0, gid)
+                    or stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1
+                    or before.st_size > maximum): fail()
+            with os.fdopen(fd, 'rb', closefd=False) as stream: body = stream.read(maximum + 1)
+            after = os.fstat(fd)
+            identity = [before.st_dev, before.st_ino]
+            if (len(body) != before.st_size or inode(directory, name) != identity
+                    or (before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
+                       (after.st_size, after.st_mtime_ns, after.st_ctime_ns)): fail()
+            return body, {'inode': identity, 'uid': 0, 'gid': gid, 'mode': 0o600,
+                          'size': len(body), 'sha256': hashlib.sha256(body).hexdigest()}
+        finally: os.close(fd)
+    def directory_info(fd, *, uid, gid):
+        info = os.fstat(fd)
+        _require_no_acl(fd)
+        if (not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (uid, gid)
+                or stat.S_IMODE(info.st_mode) != 0o700): fail()
+        return [info.st_dev, info.st_ino]
+    def write_new(directory, name, body):
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        try:
+            _require_no_acl(fd)
+            with os.fdopen(fd, 'wb', closefd=False) as stream:
+                stream.write(body)
+                stream.flush()
+                os.fsync(fd)
+        finally: os.close(fd)
+        os.fsync(directory)
+
+    with protected_directory(_launchd.ACCESS_STATE) as metadata, protected_directory(RUNTIME_CONFIG_ROOT) as config_root:
+        directory_info(metadata, uid=0, gid=0)
+        parent = os.open(str(owner.pw_uid), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=config_root)
+        try:
+            parent_id = directory_info(parent, uid=owner.pw_uid, gid=owner.pw_gid)
+            if inode(config_root, str(owner.pw_uid)) != parent_id or inode(parent, 'onboarding.json') is not None: fail()
+            prior_ledger = None
+            if inode(metadata, ledger_name) is not None:
+                prior_ledger, _ledger_image = image(metadata, ledger_name, maximum=131072)
+                ledger = json.loads(prior_ledger, object_pairs_hook=unique)
+                if (set(ledger) != {'schemaVersion', 'kind', 'archives'} or ledger['schemaVersion'] != 1
+                        or ledger['kind'] != 'ods-native-source-sidefiles-archives'
+                        or set(ledger['archives']) != {candidate}): fail()
+            else:
+                ledger = {'schemaVersion': 1, 'kind': 'ods-native-source-sidefiles-archives', 'archives': {}}
+            verify(archive_name)
+            created = inode(metadata, archive_name) is None
+            if created:
+                receipt_body, receipt_image = image(metadata, 'source-sidefiles.json', maximum=8192)
+                gateway_body, gateway_image = image(parent, 'gateway.env', gid=owner.pw_gid, maximum=0)
+                if (receipt_image['inode'] != expected_receipt or gateway_image['inode'] != expected_gateway
+                        or gateway_body != b''): fail()
+                receipt = json.loads(receipt_body, object_pairs_hook=unique)
+                if receipt != {**expected_binding, 'parent': parent_id,
+                        'children': {name: {'inode': None, 'ready': False} for name in bodies}}: fail()
+                if (any(type(receipt[key]) is not int for key in ('schemaVersion', 'ownerUid', 'ownerGid'))
+                        or any(child['ready'] is not False for child in receipt['children'].values())
+                        or _sidefile_archive_inode(receipt['parent']) != parent_id): fail()
+                if prior_ledger is not None: fail()
+                os.mkdir(archive_name, 0o700, dir_fd=metadata)
+                os.fsync(metadata)
+            archive = os.open(archive_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=metadata)
+            try:
+                archive_id = directory_info(archive, uid=0, gid=0)
+                if created:
+                    capsule = {}
+                    for kind, name in names.items():
+                        raw, source_image = image(metadata, name)
+                        if raw != authority[kind]: fail()
+                        write_new(archive, kind + '.json', raw)
+                        copied, copied_image = image(archive, kind + '.json')
+                        if copied != raw: fail()
+                        capsule[kind] = {'sourceName': name, 'sourceInode': source_image['inode'],
+                            **{key: copied_image[key] for key in ('inode', 'sha256', 'size')}}
+                    manifest = {'schemaVersion': 1, 'kind': 'ods-native-source-sidefiles-archive',
+                        'currentDigest': current, 'candidateDigest': candidate,
+                        'owner': {'uid': owner.pw_uid, 'gid': owner.pw_gid},
+                        'directory': {'inode': archive_id}, 'parent': {'path': str(config.parent), 'inode': parent_id},
+                        'authority': capsule, 'files': {'source-sidefiles.json': receipt_image, 'gateway.env': gateway_image},
+                        'absent': ['onboarding.json'], 'origin': 'unbound-empty-inherited-group'}
+                    write_new(archive, 'manifest.json', encoded(manifest))
+                manifest_body, manifest_image = image(archive, 'manifest.json', maximum=131072)
+                manifest = json.loads(manifest_body, object_pairs_hook=unique)
+                custody._native_sidefile_archive_manifest(manifest, candidate,
+                    owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+                entry = {'directory': {'inode': archive_id},
+                         'manifest': {key: manifest_image[key] for key in ('inode', 'sha256')}}
+                if prior_ledger is not None:
+                    if ledger['archives'][candidate] != entry: fail()
+                    custody.native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+                if (manifest_body != encoded(manifest) or set(manifest) != {'schemaVersion', 'kind', 'currentDigest',
+                        'candidateDigest', 'owner', 'directory', 'parent', 'authority', 'files', 'absent', 'origin'}
+                        or type(manifest['schemaVersion']) is not int or manifest['schemaVersion'] != 1
+                        or manifest['kind'] != 'ods-native-source-sidefiles-archive'
+                        or (manifest['currentDigest'], manifest['candidateDigest']) != (current, candidate)
+                        or manifest['owner'] != {'uid': owner.pw_uid, 'gid': owner.pw_gid}
+                        or manifest['directory'] != {'inode': archive_id}
+                        or manifest['parent'] != {'path': str(config.parent), 'inode': parent_id}
+                        or manifest['absent'] != ['onboarding.json'] or manifest['origin'] != 'unbound-empty-inherited-group'
+                        or set(manifest['authority']) != set(names)
+                        or set(manifest['files']) != {'source-sidefiles.json', 'gateway.env'}): fail()
+                wanted_gateway = {'inode': expected_gateway, 'uid': 0, 'gid': owner.pw_gid,
+                                  'mode': 0o600, 'size': 0, 'sha256': empty}
+                if manifest['files']['gateway.env'] != wanted_gateway: fail()
+                if manifest['files']['source-sidefiles.json']['inode'] != expected_receipt: fail()
+                for kind, name in names.items():
+                    raw, source_image = image(metadata, name)
+                    copied, copied_image = image(archive, kind + '.json')
+                    expected = {'sourceName': name, 'sourceInode': source_image['inode'],
+                                **{key: copied_image[key] for key in ('inode', 'sha256', 'size')}}
+                    if raw != authority[kind] or copied != raw or manifest['authority'][kind] != expected: fail()
+                if set(os.listdir(archive)) - {'manifest.json', 'context.json', 'restored.json', *manifest['files']}: fail()
+                # Both selected originals (or their already preserved inodes)
+                # must qualify before the first move, including replay.
+                for source, name, gid in ((parent, 'gateway.env', owner.pw_gid), (metadata, 'source-sidefiles.json', 0)):
+                    expected = manifest['files'][name]
+                    before, after = inode(source, name), inode(archive, name)
+                    if before == expected['inode'] and after is None: location = source
+                    elif before is None and after == expected['inode']: location = archive
+                    else: fail()
+                    body, observed = image(location, name, gid=gid, maximum=0 if name == 'gateway.env' else 8192)
+                    if observed != expected: fail()
+                    if name == 'source-sidefiles.json':
+                        custody._native_sidefile_archive_authority(manifest, authority['context'], authority['restored'], body)
+                for source, name, gid in ((parent, 'gateway.env', owner.pw_gid), (metadata, 'source-sidefiles.json', 0)):
+                    verify(archive_name)
+                    if (directory_info(parent, uid=owner.pw_uid, gid=owner.pw_gid) != parent_id
+                            or inode(config_root, str(owner.pw_uid)) != parent_id
+                            or inode(metadata, archive_name) != archive_id or inode(parent, 'onboarding.json') is not None): fail()
+                    before, after = inode(source, name), inode(archive, name)
+                    expected = manifest['files'][name]
+                    if before == expected['inode'] and after is None:
+                        body, observed = image(source, name, gid=gid, maximum=0 if name == 'gateway.env' else 8192)
+                        if observed != expected: fail()
+                        if name == 'source-sidefiles.json' and json.loads(body, object_pairs_hook=unique) != {
+                                **expected_binding, 'parent': parent_id,
+                                'children': {leaf: {'inode': None, 'ready': False} for leaf in bodies}}: fail()
+                        _sidefile_archive_rename(source, name, archive, name)
+                        os.fsync(source)
+                        os.fsync(archive)
+                    elif before is not None or after != expected['inode']: fail()
+                    if inode(source, name) is not None or image(archive, name, gid=gid,
+                            maximum=0 if name == 'gateway.env' else 8192)[1] != expected: fail()
+                if set(os.listdir(archive)) != {'manifest.json', 'context.json', 'restored.json', *manifest['files']}: fail()
+                verify(archive_name)
+                if image(archive, 'manifest.json', maximum=131072)[0] != manifest_body: fail()
+                if candidate in ledger['archives']:
+                    if ledger['archives'][candidate] != entry: fail()
+                else:
+                    if inode(metadata, ledger_name) is not None: fail()
+                    ledger['archives'][candidate] = entry
+                    temporary = '.sidefile-archive-ledger-' + os.urandom(16).hex()
+                    write_new(metadata, temporary, encoded(ledger))
+                    try:
+                        os.link(temporary, ledger_name, src_dir_fd=metadata, dst_dir_fd=metadata, follow_symlinks=False)
+                    finally:
+                        os.unlink(temporary, dir_fd=metadata)
+                        os.fsync(metadata)
+                custody.native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+                verify(archive_name)
+                return archive_name
+            finally: os.close(archive)
+        finally: os.close(parent)
+
+
+def _bound_sidefile_archive(plan, *, authority=None, preserve=False, verify):
+    """Seal active authority first; preserve its four exact originals only stopped.
+
+    The caller holds the controller lock. Preparing copies private authority,
+    but moves nothing. Preservation is called only by recover_previous after
+    every service is proven stopped. Each original keeps its inode/owner/bytes;
+    a sealed interrupted prefix is replayable, an unsealed directory is not.
+    """
+    from pixel_macos_custody import protected_directory, _require_no_acl, replace_protected_bytes
+    from pixel_connections import custody
+    owner, selection = plan['owner'], plan['runtime_bundle']
+    candidate = selection['digest']
+    archive_name = custody._SIDEFILE_ARCHIVE_PREFIX + candidate
+    config_parent = Path(selection['config_path']).parent
+    names = {'context': 'runtime-upgrade-context-' + candidate + '.json', 'journal': 'runtime-upgrade.json'}
+    owners = {'gateway.env': (owner.pw_uid, owner.pw_gid), 'onboarding.json': (owner.pw_uid, owner.pw_gid),
+        'source-sidefiles.json': (0, 0), 'source-runtime-installation.json': (0, 0)}
+    if config_parent != RUNTIME_CONFIG_ROOT / str(owner.pw_uid):
+        raise InstallError('native-prepublication-preservation-path-invalid')
+
+    def fail(): raise InstallError('native-prepublication-preservation-changed')
+    def encoded(value):
+        return (json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False) + '\n').encode()
+    def unique(rows):
+        value = {}
+        for key, item in rows:
+            if key in value: fail()
+            value[key] = item
+        return value
+    def inode(fd, name):
+        try: info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError: return None
+        return [info.st_dev, info.st_ino]
+    def directory(fd, uid, gid):
+        info = os.fstat(fd)
+        _require_no_acl(fd)
+        if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (uid, gid, 0o700): fail()
+        return [info.st_dev, info.st_ino]
+    def image(directory_fd, name, *, uid=0, gid=0, limit=32 * 1024 * 1024):
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+        try:
+            before = os.fstat(fd)
+            _require_no_acl(fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or (before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode)) != (uid, gid, 0o600)
+                    or not 0 < before.st_size <= limit): fail()
+            with os.fdopen(fd, 'rb', closefd=False) as stream: raw = stream.read(limit + 1)
+            after = os.fstat(fd)
+            key = lambda info: (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+                info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            if key(before) != key(after) or len(raw) != before.st_size or inode(directory_fd, name) != [before.st_dev, before.st_ino]: fail()
+            return raw, dict(inode=[before.st_dev, before.st_ino], uid=uid, gid=gid, mode=0o600,
+                size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+        finally: os.close(fd)
+    def write_new(fd, name, raw):
+        child = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        try:
+            _require_no_acl(child)
+            with os.fdopen(child, 'wb', closefd=False) as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(child)
+        finally: os.close(child)
+        os.fsync(fd)
+
+    with protected_directory(_launchd.ACCESS_STATE) as metadata, protected_directory(RUNTIME_CONFIG_ROOT) as config_root:
+        directory(metadata, 0, 0)
+        parent = os.open(str(owner.pw_uid), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=config_root)
+        try:
+            parent_id = directory(parent, owner.pw_uid, owner.pw_gid)
+            if inode(config_root, str(owner.pw_uid)) != parent_id: fail()
+            view = custody.native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+            ledger_raw, ledger_image = (image(metadata, custody._SIDEFILE_ARCHIVES, limit=131072)
+                if view['ledger'] is not None else (None, None))
+            ledger = json.loads(ledger_raw, object_pairs_hook=unique) if ledger_raw is not None else {
+                'schemaVersion': 1, 'kind': 'ods-native-source-sidefiles-archives', 'archives': {}}
+            verify(archive_name)
+            created = inode(metadata, archive_name) is None
+            if created:
+                if preserve or authority is None or candidate in ledger['archives'] or len(ledger['archives']) >= 16: fail()
+                files, bodies = {}, {}
+                for name, (uid, gid) in owners.items():
+                    bodies[name], files[name] = image(parent if uid else metadata, name, uid=uid, gid=gid, limit=131072)
+                os.mkdir(archive_name, 0o700, dir_fd=metadata)
+                os.fsync(metadata)
+            archive = os.open(archive_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=metadata)
+            try:
+                archive_id = directory(archive, 0, 0)
+                if created:
+                    copied = {}
+                    for key, name in names.items():
+                        raw, original = image(metadata, name)
+                        if raw != authority[key]: fail()
+                        write_new(archive, key + '.json', raw)
+                        body, child = image(archive, key + '.json')
+                        if body != raw: fail()
+                        copied[key] = dict(sourceName=name, sourceInode=original['inode'],
+                            **{field: child[field] for field in ('inode', 'sha256', 'size')})
+                    manifest = dict(schemaVersion=2, kind='ods-native-source-sidefiles-archive',
+                        currentDigest=plan['upgrade_qualification']['currentDigest'], candidateDigest=candidate,
+                        owner=dict(uid=owner.pw_uid, gid=owner.pw_gid), directory=dict(inode=archive_id),
+                        parent=dict(path=str(config_parent), inode=parent_id), authority=copied, files=files,
+                        absent=[], origin='bound-ready-before-source-publication',
+                        history=dict(ledger=view['ledger'], archives=ledger['archives']))
+                    custody._native_sidefile_archive_manifest(manifest, candidate, owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+                    custody._native_bound_sidefile_archive_authority(manifest, authority['context'], authority['journal'], bodies)
+                    write_new(archive, 'manifest.json', encoded(manifest))
+                manifest_raw, manifest_image = image(archive, 'manifest.json', limit=131072)
+                manifest = json.loads(manifest_raw, object_pairs_hook=unique)
+                custody._native_sidefile_archive_manifest(manifest, candidate, owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+                if (manifest.get('schemaVersion') != 2 or manifest_raw != encoded(manifest)
+                        or manifest['directory'] != {'inode': archive_id}
+                        or manifest['parent'] != {'path': str(config_parent), 'inode': parent_id}
+                        or manifest['currentDigest'] != plan['upgrade_qualification']['currentDigest']): fail()
+                entry = dict(directory=dict(inode=archive_id), manifest={key: manifest_image[key] for key in ('inode', 'sha256')})
+                baseline = manifest['history']['archives']
+                terminal = candidate in ledger['archives']
+                if terminal:
+                    if ledger['archives'] != {**baseline, candidate: entry}: fail()
+                elif ledger['archives'] != baseline or view['ledger'] != manifest['history']['ledger']: fail()
+                copies = {}
+                for key in names:
+                    raw, child = image(archive, key + '.json')
+                    wanted = manifest['authority'][key]
+                    if any(child[field] != wanted[field] for field in ('inode', 'sha256', 'size')): fail()
+                    if authority is not None and raw != authority[key]: fail()
+                    copies[key] = raw
+                expected_names = {'manifest.json', 'context.json', 'journal.json', *owners}
+                if set(os.listdir(archive)) - expected_names: fail()
+                bodies = {}
+                def locate(name):
+                    uid, gid = owners[name]
+                    source = parent if uid else metadata
+                    wanted = manifest['files'][name]
+                    before, after = inode(source, name), inode(archive, name)
+                    if before == wanted['inode'] and after is None: location = source
+                    elif before is None and after == wanted['inode']: location = archive
+                    else: fail()
+                    raw, observed = image(location, name, uid=uid, gid=gid, limit=131072)
+                    if observed != wanted: fail()
+                    return source, location, raw
+                for name in owners: bodies[name] = locate(name)[2]
+                custody._native_bound_sidefile_archive_authority(manifest, copies['context'], copies['journal'], bodies)
+                # Reconfirm durability on a sealed retry too: publication may
+                # have lost an fsync reply before any original was moved.
+                for name in ('context.json', 'journal.json', 'manifest.json'):
+                    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=archive)
+                    try: os.fsync(fd)
+                    finally: os.close(fd)
+                os.fsync(archive)
+                os.fsync(metadata)
+                verify(archive_name)
+                if not preserve:
+                    return copies
+                for name in owners:
+                    verify(archive_name)
+                    if (directory(parent, owner.pw_uid, owner.pw_gid) != parent_id
+                            or inode(config_root, str(owner.pw_uid)) != parent_id
+                            or directory(archive, 0, 0) != archive_id or inode(metadata, archive_name) != archive_id): fail()
+                    source, location, _raw = locate(name)
+                    if location != archive:
+                        _sidefile_archive_rename(source, name, archive, name)
+                        os.fsync(source)
+                        os.fsync(archive)
+                    if locate(name)[1] != archive: fail()
+                if set(os.listdir(archive)) != expected_names or image(archive, 'manifest.json', limit=131072)[0] != manifest_raw: fail()
+                verify(archive_name)
+                if not terminal:
+                    updated = dict(ledger, archives={**baseline, candidate: entry})
+                    # CAS the complete previous ledger, retaining every a9 entry.
+                    # A lost rename reply is replayed by its exact terminal value.
+                    if ledger_raw is not None:
+                        if image(metadata, custody._SIDEFILE_ARCHIVES, limit=131072) != (ledger_raw, ledger_image): fail()
+                        replace_protected_bytes(_launchd.ACCESS_STATE / custody._SIDEFILE_ARCHIVES,
+                            expected=ledger_raw, replacement=encoded(updated), mode=0o600, gid=0)
+                    else:
+                        temporary = '.sidefile-archive-ledger-' + os.urandom(16).hex()
+                        write_new(metadata, temporary, encoded(updated))
+                        try:
+                            os.link(temporary, custody._SIDEFILE_ARCHIVES, src_dir_fd=metadata, dst_dir_fd=metadata, follow_symlinks=False)
+                        finally:
+                            os.unlink(temporary, dir_fd=metadata)
+                            os.fsync(metadata)
+                custody.native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+                verify(archive_name)
+                return copies
+            finally: os.close(archive)
+        finally: os.close(parent)
+
+
+def _archive_sidefiles_no_source(bridge, archive_name):
+    """Fresh absent-identity actor census; no pending archive is Source authority."""
+    from pixel_connections import custody
+    import grp
+    if any(os.path.lexists(path) for path in (custody.NATIVE_STATE, custody.NATIVE_ENV,
+            custody.NATIVE_LEGACY_ENV, custody.NATIVE_LOGS, custody.NATIVE_KIT)):
+        raise InstallError('native-sidefiles-archive-source-present')
+    if any(custody._native_ds_record(kind) is not None for kind in ('Users', 'Groups')):
+        raise InstallError('native-sidefiles-archive-source-present')
+    for lookup in (pwd.getpwnam, grp.getgrnam):
+        try: lookup(custody.NATIVE_BROKER)
+        except KeyError: continue
+        raise InstallError('native-sidefiles-archive-source-present')
+    names = {name for name in os.listdir(bridge.state)
+        if name.startswith(('source-', '.source-', 'native-source-', '.native-source-')) or name == 'native-app-enrollment.json'}
+    if names - {'source-sidefiles.json', 'source-sidefiles-archives.json', archive_name}:
+        raise InstallError('native-sidefiles-archive-source-present')
+    loaded = custody.native_launchd_loaded_labels(bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10))
+    if any(label.startswith(custody.NATIVE_LABEL) for label in loaded):
+        raise InstallError('native-sidefiles-archive-source-present')
+    processes = bridge.command(['/bin/ps', '-axo', 'pid=,uid='], timeout=10)
+    seen = set()
+    for line in processes.splitlines():
+        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+(-?[0-9]+)\s*', line)
+        if match is None or int(match[1]) in seen:
+            raise InstallError('native-sidefiles-archive-census-unavailable')
+        seen.add(int(match[1]))
+    if not seen or len(processes) > 1024 * 1024:
+        raise InstallError('native-sidefiles-archive-census-unavailable')
+
+
+def archive_sidefiles(*, current_digest, candidate_digest, owner_name, expected_receipt, expected_gateway):
+    """Explicit preservation under the original controller lock, never bootstrap."""
+    if sys.platform != 'darwin' or os.geteuid() != 0: raise InstallError('macos-root-install-required')
+    from pixel_macos_custody import protected_bytes
+    bridge = _recovery_bridge(current_digest=current_digest, candidate_digest=candidate_digest, owner_name=owner_name)
+    selection = dict(current_digest=current_digest, candidate_digest=candidate_digest, owner_name=owner_name, completed=True)
+    with bridge.locked(), bridge.bounded(900):
+        plan, journal, records = _load_upgrade_recovery(**selection)
+        _verify_recovery_bindings(plan, records)
+        proof = journal.value.get('sourceAddition', {}).get('proof', {})
+        if (journal.value['phase'] != 'restored' or plan.get('source_lifecycle', {}).get('mode') != 'absent'
+                or proof.get('kit') is not None or proof.get('identity') != {'kind': 'absent'}
+                or proof.get('metadata') != {}):
+            raise InstallError('native-sidefiles-archive-origin-unqualified')
+        authority_paths = {'context': _launchd.ACCESS_STATE / ('runtime-upgrade-context-' + candidate_digest + '.json'),
+                           'restored': journal.path}
+        authority = {kind: protected_bytes(path, limit=_upgrade.JOURNAL_LIMIT) for kind, path in authority_paths.items()}
+        before = next(item['before'] for item in records if item['path'] == str(_destination(ACCESS_FILES['config'])))
+        old = _bridge_from_recovery_plan(dict(plan, access_settings=json.loads(before)), owner_name=owner_name)
+        with old.bounded(900):
+            def verify(archive_name):
+                fresh_plan, fresh_journal, fresh_records = _load_upgrade_recovery(**selection)
+                if (fresh_plan != plan or fresh_journal.value != journal.value or fresh_records != records
+                        or any(protected_bytes(path, limit=_upgrade.JOURNAL_LIMIT) != authority[kind]
+                               for kind, path in authority_paths.items())):
+                    raise InstallError('native-sidefiles-archive-authority-changed')
+                _verify_recovery_bindings(plan, records)
+                _verify_retirement_live(plan, records)
+                _discover_source_installer_bridge(old)
+                _archive_sidefiles_no_source(old, archive_name)
+            return _preserve_unbound_sidefiles(plan, authority, expected_receipt=expected_receipt,
+                expected_gateway=expected_gateway, verify=verify)
+
+
+def _preflight_source_publication(plan):
+    selection = plan.get('runtime_bundle')
+    if not selection or selection.get('connection_sidefiles') is None:
+        return
+    if not plan.get('initial_install'):
+        raise InstallError('native-source-initial-publication-required')
+    descriptor = _destination(Path('/private/etc/ods/pixel-provider-runtime.json'))
+    receipt = _destination(_launchd.ACCESS_STATE / 'source-runtime-installation.json')
+    if os.path.lexists(descriptor) and not os.path.lexists(receipt):
+        raise InstallError('native-source-operator-runtime-preserved')
+    record = _destination(_launchd.ACCESS_STATE / 'source-sidefiles.json')
+    parent = Path(selection['config_path']).parent
+    if not os.path.lexists(record) and any(os.path.lexists(parent / name)
+                                         for name in ('gateway.env', 'onboarding.json')):
+        raise InstallError('native-connection-sidefiles-unbound')
+
+
+def _verify_source_runtime(plan, *, publish=True):
+    selection = plan.get('runtime_bundle')
+    if not selection or selection.get('connection_sidefiles') is None:
+        return
+    from pixel_provider.runtime_custody import RuntimeCustody
+    from pixel_connections.custody import native_source_selection
+    bridge = _bridge_from_recovery_plan(plan, owner_name=plan['owner'].pw_name)
+    with bridge.bounded(900), bridge.locked():
+        _discover_source_installer_bridge(bridge)
+        value, _checksum = RuntimeCustody(bridge).inspect()
+        if (value['runtimeRoot'] != selection['destination'] + '/runtime'
+                or value['sourceRoot'] != selection['destination'] + '/ods-source'):
+            raise InstallError('native-source-runtime-selection-changed')
+        selected = native_source_selection(bridge, bridge.connection_deployment())
+        spec = importlib.util.spec_from_file_location('installed_source_publication', HERE / 'pixel-native-source-broker.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if publish:
+            module.publish_kit(selected)
+        else:
+            module.publish_runtime_metadata(selection['destination'], selection['digest'], plan['launcher'],
+                str(_native_services.helper('ops-service').select_python()), verify=True, installation={
+                    'source': str(plan['source']), 'owner': plan['owner'].pw_uid, 'operation': 'initial-install'})
+            module.verify_kit_publication(selected)
+
+
+def _publish_source_runtime_metadata(plan):
+    selection = plan.get('runtime_bundle')
+    if not selection or selection.get('connection_sidefiles') is None:
+        return
+    if not plan.get('initial_install'):
+        raise InstallError('native-source-initial-publication-required')
+    spec = importlib.util.spec_from_file_location('initial_source_runtime', HERE / 'pixel-native-source-broker.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _mkdir_deployment_directories(module.RUNTIME_MANIFEST.parent)
+    return module.publish_runtime_metadata(selection['destination'], selection['digest'], plan['launcher'],
+        str(_native_services.helper('ops-service').select_python()), installation={
+            'source': str(plan['source']), 'owner': plan['owner'].pw_uid, 'operation': 'initial-install'})
+
+
 RECOVERY_PLAN_FIELDS = ('source_environment', 'source_process', 'gateway_binding',
                         'access_settings', 'access_port', 'upgrade_qualification', 'upgrade_kind')
 MIGRATION_RECOVERY_FIELDS = ('migration_qualification', 'migration_source_config_bytes',
                             'native_services', 'native_manager_port')
+
+
+def _source_lifecycle_intent(value, *, owner, current_digest, candidate_digest):
+    """Validate a frozen Root installer intent; this grants no Source admission."""
+    fields = {'schemaVersion', 'kind', 'mode', 'nonce', 'currentDigest', 'candidateDigest',
+              'ownerUid', 'ownerGid', 'familySha256'}
+    if (type(value) is not dict or set(value) != fields
+            or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+            or value['kind'] != 'ods-native-source-installer-intent' or value['mode'] not in ('absent', 'withdrawal')
+            or type(value['nonce']) is not str or not re.fullmatch('[a-f0-9]{32}', value['nonce'])
+            or type(value['familySha256']) is not str or not re.fullmatch('[a-f0-9]{64}', value['familySha256'])
+            or value['currentDigest'] != current_digest or value['candidateDigest'] != candidate_digest
+            or current_digest == candidate_digest
+            or any(type(value[key]) is not str or not re.fullmatch('[a-f0-9]{64}', value[key])
+                   for key in ('currentDigest', 'candidateDigest'))
+            or type(value['ownerUid']) is not int or value['ownerUid'] != owner.pw_uid or value['ownerUid'] <= 0
+            or type(value['ownerGid']) is not int or value['ownerGid'] != owner.pw_gid or value['ownerGid'] < 0):
+        raise InstallError('native-source-installer-intent-invalid')
+    return dict(value)
+
+
+def _new_source_lifecycle_intent(plan, files, *, mode='absent'):
+    """Freeze candidate code images before the protected context is written."""
+    qualification, owner = plan['upgrade_qualification'], plan['owner']
+    records = [dict(path=str(path), before=None, after=body, mode=attrs['mode'], gid=attrs.get('gid', 0))
+               for path, body, attrs in files if str(path) in _upgrade.SOURCE_ADDITIONS]
+    value = dict(schemaVersion=1, kind='ods-native-source-installer-intent', mode=mode,
+        nonce=os.urandom(16).hex(), currentDigest=qualification['currentDigest'],
+        candidateDigest=qualification['candidateDigest'], ownerUid=owner.pw_uid, ownerGid=owner.pw_gid,
+        familySha256=_upgrade.source_family_hash(records))
+    return _source_lifecycle_intent(value, owner=owner,
+        current_digest=qualification['currentDigest'], candidate_digest=qualification['candidateDigest'])
+
+
+def _bind_source_upgrade_plan(plan):
+    """Bind the normal producer to the fixed Source family, without admission.
+
+    File presence chooses which proof the Root execution must obtain. It never
+    establishes absence, grants, account identity or permission to move data.
+    The actual old protected bridge repeats that proof under its runtime lock
+    before writing the immutable context or preparing any withdrawal.
+    """
+    selection = plan.get('runtime_bundle')
+    if not selection or selection.get('connection_sidefiles') is None:
+        return
+    if not plan.get('upgrade_qualification') or plan.get('source_lifecycle') is not None:
+        raise InstallError('native-source-installer-plan-invalid')
+    sys.path.insert(0, str(HERE.parents[2] / 'bin'))
+    from pixel_connections import custody
+    mode = 'withdrawal' if os.path.lexists(custody.NATIVE_STATE) else 'absent'
+    plan['source_lifecycle'] = _new_source_lifecycle_intent(plan, _source_family_files(plan), mode=mode)
 
 
 def _recovery_context(plan):
@@ -2235,7 +3752,42 @@ def _recovery_context(plan):
     if plan.get('migration_qualification'):
         value.update({field: plan[field] for field in MIGRATION_RECOVERY_FIELDS})
         value['migration_source_config_bytes'] = base64.b64encode(plan['migration_source_config_bytes']).decode('ascii')
+    if plan.get('source_lifecycle') is not None:
+        qualification = plan['upgrade_qualification']
+        value['schemaVersion'] = 2
+        value['source_lifecycle'] = _source_lifecycle_intent(plan['source_lifecycle'], owner=owner,
+            current_digest=qualification['currentDigest'], candidate_digest=qualification['candidateDigest'])
+    _source_sidefiles_context(plan)
     return value
+
+
+def _source_sidefiles_context(plan):
+    """Validate frozen admitted owner images, not bootstrap defaults or grants."""
+    selection = plan['runtime_bundle']
+    if 'source_sidefiles_before' not in selection:
+        return
+    from pixel_connections import custody
+    snapshot = selection['source_sidefiles_before']
+    intent = plan.get('source_lifecycle')
+    if intent is None or type(snapshot) is not dict or type(snapshot.get('runtime')) is not dict:
+        raise InstallError('native-source-installer-sidefiles-context-invalid')
+    runtime = snapshot['runtime']
+    try:
+        custody.native_installer_sidefiles_receipt(snapshot, owner_uid=plan['owner'].pw_uid,
+            owner_gid=plan['owner'].pw_gid, runtime=runtime)
+    except custody.CustodyError:
+        raise InstallError('native-source-installer-sidefiles-context-invalid') from None
+    bodies = selection.get('connection_sidefiles')
+    if (runtime['bundleSha256'] != intent['currentDigest']
+            or type(bodies) is not dict or set(bodies) != {'gateway.env', 'onboarding.json'}):
+        raise InstallError('native-source-installer-sidefiles-context-invalid')
+    for name, text in bodies.items():
+        if type(text) is not str:
+            raise InstallError('native-source-installer-sidefiles-context-invalid')
+        raw = text.encode('utf-8')
+        if (snapshot['files'][name]['sha256'] != hashlib.sha256(raw).hexdigest()
+                or snapshot['files'][name]['size'] != len(raw)):
+            raise InstallError('native-source-installer-sidefiles-context-invalid')
 
 
 def _load_recovery_context(path, *, current_digest, candidate_digest, owner_name):
@@ -2253,9 +3805,16 @@ def _decode_recovery_context(value, *, current_digest, candidate_digest, owner_n
     migrating = isinstance(value, dict) and value.get('upgrade_kind') == 'native-migration'
     if migrating:
         expected.update(MIGRATION_RECOVERY_FIELDS)
-    if type(value) is not dict or set(value) != expected or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1:
+    source = isinstance(value, dict) and value.get('schemaVersion') == 2
+    if source:
+        expected.add('source_lifecycle')
+    if (type(value) is not dict or set(value) != expected or type(value['schemaVersion']) is not int
+            or value['schemaVersion'] not in (1, 2)):
         raise InstallError('runtime-upgrade-context-invalid')
-    owner = pwd.getpwnam(owner_name)
+    try:
+        owner = pwd.getpwnam(owner_name)
+    except (KeyError, TypeError) as error:
+        raise InstallError('runtime-upgrade-context-owner-changed') from error
     if owner.pw_uid == 0 or value['owner'] != {'name': owner.pw_name, 'uid': owner.pw_uid,
                                             'gid': owner.pw_gid, 'home': owner.pw_dir}:
         raise InstallError('runtime-upgrade-context-owner-changed')
@@ -2272,6 +3831,9 @@ def _decode_recovery_context(value, *, current_digest, candidate_digest, owner_n
     plan = {field: value[field] for field in RECOVERY_PLAN_FIELDS}
     plan['owner'] = owner
     plan['runtime_bundle'] = dict(value['runtime_bundle'])
+    if source:
+        plan['source_lifecycle'] = _source_lifecycle_intent(value['source_lifecycle'], owner=owner,
+            current_digest=current_digest, candidate_digest=candidate_digest)
     try:
         for field in ('source_bytes', 'key'):
             plan[field] = base64.b64decode(value[field], validate=True)
@@ -2284,6 +3846,7 @@ def _decode_recovery_context(value, *, current_digest, candidate_digest, owner_n
         raise InstallError('runtime-upgrade-context-encoding-invalid') from None
     if migrating:
         _validate_migration_recovery_context(plan)
+    _source_sidefiles_context(plan)
     return plan
 
 
@@ -2340,6 +3903,8 @@ def _retirement_plan(snapshots, *, current_digest, candidate_digest, owner_name)
             or type(item.get('path')) is not str for item in files)):
         raise InstallError('runtime-upgrade-recovery-file-contract-invalid')
     selected = {item['path'] for item in files}
+    _require_complete_source_file_family(selected)
+    _require_complete_schedule_file_family(selected)
     if str(_launchd.ACCESS_STATE / 'service-installation.json') in selected:
         native_contract = _managed_service_contract(selected)
         required.update(native_contract)
@@ -2355,17 +3920,18 @@ def _retirement_plan(snapshots, *, current_digest, candidate_digest, owner_name)
         current_digest=current_digest, candidate_digest=candidate_digest, owner_name=owner_name)
     _verify_recovery_bindings(plan, records)
     _verify_recovery_runtime(plan)
+    _verify_schedule_recovery(plan, records)
+    _verify_guard_recovery(plan, records)
     return plan, records
 
 
 def _verify_retirement_live(plan, records):
     """Check the restored deployment without relying on removed journal files."""
-    from pixel_macos_custody import protected_inspection_bytes as protected_bytes
     if any(os.path.lexists(_launchd.ACCESS_STATE / name) for name in
            ('transition.json', 'policy-activation.json', 'runtime-upgrade.json')):
         raise InstallError('runtime-upgrade-pending-recovery')
     for item in records:
-        if protected_bytes(item['path'], limit=8 * 1024 * 1024) != item['before']:
+        if _source_snapshot_read(item['path'], limit=8 * 1024 * 1024) != item['before']:
             raise InstallError('runtime-upgrade-rollback-file-drift')
     previous, _ = _upgrade_services(plan, records)
     identities = {role: _upgrade_service_identity(service) for role, service in previous.items()}
@@ -2397,7 +3963,9 @@ def _archive_verified_retirement(bridge, snapshots, *, current_digest, candidate
 
 def _recovery_file_contract():
     """Fixed native deployment destinations, independent of journal contents."""
-    paths = [ACCESS_PROGRAM_ROOT / name for name in HOST_FILES]
+    legacy = _upgrade.SCHEDULE_ADDITIONS | _upgrade.GUARD_ADDITIONS
+    paths = [ACCESS_PROGRAM_ROOT / name for name in HOST_FILES
+             if str(ACCESS_PROGRAM_ROOT / name) not in legacy]
     paths += [ACCESS_PROGRAM_ROOT / 'pixel_settings' / name for name in SETTINGS_FILES]
     paths += [ACCESS_PROGRAM_ROOT / 'pixel_provider' / name for name in PROVIDER_FILES]
     paths += [ACCESS_PROGRAM_ROOT / name for name in ('access_mode_http.mjs', 'access_mode_relay.mjs')]
@@ -2409,7 +3977,75 @@ def _recovery_file_contract():
     optional = {str(_destination(PROFILE.with_name('pixel-gateway.' + mode + '.sb'))): (0o644, 0)
                 for mode in _policy.MODES}
     optional[str(_launchd.ACCESS_STATE / 'service-baseline.json')] = (0o600, 0)
+    optional[str(_destination(_launchd.ACCESS_STATE / 'source-runtime-installation.json'))] = (0o600, 0)
+    for path in (Path('/private/etc/ods/pixel-provider-runtime-manifest.json'),
+                 Path('/private/etc/ods/pixel-provider-runtime.json')):
+        optional[str(_destination(path))] = (0o644, 0)
+    for path in ([ACCESS_PROGRAM_ROOT / 'pixel_connections' / name for name in CONNECTION_FILES]
+                 + [ACCESS_PROGRAM_ROOT / name for name in SOURCE_HOST_FILES]):
+        optional[str(_destination(path))] = (0o644, 0)
+    optional.update({path: (0o644, 0) for path in legacy})
     return required, optional
+
+
+def _require_complete_schedule_file_family(selected):
+    family = set(selected) & _upgrade.SCHEDULE_ADDITIONS
+    if family and family != _upgrade.SCHEDULE_ADDITIONS:
+        raise InstallError('native-schedule-recovery-file-family-incomplete')
+
+
+def _verify_legacy_recovery(plan, records, family, codes):
+    """Old journals may omit the family; current deployment journals may not.
+
+    codes: the incomplete-family and changed-candidate-bundle refusals.
+    """
+    incomplete, changed = codes
+    if family.issubset({item['path'] for item in records}):
+        return
+    if plan.get('source_lifecycle') is not None:
+        # The complete Source capsule declares the whole family, including
+        # if candidate publication has not reached its final path.
+        raise InstallError(incomplete)
+    digest = plan['runtime_bundle']['digest']
+    candidate = _bundle.INSTALL_ROOT / digest
+    if not os.path.lexists(candidate):
+        return  # A pre-Source journal may precede candidate publication.
+    from pixel_macos_custody import protected_bytes
+    body = protected_bytes(candidate / _bundle.MANIFEST, limit=_bundle.MAX_MANIFEST)
+    if hashlib.sha256(body).hexdigest() != digest:
+        raise InstallError(changed)
+    manifest = json.loads(body)
+    if (type(manifest) is not dict or type(manifest.get('entries')) is not dict
+            or any('ods-source/bin/' + Path(path).name in manifest['entries'] for path in family)):
+        raise InstallError(incomplete)
+
+
+def _verify_schedule_recovery(plan, records):
+    _verify_legacy_recovery(plan, records, _upgrade.SCHEDULE_ADDITIONS, (
+        'native-schedule-recovery-file-family-incomplete', 'runtime-upgrade-schedule-source-changed'))
+
+
+def _verify_guard_recovery(plan, records):
+    """A journal written before the guard family may omit its one path.
+
+    Source-era candidates shipped the guard's source before the controller
+    deployed it. Their omissions stay refused, since they cannot be told
+    apart from a current journal that lost the path.
+    """
+    _verify_legacy_recovery(plan, records, _upgrade.GUARD_ADDITIONS, (
+        'native-guard-recovery-file-family-incomplete', 'runtime-upgrade-guard-source-changed'))
+
+
+def _require_complete_source_file_family(selected):
+    """A Source publication is one closed family, never arbitrary optional files."""
+    family = {str(_destination(path)) for path in (
+        *[ACCESS_PROGRAM_ROOT / 'pixel_connections' / name for name in CONNECTION_FILES],
+        *[ACCESS_PROGRAM_ROOT / name for name in SOURCE_HOST_FILES],
+        _launchd.ACCESS_STATE / 'source-runtime-installation.json',
+        Path('/private/etc/ods/pixel-provider-runtime-manifest.json'),
+        Path('/private/etc/ods/pixel-provider-runtime.json'))}
+    if family.intersection(selected) and not family.issubset(selected):
+        raise InstallError('native-source-recovery-file-family-incomplete')
 
 
 def _load_upgrade_recovery_base(*, current_digest, candidate_digest, owner_name, completed=False):
@@ -2431,6 +4067,8 @@ def _load_upgrade_recovery_base(*, current_digest, candidate_digest, owner_name,
             or type(item.get('path')) is not str for item in files)):
         raise InstallError('runtime-upgrade-recovery-file-contract-invalid')
     selected = {item['path'] for item in files}
+    _require_complete_source_file_family(selected)
+    _require_complete_schedule_file_family(selected)
     if str(_launchd.ACCESS_STATE / 'service-installation.json') in selected:
         native_contract = _managed_service_contract(selected)
         required.update(native_contract)
@@ -2448,12 +4086,277 @@ def _load_upgrade_recovery_base(*, current_digest, candidate_digest, owner_name,
     plan = _load_recovery_context(
         _launchd.ACCESS_STATE / ('runtime-upgrade-context-' + candidate_digest + '.json'),
         current_digest=current_digest, candidate_digest=candidate_digest, owner_name=owner_name)
+    if journal.value['schemaVersion'] in (4, 5, 6) and 'sourceAddition' in journal.value:
+        from pixel_connections.custody import (native_installer_absence_receipt,
+            native_installer_withdrawal_intent, native_installer_withdrawal_receipt)
+        from pixel_macos_custody import protected_bytes
+        intent = plan.get('source_lifecycle')
+        addition = journal.value['sourceAddition']
+        context_bytes = protected_bytes(_launchd.ACCESS_STATE /
+            ('runtime-upgrade-context-' + candidate_digest + '.json'), limit=_upgrade.JOURNAL_LIMIT)
+        if (intent is None or addition['contextSha256'] != hashlib.sha256(context_bytes).hexdigest()
+                or addition['familySha256'] != intent['familySha256']
+                or _upgrade.source_family_hash(records) != intent['familySha256']):
+            raise InstallError('native-source-installer-journal-binding-changed')
+        transaction = {
+            'kind': 'native-installer-upgrade', 'transaction': addition['contextSha256'],
+            'currentDigest': current_digest, 'candidateDigest': candidate_digest}
+        options = {'transaction': transaction, 'owner_uid': plan['owner'].pw_uid, 'owner_gid': plan['owner'].pw_gid}
+        if intent['mode'] == 'absent':
+            if 'receipt' in addition:
+                raise InstallError('native-source-installer-journal-binding-changed')
+            native_installer_absence_receipt(addition['proof'], **options)
+        elif intent['mode'] == 'withdrawal':
+            native_installer_withdrawal_intent(addition['proof'], **options)
+            if 'receipt' in addition:
+                native_installer_withdrawal_receipt(addition['receipt'], intent=addition['proof'], **options)
+        else:
+            raise InstallError('native-source-installer-journal-binding-changed')
+    elif plan.get('source_lifecycle') is not None:
+        raise InstallError('native-source-installer-journal-binding-changed')
     managed = _managed_service_record(records, 'after')
     if managed is not None and (not plan.get('migration_qualification')
             or managed.get('selection') != plan.get('native_services')):
         raise InstallError('native-service-recovery-selection-changed')
     _verify_recovery_runtime(plan)
+    _verify_schedule_recovery(plan, records)
+    _verify_guard_recovery(plan, records)
     return plan, journal, records
+
+
+def _read_source_installer_context(transaction):
+    """Read an exact context, not a Source execution or mutation grant."""
+    from pixel_macos_custody import protected_bytes
+    if (type(transaction) is not dict or set(transaction) != {
+            'kind', 'transaction', 'currentDigest', 'candidateDigest'}
+            or transaction['kind'] != 'native-installer-upgrade'
+            or any(type(transaction[key]) is not str or not re.fullmatch('[a-f0-9]{64}', transaction[key])
+                   for key in ('transaction', 'currentDigest', 'candidateDigest'))
+            or transaction['currentDigest'] == transaction['candidateDigest']):
+        raise InstallError('native-source-installer-transaction-invalid')
+    candidate = transaction['candidateDigest']
+    context = _launchd.ACCESS_STATE / ('runtime-upgrade-context-' + candidate + '.json')
+    raw = protected_bytes(context, limit=_upgrade.JOURNAL_LIMIT)
+    if hashlib.sha256(raw).hexdigest() != transaction['transaction']:
+        raise InstallError('native-source-installer-context-changed')
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise InstallError('native-source-installer-context-ambiguous')
+            result[key] = value
+        return result
+    try:
+        value = json.loads(raw, object_pairs_hook=unique)
+        owner_name = value['owner']['name']
+    except (KeyError, TypeError, ValueError):
+        raise InstallError('native-source-installer-context-invalid') from None
+    if type(owner_name) is not str or not owner_name or len(owner_name) > 256:
+        raise InstallError('native-source-installer-context-invalid')
+    plan = _decode_recovery_context(value, current_digest=transaction['currentDigest'],
+        candidate_digest=candidate, owner_name=owner_name)
+    if value['schemaVersion'] != 2 or plan.get('source_lifecycle') is None:
+        raise InstallError('native-source-installer-context-invalid')
+    return value, raw, plan
+
+
+def verify_source_installer_intent_request(transaction):
+    """Readonly producer preflight before an intent is embedded in Journal4.
+
+    Candidate images are labelled as such; they are never old absence proof.
+    A journal that is already present must pass its full independent verifier.
+    """
+    from pixel_macos_custody import protected_bytes
+    value, raw, plan = _read_source_installer_context(transaction)
+    _verify_recovery_runtime(plan)
+    files = [dict(path=str(path), after=body, mode=attrs['mode'], gid=attrs['gid'])
+             for path, body, attrs in _source_family_files(plan)]
+    intent = plan['source_lifecycle']
+    if _upgrade.source_family_hash(files) != intent['familySha256']:
+        raise InstallError('native-source-installer-family-changed')
+    existing = None
+    if os.path.lexists(_launchd.ACCESS_STATE / 'runtime-upgrade.json'):
+        existing = verify_source_installer_transaction(transaction)
+    context = _launchd.ACCESS_STATE / ('runtime-upgrade-context-' + transaction['candidateDigest'] + '.json')
+    if protected_bytes(context, limit=_upgrade.JOURNAL_LIMIT) != raw:
+        raise InstallError('native-source-installer-authority-changed')
+    return {'transaction': dict(transaction), 'intent': dict(intent), 'owner': dict(value['owner']),
+            'candidateFiles': files, 'journal': existing}
+
+
+def verify_source_installer_transaction(transaction):
+    """Reopen actual protected context AND journal for a request-local publisher.
+
+    Caller holds the controller lock and a bounded Root bridge operation. This
+    returns Root-only recovery images, never credentials to a public response.
+    It verifies an installer transaction; fresh absence/actor custody remains a
+    separate mandatory check before every Source mutation.
+    """
+    from pixel_macos_custody import protected_bytes
+    from pixel_access_bridge import private_json
+    value, raw, _context_plan = _read_source_installer_context(transaction)
+    owner_name = value['owner']['name']
+    candidate = transaction['candidateDigest']
+    context = _launchd.ACCESS_STATE / ('runtime-upgrade-context-' + candidate + '.json')
+    plan, journal, records = _load_upgrade_recovery_base(current_digest=transaction['currentDigest'],
+        candidate_digest=candidate, owner_name=owner_name)
+    intent = plan.get('source_lifecycle')
+    addition = journal.value.get('sourceAddition', {})
+    source_owner = (addition.get('proof', {}).get('owner') if intent and intent['mode'] == 'withdrawal'
+                    else {'uid': addition.get('proof', {}).get('ownerUid'), 'gid': addition.get('proof', {}).get('ownerGid')})
+    if (value.get('schemaVersion') != 2 or intent is None
+            or _recovery_context(plan) != value
+            or journal.value.get('schemaVersion') not in (4, 5, 6)
+            or journal.value['sourceAddition']['contextSha256'] != transaction['transaction']
+            or journal.value['sourceAddition']['familySha256'] != intent['familySha256']
+            or _upgrade.source_family_hash(records) != intent['familySha256']
+            or source_owner != {'uid': plan['owner'].pw_uid, 'gid': plan['owner'].pw_gid}):
+        raise InstallError('native-source-installer-journal-binding-changed')
+    if (protected_bytes(context, limit=_upgrade.JOURNAL_LIMIT) != raw
+            or private_json(journal.path, 0, _upgrade.JOURNAL_LIMIT) != journal.value):
+        raise InstallError('native-source-installer-authority-changed')
+    return {'transaction': dict(transaction), 'intent': dict(intent), 'owner': dict(value['owner']),
+            'phase': journal.value['phase'], 'files': records,
+            'proof': journal.value['sourceAddition']['proof'],
+            'receipt': journal.value['sourceAddition'].get('receipt')}
+
+
+def _source_upgrade_preflight(plan, bridge):
+    """Qualify the actual old Source custody before publishing installer intent.
+
+    The data-absent case has its own protected legacy proof. A runtime that
+    already has Source authority must provide the actual withdrawal capability;
+    a candidate checkout is never substituted for the old protected publisher.
+    """
+    intent = plan.get('source_lifecycle')
+    if intent is None:
+        return None
+    from pixel_connections import custody
+    qualification = plan['upgrade_qualification']
+    _source_lifecycle_intent(intent, owner=plan['owner'],
+        current_digest=qualification['currentDigest'], candidate_digest=qualification['candidateDigest'])
+    backend, inspected = None, None
+    if intent['mode'] == 'absent':
+        inspected = custody.native_inspect_installer_absence(bridge, current_digest=qualification['currentDigest'])
+        if inspected['state'][0] is None:
+            return None
+        selected = custody.native_source_selection(bridge, bridge.connection_deployment())
+    else:
+        from pixel_connections.source_backend import for_bridge
+        backend = for_bridge(bridge, linux_paths=custody.Paths(), linux_run=custody.system_run)
+        selected = backend.selection
+    from pixel_connections.native_executor import _publisher
+    custody.native_verify_kit(selected, require_profiles=True, _publication=True)
+    publisher = _publisher(selected)
+    if backend is not None:
+        for name in ('installer_withdrawal_intent', 'withdraw_installer_generation', 'verify_installer_withdrawal',
+                     'rebind_installer_generation', 'verify_installer_rebind_generation'):
+            if not callable(getattr(publisher, name, None)):
+                raise InstallError('native-source-installer-withdrawal-capability-required')
+    captured = custody.native_installer_sidefiles_snapshot(selected)
+    if type(captured) is not dict or set(captured) != {'snapshot', 'sidefiles'}:
+        raise InstallError('native-source-installer-sidefiles-context-invalid')
+    _module, doc, _component, ref = publisher._material(selected)
+    runtime = dict(deploymentSha256=selected.deployment.checksum, custodySha256=doc['runtimeCustodySha256'],
+        bundleSha256=doc['bundleSha256'], sourceRef=ref)
+    custody.native_installer_sidefiles_receipt(captured['snapshot'], owner_uid=plan['owner'].pw_uid,
+        owner_gid=plan['owner'].pw_gid, runtime=runtime)
+    if captured['snapshot']['config']['path'] != doc['configPath']:
+        raise InstallError('native-source-installer-sidefiles-context-invalid')
+    if inspected is not None and custody.native_inspect_installer_absence(
+            bridge, current_digest=qualification['currentDigest']) != inspected:
+        raise InstallError('native-source-installer-absence-changed')
+    # Capture is Root-only, under the same old runtime lease and controller
+    # lock. Preserve the actually admitted current bodies; no owner file write.
+    plan['runtime_bundle'] = dict(plan['runtime_bundle'], source_sidefiles_before=captured['snapshot'],
+        connection_sidefiles=dict(captured['sidefiles']))
+    _source_sidefiles_context(plan)
+    return backend
+
+
+def _prepare_source_upgrade_journal(plan, bridge, records, *, context_raw, backend):
+    """Create the typed Root transaction, completing withdrawal before staging.
+
+    Context publication is already protected and immutable at this point. A
+    refusal preserves that context and any exact journal for explicit recovery;
+    it never restores an archived generation or creates new authority.
+    """
+    from pixel_macos_custody import protected_bytes
+    from pixel_connections import custody
+    qualification = plan['upgrade_qualification']
+    current, candidate = qualification['currentDigest'], qualification['candidateDigest']
+    context = bridge.state / ('runtime-upgrade-context-' + candidate + '.json')
+    transaction = dict(kind='native-installer-upgrade', transaction=hashlib.sha256(context_raw).hexdigest(),
+        currentDigest=current, candidateDigest=candidate)
+    if protected_bytes(context, limit=_upgrade.JOURNAL_LIMIT) != context_raw:
+        raise InstallError('native-source-installer-context-changed')
+    intent = plan['source_lifecycle']
+    if _upgrade.source_family_hash(records) != intent['familySha256']:
+        raise InstallError('native-source-installer-family-changed')
+    publisher, selected = None, None
+    if intent['mode'] == 'absent':
+        if backend is not None:
+            raise InstallError('native-source-installer-mode-changed')
+        print('Checking native Source absence before staging.', file=sys.stderr, flush=True)
+        proof = custody.native_absent_for_installer(bridge, transaction=transaction)
+    elif intent['mode'] == 'withdrawal':
+        if backend is None or backend.bridge is not bridge:
+            raise InstallError('native-source-installer-withdrawal-capability-required')
+        from pixel_connections.native_executor import _publisher
+        # Stops all recorded roles and both triggers, not just the sync job.
+        backend.quiesce_for_sign_in()
+        selected = backend.selection
+        publisher = _publisher(selected)
+        proof = publisher.installer_withdrawal_intent(selected, transaction=transaction)
+    else:
+        raise InstallError('native-source-installer-mode-changed')
+    addition = dict(schemaVersion=1, kind='ods-native-source-installer-addition',
+        contextSha256=transaction['transaction'], familySha256=intent['familySha256'], proof=proof,
+        absentPaths=sorted(r['path'] for r in records
+            if r['path'] in _upgrade.SOURCE_ADDITIONS and r['before'] is None))
+    options = dict(current_digest=current, candidate_digest=candidate,
+        allowed_paths={item['path'] for item in records})
+    value = _upgrade.encode_recovery(records, source_addition=addition, **options)
+    if protected_bytes(context, limit=_upgrade.JOURNAL_LIMIT) != context_raw:
+        raise InstallError('native-source-installer-context-changed')
+    journal = _upgrade.RecoveryJournal.create(bridge.state / 'runtime-upgrade.json', value)
+    print('Preserving native Source installer history.', file=sys.stderr, flush=True)
+    _rollover_source_installer_history(bridge, transaction, selected=selected, publisher=publisher)
+    if publisher is not None:
+        receipt = publisher.withdraw_installer_generation(selected, transaction=transaction, intent=proof)
+        def verify_withdrawal(*, intent, receipt):
+            publisher.verify_installer_withdrawal(selected, transaction=transaction, intent=intent, receipt=receipt)
+        journal.bind_source_withdrawal(receipt, verify_withdrawal=verify_withdrawal, **options)
+    else:
+        print('Rechecking native Source absence against its preparation receipt.', file=sys.stderr, flush=True)
+        custody.native_verify_installer_absence(bridge, proof, transaction=transaction)
+    return journal
+
+
+def _rollover_source_installer_history(bridge, transaction, *, selected=None, publisher=None):
+    """Require the protected old publisher before reusing fixed journal slots.
+
+    Presence only selects the required capability. The fixed publisher plan
+    independently qualifies the actual prepared Root transaction, old runtime,
+    settled history and quiescence before any rename or Source code write.
+    Legacy installations with none of these slots need no new capability.
+    """
+    names = ('source-installer-rebind.json', 'source-installer-code-only.json', 'source-installer-history.json')
+    if not any(os.path.lexists(bridge.state / name) for name in names):
+        return
+    from pixel_connections import custody
+    from pixel_connections.native_executor import _publisher
+    if selected is None:
+        selected = custody.native_source_selection(bridge, bridge.connection_deployment())
+    if publisher is None:
+        publisher = _publisher(selected)
+    rollover = getattr(publisher, 'rollover_installer_history', None)
+    if not callable(rollover):
+        raise InstallError('native-source-installer-history-capability-required')
+    result = rollover(selected, transaction=transaction)
+    if (type(result) is not dict or set(result) != {'status', 'transaction'}
+            or result['status'] not in ('observed', 'retained') or result['transaction'] != transaction):
+        raise InstallError('native-source-installer-history-unqualified')
 
 
 def _controller_repair_path(candidate):
@@ -2544,17 +4447,122 @@ def _verify_recovery_bindings(plan, records):
         raise InstallError('runtime-upgrade-recovery-binding-mismatch') from None
 
 
-def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_reproved=None):
+def _prepublication_source_absence(bridge, candidate, owner):
+    """Only the two inert receipts and verified history may precede first Source."""
+    from pixel_connections import custody
+    if any(os.path.lexists(path) for path in (custody.NATIVE_STATE, custody.NATIVE_ENV,
+            custody.NATIVE_LEGACY_ENV, custody.NATIVE_LOGS, custody.NATIVE_KIT)):
+        raise InstallError('native-prepublication-source-present')
+    if any(custody._native_ds_record(kind) is not None for kind in ('Users', 'Groups')):
+        raise InstallError('native-prepublication-source-present')
+    for lookup in (pwd.getpwnam, grp.getgrnam):
+        try: lookup(custody.NATIVE_BROKER)
+        except KeyError: continue
+        raise InstallError('native-prepublication-source-present')
+    history = custody.native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+    allowed = {'source-sidefiles.json', 'source-runtime-installation.json',
+        custody._SIDEFILE_ARCHIVE_PREFIX + candidate, *custody._native_sidefile_archive_names(history)}
+    names = {name for name in os.listdir(bridge.state)
+        if name.startswith(('source-', '.source-', 'native-source-', '.native-source-')) or name == 'native-app-enrollment.json'}
+    if names - allowed:
+        raise InstallError('native-prepublication-source-present')
+    loaded = custody.native_launchd_loaded_labels(bridge.command(['/bin/launchctl', 'print', 'system'], timeout=10))
+    if any(label.startswith(custody.NATIVE_LABEL) for label in loaded):
+        raise InstallError('native-prepublication-source-present')
+    processes = bridge.command(['/bin/ps', '-axo', 'pid=,uid='], timeout=10)
+    seen = set()
+    for line in processes.splitlines():
+        match = re.fullmatch(r'\s*([1-9][0-9]*)\s+(-?[0-9]+)\s*', line)
+        if match is None or int(match[1]) in seen:
+            raise InstallError('native-prepublication-census-unavailable')
+        seen.add(int(match[1]))
+    if not seen or len(processes) > 1024 * 1024:
+        raise InstallError('native-prepublication-census-unavailable')
+
+
+def _recover_before_source_publication(plan, records, journal, bridge, *, verify_snapshots):
+    """Explicit rollback of an active Core whose first Source never published.
+
+    Default active recovery still resumes its target. This path additionally
+    requires typed original absence, complete after-images at first selection,
+    held admission, and a sealed preservation capsule before changing phase.
+    """
+    from pixel_macos_custody import protected_bytes
+    from pixel_connections import custody
+    candidate = plan['upgrade_qualification']['candidateDigest']
+    addition = journal.value.get('sourceAddition', {})
+    proof = addition.get('proof', {})
+    if (journal.value.get('schemaVersion') not in (5, 6) or plan.get('source_lifecycle', {}).get('mode') != 'absent'
+            or proof.get('kit') is not None or proof.get('identity') != {'kind': 'absent'}
+            or 'receipt' in addition or journal.value['phase'] not in ('active', 'rolling-back', 'recovery-required', 'restored')):
+        raise InstallError('native-prepublication-rollback-origin-unqualified')
+    transaction = dict(kind='native-installer-upgrade', transaction=addition['contextSha256'],
+        currentDigest=plan['upgrade_qualification']['currentDigest'], candidateDigest=candidate)
+    custody.native_installer_absence_receipt(proof, transaction=transaction,
+        owner_uid=plan['owner'].pw_uid, owner_gid=plan['owner'].pw_gid)
+    publication = next((item for item in records if item['path'] == _upgrade.SOURCE_PRIVATE_RECEIPT), None)
+    if publication is None or publication['before'] is not None or publication['after'] is None:
+        raise InstallError('native-prepublication-rollback-origin-unqualified')
+    context_path = _launchd.ACCESS_STATE / ('runtime-upgrade-context-' + candidate + '.json')
+    context_raw = protected_bytes(context_path, limit=_upgrade.JOURNAL_LIMIT)
+    archive_path = _launchd.ACCESS_STATE / (custody._SIDEFILE_ARCHIVE_PREFIX + candidate)
+    fresh = not os.path.lexists(archive_path)
+    if fresh and (journal.value['phase'] != 'active' or any(
+            _source_snapshot_read(item['path'], limit=8 * 1024 * 1024) != item['after'] for item in records)):
+        raise InstallError('native-prepublication-rollback-after-images-required')
+    hold = _resume_migration_hold(plan)
+    def verify(_archive_name):
+        if (protected_bytes(context_path, limit=_upgrade.JOURNAL_LIMIT) != context_raw
+                or json.loads(protected_bytes(journal.path, limit=_upgrade.JOURNAL_LIMIT)) != journal.value
+                or _resume_migration_hold(plan) != hold):
+            raise InstallError('native-prepublication-rollback-authority-changed')
+        for item in records:
+            actual = _source_snapshot_read(item['path'], limit=8 * 1024 * 1024)
+            allowed = (item['after'],) if journal.value['phase'] == 'active' else (item['before'], item['after'])
+            if actual not in allowed:
+                raise InstallError('native-prepublication-rollback-image-changed')
+        _prepublication_source_absence(bridge, candidate, plan['owner'])
+    verify_snapshots()
+    verify(archive_path.name)
+    authority = _bound_sidefile_archive(plan, authority=dict(context=context_raw,
+        journal=protected_bytes(journal.path, limit=_upgrade.JOURNAL_LIMIT)) if fresh else None, verify=verify)
+    original = json.loads(authority['journal'])
+    if (authority['context'] != context_raw or original.get('phase') != 'active'
+            or original != dict(journal.value, phase='active')):
+        raise InstallError('native-prepublication-rollback-authority-changed')
+    def preserve():
+        _bound_sidefile_archive(plan, authority=authority, preserve=True, verify=verify)
+    _recover_upgrade(plan, records, journal, verify_snapshots=verify_snapshots,
+        previous_guard=_previous_upgrade_guard(records), source_bridge=bridge, preserve_private=preserve)
+
+
+def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_reproved=None,
+                    rollback_before_source_publication=False, quarantine_empty_source_stage=False):
     """Restore an interrupted runtime upgrade; CLI remains gated separately."""
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise InstallError('macos-root-install-required')
     from pixel_access_bridge import LaunchdAccessBridge
-    from pixel_macos_custody import protected_inspection_bytes as protected_bytes
     if not isinstance(bridge, LaunchdAccessBridge) or bridge.state != _launchd.ACCESS_STATE:
         raise InstallError('runtime-upgrade-controller-state-changed')
+    if type(rollback_before_source_publication) is not bool:
+        raise InstallError('native-prepublication-rollback-selection-invalid')
+    if (type(quarantine_empty_source_stage) is not bool
+            or quarantine_empty_source_stage and rollback_before_source_publication):
+        raise InstallError('native-source-empty-stage-selection-invalid')
     if not os.path.lexists(bridge.state / 'runtime-upgrade.json'):
+        if quarantine_empty_source_stage:
+            raise InstallError('native-source-empty-stage-journal-required')
+        if rollback_before_source_publication:
+            from pixel_connections import custody
+            owner = pwd.getpwnam(owner_name)
+            history = custody.native_sidefile_archives(owner_uid=owner.pw_uid, owner_gid=owner.pw_gid)
+            archived = history['archives'].get(custody._SIDEFILE_ARCHIVE_PREFIX + candidate_digest)
+            if (archived is None or archived['manifest']['schemaVersion'] != 2
+                    or archived['manifest']['currentDigest'] != current_digest):
+                raise InstallError('native-prepublication-rollback-authority-required')
         return _finish_archived_upgrade(bridge, current_digest=current_digest,
             candidate_digest=candidate_digest, owner_name=owner_name, on_reproved=on_reproved)
+    outcome = 'restored'
     with bridge.recovery_locked():
         selection = dict(current_digest=current_digest, candidate_digest=candidate_digest,
                          owner_name=owner_name)
@@ -2566,12 +4574,395 @@ def recover_install(bridge, *, current_digest, candidate_digest, owner_name, on_
                 raise InstallError('runtime-upgrade-recovery-authority-changed')
             _verify_recovery_bindings(plan, records)
             for item in records:
-                if protected_bytes(item['path'], limit=8 * 1024 * 1024) not in (item['before'], item['after']):
+                if _source_snapshot_read(item['path'], limit=8 * 1024 * 1024) not in (item['before'], item['after']):
                     raise InstallError('runtime-upgrade-rollback-file-drift')
         verify()
-        _recover_upgrade(plan, records, journal, verify_snapshots=verify,
-                         previous_guard=_previous_upgrade_guard(records))
-    return 'restored'
+        if plan.get('source_lifecycle') is not None:
+            with bridge.bounded(SOURCE_TRANSACTION_SECONDS):
+                source_bridge = bridge
+                if journal.value['phase'] == 'prepared':
+                    # The recovery bridge is an inert lock holder bound to the
+                    # candidate context. Before staging, Source discovery must
+                    # instead qualify the exact still-installed old controller.
+                    # These images have already passed the context/journal binding
+                    # checks; never adopt arbitrary current settings as authority.
+                    from pixel_macos_custody import protected_bytes
+                    path = str(_destination(ACCESS_FILES['config']))
+                    settings = next((item['before'] for item in records if item['path'] == path), None)
+                    if settings is None or protected_bytes(path) != settings:
+                        raise InstallError('native-source-installer-target-binding-changed')
+                    source_bridge = _bridge_from_recovery_plan(
+                        dict(plan, access_settings=json.loads(settings)), owner_name=owner_name)
+                with (source_bridge.bounded(SOURCE_TRANSACTION_SECONDS) if source_bridge is not bridge else nullcontext()):
+                    if quarantine_empty_source_stage:
+                        _quarantine_unrecorded_source_stage(plan, records, journal, verify_snapshots=verify)
+                    if rollback_before_source_publication:
+                        _recover_before_source_publication(plan, records, journal, source_bridge, verify_snapshots=verify)
+                    elif journal.value['phase'] == 'active':
+                        _resume_source_upgrade_active(plan, records, journal, verify_snapshots=verify)
+                        outcome = 'active'
+                    else:
+                        _recover_upgrade(plan, records, journal, verify_snapshots=verify,
+                            previous_guard=_previous_upgrade_guard(records), source_bridge=source_bridge)
+        else:
+            if rollback_before_source_publication or quarantine_empty_source_stage:
+                raise InstallError('native-prepublication-rollback-origin-unqualified')
+            _recover_upgrade(plan, records, journal, verify_snapshots=verify,
+                             previous_guard=_previous_upgrade_guard(records))
+    return outcome
+
+
+def _unrecorded_source_stage(original, *, first_kit):
+    """The fixed staging journal of one qualified inert kit; never an adoption.
+
+    A retained code-only kit records its parent and old kit. The first kit has
+    no old kit; its candidate is staged in the current protected kit parent.
+    """
+    if first_kit:
+        record = original.get('publication')
+        if type(record) is not dict or record.get('old') is not None or record.get('bindings') != {}:
+            raise InstallError('native-source-empty-stage-unqualified')
+        return dict(first_kit=True, record=record, files=original['files'], journal='source-publication.json',
+            parent=None, live=None)
+    record = original.get('record')
+    if type(record) is not dict:
+        raise InstallError('native-source-empty-stage-unqualified')
+    return dict(first_kit=False, record=record, files=original['targetKit'], journal='source-installer-code-only.json',
+        parent=record['kitParent'], live=record['oldKit']['inode'])
+
+
+def _quarantine_unrecorded_source_stage(plan, records, journal, *, verify_snapshots):
+    """Preserve an empty root-owned staging object without an inode receipt.
+
+    This explicit recovery never adopts an unrecorded object as Source code.
+    It moves the empty directory or file into protected quarantine after independently
+    rechecking the transaction, inactive Source census and the live Edge hold.
+    It covers the first inert kit and a retained code-only kit, each through
+    its own staging journal and authority.
+    """
+    intent = plan.get('source_lifecycle')
+    addition = journal.value.get('sourceAddition', {})
+    proof = addition.get('proof') if type(addition) is dict else None
+    if (journal.value.get('phase') != 'active' or type(intent) is not dict
+            or intent.get('mode') != 'absent' or type(proof) is not dict or 'kit' not in proof):
+        raise InstallError('native-source-empty-stage-unqualified')
+    first_kit = proof['kit'] is None
+    from pixel_macos_custody import protected_bytes, protected_directory
+    from pixel_connections import custody
+    authority = (custody.native_installer_absent_kit_authority if first_kit
+                 else custody.native_installer_code_only_kit_authority)
+    path = str(_destination(ACCESS_FILES['config']))
+    settings = next((item['after'] for item in records if item['path'] == path), None)
+    if settings is None or protected_bytes(path) != settings:
+        raise InstallError('native-source-installer-target-binding-changed')
+    selected_plan = dict(plan, access_settings=json.loads(settings))
+    bridge = _bridge_from_recovery_plan(selected_plan, owner_name=plan['owner'].pw_name)
+    transaction = dict(kind='native-installer-upgrade', transaction=addition['contextSha256'],
+        currentDigest=plan['upgrade_qualification']['currentDigest'],
+        candidateDigest=plan['upgrade_qualification']['candidateDigest'])
+    hold = _resume_migration_hold(plan)
+    with bridge.bounded(600):
+        _discover_source_installer_bridge(bridge)
+        selected = custody.native_source_selection(bridge, bridge.connection_deployment())
+        original = authority(selected, transaction=transaction, proof=proof)
+        stage = _unrecorded_source_stage(original, first_kit=first_kit)
+        record = stage['record']
+        if record.get('phase') != 'staging' or not record.get('stagedFiles'):
+            raise InstallError('native-source-empty-stage-unqualified')
+        def guard():
+            verify_snapshots()
+            if _resume_migration_hold(plan) != hold:
+                raise InstallError('native-source-empty-stage-authority-changed')
+            fresh = authority(selected, transaction=transaction, proof=proof)
+            if fresh != original:
+                raise InstallError('native-source-empty-stage-authority-changed')
+        if record.get('candidateInode') is not None:
+            _quarantine_unrecorded_source_file(selected, transaction, proof, stage, guard=guard)
+            return
+        if any(value != {'inode': None, 'ready': False} for value in record['stagedFiles'].values()):
+            raise InstallError('native-source-empty-stage-unqualified')
+        candidate, backup = record['candidate'], record['backup']
+        quarantine = '.ods-quarantined-source-kit-' + record['nonce']
+        receipt_name = '.ods-empty-source-stage-' + record['nonce'] + '.json'
+        with protected_directory(custody.NATIVE_META) as metadata, protected_directory(custody.NATIVE_KIT.parent) as kits:
+            parent = [os.fstat(kits).st_dev, os.fstat(kits).st_ino]
+            if (stage['parent'] is not None and parent != stage['parent']
+                    or custody._native_at_inode(kits, custody.NATIVE_KIT.name) != stage['live']
+                    or custody._native_at_inode(kits, backup) is not None
+                    # Like the first-kit plan, no other staged kit may be present.
+                    or stage['first_kit'] and any(name.startswith('.source-kit-') and name != candidate
+                                                  for name in os.listdir(kits))):
+                raise InstallError('native-source-empty-stage-changed')
+            raw = custody._native_json_at(metadata, stage['journal'])[1]
+            source = custody._native_at_inode(kits, candidate)
+            saved = custody._native_at_inode(metadata, quarantine)
+            if (source is None) == (saved is None):
+                raise InstallError('native-source-empty-stage-changed')
+            directory, name, expected = (kits, candidate, source) if source is not None else (metadata, quarantine, saved)
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            try:
+                def empty():
+                    info = os.fstat(fd)
+                    custody._native_no_acl(fd)
+                    return ([info.st_dev, info.st_ino] == expected and (info.st_uid, info.st_gid) == (0, 0)
+                        and stat.S_IMODE(info.st_mode) == 0o700 and not os.listdir(fd)
+                        and custody._native_at_inode(directory, name) == expected)
+                if not empty():
+                    raise InstallError('native-source-empty-stage-changed')
+                guard()
+                if (not empty() or custody._native_json_at(metadata, stage['journal'])[1] != raw
+                        or custody._native_at_inode(kits, custody.NATIVE_KIT.name) != stage['live']
+                        or custody._native_at_inode(kits, backup) is not None):
+                    raise InstallError('native-source-empty-stage-changed')
+                receipt = {'schemaVersion': 1, 'transaction': transaction, 'candidate': candidate,
+                    'quarantine': quarantine, 'directoryInode': expected, 'parentInode': parent,
+                    'journalSha256': hashlib.sha256(raw).hexdigest()}
+                def read_receipt():
+                    try:
+                        body, inode = custody._native_root_file(metadata, receipt_name, limit=16384)
+                    except FileNotFoundError:
+                        return None, None
+                    return json.loads(body, object_pairs_hook=custody._native_pairs), (body, inode)
+                existing, receipt_raw = read_receipt()
+                if existing is None:
+                    if source is None:
+                        raise InstallError('native-source-empty-stage-receipt-required')
+                    temporary = '.ods-empty-source-stage-tmp-' + os.urandom(16).hex()
+                    out = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                  0o600, dir_fd=metadata)
+                    try:
+                        with os.fdopen(out, 'wb') as stream:
+                            os.fchmod(stream.fileno(), 0o600)
+                            os.fchown(stream.fileno(), 0, 0)
+                            custody._native_no_acl(stream.fileno())
+                            stream.write(custody._native_encoded(receipt))
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        _sidefile_archive_rename(metadata, temporary, metadata, receipt_name)
+                        os.fsync(metadata)
+                    finally:
+                        try: os.unlink(temporary, dir_fd=metadata)
+                        except FileNotFoundError: pass
+                    existing, receipt_raw = read_receipt()
+                if existing != receipt:
+                    raise InstallError('native-source-empty-stage-receipt-changed')
+                guard()
+                if (not empty() or read_receipt()[1] != receipt_raw
+                        or custody._native_json_at(metadata, stage['journal'])[1] != raw):
+                    raise InstallError('native-source-empty-stage-changed')
+                if source is not None:
+                    _sidefile_archive_rename(kits, candidate, metadata, quarantine)
+                    os.fsync(kits)
+                    os.fsync(metadata)
+                    if (custody._native_at_inode(kits, candidate) is not None
+                            or custody._native_at_inode(metadata, quarantine) != expected):
+                        raise InstallError('native-source-empty-stage-changed')
+            finally:
+                os.close(fd)
+        guard()
+
+
+def _quarantine_unrecorded_source_file(selected, transaction, proof, stage, *, guard):
+    """Preserve one empty file created before its inode could be journaled."""
+    from pixel_macos_custody import protected_directory
+    from pixel_connections import custody
+    from pixel_connections.native_executor import _publisher
+    record, files = stage['record'], stage['files']
+    publisher, material = _publisher(selected, with_material=True)
+    if material[1] != selected.deployment.document:
+        raise InstallError('native-source-empty-file-authority-changed')
+    prefix = '.ods-quarantined-source-file-' + record['nonce'] + '-'
+    with protected_directory(custody.NATIVE_META) as metadata, protected_directory(custody.NATIVE_KIT.parent) as kits:
+        if (stage['parent'] is not None and [os.fstat(kits).st_dev, os.fstat(kits).st_ino] != stage['parent']
+                or custody._native_at_inode(kits, custody.NATIVE_KIT.name) != stage['live']
+                or custody._native_at_inode(kits, record['backup']) is not None
+                or custody._native_at_inode(kits, record['candidate']) != record['candidateInode']
+                or stage['first_kit'] and any(name.startswith('.source-kit-') and name != record['candidate']
+                                              for name in os.listdir(kits))):
+            raise InstallError('native-source-empty-file-changed')
+        journal_raw = custody._native_json_at(metadata, stage['journal'])[1]
+        directory = os.open(record['candidate'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=kits)
+        try:
+            def scan():
+                info = os.fstat(directory)
+                custody._native_no_acl(directory)
+                names = set(os.listdir(directory))
+                if ([info.st_dev, info.st_ino] != record['candidateInode']
+                        or (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (0, 0, 0o700)
+                        or custody._native_at_inode(kits, record['candidate']) != record['candidateInode']
+                        or names - set(files)):
+                    raise InstallError('native-source-empty-file-changed')
+                unknown = []
+                for leaf, body in files.items():
+                    image = record['stagedFiles'][leaf]
+                    present = custody._native_at_inode(directory, leaf)
+                    if image['inode'] is None:
+                        if present is not None:
+                            unknown.append((leaf, present))
+                    else:
+                        if present != image['inode']:
+                            raise InstallError('native-source-empty-file-changed')
+                        publisher._generation_prefix(custody, directory, leaf, body, image,
+                            mode=0o755 if leaf == 'broker.py' else 0o644)
+                return unknown
+            unknown = scan()
+            if len(unknown) > 1:
+                raise InstallError('native-source-empty-file-unqualified')
+            if not unknown:
+                # A lost reply after quarantine is replayable only from its
+                # independently bound, root-private receipt and retained inode.
+                receipts = [name for name in os.listdir(metadata) if name.startswith(prefix) and name.endswith('.json')]
+                if not receipts or len(receipts) > 32:
+                    raise InstallError('native-source-empty-file-receipt-required')
+                matched = 0
+                for receipt_name in receipts:
+                    raw, _inode = custody._native_root_file(metadata, receipt_name, limit=16384)
+                    receipt = json.loads(raw, object_pairs_hook=custody._native_pairs)
+                    if (type(receipt) is not dict or set(receipt) != {'schemaVersion', 'transaction',
+                            'candidateInode', 'fileName', 'fileInode', 'quarantine', 'journalSha256'}
+                            or type(receipt.get('schemaVersion')) is not int or receipt['schemaVersion'] != 1
+                            or receipt.get('transaction') != transaction
+                            or receipt.get('candidateInode') != record['candidateInode']):
+                        raise InstallError('native-source-empty-file-receipt-changed')
+                    if receipt.get('journalSha256') != hashlib.sha256(journal_raw).hexdigest():
+                        continue
+                    leaf = receipt.get('fileName')
+                    identity = receipt.get('fileInode')
+                    if (leaf not in files or record['stagedFiles'][leaf]['inode'] is not None
+                            or custody._native_at_inode(directory, leaf) is not None
+                            or not custody._native_inode(identity)):
+                        raise InstallError('native-source-empty-file-receipt-changed')
+                    tag = hashlib.sha256(leaf.encode()).hexdigest()[:16] + '-' + format(identity[0], 'x') + '-' + format(identity[1], 'x')
+                    saved = prefix + tag + '.file'
+                    if (receipt_name != prefix + tag + '.json' or receipt.get('quarantine') != saved
+                            or custody._native_at_inode(metadata, saved) != identity):
+                        raise InstallError('native-source-empty-file-receipt-changed')
+                    body, located = custody._native_root_file(metadata, saved, mode=0o600, limit=1)
+                    if body != b'' or located != identity:
+                        raise InstallError('native-source-empty-file-receipt-changed')
+                    matched += 1
+                if not matched:
+                    raise InstallError('native-source-empty-file-receipt-required')
+                guard()
+                if scan() or custody._native_json_at(metadata, stage['journal'])[1] != journal_raw:
+                    raise InstallError('native-source-empty-file-changed')
+                return
+            leaf, identity = unknown[0]
+            tag = hashlib.sha256(leaf.encode()).hexdigest()[:16] + '-' + format(identity[0], 'x') + '-' + format(identity[1], 'x')
+            quarantine, receipt_name = prefix + tag + '.file', prefix + tag + '.json'
+            fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                def empty():
+                    info = os.fstat(fd)
+                    custody._native_no_acl(fd)
+                    return (stat.S_ISREG(info.st_mode) and (info.st_uid, info.st_gid) == (0, 0)
+                        and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1 and info.st_size == 0
+                        and [info.st_dev, info.st_ino] == identity and custody._native_at_inode(directory, leaf) == identity)
+                if not empty():
+                    raise InstallError('native-source-empty-file-changed')
+                guard()
+                if (not empty() or scan() != unknown
+                        or custody._native_json_at(metadata, stage['journal'])[1] != journal_raw):
+                    raise InstallError('native-source-empty-file-changed')
+                receipt = {'schemaVersion': 1, 'transaction': transaction, 'candidateInode': record['candidateInode'],
+                    'fileName': leaf, 'fileInode': identity, 'quarantine': quarantine,
+                    'journalSha256': hashlib.sha256(journal_raw).hexdigest()}
+                try:
+                    body, receipt_inode = custody._native_root_file(metadata, receipt_name, limit=16384)
+                    if json.loads(body, object_pairs_hook=custody._native_pairs) != receipt:
+                        raise InstallError('native-source-empty-file-receipt-changed')
+                except FileNotFoundError:
+                    temporary = '.ods-empty-source-file-tmp-' + os.urandom(16).hex()
+                    out = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=metadata)
+                    try:
+                        with os.fdopen(out, 'wb') as stream:
+                            os.fchmod(stream.fileno(), 0o600)
+                            os.fchown(stream.fileno(), 0, 0)
+                            custody._native_no_acl(stream.fileno())
+                            stream.write(custody._native_encoded(receipt))
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        _sidefile_archive_rename(metadata, temporary, metadata, receipt_name)
+                        os.fsync(metadata)
+                    finally:
+                        try: os.unlink(temporary, dir_fd=metadata)
+                        except FileNotFoundError: pass
+                    body, receipt_inode = custody._native_root_file(metadata, receipt_name, limit=16384)
+                guard()
+                if (not empty() or scan() != unknown
+                        or custody._native_root_file(metadata, receipt_name, limit=16384) != (body, receipt_inode)
+                        or custody._native_json_at(metadata, stage['journal'])[1] != journal_raw):
+                    raise InstallError('native-source-empty-file-changed')
+                _sidefile_archive_rename(directory, leaf, metadata, quarantine)
+                os.fsync(directory)
+                os.fsync(metadata)
+                if (custody._native_at_inode(directory, leaf) is not None
+                        or custody._native_at_inode(metadata, quarantine) != identity):
+                    raise InstallError('native-source-empty-file-changed')
+            finally:
+                os.close(fd)
+        finally:
+            os.close(directory)
+    guard()
+
+
+def _resume_source_upgrade_active(plan, records, journal, *, verify_snapshots):
+    """Finish a started Source target, never roll back a partial target rebind."""
+    if plan.get('source_lifecycle') is None or journal.value['phase'] != 'active':
+        raise InstallError('native-source-installer-target-not-ready')
+    _previous, services = _upgrade_services(plan, records)
+    def ready():
+        verify_snapshots()
+        for item in records:
+            if _source_snapshot_read(item['path'], limit=8 * 1024 * 1024) != item['after']:
+                raise InstallError('runtime-upgrade-file-drift')
+        _verify_bundle_selection(plan)
+        if 'operations' in services:
+            _verify_new_services(dict(plan, native_services=_managed_service_record(records, 'after')['selection']))
+        for service in services.values():
+            _upgrade_service_identity(service)
+        _candidate_upgrade_policy_mode(plan)
+        _ready_gateway(services['gateway'], plan['access_settings']['gateway_port'])
+        _ready_access(services['access'], upgrade_guard=True)
+        _ready_access_relay(services['relay'], plan, upgrade_guard=True)
+    hold = _resume_migration_hold(plan)
+    ready()
+    _finish_source_upgrade(plan, records, journal)
+    journal.finish(ready)
+    _ready_access(services['access'])
+    _ready_access_relay(services['relay'], plan)
+    _clear_candidate_stop_witnesses(plan)
+    _finish_migration_hold(plan, hold)
+
+
+def _verify_archived_source_rebind(plan, records, journal):
+    """Read-only Source completion proof while a freshly checked hold is held."""
+    intent = plan.get('source_lifecycle')
+    if intent is None or intent['mode'] == 'absent' and journal.value['phase'] == 'restored':
+        return
+    addition = journal.value.get('sourceAddition', {})
+    if intent['mode'] not in ('absent', 'withdrawal') or intent['mode'] == 'withdrawal' and 'receipt' not in addition:
+        raise InstallError('native-source-installer-completion-unqualified')
+    from pixel_macos_custody import protected_bytes
+    from pixel_connections import custody
+    phase = journal.value['phase']
+    side = 'after' if phase == 'active' else 'before'
+    path = str(_destination(ACCESS_FILES['config']))
+    body = next((item[side] for item in records if item['path'] == path), None)
+    if phase not in ('active', 'restored') or body is None or protected_bytes(path) != body:
+        raise InstallError('native-source-installer-target-binding-changed')
+    bridge = _bridge_from_recovery_plan(dict(plan, access_settings=json.loads(body)), owner_name=plan['owner'].pw_name)
+    transaction = dict(kind='native-installer-upgrade', transaction=addition['contextSha256'],
+        currentDigest=plan['upgrade_qualification']['currentDigest'],
+        candidateDigest=plan['upgrade_qualification']['candidateDigest'])
+    with bridge.bounded(180):
+        _discover_source_installer_bridge(bridge)
+        selected = custody.native_source_selection(bridge, bridge.connection_deployment())
+        if intent['mode'] == 'absent':
+            verify = (custody.native_verify_completed_installer_absent_kit if addition['proof']['kit'] is None else
+                      custody.native_verify_completed_installer_code_only_kit)
+            return verify(selected, addition['proof'], transaction=transaction)
+        return custody.native_verify_completed_installer_rebind(selected, addition['receipt'], transaction=transaction)
 
 
 def _finish_archived_upgrade(bridge, *, current_digest, candidate_digest, owner_name, on_reproved=None):
@@ -2591,7 +4982,7 @@ def _finish_archived_upgrade(bridge, *, current_digest, candidate_digest, owner_
             if fresh_plan != plan or fresh_journal.value != journal.value or fresh_records != records:
                 raise InstallError('runtime-upgrade-recovery-authority-changed')
             for item in records:
-                if protected_bytes(item['path'], limit=8 * 1024 * 1024) != item['after' if phase == 'active' else 'before']:
+                if _source_snapshot_read(item['path'], limit=8 * 1024 * 1024) != item['after' if phase == 'active' else 'before']:
                     raise InstallError('runtime-upgrade-rollback-file-drift')
             if phase == 'active':
                 if plan.get('migration_qualification'):
@@ -2645,7 +5036,9 @@ def _finish_archived_upgrade(bridge, *, current_digest, candidate_digest, owner_
                     on_reproved()
                 return phase
         if hold['phase'] != 'released':
-            _finish_migration_hold(plan, hold)
+            source_options = ({'verify_while_held': lambda: _verify_archived_source_rebind(plan, records, journal)}
+                              if plan.get('source_lifecycle') is not None else {})
+            _finish_migration_hold(plan, hold, **source_options)
         return phase
 
 
@@ -2683,7 +5076,8 @@ def _verify_recovery_runtime(plan):
         if migrating:
             manifest, _ = _bundle.verify(candidate, expected_digest=candidate_digest)
             config = json.loads(selection['source_config_bytes'])
-            config['plugins']['load']['paths'] = [str(candidate / path) for path in manifest['plugins']]
+            selected_plugins = _configured_bundle_plugins(candidate, manifest, config, _recovery=True)
+            config['plugins']['load']['paths'] = [str(candidate / path) for path in selected_plugins]
             if (json.dumps(config, indent=2, ensure_ascii=True) + '\n').encode() != selection['config_bytes']:
                 raise InstallError('native-migration-config-mapping-changed')
         else:
@@ -2871,6 +5265,11 @@ def _execute_upgrade_install(plan, source):
         raise InstallError('macos-root-install-required')
     if not plan.get('upgrade_qualification') or not plan.get('runtime_bundle'):
         raise InstallError('runtime-upgrade-plan-required')
+    if (plan['runtime_bundle'].get('connection_sidefiles') is not None
+            and plan.get('source_lifecycle') is None):
+        # Joint native migrations also enter here without _bundle_plan's
+        # upgrade argument. They must not bypass Source custody admission.
+        raise InstallError('native-source-upgrade-not-qualified')
     sys.path.insert(0, str(HERE.parents[2] / 'bin'))
     from pixel_access_bridge import LaunchdAccessBridge
     from pixel_macos_custody import protected_bytes
@@ -2885,12 +5284,15 @@ def _execute_upgrade_install(plan, source):
         settings_data_dir=settings.get('settings_data_dir'), gateway_policy=settings['gateway_policy'])
     # Snapshot and staging share one lock. Do not nest prepared_upgrade's lock:
     # it is the same nonblocking flock used by live controller mutations.
-    with bridge.locked():
+    with (bridge.bounded(SOURCE_TRANSACTION_SECONDS) if plan.get('source_lifecycle') is not None else nullcontext()), bridge.locked():
         if any(os.path.lexists(bridge.state / name) for name in
                ('transition.json', 'policy-activation.json', 'runtime-upgrade.json')):
             raise InstallError('runtime-upgrade-pending-recovery')
         if json.loads(protected_bytes(_destination(ACCESS_FILES['config']))) != settings:
             raise InstallError('runtime-upgrade-controller-binding-changed')
+        if plan.get('source_lifecycle') is not None:
+            _discover_source_installer_bridge(bridge)
+        source_backend = _source_upgrade_preflight(plan, bridge)
         records, additions = _upgrade_file_snapshots(plan, source)
         if plan.get('migration_qualification') and os.path.lexists(bridge.state / 'service-installation.json'):
             records.extend(_managed_service_snapshots(plan))
@@ -2920,26 +5322,96 @@ def _execute_upgrade_install(plan, source):
                            for role in _upgrade.NATIVE_ROLES)
         if any(os.path.lexists(path) for path in prior_paths):
             raise InstallError('runtime-upgrade-prior-attempt-requires-archive')
-        value = _upgrade.encode_recovery(records,
-            current_digest=qualification['currentDigest'], candidate_digest=selection['digest'],
-            allowed_paths={item['path'] for item in records})
+        value = None
+        if plan.get('source_lifecycle') is None:
+            value = _upgrade.encode_recovery(records,
+                current_digest=qualification['currentDigest'], candidate_digest=selection['digest'],
+                allowed_paths={item['path'] for item in records})
         context_path = bridge.state / ('runtime-upgrade-context-' + selection['digest'] + '.json')
-        _write_exact(context_path,
-            (json.dumps(_recovery_context(plan), sort_keys=True) + '\n').encode(), mode=0o600)
-        journal = _upgrade.RecoveryJournal.create(bridge.state / 'runtime-upgrade.json', value)
+        context_raw = (json.dumps(_recovery_context(plan), sort_keys=True) + '\n').encode()
+        _write_exact(context_path, context_raw, mode=0o600)
+        if plan.get('source_lifecycle') is not None:
+            journal = _prepare_source_upgrade_journal(plan, bridge, records,
+                context_raw=context_raw, backend=source_backend)
+        else:
+            journal = _upgrade.RecoveryJournal.create(bridge.state / 'runtime-upgrade.json', value)
         # Staging changes no live references; failures retain the exact journal
         # and leave recovery to a verified operator command, not a fresh install.
+        print('Publishing the verified native Pixel runtime.', file=sys.stderr, flush=True)
         published = _bundle.publish(selection['source'], expected_digest=selection['digest'])
         if str(published) != selection['destination']:
             raise InstallError('native-bundle-destination-changed')
         _runtime_config(plan, write=True)
         for path, data, attributes in additions:
             _write_exact(path, data, **attributes)
-        _activate_upgrade(plan, records, journal, previous_guard=previous_guard)
+        source_options = {'source_bridge': bridge} if plan.get('source_lifecycle') is not None else {}
+        _activate_upgrade(plan, records, journal, previous_guard=previous_guard, **source_options)
     # Reconciliation submits a controller transaction, so it must not run
     # while this process holds the same controller lock.
     _reprove_installed_access(plan)
     return 'active'
+
+
+def _verify_initial_retained_hold(plan, container, observed):
+    """Prove the exact retained owner recovery already holds this Edge.
+
+    Acquire is idempotent for the same held token and revision. A release
+    changes the revision, so a concurrent release cannot create a new hold.
+    The recovery coordinator separately checks its exact operation key before
+    resuming and never publishes a selection without its second full proof.
+    """
+    from pixel_access_bridge import AccessError, private_json
+    owner = plan['owner'].pw_uid
+    preparation = Path(plan['access_settings']['install_dir']) / 'data/pixel-native/preparation'
+    def private_directory(path):
+        info = path.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != owner
+                or stat.S_IMODE(info.st_mode) != 0o700 or path.resolve(strict=True) != path):
+            raise InstallError('native-initial-admission-not-ready')
+        return (info.st_dev, info.st_ino)
+    try:
+        preparation_id = private_directory(preparation)
+        pointer_path = preparation / 'ingress-refresh-current.json'
+        pointer = private_json(pointer_path, owner, 4096)
+        if (type(pointer) is not dict or set(pointer) != {'directory'}
+                or type(pointer['directory']) is not str
+                or not re.fullmatch('ingress-refresh-[a-f0-9]{32}', pointer['directory'])):
+            raise InstallError('native-initial-admission-not-ready')
+        directory = preparation / pointer['directory']
+        directory_id = private_directory(directory)
+        journal = directory / 'refresh.json'
+        record = private_json(journal, owner, 2 * 1024 * 1024)
+        operation = record.get('operation') if type(record) is dict else None
+        binding = record.get('binding') if type(record) is dict else None
+        selection = record.get('selection') if type(record) is dict else None
+        rollback = record.get('rollback') if type(record) is dict else None
+        if (type(record) is not dict or type(record.get('schemaVersion')) is not int
+                or record['schemaVersion'] != 1 or record.get('phase') not in ('operating', 'operation-failed')
+                or type(operation) is not dict or set(operation) != {'kind', 'key'}
+                or operation['kind'] != 'retained-recovery' or type(operation['key']) is not str
+                or not re.fullmatch('[a-f0-9]{64}', operation['key'])
+                or type(binding) is not dict or set(binding) != {'token', 'revision'}
+                or any(type(value) is not str or not re.fullmatch('[a-f0-9]{64}', value)
+                    for value in binding.values())
+                or type(selection) is not dict or selection.get('sha256') != hashlib.sha256(
+                    plan['runtime_bundle']['source_config_bytes']).hexdigest()
+                or record.get('source') != plan['runtime_bundle']['source_config']
+                or record.get('project') != plan['source_environment']['PIXEL_HISTORY_PROJECT']
+                or type(rollback) is not dict or rollback.get('path') != str(directory / 'rollback.compose.json')
+                or observed.get('revision') != binding['revision']):
+            raise InstallError('native-initial-admission-not-ready')
+        confirmed = _migration_edge_request(plan, container, 'acquire', binding)
+        if (type(confirmed) is not dict or confirmed.get('capability') != 'available'
+                or confirmed.get('phase') != 'held' or type(confirmed.get('streams')) is not int
+                or confirmed['streams'] != 0
+                or confirmed.get('admission_blocked') is not True
+                or confirmed.get('revision') != binding['revision']
+                or private_directory(preparation) != preparation_id or private_directory(directory) != directory_id
+                or private_json(pointer_path, owner, 4096) != pointer
+                or private_json(journal, owner, 2 * 1024 * 1024) != record):
+            raise InstallError('native-initial-admission-not-ready')
+    except (AccessError, KeyError, TypeError, ValueError, OSError):
+        raise InstallError('native-initial-admission-not-ready') from None
 
 
 def verify_initial_install(plan):
@@ -2997,14 +5469,18 @@ def verify_initial_install(plan):
     _ready_access_relay(services[2], plan)
     def admission_ready():
         value = _migration_edge_request(plan, edge['container'])
-        if (value.get('capability') != 'available' or value.get('phase') != 'idle'
+        if (value.get('capability') == 'available' and value.get('phase') == 'held'
+                and type(value.get('streams')) is int and value['streams'] == 0
+                and value.get('admission_blocked') is True):
+            _verify_initial_retained_hold(plan, edge['container'], value)
+        elif (value.get('capability') != 'available' or value.get('phase') != 'idle'
                 or value.get('admission_blocked') is not False):
             raise InstallError('native-initial-admission-not-ready')
     admission_ready()
     service_path = state / 'service-installation.json'
     service_record = private_json(service_path, 0, 2 * 1024 * 1024)
     if (type(service_record) is not dict or service_record.get('requiresRecovery') or service_record.get('stopWitnesses')
-            or service_record.get('attempted') != ['manager', 'promoter', 'operations']):
+            or service_record.get('attempted') != list(_managed_service_order(service_record['selection']))):
         raise InstallError('native-managed-service-not-ready')
     _verify_new_services(plan)
     # Each readiness check can take time. Check the protected bindings and
@@ -3017,6 +5493,7 @@ def verify_initial_install(plan):
             or [_upgrade_service_identity(service) for service in services] != identities):
         raise InstallError('native-initial-activation-changed')
     _verify_bundle_selection(plan)
+    _verify_source_runtime(plan, publish=False)
     for service in services:
         service.verify()
         if _job_disabled(service.target):
@@ -3041,6 +5518,7 @@ def install(plan, source):
     # but a protected service must never execute that writable runtime.
     if not plan.get('runtime_bundle'):
         raise InstallError('protected-runtime-bundle-required')
+    _preflight_source_publication(plan)
     files = _deployment_files(source, plan)
     for path, data, attributes in files:
         _preflight_file(path, data, **attributes)
@@ -3075,12 +5553,20 @@ def install(plan, source):
         if str(published) != selection['destination']:
             raise InstallError('native-bundle-destination-changed')
         _runtime_config(plan, write=True)
+        _connection_sidefiles(plan)
+        source_metadata = ({_destination(Path('/private/etc/ods/pixel-provider-runtime-manifest.json')),
+            _destination(Path('/private/etc/ods/pixel-provider-runtime.json')),
+            _destination(_launchd.ACCESS_STATE / 'source-runtime-installation.json')}
+            if selection.get('connection_sidefiles') is not None else set())
         for path, data, attributes in files:
-            _write_exact(path, data, **attributes)
+            if path not in source_metadata:
+                _write_exact(path, data, **attributes)
+        _publish_source_runtime_metadata(plan)
     except BaseException:
         _migration_phase(plan, journal, 'staging-failed')
         raise
     _activate_with_admission(plan, services, journal)
+    _verify_source_runtime(plan)
     _reprove_installed_access(plan)
 
 
@@ -3113,36 +5599,111 @@ def _bridge_from_recovery_plan(plan, *, owner_name):
         settings_data_dir=settings.get('settings_data_dir'), gateway_policy=settings['gateway_policy'])
 
 
+def _discover_source_installer_bridge(bridge):
+    """Initialize only a live protected bridge in its existing bounded scope.
+
+    Construction remains inert for locks and stopped recovery. Live Source
+    preflight/publication calls ordinary discovery, including its unchanged
+    Root program, DS, plist, policy, owner config and runtime-home checks.
+    """
+    from pixel_access_bridge import LaunchdAccessBridge
+    if type(bridge) is not LaunchdAccessBridge or LaunchdAccessBridge._native_runtime_lease(bridge) is None:
+        raise InstallError('native-source-installer-bridge-scope-required')
+    LaunchdAccessBridge.discover(bridge)
+
+
+def _native_failure_diagnostic(error):
+    """Only fixed categories and verified source locations; never exception data."""
+    categories = [(InstallError, 'InstallError'), (_upgrade.UpgradeError, 'UpgradeError'),
+                  (_bundle.BundleError, 'BundleError')]
+    for name, kind in (('pixel_access_bridge', 'AccessError'),
+                       ('pixel_macos_custody', 'CustodyError'),
+                       ('pixel_connections.custody', 'CustodyError')):
+        cls = getattr(sys.modules.get(name), kind, None)
+        if isinstance(cls, type) and issubclass(cls, BaseException):
+            categories.append((cls, name + '.' + kind))
+    categories.extend(((OSError, 'OSError'), (KeyError, 'KeyError'), (TypeError, 'TypeError'),
+                       (ValueError, 'ValueError'), (subprocess.SubprocessError, 'SubprocessError')))
+    root = HERE.parents[2]
+    category, location, guidance, seen = 'Exception', '', None, set()
+    cause = error
+    for _ in range(10):
+        if not isinstance(cause, BaseException) or id(cause) in seen:
+            break
+        seen.add(id(cause))
+        category = next((label for cls, label in categories if isinstance(cause, cls)), 'Exception')
+        if type(cause) is InstallError and type(cause.code) is str and cause.code in SANDBOX_RETIREMENT_GUIDANCE:
+            guidance = cause.code
+        trace = cause.__traceback__
+        for _ in range(128):
+            if trace is None:
+                break
+            filename = trace.tb_frame.f_code.co_filename
+            module_file = trace.tb_frame.f_globals.get('__file__')
+            try:
+                path = Path(filename).resolve(strict=True)
+                relative = path.relative_to(root).as_posix()
+                if (filename == str(path) and module_file == filename and path.is_file()
+                        and re.fullmatch(r'(?:bin|installers)/[A-Za-z0-9_./-]+\.py', relative)
+                        and type(trace.tb_lineno) is int and 0 < trace.tb_lineno <= 1000000):
+                    location = relative + ':' + str(trace.tb_lineno)
+            except (OSError, ValueError, TypeError, RuntimeError):
+                pass
+            trace = trace.tb_next
+        cause = cause.__cause__
+    return category + (' at ' + location if location else ''), guidance
+
+
 def _recovery_main(argv):
     parser = argparse.ArgumentParser(description='Recover a journaled native runtime update; requires root.')
     parser.add_argument('--owner', required=True)
     parser.add_argument('--current-bundle-digest', required=True)
     parser.add_argument('--bundle-digest', required=True)
+    parser.add_argument('--rollback-before-source-publication', action='store_true',
+        help='Explicitly preserve first-Source private files and restore the previous runtime; requires complete Source absence')
+    parser.add_argument('--quarantine-empty-source-stage', action='store_true',
+        help='Preserve a verified empty Source staging object whose inode was not recorded')
     args = parser.parse_args(argv)
     from pixel_access_bridge import AccessError
+    from pixel_macos_custody import CustodyError
+    from pixel_connections.custody import CustodyError as SourceCustodyError
     try:
         if sys.platform != 'darwin' or os.geteuid() != 0:
             raise InstallError('macos-root-install-required')
         selection = dict(current_digest=args.current_bundle_digest,
                          candidate_digest=args.bundle_digest, owner_name=args.owner)
         reproved = []
+        recovery_options = ({'rollback_before_source_publication': True}
+            if args.rollback_before_source_publication else {})
+        if args.quarantine_empty_source_stage:
+            recovery_options['quarantine_empty_source_stage'] = True
         outcome = recover_install(_recovery_bridge(**selection), **selection,
-                                  on_reproved=lambda: reproved.append(True))
+                                  on_reproved=lambda: reproved.append(True), **recovery_options)
         # Recovery may restore the previous runtime. Its installed policy, not
         # the candidate plan, determines the mode that must pass the tool proof.
         if not reproved:
             _reprove_recovered_access(args.owner)
     except InstallError as error:
-        print('error: ' + error.code, file=sys.stderr)
+        detail, _guidance = _native_failure_diagnostic(error)
+        print('error: ' + error.code + ' (' + detail + ')', file=sys.stderr)
         return 1
-    except (AccessError, _upgrade.UpgradeError, OSError, ValueError, KeyError, TypeError,
-            subprocess.SubprocessError):
+    except (AccessError, CustodyError, SourceCustodyError, _upgrade.UpgradeError, OSError, ValueError, KeyError, TypeError,
+            subprocess.SubprocessError) as error:
         # Environment/configuration errors can carry credentials in their text.
-        print('error: native-runtime-recovery-failed', file=sys.stderr)
+        detail, _guidance = _native_failure_diagnostic(error)
+        deadline = (type(error) is AccessError and error.code in
+                    ('native-source-deadline-unavailable', 'operation-deadline-exceeded'))
+        print('error: native-runtime-recovery-failed (' + detail + ')'
+              + (' [bounded-source-deadline]' if deadline else ''), file=sys.stderr)
         return 1
     print(json.dumps({'operation': 'runtime-recovery', 'status': outcome,
                       'runtimeBundleDigest': args.bundle_digest if outcome == 'active' else args.current_bundle_digest}))
     return 0
+
+
+def _provision_google_release():
+    from pixel_connections.google_app import provision_for_install
+    provision_for_install()
 
 
 def _reprove_recovered_access(owner_name):
@@ -3188,6 +5749,36 @@ def _retirement_snapshots(*, current_digest, candidate_digest, history_digest=No
         if os.path.lexists(_launchd.ACCESS_STATE / name):
             snapshots[name] = read(name)
     return snapshots
+
+
+def _sidefiles_archive_main(argv):
+    parser = argparse.ArgumentParser(description='Preserve an explicitly selected unbound first-kit sidefile; requires root.',
+                                     allow_abbrev=False)
+    for name in ('owner', 'current-bundle-digest', 'bundle-digest', 'expected-receipt-inode', 'expected-gateway-inode'):
+        parser.add_argument('--' + name, required=True)
+    args = parser.parse_args(argv)
+    from pixel_access_bridge import AccessError
+    from pixel_macos_custody import CustodyError
+    from pixel_connections.custody import CustodyError as SourceCustodyError
+    try:
+        def selected_inode(value):
+            if type(value) is not str or not re.fullmatch(r'[1-9][0-9]{0,19}:[1-9][0-9]{0,19}', value):
+                raise InstallError('native-sidefiles-archive-selection-invalid')
+            return _sidefile_archive_inode([int(part) for part in value.split(':')])
+        archive = archive_sidefiles(current_digest=args.current_bundle_digest, candidate_digest=args.bundle_digest,
+            owner_name=args.owner, expected_receipt=selected_inode(args.expected_receipt_inode),
+            expected_gateway=selected_inode(args.expected_gateway_inode))
+    except InstallError as error:
+        print('error: ' + error.code, file=sys.stderr)
+        return 1
+    except (AccessError, CustodyError, SourceCustodyError, _upgrade.UpgradeError, OSError, ValueError, KeyError, TypeError,
+            subprocess.SubprocessError) as error:
+        detail, _guidance = _native_failure_diagnostic(error)
+        print('error: native-sidefiles-archive-failed (' + detail + ')', file=sys.stderr)
+        return 1
+    print(json.dumps({'operation': 'sidefiles-archive', 'status': 'preserved-unbound',
+                      'candidateDigest': args.bundle_digest, 'archive': archive}))
+    return 0
 
 
 def _retirement_main(argv):
@@ -3252,6 +5843,8 @@ def _migration_main(argv):
             current_digest=args.current_bundle_digest, services_bundle=args.services_bundle,
             services_digest=args.services_digest, source_ref=args.pixel_source_ref, native_transport=transport)
         outcome = migrate_install(plan, args.source) if args.activate else 'planned'
+        if outcome == 'active':
+            _provision_google_release()
     except InstallError as error:
         print('error: ' + error.code, file=sys.stderr)
         if error.code in SANDBOX_RETIREMENT_GUIDANCE:
@@ -3259,19 +5852,10 @@ def _migration_main(argv):
         return 1
     except (AccessError, CustodyError, _upgrade.UpgradeError, OSError, ValueError,
             KeyError, TypeError, subprocess.SubprocessError) as error:
-        # Upgrade rollback wraps its cause. Preserve known installer codes, not
-        # arbitrary exception text that could contain environment credentials.
-        cause, detail = error, ''
-        for _ in range(10):
-            if isinstance(cause, InstallError):
-                detail = ' (' + cause.code + ')'
-                break
-            cause = getattr(cause, '__cause__', None)
-            if cause is None:
-                break
-        print('error: native-joint-migration-failed' + detail + '; retain the preparation and protected recovery journal', file=sys.stderr)
-        if isinstance(cause, InstallError) and cause.code in SANDBOX_RETIREMENT_GUIDANCE:
-            print(SANDBOX_RETIREMENT_GUIDANCE[cause.code], file=sys.stderr)
+        detail, guidance = _native_failure_diagnostic(error)
+        print('error: native-joint-migration-failed (' + detail + '); retain the preparation and protected recovery journal', file=sys.stderr)
+        if guidance is not None:
+            print(SANDBOX_RETIREMENT_GUIDANCE[guidance], file=sys.stderr)
         return 1
     public = {'operation': 'native-migration', 'status': outcome,
         'runtimeBundleDigest': args.bundle_digest, 'serviceBundleDigest': args.services_digest}
@@ -3297,6 +5881,9 @@ def main(argv=None):
     if argv and argv[0] == 'retire-runtime':
         sys.path.insert(0, str(HERE.parents[2] / 'bin'))
         return _retirement_main(argv[1:])
+    if argv and argv[0] == 'archive-sidefiles':
+        sys.path.insert(0, str(HERE.parents[2] / 'bin'))
+        return _sidefiles_archive_main(argv[1:])
     if argv and argv[0] == 'recover-runtime':
         sys.path.insert(0, str(HERE.parents[2] / 'bin'))
         return _recovery_main(argv[1:])
@@ -3360,11 +5947,14 @@ def main(argv=None):
             print(json.dumps(verify_initial_install(plan), sort_keys=True, separators=(',', ':')))
         elif args.activate_upgrade:
             outcome = upgrade_install(plan, args.source)
+            if outcome == 'active':
+                _provision_google_release()
             print(json.dumps({'operation': 'runtime-upgrade', 'status': outcome,
                               'runtimeBundleDigest': plan['runtime_bundle']['digest']},
                              sort_keys=True, separators=(',', ':')))
         elif args.install:
             install(plan, args.source)
+            _provision_google_release()
         else:
             # Environment assignments may contain credentials. Only emit the
             # nonsecret deployment identity, never the complete launchd argv.
@@ -3433,5 +6023,53 @@ def _controller_repair_main(argv):
         return 1
 
 
+def _protected_cli(argv):
+    """Enter a fresh protected graph before a native live/commit CLI journey.
+
+    Library calls keep their existing explicit custody boundaries. The CLI
+    captures only its fixed code closure; active settings, owner, HOME and
+    runtime identity still come from ordinary discovery inside the operation.
+    """
+    if sys.platform != 'darwin' or os.geteuid() != 0 or any(flag in argv for flag in ('--help', '-h')):
+        return None
+    subcommand = argv[0] if argv else None
+    live_commands = ('migrate-native', 'recover-runtime', 'retire-runtime', 'repair-controller', 'archive-sidefiles')
+    if subcommand not in live_commands and not any(flag in argv for flag in
+            ('--install', '--activate-upgrade', '--verify-initial')):
+        return None
+    if subcommand == 'migrate-native' and '--activate' not in argv:
+        return None
+    sys.path.insert(0, str(HERE.parents[2] / 'bin'))
+    import pixel_native_installer_entry as entry
+    active = entry.active_support()
+    if active is not None:
+        if active['peer'] != 'access-install' or Path(active['root']) != HERE.parents[2]:
+            raise InstallError('native-installer-support-peer-invalid')
+        return None
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument('--source')
+    parser.add_argument('--install-dir')
+    options, _unknown = parser.parse_known_args(argv)
+    arguments = list(argv)
+    if subcommand not in live_commands and options.source and options.install_dir is None:
+        # --source also historically supplies the data-directory default.
+        # Preserve it before the protected entry selects its captured code.
+        arguments.extend(('--install-dir', options.source))
+    source = _path(options.source) if options.source is not None else HERE.parents[2]
+    python = _native_services.helper('ops-service').select_python()
+    support = entry.stage_support(source, python=python)
+    if (type(support) is not dict or set(support) != {'root', 'entry', 'codeSha256', 'python'}
+            or Path(support['root']) != entry.SUPPORT_ROOT / support['codeSha256']
+            or Path(support['entry']) != Path(support['root']) / entry.ENTRY):
+        raise InstallError('native-installer-support-publication-invalid')
+    return subprocess.run([support['python'], '-I', '-B', support['entry'], '--peer', 'access-install',
+        '--', *arguments], check=False, timeout=PROTECTED_CLI_SECONDS).returncode
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        protected_result = _protected_cli(sys.argv[1:])
+        raise SystemExit(main() if protected_result is None else protected_result)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        print('error: native-installer-support-custody-failed', file=sys.stderr)
+        raise SystemExit(1)

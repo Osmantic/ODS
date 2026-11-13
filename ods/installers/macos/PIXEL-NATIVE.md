@@ -8,6 +8,15 @@ renderer uses `ProcessType=Interactive`, `/dev/null` for stdin and umask `077`.
 The ODS gateway renderer now follows these three defaults. This is a candidate
 definition change, not a performance measurement or an update of live services.
 
+The Root access coordinator also uses `ProcessType=Interactive`: its custody
+checks answer owner requests within fixed deadlines. A Terminal measurement
+does not establish the response time of a `Background` LaunchDaemon, whose CPU
+and I/O scheduling macOS throttles. This changes scheduling only; the daemon's
+Root identity, fixed interpreter, owner authentication and custody checks remain
+the same. Existing installations receive the definition through the normal
+protected update, including its before/after service proofs.
+See Apple's [launchd ProcessType documentation](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5).
+
 ODS deliberately retains its protected LaunchDaemon definition, running the
 gateway as the installation owner, and its controlled stop/restart contract.
 Running `openclaw gateway install` alongside it would create a second supervisor
@@ -73,8 +82,13 @@ The protected service installer now distinguishes a first installation using
 requires an explicit unloaded `--gateway-plist` staging template and selected
 runtime bundle. Before staging and again before activation it verifies the
 template, rejects an existing owner LaunchAgent definition or loaded job, and
-checks both gateway/access loopback ports. It never disables, starts or restores
-the template as a user service. Migration behavior is unchanged.
+checks both gateway/access loopback ports. A port is refused when a loopback
+connection to it is accepted or when a reuse-address bind fails. Those are the
+conditions the Node gateway and access listeners would hit. Connections a
+removed install left in TIME_WAIT do not count; macOS can hold thousands of
+them on the old gateway port for a long time after it closed, and a plain bind
+would report that port as taken. It never disables, starts or restores the
+template as a user service. Migration behavior is unchanged.
 
 On initial activation failure, confirmed shutdown produces `initial-stopped`;
 unconfirmed cleanup produces `recovery-required`. Both preserve the admission
@@ -1432,8 +1446,15 @@ Retirement recognizes the model coordinator's retained backup and completion
 records: `model-before.json`, `model-route-completed.json`,
 `model-promotion-completed.json`, and the legacy `model-completed.json`.
 They are archived with the old deployment under the existing protected-file
-checks. Pending access/model transitions, policy activation, runtime upgrades,
-and unknown state still block retirement before services or containers stop.
+checks. The records of an explicit `recover-runtime --quarantine-empty-source-stage`
+are archived with it too: the sealed `.ods-empty-source-stage-<nonce>.json`
+receipt with its empty `.ods-quarantined-source-kit-<nonce>` directory, and each
+empty `.ods-quarantined-source-file-<nonce>-<tag>.file` with its `.json` receipt.
+They move by rename and keep their inodes; retirement never reads them or binds
+them as authority. Pending access/model transitions, policy
+activation, runtime upgrades, and unknown state, including the quarantine
+writer's temporary names, still block retirement before services or containers
+stop.
 
 The uninstaller retires native services before removing the ODS tree. It keeps
 root-protected recovery archives, stops and renames the exact owned sandbox,

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {syncBuiltinESMExports} from 'node:module';
 import {createChangedFileChecks, createModuleCheckQueue, debugGlobalWrites, FILE_CHECK_INSTRUCTION, FILE_CHECK_LIMITS, FILE_CHECK_REMOVAL,
   FILE_CHECKS_OFF, fileCheckFacts, fileCheckInstruction, generatedFile, nodeModuleCheck, parseCheck, scratchEntry, topLevelDefinitions,
   touchedProjects} from '../plugin/changed-file-checks.mjs';
@@ -33,6 +34,24 @@ function workspace(t, files = {}) {
   const write = (relative, content) => { fs.mkdirSync(path.dirname(at(relative)), {recursive: true}); fs.writeFileSync(at(relative), content); };
   for (const [relative, content] of Object.entries(files)) write(relative, content);
   return {root, at, write};
+}
+
+// A filesystem whose stat clock cannot distinguish these equal-size writes.
+// Real bytes/inodes/link counts and the production exact-read checks remain.
+function coarseFileClock(t, file) {
+  const lstat = fs.lstatSync, snapshot = lstat(file), observed = [];
+  const mocked = t.mock.method(fs, 'lstatSync', (target, ...args) => {
+    const stat = lstat(target, ...args);
+    if (target === file) {
+      stat.mtimeMs = snapshot.mtimeMs;
+      stat.ctimeMs = snapshot.ctimeMs;
+      observed.push([stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino]);
+    }
+    return stat;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { mocked.mock.restore(); syncBuiltinESMExports(); });
+  return observed;
 }
 
 test('top-level definitions are counted at column 0, outside comments and template strings', () => {
@@ -480,6 +499,34 @@ test('a file rewritten with the same size and mtime is read again', t => {
   fs.utimesSync(at('Playground/game/a.js'), second, second);
   assert.equal(fs.statSync(at('Playground/game/a.js')).mtimeMs, second.getTime());
   assert.deepEqual(checks.findings(), []);
+});
+
+test('cached analysis compares actual content when every stat version field collides', t => {
+  const {root, write, at} = workspace(t, {'Playground/game/a.js': 'const a = 1;\n'});
+  const checks = createChangedFileChecks();
+  checks.touch(root, ['Playground/game']);
+  write('Playground/game/a.js', 'function x() {}\nfunction x() {}\n');
+  const observed = coarseFileClock(t, at('Playground/game/a.js'));
+  assert.deepEqual(checks.findings(), [
+    {kind:'definition', project:'Playground/game', file:'a.js', name:'x', count:2},
+  ]);
+  write('Playground/game/a.js', 'function x() {}\nfunction y() {}\n');
+  assert.deepEqual(checks.findings(), []);
+  assert.equal(observed.length, 2);
+  assert.deepEqual(observed[0], observed[1], 'the cache cannot distinguish these versions from stat metadata');
+});
+
+test('a cached candidate still obeys the exact-read refusal for a new hard link', t => {
+  const {root, write, at} = workspace(t, {'Playground/game/a.js': 'const a = 1;\n'});
+  const checks = createChangedFileChecks();
+  checks.touch(root, ['Playground/game']);
+  write('Playground/game/a.js', 'function x() {}\nfunction x() {}\n');
+  const observed = coarseFileClock(t, at('Playground/game/a.js'));
+  assert.equal(checks.findings().length, 1);
+  fs.linkSync(at('Playground/game/a.js'), at('shared.js'));
+  assert.equal(fs.statSync(at('Playground/game/a.js')).nlink, 2);
+  assert.deepEqual(checks.findings(), [], 'do not reuse an analysis when the current file cannot be read safely');
+  assert.deepEqual(observed[0], observed[1]);
 });
 
 test('the same finding in two projects is told for each, and names the texts cannot print are left out', t => {
