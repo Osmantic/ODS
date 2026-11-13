@@ -20,6 +20,9 @@ import sys
 ARCHIVES = Path('/private/var/lib/ods-pixel-source-recovery')
 COPIES = {'identity.json': 'source-identity.json', 'custody.json': 'source-custody-prepare.json',
           'code.json': 'source-installer-code-only.json'}
+MANIFEST_COPIES = {**COPIES, 'environment.json': 'source-environment.json', 'logs.json': 'source-logs-prepare.json',
+    'publication.json': 'source-publication.json', 'initial.json': 'source-initial-generation.json',
+    'jobs.json': 'source-jobs-prepare.json'}
 LATER = {'runtime-upgrade.json', 'transition.json', 'connection.json', 'source-environment.json',
          'source-logs-prepare.json', 'source-initial-generation.json', 'source-initial-boot.json',
          'source-jobs-prepare.json', 'source-jobs-active.json', 'source-execution.json',
@@ -372,10 +375,149 @@ def preserve_empty_gate(c, mac, selected, expected):
             'archive': str(ARCHIVES / ('first-gate-' + tag))}
 
 
+def empty_manifest(c, directory, name, pair):
+    body, actual = c._native_root_file(directory, name, limit=1)
+    require(not body and actual == pair, 'prefix-manifest-not-selected-empty-file')
+
+
+def manifest_inputs(c, mac, selected, expected, pair, publisher):
+    require('child' in expected, 'prefix-manifest-prior-preservation-required')
+    with mac.protected_directory(ARCHIVES / ('first-child-' + selection_id(expected))) as prior:
+        require(capsule(c, prior, expected, selection_id(expected)), 'prefix-manifest-prior-preservation-required')
+    view = publisher._initial_generation_view(selected)
+    require(view[0] is c and view[1]['bundleSha256'] == expected['runtime'], 'prefix-runtime-changed')
+    doc, full, identity, descriptor = view[1], view[2], view[3], view[4]
+    with mac.protected_directory(c.NATIVE_META) as metadata:
+        images = {name: c._native_root_file(metadata, leaf, limit=131072)
+            for name, leaf in MANIFEST_COPIES.items()}
+        for name in ('identity.json', 'code.json'):
+            body, actual = images[name]
+            require({'inode': actual, 'sha256': hashlib.sha256(body).hexdigest()} == expected['images'][name],
+                'prefix-receipt-changed')
+        parent = json.loads(images['initial.json'][0], object_pairs_hook=c._native_pairs)
+        child = json.loads(images['jobs.json'][0], object_pairs_hook=c._native_pairs)
+        publisher._initial_generation_record(c, parent)
+        base = {key: value for key, value in full.items() if key not in ('runtimeCustodySha256', 'bundleSha256', 'sourceRef')}
+        c._native_job_record(child, dict(base, publicationSha256=hashlib.sha256(images['publication.json'][0]).hexdigest()), descriptor)
+        require(parent['phase'] == 'generation' and parent['after']['ready'] and child['phase'] == 'staging'
+            and child['generation'] == parent['generation'] and child['environment'] == parent['environment']
+            and child['before']['inode'] == parent['gate']['inode']
+            and child['manifest'] == {'inode': None, 'ready': False}
+            and child['gate'] == {'inode': None, 'ready': False}, 'prefix-manifest-lifecycle-changed')
+        require(set(child['definitions']) == {c.NATIVE_LABEL+'sync', c.NATIVE_LABEL+'direct'}
+            and all(item['ready'] and item['identifier'] is None for item in child['definitions'].values()),
+            'prefix-manifest-definitions-incomplete')
+        require(all(c._native_at_inode(metadata, name) is None for name in ('source-initial-boot.json',
+            'source-jobs-active.json', 'source-execution.json', 'source-environment-generation.json')),
+            'prefix-later-lifecycle-present')
+        with mac.protected_directory(c.NATIVE_STATE.parent) as state_parent:
+            gate = os.open(c.NATIVE_STATE.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=state_parent)
+            try:
+                require(c._native_at_inode(state_parent, c.NATIVE_STATE.name) == expected['gate']
+                    and c._native_root_file(gate, 'custody.json', mode=0o640, gid=identity['id']) ==
+                        (descriptor, parent['gate']['inode']), 'prefix-manifest-gate-changed')
+            finally:
+                os.close(gate)
+        jobs = c._native_job_directory(metadata, child)
+        try:
+            names = {label+'.plist' for label in child['definitions']}
+            require(set(os.listdir(jobs)) in (names, names | {'manifest.json'}), 'prefix-manifest-unknown-entry')
+            for label, item in child['definitions'].items():
+                path, body, _ = publisher.disabled_definition(item['role'], identity=identity,
+                    python=doc['hostPythonPath'], identifier=None)
+                require(path.stem == label and c._native_root_file(jobs, label+'.plist', mode=0o644, limit=16384) ==
+                    (body, item['inode']), 'prefix-manifest-definition-changed')
+            if 'manifest.json' in os.listdir(jobs):
+                empty_manifest(c, jobs, 'manifest.json', pair)
+        finally:
+            os.close(jobs)
+    with mac.protected_directory(c.NATIVE_DEFINITIONS) as definitions:
+        require(not any(name.startswith(c.NATIVE_LABEL) for name in os.listdir(definitions)),
+            'prefix-source-definition-present')
+    require(not os.path.lexists(c.NATIVE_CONNECTION_RECORD), 'prefix-source-data-present')
+    actors_absent(c, selected.bridge, identity['id'])
+    return images, child
+
+
+def manifest_capsule(c, directory, expected, pair, images, tag):
+    private_dir(c, directory)
+    names = set(MANIFEST_COPIES) | {'manifest.json'}
+    actual_names = set(os.listdir(directory))
+    require(actual_names in (names, names | {'unrecorded-manifest'}), 'prefix-archive-unsealed-or-unknown')
+    body, _ = c._native_root_file(directory, 'manifest.json', limit=131072)
+    manifest = json.loads(body, object_pairs_hook=c._native_pairs)
+    snapshots = {name: {'inode': inode, 'sha256': hashlib.sha256(raw).hexdigest()}
+        for name, (raw, inode) in images.items()}
+    require(type(manifest) is dict and set(manifest) == {'schemaVersion', 'kind', 'archiveId', 'expected', 'file', 'images', 'copies'}
+        and type(manifest['schemaVersion']) is int and manifest['schemaVersion'] == 1
+        and manifest['kind'] == 'ods-native-source-first-manifest-preservation' and manifest['archiveId'] == tag
+        and manifest['expected'] == expected and manifest['file'] == pair and manifest['images'] == snapshots
+        and type(manifest['copies']) is dict and set(manifest['copies']) == set(MANIFEST_COPIES),
+        'prefix-archive-manifest-invalid')
+    for name, (raw, _inode) in images.items():
+        require(c._native_root_file(directory, name, limit=131072) == (raw, manifest['copies'][name]),
+            'prefix-archive-copy-changed')
+    if 'unrecorded-manifest' in actual_names:
+        empty_manifest(c, directory, 'unrecorded-manifest', pair)
+    return 'unrecorded-manifest' in actual_names
+
+
+def preserve_empty_manifest(c, mac, selected, expected, pair):
+    """Retain exactly one unbound empty initial manifest; never journal its inode."""
+    c._native_root()
+    selection_id(expected)
+    require(type(pair) is list and len(pair) == 2 and all(type(n) is int and n > 0 for n in pair),
+        'prefix-manifest-selection-invalid')
+    from pixel_connections.native_executor import _publisher
+    publisher = _publisher(selected)
+    images, child = manifest_inputs(c, mac, selected, expected, pair, publisher)
+    tag = hashlib.sha256(encoded({'expected': expected, 'manifest': pair})).hexdigest()
+    require(ARCHIVES.parent == c.NATIVE_STATE.parent, 'prefix-archive-path-invalid')
+    with mac.protected_directory(ARCHIVES.parent) as parent:
+        if c._native_at_inode(parent, ARCHIVES.name) is None:
+            make_private_dir(c, parent, ARCHIVES.name)
+    with mac.protected_directory(ARCHIVES) as root, mac.protected_directory(c.NATIVE_META) as metadata:
+        private_dir(c, root)
+        name = 'first-manifest-' + tag
+        fresh = c._native_at_inode(root, name) is None
+        jobs = c._native_job_directory(metadata, child)
+        try:
+            if fresh:
+                empty_manifest(c, jobs, 'manifest.json', pair)
+                make_private_dir(c, root, name)
+            with mac.protected_directory(ARCHIVES / name) as archive:
+                private_dir(c, archive)
+                require(os.fstat(archive).st_dev == pair[0], 'prefix-cross-device-preservation-refused')
+                if fresh:
+                    copies = {leaf: write_new(c, archive, leaf, raw) for leaf, (raw, _inode) in images.items()}
+                    write_new(c, archive, 'manifest.json', encoded({'schemaVersion': 1,
+                        'kind': 'ods-native-source-first-manifest-preservation', 'archiveId': tag,
+                        'expected': expected, 'file': pair, 'images': {leaf: {'inode': inode,
+                            'sha256': hashlib.sha256(raw).hexdigest()} for leaf, (raw, inode) in images.items()}, 'copies': copies}))
+                retained = manifest_capsule(c, archive, expected, pair, images, tag)
+                require(manifest_inputs(c, mac, selected, expected, pair, publisher) == (images, child), 'prefix-receipts-changed')
+                require(c._native_at_inode(metadata, 'native-source-jobs') == child['directory'], 'prefix-manifest-directory-changed')
+                if retained:
+                    require(c._native_at_inode(jobs, 'manifest.json') is None, 'prefix-manifest-slot-not-empty')
+                else:
+                    empty_manifest(c, jobs, 'manifest.json', pair)
+                    rename_exclusive(jobs, 'manifest.json', archive, 'unrecorded-manifest')
+                    os.fsync(jobs)
+                    os.fsync(archive)
+                require(manifest_capsule(c, archive, expected, pair, images, tag)
+                    and c._native_at_inode(jobs, 'manifest.json') is None, 'prefix-preservation-unconfirmed')
+        finally:
+            os.close(jobs)
+    proof = publisher.verify_initial_generation_child(selected)
+    require(proof == {'generation': child['generation'], 'phase': 'staging'}, 'prefix-manifest-completion-unconfirmed')
+    return {'status': 'preserved-empty-first-manifest', 'sourcePrepared': False, 'archive': str(ARCHIVES / name)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--install-dir', required=True)
     parser.add_argument('--selection', required=True, help='Private JSON with the explicitly selected runtime, gate and receipt images')
+    parser.add_argument('--empty-manifest', help='Explicit device:inode of one empty unrecorded initial manifest')
     args = parser.parse_args()
     require(sys.platform == 'darwin' and os.geteuid() == 0, 'prefix-root-darwin-required')
     sys.path.insert(0, '/usr/local/libexec/ods-pixel-access')
@@ -405,15 +547,20 @@ def main():
         gateway_policy=settings['gateway_policy'], gateway_owner=settings['owner'],
         settings_data_dir=settings.get('settings_data_dir'), gateway_port=settings.get('gateway_port'))
     require(os.path.lexists(bridge.state / 'lock'), 'prefix-original-lock-missing')
-    with bridge.bounded(180), bridge.locked(wait_seconds=30):
+    with bridge.bounded(600 if args.empty_manifest else 180), bridge.locked(wait_seconds=30):
         bridge.discover()
         coordinator._guard_native_enrollment(bridge)
         coordinator._guard_google_exchange(bridge)
         coordinator._guard_fresh_source(bridge)
         require(bridge.pending() is None, 'prefix-transition-pending')
         selected = source_backend.for_bridge(bridge, linux_paths=coordinator.PATHS, linux_run=coordinator.RUN).selection
-        operation = preserve_empty_child if 'child' in expected else preserve_empty_gate
-        print(json.dumps(operation(c, mac, selected, expected)), flush=True)
+        if args.empty_manifest:
+            require(re.fullmatch(r'[1-9][0-9]*:[1-9][0-9]*', args.empty_manifest), 'prefix-manifest-selection-invalid')
+            result = preserve_empty_manifest(c, mac, selected, expected, [int(n) for n in args.empty_manifest.split(':')])
+        else:
+            operation = preserve_empty_child if 'child' in expected else preserve_empty_gate
+            result = operation(c, mac, selected, expected)
+        print(json.dumps(result), flush=True)
 
 
 if __name__ == '__main__':

@@ -91,6 +91,30 @@ data, descriptor, unknown names and changed entries refuse preservation. The
 same sealed-capsule/exclusive-rename procedure retains the empty child without
 adopting it or modifying live receipts. The normal preparer creates its replacement.
 
+For the later initial-generation `manifest.json` allocation, `--empty-manifest
+DEVICE:INODE` selects only a zero-byte Root-owned mode-0600 single-link file
+without an ACL. The original first-child preservation must still verify. The
+current runtime, immutable identity/code receipts, preconsent/no-actor proof,
+canonical v1 gate and complete state/environment/logs are requalified. The
+parent must be in `generation`, its exact child in `staging`, with both fixed
+sync/direct definitions ready, no public definitions, no other staged entries,
+and neither manifest nor replacement-gate inode recorded. Eight current receipt
+images are sealed in a separate Root capsule before an exclusive same-filesystem
+rename retains the unrecorded file. Live receipts are unchanged. The installed
+publisher independently verifies the resulting child prefix before completion.
+Lost acknowledgements may resume only the same sealed images and retained inode;
+unsealed capsules, changed data/authority and a new live manifest refuse recovery.
+This administrator preservation is bounded to 600 seconds and starts no Source
+process, grants no Google access and does not prepare or activate a generation.
+
+The scoped immutable-bundle inventory can use the metadata reader's internal FD
+visitor. One traversal checks every current Root owner/mode/ACL, entry set,
+namespace identity and internal link while inventorying bytes through held FDs.
+Unchanged immutable bytes may reuse their verified hash, but metadata and ACL
+qualification are never cached. Older metadata readers retain the complete
+separate traversal. An empty quiescence namespace grants no historical name;
+existing names still require the complete history proof, and unknown names refuse.
+
 A lost rename acknowledgement may resume only the same sealed capsule and
 selection. An interrupted unsealed capsule is retained and refused, rather
 than recreated. This recovery is not evidence that ordinary Portal first

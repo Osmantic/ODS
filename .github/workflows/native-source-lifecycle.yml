@@ -44,6 +44,11 @@ jobs:
             files: ods/tests/test_native_source_initial_backend.py
           - packet: empty-first-gate-preservation
             files: ods/tests/test_native_source_empty_gate_preservation.py ods/tests/test_native_source_prefix_credential.py
+          - packet: empty-initial-manifest-preservation
+            files: ods/tests/test_native_source_manifest_preservation.py
+          - packet: initial-history-absence
+            files: ods/tests/test_native_source_initial_generation.py
+            filter: names_absence
           - packet: initial-generation-faults
             files: ods/tests/test_native_source_initial_generation.py
             filter: initial_lost_reply
