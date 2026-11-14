@@ -260,6 +260,42 @@ def edge_storage(docker_run, edge):
     return mounts[0]
 
 
+def operation_hold_revision(docker_run, *, preparation, project, dashboard_key, operation_kind, operation_key):
+    """Authenticate a retained operation's hold while the selection lock is held.
+
+    The revision is nonsecret and may accompany a root read-only runtime proof.
+    The token stays in this owner-only journal and the private Docker stdin.
+    """
+    environment = helper('pixel-native-env')
+    pointer = preparation / 'ingress-refresh-current.json'
+    if not os.path.lexists(pointer):
+        return None
+    name = json.loads(environment.snapshot(pointer)[0]).get('directory', '')
+    if not re.fullmatch('ingress-refresh-[a-f0-9]{32}', name):
+        raise ValueError('native-ingress-refresh-pointer-invalid')
+    journal = preparation / name / 'refresh.json'
+    record = json.loads(environment.snapshot(journal)[0])
+    if record.get('phase') in ('ready', 'rolled-back', 'not-started'):
+        return None
+    expected = operation_selection(lambda: None, operation_kind, operation_key)
+    if (record.get('phase') not in ('operating', 'operation-failed')
+            or record.get('operation') != expected or record.get('project') != project
+            or Path(record['rollback']['path']) != journal.parent / 'rollback.compose.json'):
+        raise ValueError('native-ingress-operation-selection-changed')
+    native_idle(record['source'])
+    verify_current(docker_run, record)
+    if hashlib.sha256(environment.snapshot(record['source'])[0]).hexdigest() != record['selection']['sha256']:
+        raise ValueError('native-ingress-operation-source-changed')
+    compose = helper('pixel-native-compose')
+    edge = compose._managed_edge(docker_run, project)
+    if edge_storage(docker_run, edge) != record['edgeTransitionVolume']:
+        raise ValueError('native-lifecycle-transition-volume-changed')
+    # An authenticated idempotent acquire proves this exact token still owns
+    # the hold. A different owner or a released revision is rejected by Edge.
+    compose._edge_transition(docker_run, edge, dashboard_key, binding=record['binding'])
+    return record['binding']['revision']
+
+
 def finish_operation(run, docker_run, record, *, operation, dashboard_key, checkpoint):
     """A caller's final work is part of the same persisted admission hold.
 

@@ -48,14 +48,14 @@ def test_inspection_rejects_mutations_before_loading_runtime(monkeypatch, kwargs
 
 
 @pytest.mark.parametrize('fault', [None, 'no-webui', 'configure', 'environment', 'keys', 'files', 'config', 'existing',
-    'prerequisites', 'infrastructure', 'protected', 'health', 'webui-routing', 'unsafe-recipe', 'recipe-alias', 'resume', 'resume-host', 'resume-model', 'resume-optional', 'inspect'])
+    'prerequisites', 'infrastructure', 'protected', 'health', 'webui-routing', 'unsafe-recipe', 'recipe-alias', 'resume', 'resume-host', 'resume-model', 'resume-optional', 'resume-held', 'inspect'])
 def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, monkeypatch, fault):
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
     monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
     owner = SimpleNamespace(pw_name='fixture', pw_uid=501, pw_dir=str(tmp_path))
     monkeypatch.setattr(module.pwd, 'getpwuid', lambda uid: owner)
     preparation, install_dir, home = [tmp_path / name for name in ('prepared', 'ods', 'native-home')]
-    if fault in ('resume', 'resume-host', 'resume-model', 'resume-optional', 'inspect'):
+    if fault in ('resume', 'resume-host', 'resume-model', 'resume-optional', 'resume-held', 'inspect'):
         preparation = install_dir / 'data/pixel-native/preparation'
         home = install_dir / 'data/pixel-native/home'
     for path in (preparation, install_dir, home / '.openclaw'): path.mkdir(parents=True, exist_ok=True)
@@ -113,12 +113,13 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
             wait_ready=lambda run: event('health'),
             validate_stack=module.helper('pixel-native-compose.py').validate_stack),
         'pixel-native-ingress-config.py': SimpleNamespace(prepare=lambda run, **kw: event('ingress-config')),
-        'pixel-native-ingress-refresh.py': SimpleNamespace(refresh_locked=lambda *args, **kw:
+        'pixel-native-ingress-refresh.py': SimpleNamespace(operation_hold_revision=lambda *args, **kw: '1' * 64 if fault == 'resume-held' else None,
+            refresh_locked=lambda *args, **kw:
             (event('ingress-refresh') or {'operationResult': kw['operation'](
                 {'environmentAfterSha256': hashlib.sha256(b'fixture').hexdigest()}, {}, lambda record: None)})),
         'pixel-native-env.py': SimpleNamespace(snapshot=lambda path: (b'fixture', None)),
     }
-    if fault in ('resume', 'resume-host', 'resume-model', 'resume-optional'):
+    if fault in ('resume', 'resume-host', 'resume-model', 'resume-optional', 'resume-held'):
         def finish(**kwargs):
             events.append('recover')
             assert kwargs['receipt'] == receipt
@@ -189,13 +190,15 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
     def run(argv, **kw):
         assert all(key not in ' '.join(argv) for key in (env['DASHBOARD_API_KEY'], env['PIXEL_OPENWEBUI_KEY']))
         if argv[0] == '/usr/bin/sudo':
-            if fault in ('resume', 'resume-host', 'resume-model', 'resume-optional'):
+            if fault in ('resume', 'resume-host', 'resume-model', 'resume-optional', 'resume-held'):
                 events.append('verify-initial')
                 assert '--verify-initial' in argv and '--install' not in argv
+                if fault == 'resume-held':
+                    assert argv[argv.index('--held-admission-revision') + 1] == '1' * 64
                 assert '--initial-install' in argv
                 assert kw['stdout'] == module.subprocess.PIPE and kw['timeout'] == 300
                 return SimpleNamespace(returncode=0, stdout=json.dumps({
-                    'status': 'active', 'runtimeDigest': 'a' * 64, 'serviceDigest': 'b' * 64}))
+                    'status': 'active-under-hold' if fault == 'resume-held' else 'active', 'runtimeDigest': 'a' * 64, 'serviceDigest': 'b' * 64}))
             events.append('protected')
             assert argv[1] == '/usr/bin/python3'
             assert '--initial-install' in argv and '--install' in argv
@@ -224,11 +227,11 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
     monkeypatch.setattr(module.subprocess, 'run', run)
     journal = preparation / 'activation.json'
     if fault == 'existing': journal.write_text('do not overwrite')
-    if fault in ('resume', 'resume-host', 'resume-model', 'resume-optional', 'inspect'): journal.write_text('retained failed attempt')
+    if fault in ('resume', 'resume-host', 'resume-model', 'resume-optional', 'resume-held', 'inspect'): journal.write_text('retained failed attempt')
     def activate():
         return module.activate(preparation=preparation, install_dir=install_dir, ods_source=install_dir,
             compose_files=files, configure_stack=fault == 'configure',
-            resume_final_health=fault in ('resume', 'resume-host', 'resume-model', 'resume-optional', 'inspect'),
+            resume_final_health=fault in ('resume', 'resume-host', 'resume-model', 'resume-optional', 'resume-held', 'inspect'),
             restore_host_agent=fault == 'resume-host', resume_model=fault == 'resume-model',
             inspect_continuation=fault == 'inspect',
             opencode_choice='disabled' if fault in ('inspect', 'resume-optional') else None,
@@ -240,7 +243,7 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
         assert not (preparation / 'selection-update.json').exists()
         assert not (preparation / 'environment-before-native.env').exists()
         return
-    if fault in ('resume', 'resume-host', 'resume-model', 'resume-optional'):
+    if fault in ('resume', 'resume-host', 'resume-model', 'resume-optional', 'resume-held'):
         expected_result = preparation / 'selection-update.json'
         if fault == 'resume-model':
             expected_result = {'selection': str(expected_result),

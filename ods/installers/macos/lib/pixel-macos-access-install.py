@@ -2954,7 +2954,7 @@ def _execute_upgrade_install(plan, source):
     return 'active'
 
 
-def verify_initial_install(plan):
+def verify_initial_install(plan, *, held_revision=None):
     """Read back a completed protected initial install without activating it.
 
     Owner-side final-health failure is not authority to replay root activation.
@@ -2964,6 +2964,8 @@ def verify_initial_install(plan):
     """
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise InstallError('macos-root-install-required')
+    if held_revision is not None and (type(held_revision) is not str or not re.fullmatch('[a-f0-9]{64}', held_revision)):
+        raise InstallError('native-initial-held-revision-invalid')
     if not plan.get('initial_install') or not plan.get('runtime_bundle') or not plan.get('native_services'):
         raise InstallError('complete-initial-service-selection-required')
     sys.path.insert(0, str(HERE.parents[2] / 'bin'))
@@ -3009,8 +3011,14 @@ def verify_initial_install(plan):
     _ready_access_relay(services[2], plan)
     def admission_ready():
         value = _migration_edge_request(plan, edge['container'])
-        if (value.get('capability') != 'available' or value.get('phase') != 'idle'
-                or value.get('admission_blocked') is not False):
+        # The owner-side ingress transaction authenticates its exact hold before
+        # and after this read-only proof. Release rotates the revision, so a
+        # different hold cannot satisfy either sample. This proves protected
+        # runtime readiness under that hold, not readiness for public admission.
+        held = held_revision is not None
+        if (value.get('capability') != 'available' or value.get('phase') != ('held' if held else 'idle')
+                or value.get('admission_blocked') is not held
+                or held and (value.get('revision') != held_revision or value.get('streams') != 0)):
             raise InstallError('native-initial-admission-not-ready')
     admission_ready()
     service_path = state / 'service-installation.json'
@@ -3038,7 +3046,8 @@ def verify_initial_install(plan):
     if [_upgrade_service_identity(service) for service in services] != identities:
         raise InstallError('native-initial-activation-changed')
     no_transition()
-    return {'status': 'active', 'runtimeDigest': plan['runtime_bundle']['digest'],
+    return {'status': 'active-under-hold' if held_revision is not None else 'active',
+            'runtimeDigest': plan['runtime_bundle']['digest'],
             'serviceDigest': plan['native_services']['expected_digest']}
 
 
@@ -3331,6 +3340,8 @@ def main(argv=None):
     parser.add_argument("--install", action="store_true")
     parser.add_argument('--verify-initial', action='store_true',
                         help='Read-only proof of an already active initial installation')
+    parser.add_argument('--held-admission-revision',
+                        help='With --verify-initial only: prove the runtime under this authenticated owner transaction revision')
     parser.add_argument('--initial-install', action='store_true',
                         help='Plan a new deployment from an unloaded --gateway-plist template, not a migration')
     parser.add_argument('--activate-upgrade', action='store_true',
@@ -3338,6 +3349,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         service_options = (args.services_bundle, args.services_digest, args.pixel_source_ref)
+        if args.held_admission_revision is not None and not args.verify_initial:
+            raise InstallError('held-admission-requires-initial-verification')
         if args.verify_initial and (not args.initial_install or not all(service_options)
                                     or args.install or args.activate_upgrade or args.current_bundle_digest):
             raise InstallError('initial-verification-conflicts-with-activation')
@@ -3369,7 +3382,8 @@ def main(argv=None):
             bind_initial_services(plan, bundle=args.services_bundle, digest=args.services_digest,
                 source_ref=args.pixel_source_ref)
         if args.verify_initial:
-            print(json.dumps(verify_initial_install(plan), sort_keys=True, separators=(',', ':')))
+            options = {'held_revision': args.held_admission_revision} if args.held_admission_revision is not None else {}
+            print(json.dumps(verify_initial_install(plan, **options), sort_keys=True, separators=(',', ':')))
         elif args.activate_upgrade:
             outcome = upgrade_install(plan, args.source)
             print(json.dumps({'operation': 'runtime-upgrade', 'status': outcome,
