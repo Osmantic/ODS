@@ -26,3 +26,9 @@ Your data is preserved when disabling. To re-enable later: `ods enable label-stu
 2. Open `http://localhost:8086`
 3. Create an account on first launch
 4. Create a project and import data for labeling
+
+## Local Files
+
+Local-file storage is limited to `/label-studio/upload`, which is the `upload/`
+folder in the ODS install directory. Put datasets there and use an absolute path
+under `/label-studio/upload` when you add Local Files storage to a project.
