@@ -251,6 +251,9 @@ EXTERNAL_LLM_API_KEY_ENV=""
 EXTERNAL_LLM_API_KEY_DISABLE=false
 EXTERNAL_LLM_AUTO_REUSE="${EXTERNAL_LLM_AUTO_REUSE:-false}"
 EXTERNAL_LLM_DISABLE=false
+EXTERNAL_STT_URL="${EXTERNAL_STT_URL:-}"
+EXTERNAL_STT_MODEL="${EXTERNAL_STT_MODEL:-}"
+EXTERNAL_STT_DISABLE=false
 ODS_RESELECT_MODEL="${ODS_RESELECT_MODEL:-false}"
 # The model server --llm-backend asks for: vllm, llama-server, or empty, which
 # lets phase 02 choose (installers/lib/llm-backend.sh).
@@ -316,6 +319,12 @@ Options:
                       Allow non-interactive reuse of a detected matching model
     --no-external-llm
                       Disable a persisted external LLM selection on this rerun
+    --external-stt-url U
+                      Use an OpenAI-compatible speech-to-text server on another machine
+                      (e.g. http://192.168.1.20:8000) instead of the local Whisper service
+    --external-stt-model M
+                      Speech-to-text model id that server serves (sets AUDIO_STT_MODEL)
+    --no-external-stt Go back to the local Whisper service on this rerun
     --reselect-model  Replace a valid active local model with the current installer recommendation
     --llm-backend vllm|llama-server
                       Model server. Without it, a new Linux install runs the vLLM engine
@@ -440,6 +449,13 @@ while [[ $# -gt 0 ]]; do
         --no-external-llm-key) EXTERNAL_LLM_API_KEY_FILE=""; EXTERNAL_LLM_API_KEY_DISABLE=true; shift ;;
         --reuse-external-llm) EXTERNAL_LLM_AUTO_REUSE=true; shift ;;
         --no-external-llm) EXTERNAL_LLM_DISABLE=true; shift ;;
+        --external-stt-url)
+            [[ -n "${2:-}" ]] || { echo "--external-stt-url requires a URL" >&2; exit 1; }
+            EXTERNAL_STT_URL="$2"; EXTERNAL_STT_DISABLE=false; shift 2 ;;
+        --external-stt-model)
+            [[ -n "${2:-}" ]] || { echo "--external-stt-model requires a model id" >&2; exit 1; }
+            EXTERNAL_STT_MODEL="$2"; shift 2 ;;
+        --no-external-stt) EXTERNAL_STT_URL=""; EXTERNAL_STT_DISABLE=true; shift ;;
         --reselect-model) ODS_RESELECT_MODEL=true; shift ;;
         --llm-backend)
             case "${2:-}" in vllm|llama-server) LLM_BACKEND_REQUESTED="$2" ;; *) echo "--llm-backend requires vllm or llama-server" >&2; exit 1 ;; esac
@@ -725,6 +741,7 @@ export NATIVE_LLM_GPU_NAME NATIVE_LLM_GPU_VRAM_MB ODS_WINDOWS_SYSTEM_DIRECTORY
 
 export EXTERNAL_LLM_URL EXTERNAL_LLM_PROVIDER EXTERNAL_LLM_MODEL
 export EXTERNAL_LLM_AUTO_REUSE EXTERNAL_LLM_DISABLE ODS_RESELECT_MODEL
+export EXTERNAL_STT_URL EXTERNAL_STT_MODEL EXTERNAL_STT_DISABLE
 
 # Detect distro + package manager (after arg parsing so --help still shows
 # the correct VERSION before /etc/os-release overwrites it)

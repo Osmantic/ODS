@@ -1562,10 +1562,27 @@ SERVICE_PORT_DEFAULTS
     AUDIO_STT_MODEL=$(_env_get AUDIO_STT_MODEL "${AUDIO_STT_MODEL:-$_default_stt_model}")
     WHISPER_IMAGE_VALUE=$(_env_get WHISPER_IMAGE "${WHISPER_IMAGE:-$_default_whisper_image}")
     if [[ "$WHISPER_ACCELERATION_VALUE" == "cpu" ]]; then
-        [[ "$AUDIO_STT_MODEL" =~ ([Ll]arge-v3|[Tt]urbo) ]] && AUDIO_STT_MODEL="$_default_stt_model"
+        # Only the local Whisper is limited by this host's CPU.
+        [[ -z "${EXTERNAL_STT_CONTAINER_URL:-}" && "$AUDIO_STT_MODEL" =~ ([Ll]arge-v3|[Tt]urbo) ]] && AUDIO_STT_MODEL="$_default_stt_model"
         if [[ -z "$WHISPER_IMAGE_VALUE" || "$WHISPER_IMAGE_VALUE" =~ [Cc][Uu][Dd][Aa] ]]; then
             WHISPER_IMAGE_VALUE="$_default_whisper_image"
         fi
+    fi
+    # Speech-to-text on another machine, as phase 03 verified it (only that
+    # sets the container URL): Open WebUI and dashboard-api get the same
+    # server, so the two cannot drift apart.
+    EXTERNAL_STT_URL_VALUE=""
+    EXTERNAL_STT_WHISPER_URL_VALUE=""
+    EXTERNAL_STT_OPENWEBUI_URL_VALUE=""
+    if [[ -n "${EXTERNAL_STT_CONTAINER_URL:-}" ]]; then
+        [[ -z "${EXTERNAL_STT_MODEL:-}" ]] || AUDIO_STT_MODEL="$EXTERNAL_STT_MODEL"
+        if [[ -n "${EXTERNAL_STT_MODELS:-}" ]] && ! grep -Fqx -- "$AUDIO_STT_MODEL" <<<"$EXTERNAL_STT_MODELS"; then
+            ai_warn "${EXTERNAL_STT_URL} does not list the speech-to-text model ${AUDIO_STT_MODEL}; transcription fails until it does."
+            ai "Rerun with --external-stt-model MODEL, using one it lists: $(head -n 8 <<<"$EXTERNAL_STT_MODELS" | paste -sd, - | sed 's/,/, /g')"
+        fi
+        EXTERNAL_STT_URL_VALUE="$EXTERNAL_STT_URL"
+        EXTERNAL_STT_WHISPER_URL_VALUE="$EXTERNAL_STT_CONTAINER_URL"
+        EXTERNAL_STT_OPENWEBUI_URL_VALUE="${EXTERNAL_STT_CONTAINER_URL}/v1"
     fi
     EMBEDDING_MODEL_VALUE=$(_env_get EMBEDDING_MODEL "${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}")
     RAG_EMBEDDING_MODEL_VALUE=$(_env_get_preserve_empty RAG_EMBEDDING_MODEL "${RAG_EMBEDDING_MODEL:-}")
@@ -1914,6 +1931,11 @@ WHISPER_ACCELERATION=$(dotenv_value "${WHISPER_ACCELERATION_VALUE}")
 WHISPER_IMAGE=$(dotenv_value "${WHISPER_IMAGE_VALUE}")
 # Whisper STT model passed to Open WebUI and pre-downloaded by Phase 12.
 AUDIO_STT_MODEL=$(dotenv_value "${AUDIO_STT_MODEL}")
+# Speech-to-text on another machine (install.sh --external-stt-url URL).
+# Empty values use the local Whisper service.
+EXTERNAL_STT_URL=$(dotenv_value "${EXTERNAL_STT_URL_VALUE}")
+WHISPER_URL=$(dotenv_value "${EXTERNAL_STT_WHISPER_URL_VALUE}")
+AUDIO_STT_OPENAI_API_BASE_URL=$(dotenv_value "${EXTERNAL_STT_OPENWEBUI_URL_VALUE}")
 TTS_VOICE=en_US-lessac-medium
 
 #=== Embeddings / RAG ===

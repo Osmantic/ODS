@@ -178,6 +178,17 @@ def read_live_env_value(key: str, default: str = "") -> str:
     return os.environ.get(key, "") or default
 
 
+def external_stt_base_url() -> str:
+    """Speech-to-text server on another machine (install.sh --external-stt-url).
+
+    The installer writes EXTERNAL_STT_URL and points WHISPER_URL at the same
+    server as containers reach it. Empty means the bundled whisper service.
+    """
+    if not read_live_env_value("EXTERNAL_STT_URL").strip():
+        return ""
+    return read_live_env_value("WHISPER_URL").strip().rstrip("/")
+
+
 def read_live_env_values(keys: tuple[str, ...]) -> dict[str, str]:
     """Read one persisted snapshot so a route and its credential cannot diverge."""
     values = {key: os.environ.get(key, "") for key in keys}

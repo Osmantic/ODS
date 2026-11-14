@@ -139,6 +139,22 @@ def test_live_env_value_prefers_last_persisted_value(monkeypatch, tmp_path):
     assert config.read_live_env_value("LLM_MODEL") == "new-model"
 
 
+def test_external_stt_base_url_needs_the_installer_selection(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))
+    monkeypatch.delenv("EXTERNAL_STT_URL", raising=False)
+    monkeypatch.delenv("WHISPER_URL", raising=False)
+
+    (tmp_path / ".env").write_text(
+        "EXTERNAL_STT_URL=http://localhost:8000\nWHISPER_URL=http://host.docker.internal:8000/\n",
+        encoding="utf-8",
+    )
+    assert config.external_stt_base_url() == "http://host.docker.internal:8000"
+
+    # A hand-set WHISPER_URL alone is not a server on another machine.
+    (tmp_path / ".env").write_text("EXTERNAL_STT_URL=\nWHISPER_URL=http://whisper:8000\n", encoding="utf-8")
+    assert config.external_stt_base_url() == ""
+
+
 def test_live_env_value_preserves_explicit_empty_value(monkeypatch, tmp_path):
     (tmp_path / ".env").write_text("LEMONADE_MODEL=\n", encoding="utf-8")
     monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))

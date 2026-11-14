@@ -2392,3 +2392,29 @@ def test_flatten_bounds_cycles_and_large_depth_without_losing_empty_leaves():
         nested = {"child": nested}
     result = dict_flatten_nested_safe(nested, max_depth=100000)
     assert len(next(iter(result)).split(".")) == 128
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        (lambda request: httpx.Response(200, json={"object": "list", "data": []}), "healthy"),
+        (lambda request: httpx.Response(404), "unhealthy"),
+        (lambda request: (_ for _ in ()).throw(httpx.ConnectError("refused", request=request)), "unavailable"),
+    ],
+)
+async def test_check_external_stt_reads_the_model_list(monkeypatch, answer, expected):
+    from helpers import check_external_stt
+
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return answer(request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr("helpers._get_httpx_client", AsyncMock(return_value=client))
+
+    assert await check_external_stt("http://192.168.1.20:8000") == expected
+    assert seen == ["http://192.168.1.20:8000/v1/models"]
+    await client.aclose()

@@ -25,13 +25,17 @@ async def voice_status(api_key: str = Depends(verify_api_key)):
     Stub implementation — returns service health based on the existing
     service health infrastructure. Full voice API is not yet implemented.
     """
-    from helpers import check_service_health
-    from config import SERVICES
+    from helpers import check_external_stt, check_service_health
+    from config import SERVICES, external_stt_base_url
 
     services_status = {}
     for svc_key, display_name in [("whisper", "stt"), ("tts", "tts")]:
         cfg = SERVICES.get(svc_key)
-        if cfg:
+        external = external_stt_base_url() if svc_key == "whisper" else ""
+        if external:
+            # Speech-to-text runs on another machine (install.sh --external-stt-url).
+            services_status[display_name] = {"status": await check_external_stt(external)}
+        elif cfg:
             try:
                 result = await check_service_health(svc_key, cfg)
                 services_status[display_name] = {"status": result.status}

@@ -269,3 +269,45 @@ external_llm_env_value() {
     safe_env_decode_value "$value"
     printf '\n'
 }
+
+# Speech-to-text on another machine (--external-stt-url). Open WebUI and
+# dashboard-api (ODS Talk) both call the OpenAI audio API under /v1, so the
+# endpoint is an origin: a trailing /v1 is accepted and removed.
+
+external_stt_strip_url() {
+    local url="${1:-}"
+    url="${url%/}"
+    url="${url%/v1}"
+    printf '%s\n' "$url"
+}
+
+external_stt_validate_url() {
+    local url="${1:-}"
+    external_llm_validate_url "$url" || return 1
+    url="${url%/}"
+    [[ "$url" != */api/v1 ]]
+}
+
+# Model ids the server lists at /v1/models, one per line (empty output when
+# it lists none). Fails when the list does not answer or is not one.
+external_stt_models() {
+    local url response
+    url="$(external_llm_host_url "${1:-}")"
+    response="$(curl -fsS --max-time 10 "${url}/v1/models" 2>/dev/null)" || return 1
+    python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+data = payload.get("data") if isinstance(payload, dict) else None
+if not isinstance(data, list):
+    sys.exit(1)
+for item in data:
+    value = item.get("id") if isinstance(item, dict) else None
+    if isinstance(value, str) and value:
+        print(value)
+' <<<"$response"
+}

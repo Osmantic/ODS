@@ -811,14 +811,15 @@ if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
 fi
 # Whisper: 150 attempts * adaptive backoff = up to ~20 minutes (model download on first start)
 ods_progress 95 "health" "Checking voice services"
-[[ "$ENABLE_VOICE" == "true" ]] && _check_health "Whisper (STT)" "http://127.0.0.1:${SERVICE_PORTS[whisper]:-9000}${SERVICE_HEALTH[whisper]:-/health}" 150 10 "$(sr_container whisper)"
+[[ "${ENABLE_LOCAL_STT:-$ENABLE_VOICE}" == "true" ]] && _check_health "Whisper (STT)" "http://127.0.0.1:${SERVICE_PORTS[whisper]:-9000}${SERVICE_HEALTH[whisper]:-/health}" 150 10 "$(sr_container whisper)"
 [[ "$ENABLE_VOICE" == "true" ]] && _check_health "Kokoro (TTS)" "http://127.0.0.1:${SERVICE_PORTS[tts]:-8880}${SERVICE_HEALTH[tts]:-/health}" 150 10 "$(sr_container tts)"
 
 # Pre-download the Whisper STT model so first transcription is instant.
 # Speaches does NOT auto-download on transcription requests — it returns 404.
 # We must trigger the download explicitly here, verify it completed, and
-# surface a clear recovery command if anything fails.
-if [[ "$ENABLE_VOICE" == "true" ]]; then
+# surface a clear recovery command if anything fails. A speech-to-text server
+# on another machine (--external-stt-url) manages its own models.
+if [[ "${ENABLE_LOCAL_STT:-$ENABLE_VOICE}" == "true" ]]; then
     # Prefer AUDIO_STT_MODEL from .env (written by Phase 06). Fall back to the
     # GPU_BACKEND switch for backward compat with older .env files missing it.
     if [[ -n "${AUDIO_STT_MODEL:-}" ]]; then
