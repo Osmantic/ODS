@@ -4,6 +4,9 @@ services:
       context: ./extensions/services/comfyui
       dockerfile: Dockerfile
     container_name: ods-comfyui
+    # Reap child processes during a busy model load so Docker can stop this
+    # container without leaving a zombie behind.
+    init: true
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

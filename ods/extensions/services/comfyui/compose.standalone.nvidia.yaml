@@ -8,6 +8,7 @@ services:
       dockerfile: Dockerfile.standalone
     image: ods-comfyui-standalone:0.16.4-cu128
     container_name: ods-comfyui-standalone
+    init: true
     labels:
       org.osmantic.ods.comfyui.data-root: ${ODS_COMFYUI_DATA_ROOT:?set ODS_COMFYUI_DATA_ROOT}
       org.osmantic.ods.comfyui.port: ${ODS_COMFYUI_PORT:?set ODS_COMFYUI_PORT}
