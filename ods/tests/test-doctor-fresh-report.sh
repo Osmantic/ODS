@@ -88,6 +88,8 @@ tree="$fixture/tree"
 mkdir -p "$tree/bin" "$tree/extensions/services" "$fixture/doctor-tmp"
 cp -R "$ROOT/lib" "$ROOT/scripts" "$ROOT/config" "$tree/"
 cp "$ROOT/.env.schema.json" "$tree/"
+mkdir -p "$tree/installers/lib"
+cp "$ROOT/installers/lib/amd-topo.sh" "$tree/installers/lib/"  # detect-hardware.sh sources it, as in a real install
 for manifest in "$ROOT"/extensions/services/*/manifest.yaml; do
     svc="$(basename "$(dirname "$manifest")")"
     mkdir -p "$tree/extensions/services/$svc"
