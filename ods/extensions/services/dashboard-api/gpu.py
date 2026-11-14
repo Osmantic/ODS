@@ -5,10 +5,13 @@ import json as _json
 import logging
 import os
 import platform
+import re
 import subprocess
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
+from config import WINDOWS_DESKTOP_PROFILE
 from host_metrics import apple_host_metrics, linux_scope, windows_host_metrics
 from env_values import parse_env_value
 from models import GPUInfo, IndividualGPU
@@ -19,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 def run_command(cmd: list[str], timeout: int = 5) -> tuple[bool, str]:
     """Run a shell command and return (success, output)."""
+    if WINDOWS_DESKTOP_PROFILE:
+        return False, "subprocess execution disabled in windows-desktop profile"
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return result.returncode == 0, result.stdout.strip()
@@ -464,8 +469,439 @@ def get_gpu_info_wsl_host_detailed() -> Optional[list[IndividualGPU]]:
     return result or None
 
 
+_DIRECTX_GPU_PREF_KEY = r"Software\Microsoft\DirectX\UserGpuPreferences"
+_VIDEO_CONTROLLER_CLASS_KEY = (
+    r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+)
+_PREF_CODE_TO_MODE = {
+    0: "system_default",
+    1: "power_saving",
+    2: "high_performance",
+}
+_MODE_TO_PREF_CODE = {
+    "system_default": 0,
+    "auto": 0,
+    "0": 0,
+    "power_saving": 1,
+    "power-saving": 1,
+    "cpu": 1,
+    "1": 1,
+    "high_performance": 2,
+    "high-performance": 2,
+    "gpu": 2,
+    "2": 2,
+}
+
+
+def parse_directx_gpu_preference_string(raw: str) -> Optional[int]:
+    """Extract GpuPreference integer (0, 1, or 2) from a DirectX UserGpuPreferences value."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    for part in raw.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        key, val = part.split("=", 1)
+        if key.strip().casefold() == "gpupreference":
+            try:
+                code = int(val.strip())
+            except ValueError:
+                return None
+            return code if code in _PREF_CODE_TO_MODE else None
+    return None
+
+
+def read_windows_user_gpu_preference(
+    exe_candidates: Optional[list[str]] = None,
+    registry_entries: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Resolve Windows per-app GPU preference (DirectX UserGpuPreferences + ODS override).
+
+    Defaults to ``high_performance`` (GPU-first) when no explicit override is set.
+    """
+    env_override = os.environ.get("ODS_WINDOWS_GPU_PREFERENCE", "").strip().lower()
+    if env_override in _MODE_TO_PREF_CODE:
+        code = _MODE_TO_PREF_CODE[env_override]
+        mode = _PREF_CODE_TO_MODE[code]
+        return {
+            "mode": mode,
+            "preferenceCode": code,
+            "preferDiscreteGpu": mode != "power_saving",
+            "source": "env",
+            "matchedExecutable": None,
+        }
+
+    entries: dict[str, str] = {}
+    if registry_entries is not None:
+        entries = dict(registry_entries)
+    elif sys.platform == "win32":
+        try:
+            import winreg  # type: ignore[import-not-found,unused-ignore]
+
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _DIRECTX_GPU_PREF_KEY) as key:  # type: ignore[attr-defined]
+                idx = 0
+                while True:
+                    try:
+                        value_name, value_data, _ = winreg.EnumValue(key, idx)  # type: ignore[attr-defined]
+                        idx += 1
+                        if isinstance(value_name, str) and isinstance(value_data, str):
+                            entries[value_name] = value_data
+                    except OSError:
+                        break
+        except (ImportError, OSError):
+            pass
+
+    candidates = list(exe_candidates or [])
+    for env_key in ("ODS_DESKTOP_EXE", "ODS_NATIVE_LLM_EXE"):
+        val = os.environ.get(env_key, "").strip()
+        if val:
+            candidates.append(val)
+    target_basenames = {"ods.exe", "ods-setup.exe", "llama-server.exe"}
+    for cand in candidates:
+        base = os.path.basename(cand.replace("\\", "/")).lower()
+        if base:
+            target_basenames.add(base)
+
+    # First check exact path matches, then basename matches
+    norm_candidates = {c.replace("/", "\\").casefold() for c in candidates if c}
+    for reg_path, raw_val in entries.items():
+        if reg_path.replace("/", "\\").casefold() in norm_candidates:
+            code = parse_directx_gpu_preference_string(raw_val)
+            if code is not None:
+                mode = _PREF_CODE_TO_MODE[code]
+                return {
+                    "mode": mode,
+                    "preferenceCode": code,
+                    "preferDiscreteGpu": mode != "power_saving",
+                    "source": "directx_registry",
+                    "matchedExecutable": reg_path,
+                }
+
+    for reg_path, raw_val in entries.items():
+        base = os.path.basename(reg_path.replace("\\", "/")).lower()
+        if base in target_basenames:
+            code = parse_directx_gpu_preference_string(raw_val)
+            if code is not None:
+                mode = _PREF_CODE_TO_MODE[code]
+                return {
+                    "mode": mode,
+                    "preferenceCode": code,
+                    "preferDiscreteGpu": mode != "power_saving",
+                    "source": "directx_registry",
+                    "matchedExecutable": reg_path,
+                }
+
+    return {
+        "mode": "high_performance",
+        "preferenceCode": 2,
+        "preferDiscreteGpu": True,
+        "source": "default_gpu_first",
+        "matchedExecutable": None,
+    }
+
+
+def _classify_windows_gpu_vendor_and_type(name: str, vram_mb: int) -> tuple[str, str]:
+    """Return (backend, memory_type) for a Windows adapter description."""
+    lower = name.lower()
+    if any(k in lower for k in ("nvidia", "geforce", "quadro", "rtx", "gtx", "tesla")):
+        return "nvidia", "discrete"
+    if any(k in lower for k in ("amd", "radeon", "firepro")):
+        is_igpu = bool(
+            re.search(r"\bradeon(?:\(tm\))?\s+graphics$", lower)
+            or re.search(r"\bradeon(?:\(tm\))?\s+\d{3,4}[ms]", lower)
+            or "vega" in lower and vram_mb <= 4096
+            or "strix" in lower
+        )
+        return "amd", ("unified" if is_igpu else "discrete")
+    if any(k in lower for k in ("intel", "arc", "iris", "uhd")):
+        is_discrete_arc = "arc" in lower and vram_mb >= 4096 and "graphics" not in lower
+        return "intel", ("discrete" if is_discrete_arc else "unified")
+    return "unknown", "discrete"
+
+
+_nvml_lib: Any = None
+_nvml_initialized: bool = False
+
+
+def _get_initialized_nvml() -> Any:
+    """Return a singleton initialized nvml.dll handle on Windows, or None."""
+    global _nvml_lib, _nvml_initialized
+    if _nvml_initialized and _nvml_lib is not None:
+        return _nvml_lib
+    import ctypes
+
+    try:
+        nvml = ctypes.CDLL("nvml.dll")
+    except OSError:
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        nvml = ctypes.CDLL(os.path.join(system_root, "System32", "nvml.dll"))
+
+    if nvml.nvmlInit_v2() != 0:
+        return None
+    _nvml_lib = nvml
+    _nvml_initialized = True
+    return _nvml_lib
+
+
+def get_gpu_info_windows_nvml_detailed() -> Optional[list[IndividualGPU]]:
+    """Query NVIDIA GPUs on Windows in-process via nvml.dll (zero child processes)."""
+    if platform.system() != "Windows":
+        return None
+    try:
+        import ctypes
+
+        nvml = _get_initialized_nvml()
+        if nvml is None:
+            return None
+
+        count = ctypes.c_uint(0)
+        if nvml.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0 or count.value == 0:
+            return None
+
+        class _NvmlMemory(ctypes.Structure):
+            _fields_ = [
+                ("total", ctypes.c_ulonglong),
+                ("free", ctypes.c_ulonglong),
+                ("used", ctypes.c_ulonglong),
+            ]
+
+        class _NvmlUtilization(ctypes.Structure):
+            _fields_ = [
+                ("gpu", ctypes.c_uint),
+                ("memory", ctypes.c_uint),
+            ]
+
+        nvml.nvmlDeviceGetCount_v2.argtypes = [ctypes.POINTER(ctypes.c_uint)]
+        nvml.nvmlDeviceGetCount_v2.restype = ctypes.c_int
+        nvml.nvmlDeviceGetHandleByIndex_v2.argtypes = [
+            ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        nvml.nvmlDeviceGetHandleByIndex_v2.restype = ctypes.c_int
+        nvml.nvmlDeviceGetName.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint]
+        nvml.nvmlDeviceGetName.restype = ctypes.c_int
+        nvml.nvmlDeviceGetUUID.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint]
+        nvml.nvmlDeviceGetUUID.restype = ctypes.c_int
+        nvml.nvmlDeviceGetMemoryInfo.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_NvmlMemory),
+        ]
+        nvml.nvmlDeviceGetMemoryInfo.restype = ctypes.c_int
+        nvml.nvmlDeviceGetUtilizationRates.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_NvmlUtilization),
+        ]
+        nvml.nvmlDeviceGetUtilizationRates.restype = ctypes.c_int
+        nvml.nvmlDeviceGetTemperature.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.POINTER(ctypes.c_uint),
+        ]
+        nvml.nvmlDeviceGetTemperature.restype = ctypes.c_int
+        nvml.nvmlDeviceGetPowerUsage.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint),
+        ]
+        nvml.nvmlDeviceGetPowerUsage.restype = ctypes.c_int
+
+        gpus: list[IndividualGPU] = []
+        for idx in range(int(count.value)):
+            handle = ctypes.c_void_p()
+            if nvml.nvmlDeviceGetHandleByIndex_v2(idx, ctypes.byref(handle)) != 0:
+                continue
+            name_buf = ctypes.create_string_buffer(96)
+            gpu_name = "NVIDIA GPU"
+            if nvml.nvmlDeviceGetName(handle, name_buf, 96) == 0:
+                gpu_name = name_buf.value.decode("utf-8", errors="replace").strip() or gpu_name
+
+            uuid_buf = ctypes.create_string_buffer(96)
+            gpu_uuid = f"nvidia-win-{idx}"
+            if nvml.nvmlDeviceGetUUID(handle, uuid_buf, 96) == 0:
+                gpu_uuid = uuid_buf.value.decode("utf-8", errors="replace").strip() or gpu_uuid
+
+            mem = _NvmlMemory()
+            mem_ok = nvml.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem)) == 0
+            mem_total_mb = int(mem.total // (1024 * 1024)) if mem_ok else 0
+            mem_used_mb = int(mem.used // (1024 * 1024)) if mem_ok else 0
+            if mem_total_mb <= 0:
+                continue
+
+            util = _NvmlUtilization()
+            util_ok = nvml.nvmlDeviceGetUtilizationRates(handle, ctypes.byref(util)) == 0
+            util_pct = int(util.gpu) if util_ok else 0
+
+            temp = ctypes.c_uint(0)
+            temp_ok = nvml.nvmlDeviceGetTemperature(handle, 0, ctypes.byref(temp)) == 0
+            temp_c = int(temp.value) if temp_ok else 0
+
+            power_mw = ctypes.c_uint(0)
+            power_ok = nvml.nvmlDeviceGetPowerUsage(handle, ctypes.byref(power_mw)) == 0
+            power_w = round(int(power_mw.value) / 1000.0, 1) if power_ok else None
+
+            gpus.append(
+                IndividualGPU(
+                    index=idx,
+                    uuid=gpu_uuid,
+                    name=gpu_name,
+                    memory_used_mb=mem_used_mb,
+                    memory_total_mb=mem_total_mb,
+                    memory_percent=round(mem_used_mb / mem_total_mb * 100.0, 1),
+                    utilization_percent=util_pct,
+                    temperature_c=temp_c,
+                    power_w=power_w,
+                    memory_type="discrete",
+                    assigned_services=["llama-server"] if mem_used_mb > 100 else [],
+                    memory_usage_available=mem_ok,
+                    utilization_available=util_ok,
+                    temperature_available=temp_ok,
+                )
+            )
+        return gpus or None
+    except Exception as exc:
+        logger.debug("Windows NVML telemetry unavailable: %s", exc)
+        return None
+
+
+_win_reg_gpu_cache: dict[str, Any] = {"expires": 0.0, "value": None}
+
+
+def get_gpu_info_windows_registry_detailed() -> Optional[list[ tuple[str, IndividualGPU] ]]:
+    """Query Windows video adapters in-process via winreg (zero child processes)."""
+    if sys.platform != "win32":
+        return None
+    import time as _time
+    now = _time.monotonic()
+    if now < float(_win_reg_gpu_cache.get("expires", 0.0)):
+        return _win_reg_gpu_cache.get("value")
+    try:
+        import winreg  # type: ignore[import-not-found,unused-ignore]
+
+        adapters: list[tuple[str, IndividualGPU]] = []
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _VIDEO_CONTROLLER_CLASS_KEY) as root:  # type: ignore[attr-defined]
+            sub_idx = 0
+            gpu_idx = 0
+            while True:
+                try:
+                    sub_name = winreg.EnumKey(root, sub_idx)  # type: ignore[attr-defined]
+                    sub_idx += 1
+                except OSError:
+                    break
+                if not (len(sub_name) == 4 and sub_name.isdigit()):
+                    continue
+                try:
+                    with winreg.OpenKey(root, sub_name) as sub_key:  # type: ignore[attr-defined]
+                        desc, _ = winreg.QueryValueEx(sub_key, "DriverDesc")  # type: ignore[attr-defined]
+                        if not isinstance(desc, str) or not desc.strip():
+                            continue
+                        gpu_name = desc.strip()
+                        if "microsoft basic" in gpu_name.lower() or "parsec" in gpu_name.lower():
+                            continue
+                        mem_bytes = 0
+                        for mkey in (
+                            "HardwareInformation.qwMemorySize",
+                            "HardwareInformation.MemorySize",
+                        ):
+                            try:
+                                raw_mem, _ = winreg.QueryValueEx(sub_key, mkey)  # type: ignore[attr-defined]
+                                if isinstance(raw_mem, bytes) and len(raw_mem) >= 4:
+                                    mem_bytes = int.from_bytes(raw_mem[:8], "little")
+                                elif isinstance(raw_mem, int) and raw_mem > 0:
+                                    mem_bytes = raw_mem
+                                if mem_bytes > 0:
+                                    break
+                            except OSError:
+                                continue
+                        vram_mb = int(mem_bytes // (1024 * 1024))
+                        if vram_mb <= 0:
+                            continue
+                        vendor, mem_type = _classify_windows_gpu_vendor_and_type(gpu_name, vram_mb)
+                        if vendor == "unknown":
+                            continue
+                        adapters.append(
+                            (
+                                vendor,
+                                IndividualGPU(
+                                    index=gpu_idx,
+                                    uuid=f"win-{vendor}-{sub_name}",
+                                    name=gpu_name,
+                                    memory_used_mb=0,
+                                    memory_total_mb=vram_mb,
+                                    memory_percent=0.0,
+                                    utilization_percent=0,
+                                    temperature_c=0,
+                                    power_w=None,
+                                    memory_type=mem_type,
+                                    assigned_services=[],
+                                    memory_usage_available=False,
+                                    utilization_available=False,
+                                    temperature_available=False,
+                                ),
+                            )
+                        )
+                        gpu_idx += 1
+                except OSError:
+                    continue
+        result = adapters or None
+        _win_reg_gpu_cache["value"] = result
+        _win_reg_gpu_cache["expires"] = now + 60.0
+        return result
+    except Exception as exc:
+        logger.debug("Windows registry GPU discovery failed: %s", exc)
+        return None
+
+
+def get_gpu_info_windows_native_detailed() -> Optional[tuple[str, list[IndividualGPU]]]:
+    """Return (backend, list[IndividualGPU]) on native Windows respecting UserGpuPreferences."""
+    if platform.system() != "Windows":
+        return None
+
+    pref = read_windows_user_gpu_preference()
+    prefer_discrete = bool(pref.get("preferDiscreteGpu", True))
+
+    nvml_gpus = get_gpu_info_windows_nvml_detailed()
+    reg_entries = get_gpu_info_windows_registry_detailed() or []
+
+    if not prefer_discrete:
+        # User selected "Power saving" in Windows Graphics Settings -> prefer integrated GPU
+        integrated = [
+            (vendor, gpu)
+            for vendor, gpu in reg_entries
+            if gpu.memory_type == "unified"
+        ]
+        if integrated:
+            chosen_vendor = integrated[0][0]
+            return chosen_vendor, [gpu for v, gpu in integrated if v == chosen_vendor]
+
+    # High Performance / GPU-first default: prefer discrete NVIDIA (with live NVML metrics) or discrete AMD/Intel
+    if nvml_gpus:
+        return "nvidia", nvml_gpus
+
+    discrete_reg = [
+        (vendor, gpu)
+        for vendor, gpu in reg_entries
+        if gpu.memory_type == "discrete"
+    ]
+    if discrete_reg:
+        chosen_vendor = discrete_reg[0][0]
+        return chosen_vendor, [gpu for v, gpu in discrete_reg if v == chosen_vendor]
+
+    if reg_entries:
+        chosen_vendor = reg_entries[0][0]
+        return chosen_vendor, [gpu for v, gpu in reg_entries if v == chosen_vendor]
+
+    return None
+
+
 def get_gpu_info() -> Optional[GPUInfo]:
     """Get GPU metrics. Tries the configured backend first, then auto-detects."""
+    if platform.system() == "Windows":
+        win_native = get_gpu_info_windows_native_detailed()
+        if win_native:
+            win_backend, win_gpus = win_native
+            return aggregate_gpu_details(win_gpus, win_backend)
+        if WINDOWS_DESKTOP_PROFILE:
+            return None
+
     gpu_backend = os.environ.get("GPU_BACKEND", "").lower()
 
     if gpu_backend == "amd":
