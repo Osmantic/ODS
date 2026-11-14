@@ -2,7 +2,6 @@ import importlib.util
 import json
 import hashlib
 import pathlib
-import sys
 import types
 
 import pytest
