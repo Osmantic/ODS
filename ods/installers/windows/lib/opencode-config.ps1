@@ -149,9 +149,9 @@ function Sync-WindowsOpenCodeConfig {
     $_ocCompatConfigFile = Join-Path $ConfigDir "config.json"
 
     if ($SkipIfUnavailable -and `
-        -not (Test-Path $script:OPENCODE_EXE) -and `
-        -not (Test-Path $_ocConfigFile) -and `
-        -not (Test-Path $_ocCompatConfigFile)) {
+        -not (Test-Path -LiteralPath $script:OPENCODE_EXE) -and `
+        -not (Test-Path -LiteralPath $_ocConfigFile) -and `
+        -not (Test-Path -LiteralPath $_ocCompatConfigFile)) {
         return @{
             Status = "skipped"
             ConfigPath = $_ocConfigFile
@@ -165,7 +165,7 @@ function Sync-WindowsOpenCodeConfig {
     New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
 
     $_existingConfigFile = @($_ocConfigFile, $_ocCompatConfigFile) |
-        Where-Object { Test-Path $_ } |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
         Select-Object -First 1
 
     $_configObject = $null
@@ -173,7 +173,7 @@ function Sync-WindowsOpenCodeConfig {
 
     if ($_existingConfigFile) {
         try {
-            $_configObject = Get-Content $_existingConfigFile -Raw | ConvertFrom-Json -ErrorAction Stop
+            $_configObject = Get-Content -LiteralPath $_existingConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
             $_configStatus = "updated"
         } catch {
             $_configStatus = "regenerated"
