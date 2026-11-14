@@ -232,5 +232,3 @@ def test_invalid_provider_is_not_ready_even_with_matching_digest(field, value):
     snap['routeState']['provider'][field] = value
     snap['activation']['routeFingerprint'] = _fingerprint(snap['routeState']['provider'])
     assert drp.classify(snap)['ready'] is False
-
-
