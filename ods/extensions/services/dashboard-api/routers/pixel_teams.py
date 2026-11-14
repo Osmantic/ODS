@@ -8,6 +8,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from config import DATA_DIR
 from security import verify_api_key
 from pixel_chat_results import owner_namespace
 from pixel_agent_teams import TeamManager, TeamStore, TeamConflict
@@ -166,7 +167,7 @@ async def _cancel(owner, agent):
 def manager():
     global _manager
     if _manager is None:
-        _manager = TeamManager(TeamStore(Path(os.environ.get("ODS_DATA_DIR", "/data")) / "pixel-agent-teams"), _run, _cancel)
+        _manager = TeamManager(TeamStore(Path(os.environ.get("ODS_DATA_DIR", DATA_DIR)) / "pixel-agent-teams"), _run, _cancel)
     return _manager
 
 

@@ -20,7 +20,7 @@ import aiohttp
 from fastapi import APIRouter, Depends, Query, HTTPException
 from usage_timeline import minute_timeline, MAX_EVENTS
 
-from config import EXTENSIONS_DIR, SERVICES, USER_EXTENSIONS_DIR, read_live_env_value
+from config import DATA_DIR, EXTENSIONS_DIR, SERVICES, USER_EXTENSIONS_DIR, read_live_env_value
 from helpers import check_service_health, get_cached_services
 from security import verify_api_key
 
@@ -31,7 +31,7 @@ router = APIRouter(prefix="/api/usage", tags=["usage"])
 TOKEN_SPY_SERVICE_ID = "token-spy"
 TOKEN_SPY_URL = os.environ.get("TOKEN_SPY_URL", "http://token-spy:8080")
 TOKEN_SPY_API_KEY = os.environ.get("TOKEN_SPY_API_KEY", "")
-TOKEN_SPY_KEY_FILE = Path(os.environ.get("TOKEN_SPY_KEY_FILE", "/data/token-spy/token-spy-api-key.txt"))
+TOKEN_SPY_KEY_FILE = Path(os.environ.get("TOKEN_SPY_KEY_FILE") or Path(DATA_DIR) / "token-spy" / "token-spy-api-key.txt")
 # Inclusive-day span cap for /report. Without it a single request for e.g.
 # 0001-01-01..9999-12-31 makes _empty_report materialize ~3.6 million daily
 # buckets in memory and on the wire. The dashboard presets top out well

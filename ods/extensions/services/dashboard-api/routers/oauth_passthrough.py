@@ -79,6 +79,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from config import DATA_DIR
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -104,9 +105,9 @@ def _callback_dir() -> Path:
     Hermes can read (we don't put it in ``data/hermes/`` because that's
     uid 10000 and dashboard-api can't write there).
     """
-    # In-container path: dashboard-api mounts ./data → /data, so
-    # ./data/persona/ is /data/persona/ from here.
-    base = Path(os.environ.get("ODS_PERSONA_DIR", "/data/persona"))
+    # In the container ODS_DATA_DIR is /data (the ./data mount), so this is
+    # ./data/persona/ on the host; a native install uses its own data dir.
+    base = Path(os.environ.get("ODS_PERSONA_DIR") or _data_dir() / "persona")
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -124,7 +125,7 @@ def _install_dir() -> Path:
 
 
 def _data_dir() -> Path:
-    return Path(os.environ.get("ODS_DATA_DIR", "/data"))
+    return Path(os.environ.get("ODS_DATA_DIR", DATA_DIR))
 
 
 def _providers_file() -> Path:

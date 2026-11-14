@@ -14,6 +14,7 @@ from pixel_image_input import ImageInputError, MAX_IMAGE_BYTES
 from pixel_image_store import ImageStore, ImageStoreCapacity, ConversationDeleted, custody_failure_reason
 from pixel_image_transport import ImageResolutionError, resolve_image_parts
 from pixel_image_admission import ImageWorkBudget
+from config import DATA_DIR
 from security import verify_api_key
 
 
@@ -37,7 +38,7 @@ def _storage_call(method, *args):
     # Open/use/close SQLite on one worker thread. Serialize initialization and
     # transactions without blocking the API event loop or sharing a connection.
     with _storage_lock:
-        store = ImageStore(Path(os.environ.get("ODS_DATA_DIR", "/data")) / "pixel-images")
+        store = ImageStore(Path(os.environ.get("ODS_DATA_DIR", DATA_DIR)) / "pixel-images")
         try:
             return method(store, *args) if callable(method) else getattr(store, method)(*args)
         finally:

@@ -12,6 +12,7 @@ import {
   Code,
 } from 'lucide-react'
 import { isRemoteInference } from '../lib/inferenceMode'
+import { runtimeUnavailable } from '../lib/runtime'
 
 const Dashboard = lazy(() => import('../pages/Dashboard'))
 const SettingsPage = lazy(() => import('../pages/Settings'))
@@ -58,6 +59,7 @@ export const coreRoutes = [
     icon: Puzzle,
     component: Extensions,
     getProps: () => ({}),
+    enabled: ({ status }) => !runtimeUnavailable(status, 'extensions'),
     sidebar: true,
     order: 2,
   },
@@ -68,6 +70,7 @@ export const coreRoutes = [
     icon: Network,
     component: ServiceMap,
     getProps: () => ({}),
+    enabled: ({ status }) => !runtimeUnavailable(status, 'extensions'),
     sidebar: false,
     order: 2.1,
   },

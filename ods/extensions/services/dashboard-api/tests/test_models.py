@@ -1024,7 +1024,7 @@ def test_generic_external_fallback_never_probes_a_vendor_health_route(monkeypatc
             return {"data": [{"id": "Gemma-4-E2B-it-GGUF"}, {"id": "Qwen3.6-35B-A3B-GGUF"}]}
 
     class _Client:
-        def __init__(self, timeout):
+        def __init__(self, timeout, headers=None):
             self.timeout = timeout
 
         async def __aenter__(self):
@@ -1073,7 +1073,7 @@ def test_fetch_loaded_model_uses_configured_llm_url(monkeypatch):
             ]}
 
     class _Client:
-        def __init__(self, timeout):
+        def __init__(self, timeout, headers=None):
             self.timeout = timeout
 
         async def __aenter__(self):
