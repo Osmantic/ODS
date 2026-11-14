@@ -58,7 +58,8 @@ make_install() {
     cp -a "$ROOT_DIR/bin" "$install_dir/bin"
     mkdir -p "$install_dir/extensions/services/dashboard-api"
     cp "$ROOT_DIR/extensions/services/dashboard-api/"*.py "$install_dir/extensions/services/dashboard-api/"
-    cp "$ROOT_DIR/scripts/backup-native-preflight.py" "$ROOT_DIR/scripts/source-update-preflight.py" "$install_dir/scripts/"
+    cp "$ROOT_DIR/scripts/backup-native-preflight.py" "$ROOT_DIR/scripts/source-update-preflight.py" \
+        "$ROOT_DIR/scripts/backup-talk-state.py" "$install_dir/scripts/"
     cp "$ROOT_DIR/lib/rsync.sh" "$install_dir/lib/rsync.sh"
     cp "$ROOT_DIR/lib/backup-paths.sh" "$install_dir/lib/backup-paths.sh"
     cp "$ROOT_DIR/lib/dashboard-private-state.sh" "$install_dir/lib/dashboard-private-state.sh"

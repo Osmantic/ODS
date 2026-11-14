@@ -37,6 +37,7 @@ ODS_USER_DATA_PATHS=(
     # Written directly by dashboard-api through its ./data:/data mount.
     "data/user-extensions"           # Library-installed extensions
     "data/config"                    # setup wizard / persona configuration
+    "data/talk"                      # durable owner/tab mapping; paired with data/hermes
     "data/pixel-images"              # generated image library
     "data/pixel-agent-teams"         # Pixel agent team history (0700)
     "data/dashboard-password.json"   # dashboard login (0600); unconfigured without it

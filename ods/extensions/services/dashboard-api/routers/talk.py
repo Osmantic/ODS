@@ -22,6 +22,7 @@ from fastapi.responses import StreamingResponse
 from starlette.requests import ClientDisconnect
 
 import hermes_bridge
+import talk_conversations
 import session_signer
 from config import (
     EXTENSIONS_DIR,
@@ -420,6 +421,19 @@ def _require_session(request: Request) -> tuple[str, int]:
     except (ValueError, TypeError):
         expires_at = 0
     return hermes_bridge.talk_session_key(cookie_value), expires_at
+
+
+def _require_conversation(request: Request) -> tuple[str, int]:
+    owner, expiry = _require_session(request)
+    if not talk_conversations.enabled():
+        if request.headers.get('X-ODS-Talk-Conversation') or request.headers.get('X-ODS-Talk-Tab'):
+            raise HTTPException(status_code=409, detail='Durable conversation continuity is disabled. This conversation was not replaced.')
+        return owner, expiry
+    try:
+        return talk_conversations.store().resolve(owner, request.headers.get('X-ODS-Talk-Tab'),
+                                                  request.headers.get('X-ODS-Talk-Conversation')), expiry
+    except talk_conversations.ConversationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 async def _service_config(service_id: str) -> dict[str, Any] | None:
@@ -849,6 +863,10 @@ async def talk_status(request: Request) -> dict[str, Any]:
     )
     talk_block_reason = _hermes_talk_block_reason(model_compatibility)
     text_chat_ready = hermes.get("status") == "healthy" and not talk_block_reason
+    durable = talk_conversations.enabled()
+    continuity = await hermes_bridge.durable_available() if durable else False
+    if durable and not continuity:
+        text_chat_ready = False
     voice_ready = whisper.get("status") == "healthy" and tts.get("status") == "healthy"
     return {
         "ok": True,
@@ -861,20 +879,41 @@ async def talk_status(request: Request) -> dict[str, Any]:
         },
         "capabilities": {
             "text_chat": text_chat_ready,
+            "durable_conversation": durable and continuity,
+            "durable_conversation_requested": durable,
             "tts": tts.get("status") == "healthy",
-            "audio_message": voice_ready,
+            "audio_message": voice_ready and (not durable or continuity),
             "live_mic_requires_secure_context": True,
         },
         # User-facing copy (never the catalog's internal fleet note).
         "reason": talk_block_reason,
-        "reasonCode": TALK_MODEL_NOT_SUPPORTED_CODE if talk_block_reason else None,
+        "reasonCode": ("continuity_unavailable" if durable and not continuity else
+                       TALK_MODEL_NOT_SUPPORTED_CODE if talk_block_reason else None),
     }
 
 
 @router.post("/api/talk/session")
-async def talk_session(request: Request) -> dict[str, Any]:
+async def talk_session(request: Request, payload: dict[str, Any] = {}) -> dict[str, Any]:
     session_key, expires_at = _require_session(request)
+    if not talk_conversations.enabled():
+        session_key, expires_at = _require_conversation(request)
     await _require_hermes_talk_compatible()
+    if talk_conversations.enabled():
+        try:
+            key = talk_conversations.store().resolve(session_key, request.headers.get('X-ODS-Talk-Tab'),
+                    request.headers.get('X-ODS-Talk-Conversation'), create=payload.get('new') is True)
+            snapshot = await hermes_bridge.open_conversation(key, create=payload.get('new') is True)
+        except talk_conversations.ConversationError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (hermes_bridge.HermesBridgeError, asyncio.TimeoutError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # Only display text goes to the browser; runtime IDs remain server-side.
+        messages = [{'role': m['role'], 'text': m.get('text', m.get('content', ''))} for m in snapshot['messages']
+                    if m.get('role') in {'user', 'assistant'} and isinstance(m.get('text', m.get('content')), str)]
+        pending = snapshot.get('pending_approval') or {}
+        approval = {name: str(pending.get(name) or '')[:500] for name in ('command', 'description')} if pending else None
+        return {'messages': messages, 'running': snapshot['running'], 'expires_at': expires_at,
+                'continuity': 'manual-v1', 'pending_approval': approval}
     try:
         session_id = await hermes_bridge.ensure_session(session_key)
     except hermes_bridge.HermesUnavailable as exc:
@@ -905,7 +944,7 @@ async def talk_message(payload: dict[str, Any], request: Request) -> dict[str, A
     blocking version can hold the request open for 60+ seconds before any
     visible feedback, which strands the UI on a "thinking" spinner.
     """
-    session_key, _expires_at = _require_session(request)
+    session_key, _expires_at = _require_conversation(request)
     await _require_hermes_talk_compatible()
     text = _extract_message_text(payload)
     return await _send_to_hermes(session_key, text)
@@ -928,7 +967,7 @@ async def talk_message_stream(payload: dict[str, Any], request: Request) -> Stre
     so the dashboard nginx proxy passes frames through immediately rather
     than batching them.
     """
-    session_key, _expires_at = _require_session(request)
+    session_key, _expires_at = _require_conversation(request)
     await _require_hermes_talk_compatible()
     text = _extract_message_text(payload)
     headers = {
@@ -946,7 +985,7 @@ async def talk_message_stream(payload: dict[str, Any], request: Request) -> Stre
 @router.post("/api/talk/approval")
 async def talk_approval(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     """Answer the one pending Hermes tool approval for this Talk session."""
-    session_key, _expires_at = _require_session(request)
+    session_key, _expires_at = _require_conversation(request)
     if set(payload) != {"choice"} or payload.get("choice") not in {"once", "deny"}:
         raise HTTPException(status_code=422, detail="Choice must be 'once' or 'deny'.")
 
@@ -957,6 +996,15 @@ async def talk_approval(payload: dict[str, Any], request: Request) -> dict[str, 
     if not accepted:
         raise HTTPException(status_code=409, detail="No pending approval for this session.")
     return {"accepted": True, "choice": payload["choice"]}
+
+
+@router.post("/api/talk/cancel")
+async def talk_cancel(request: Request):
+    key, _ = _require_conversation(request)
+    try:
+        return {'interrupted': await hermes_bridge.interrupt_active_prompt(key)}
+    except (hermes_bridge.HermesBridgeError, asyncio.TimeoutError) as exc:
+        raise HTTPException(status_code=503, detail='Stop could not be confirmed. Reconnect to inspect the conversation.') from exc
 
 
 def _classify_attachment(file: UploadFile) -> str:
@@ -1018,7 +1066,7 @@ async def talk_attachment(
 
     PDF/docx aren't in scope for v1 (no parser dependency yet).
     """
-    session_key, _expires_at = _require_session(request)
+    session_key, _expires_at = _require_conversation(request)
     kind = _classify_attachment(file)
 
     caption = (text or "").strip()
@@ -1026,6 +1074,8 @@ async def talk_attachment(
         raise HTTPException(status_code=413, detail="Caption is too long.")
 
     if kind == "image":
+        if talk_conversations.enabled():
+            raise HTTPException(status_code=409, detail="Image history is not yet supported in durable conversations. Send a text attachment instead.")
         data = await file.read(MAX_IMAGE_BYTES + 1)
         if len(data) > MAX_IMAGE_BYTES:
             raise HTTPException(status_code=413, detail=f"Image is too large (max {MAX_IMAGE_BYTES // (1024 * 1024)} MB).")
@@ -1072,7 +1122,7 @@ async def talk_attachment(
 
 @router.post("/api/talk/audio-message")
 async def talk_audio_message(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
-    session_key, _expires_at = _require_session(request)
+    session_key, _expires_at = _require_conversation(request)
     await _require_hermes_talk_compatible()
     data = await file.read(MAX_AUDIO_BYTES + 1)
     if len(data) > MAX_AUDIO_BYTES:

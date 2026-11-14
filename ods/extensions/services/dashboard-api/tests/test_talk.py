@@ -939,13 +939,8 @@ def test_hermes_bridge_slow_open_does_not_block_other_keys(monkeypatch):
     assert _run_with_one_loop(main)
 
 
-def test_hermes_bridge_transparent_retry_on_send_reset(monkeypatch):
-    """Most insidious dead-WS pattern: ``ws.closed`` reports False, but the
-    next ``send_str`` raises ClientConnectionResetError because the upstream
-    Hermes closed the socket between checks (e.g. a Hermes restart that
-    raced with the freshness check). The bridge must catch that, evict, and
-    transparently retry once on a fresh connection — the user shouldn't see
-    "load failed" just because Hermes restarted in the background."""
+def test_hermes_bridge_does_not_replay_uncertain_send(monkeypatch):
+    """A send exception does not establish that Hermes accepted zero bytes."""
     import aiohttp
     import hermes_bridge
 
@@ -998,11 +993,10 @@ def test_hermes_bridge_transparent_retry_on_send_reset(monkeypatch):
                 break
         return events, open_calls
 
-    events, opens = _run_with_one_loop(main)
-    # User got a clean stream: session frame + complete frame, no error.
-    assert "complete" in events, f"expected transparent retry to deliver complete, got {events}"
-    # Two connection opens: the dead one + the retry's fresh one.
-    assert opens == 2, f"expected 1 retry (opens == 2), got {opens}"
+    with pytest.raises(hermes_bridge.HermesUnavailable, match='delivery is uncertain'):
+        _run_with_one_loop(main)
+    assert open_calls == 1
+    assert 'retry-key' not in hermes_bridge._CONNECTION_POOL
 
 
 def test_hermes_bridge_does_not_retry_after_prompt_submit(monkeypatch):
