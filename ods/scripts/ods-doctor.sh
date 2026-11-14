@@ -669,6 +669,50 @@ if [[ "$_doctor_gpu_backend" == "nvidia" ]] && command -v nvidia-smi >/dev/null 
     fi
 fi
 
+# An installed registry scaffold is not necessarily runnable on this host.
+# Only exclude an exact empty stub with explicitly unsupported hardware and
+# no potentially applicable overlay. Unknown configuration remains a fault.
+_doctor_unsupported_extension_stub() {
+    "${PYTHON_CMD:-python3}" - "$1" "$2" "$3" 2>/dev/null <<'PY'
+import sys
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    sys.exit(1)
+
+try:
+    class UniqueLoader(yaml.SafeLoader):
+        def construct_mapping(self, node, deep=False):
+            keys = [self.construct_object(key, deep=deep) for key, _ in node.value]
+            if len(keys) != len(set(keys)):
+                raise ValueError("duplicate mapping key")
+            return super().construct_mapping(node, deep=deep)
+
+    path, backend, declared = Path(sys.argv[1]), sys.argv[2], set(sys.argv[3].split())
+    known = {"apple", "cpu", "amd", "nvidia"}
+    if backend not in known or not declared or not declared <= known or backend in declared:
+        sys.exit(1)
+    if yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueLoader) != {"services": {}}:
+        sys.exit(1)
+    foreign_overlays = {
+        f"compose.{prefix}{other}.{suffix}"
+        for other in known - {backend}
+        for prefix in ("", "multigpu-", "standalone.")
+        for suffix in ("yaml", "yml")
+    }
+    for sibling in path.parent.iterdir():
+        if sibling.name == path.name:
+            continue
+        if sibling.name.startswith("compose") and sibling.suffix in {".yaml", ".yml"}:
+            if sibling.name not in foreign_overlays:
+                sys.exit(1)
+except (OSError, ValueError, TypeError, yaml.YAMLError):
+    sys.exit(1)
+PY
+}
+
 # Collect extension diagnostics (wrapped in function to allow local variables)
 collect_extension_diagnostics() {
     # Use outer GPU_BACKEND or default to nvidia (don't make local to avoid set -u issues)
@@ -696,6 +740,10 @@ collect_extension_diagnostics() {
                 container_state="$inspect_output"
             else
                 container_state="not_found"
+                if _doctor_unsupported_extension_stub "$compose_file" "$backend" "${SERVICE_GPU_BACKENDS[$sid]:-}"; then
+                    EXT_DIAG_ITEMS+=("{\"id\":\"$sid\",\"container_state\":\"not_found\",\"health_status\":\"not_applicable\",\"applicability_reason\":\"unsupported_backend_stub\",\"issues\":[]}")
+                    continue
+                fi
             fi
 
             # Check health endpoint if container running
@@ -1865,6 +1913,7 @@ report = {
         "runtime_ready": (docker_daemon == "true" and compose_cli == "true"),
         "extensions_total": len(ext_diagnostics),
         "extensions_healthy": sum(1 for e in ext_diagnostics if e.get("health_status") == "healthy"),
+        "extensions_not_applicable": sum(1 for e in ext_diagnostics if e.get("health_status") == "not_applicable"),
         "extensions_issues": sum(1 for e in ext_diagnostics if len(e.get("issues", [])) > 0),
     },
 }
@@ -2036,9 +2085,12 @@ summary = data.get("summary", {})
 ext_total = summary.get("extensions_total", 0)
 ext_healthy = summary.get("extensions_healthy", 0)
 ext_issues = summary.get("extensions_issues", 0)
+ext_not_applicable = summary.get("extensions_not_applicable", 0)
 
 if ext_total > 0:
     print(f"  Extensions:    {ext_healthy}/{ext_total} healthy, {ext_issues} with issues")
+    if ext_not_applicable:
+        print(f"                 {ext_not_applicable} not applicable to this hardware (not counted as healthy)")
 
 dgx_check = data.get("runtime", {}).get("dgx_spark_cuda_arch_check", {})
 if dgx_check.get("status") == "warn":

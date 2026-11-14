@@ -359,6 +359,7 @@ jobs:
         run: |
           bash tests/test-ods-doctor.sh
           bash tests/test-doctor-native-lifecycle.sh
+          bash tests/test-doctor-extension-stubs.sh
 
       - name: Windows Report Command Tests
         run: bash tests/test-windows-report-command.sh
