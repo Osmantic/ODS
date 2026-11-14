@@ -137,6 +137,10 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
         '--services-bundle', str(preparation / 'services'), '--services-digest', receipt['serviceDigest'],
         '--pixel-source-ref', receipt['pixelSourceRef'], '--initial-install']
     if resume_final_health:
+        recovery_key = hashlib.sha256(json.dumps({'receipt': receipt,
+            'source': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            'restoreHostAgent': restore_host_agent, 'restoreOptionalTools': restore_optional_tools,
+            'opencodeChoice': opencode_choice}, sort_keys=True).encode()).hexdigest()
         def refresh_ingress(complete_held):
             nonlocal selected_services, optional_snapshot
             native_env = helper('pixel-native-env.py')
@@ -156,13 +160,9 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
                 selected_services.clear()
                 selected_services.update(latest)
                 return complete_held()
-            key = hashlib.sha256(json.dumps({'receipt': receipt,
-                'source': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-                'restoreHostAgent': restore_host_agent, 'restoreOptionalTools': restore_optional_tools,
-                'opencodeChoice': opencode_choice}, sort_keys=True).encode()).hexdigest()
             refreshed = helper('pixel-native-ingress-refresh.py').refresh_locked(run, docker_run,
                 install_dir=install_dir, project=source_env['PIXEL_HISTORY_PROJECT'], dashboard_key=keys[0],
-                operation=operation, operation_kind='retained-recovery', operation_key=key)
+                operation=operation, operation_kind='retained-recovery', operation_key=recovery_key)
             return refreshed['operationResult']
         def verify_selection(unchanged):
             unchanged()
@@ -170,11 +170,26 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
             if current.returncode or json.loads(current.stdout).get('services') != selected_services:
                 raise ValueError('native-recovery-compose-selection-changed')
         def verify():
-            result = subprocess.run([*protected, '--verify-initial'], cwd='/',
+            def held_revision():
+                return helper('pixel-native-ingress-refresh.py').operation_hold_revision(docker_run,
+                    preparation=preparation, project=source_env['PIXEL_HISTORY_PROJECT'], dashboard_key=keys[0],
+                    operation_kind='retained-recovery', operation_key=recovery_key)
+            revision = held_revision()
+            proof_args = ['--held-admission-revision', revision] if revision is not None else []
+            result = subprocess.run([*protected, '--verify-initial', *proof_args], cwd='/',
                 stdout=subprocess.PIPE, text=True, timeout=300, check=False)
             if result.returncode or len(result.stdout) > 4096:
                 raise ValueError('native-initial-recovery-proof-failed')
-            return json.loads(result.stdout)
+            value = json.loads(result.stdout)
+            if held_revision() != revision:
+                raise ValueError('native-ingress-operation-selection-changed')
+            if revision is not None:
+                if value.get('status') != 'active-under-hold':
+                    raise ValueError('native-initial-recovery-proof-failed')
+                # The surrounding transaction owns admission and will reprove
+                # its binding before release; this is not a public ready marker.
+                value['status'] = 'active'
+            return value
         continuation = {}
         if restore_host_agent:
             continuation['restore_host_agent'] = lambda: helper('pixel-native-continuation.py').restore_host_agent(

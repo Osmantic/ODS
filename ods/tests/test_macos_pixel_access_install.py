@@ -24,9 +24,10 @@ installer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installer)
 
 
+@pytest.mark.parametrize('held', [False, True])
 @pytest.mark.parametrize('fault', [None, 'pending', 'phase', 'operation', 'owner', 'source', 'hold',
     'settings', 'bundle', 'disabled', 'access', 'mode', 'services', 'stops', 'admission', 'process', 'journal-change'])
-def test_initial_completion_proof_requires_unchanged_protected_state_without_mutations(tmp_path, monkeypatch, fault):
+def test_initial_completion_proof_requires_unchanged_protected_state_without_mutations(tmp_path, monkeypatch, fault, held):
     import copy
     import pixel_access_bridge
     import pixel_macos_custody
@@ -83,20 +84,43 @@ def test_initial_completion_proof_requires_unchanged_protected_state_without_mut
     monkeypatch.setattr(installer, '_ready_access_relay', lambda *args: check('relay'))
     monkeypatch.setattr(installer, '_verify_new_services', lambda plan: check('services'))
     monkeypatch.setattr(installer, '_migration_edge_request', lambda *args: dict(
-        capability='available', phase='idle', admission_blocked=fault == 'admission'))
+        capability='available', phase='held' if held else 'idle', revision='d' * 64,
+        streams=0, admission_blocked=not held if fault == 'admission' else held))
+    options = {'held_revision': 'd' * 64} if held else {}
     def forbidden(*args, **kwargs):
         raise AssertionError('Read-only verification attempted a mutation')
     for name in ('install', '_activate', '_command', '_write_exact', '_reprove_installed_access'):
         monkeypatch.setattr(installer, name, forbidden)
     if fault:
         with pytest.raises(installer.InstallError):
-            installer.verify_initial_install(plan)
+            installer.verify_initial_install(plan, **options)
     else:
-        assert installer.verify_initial_install(plan) == {
-            'status': 'active', 'runtimeDigest': 'a' * 64, 'serviceDigest': 'b' * 64}
+        assert installer.verify_initial_install(plan, **options) == {
+            'status': 'active-under-hold' if held else 'active', 'runtimeDigest': 'a' * 64, 'serviceDigest': 'b' * 64}
         assert events.count('bundle') == 2
         assert events.count('definition') == 6
         assert len(identity_calls) == 9
+
+
+@pytest.mark.parametrize('fault', ['revision', 'streams', 'phase', 'late-revision', 'invalid-revision'])
+def test_initial_held_proof_rejects_foreign_or_changed_admission(tmp_path, monkeypatch, fault):
+    # Reuse the full protected-state fixture, but corrupt only the real verifier's
+    # admission samples. It must not turn a caller's revision into authority.
+    original = installer.verify_initial_install
+    def check(plan, *, held_revision):
+        calls = 0
+        def status(*args):
+            nonlocal calls
+            calls += 1
+            return dict(capability='available', phase='idle' if fault == 'phase' else 'held',
+                admission_blocked=True, streams=1 if fault == 'streams' else 0,
+                revision='e' * 64 if fault == 'revision' or fault == 'late-revision' and calls > 1 else 'd' * 64)
+        monkeypatch.setattr(installer, '_migration_edge_request', status)
+        return original(plan, held_revision='invalid' if fault == 'invalid-revision' else held_revision)
+    monkeypatch.setattr(installer, 'verify_initial_install', check)
+    with pytest.raises(installer.InstallError):
+        test_initial_completion_proof_requires_unchanged_protected_state_without_mutations(
+            tmp_path, monkeypatch, None, True)
 
 
 def test_migration_docker_child_drops_supplementary_groups(monkeypatch):
