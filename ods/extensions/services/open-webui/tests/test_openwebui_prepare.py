@@ -413,6 +413,36 @@ def test_the_wrapper_turns_sign_in_on_when_open_webui_is_published_beyond_loopba
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="runs the POSIX wrapper with sh")
+@pytest.mark.parametrize("bind,auth,handed_over", [
+    # Local-only with sign-in off: an account made at start would refuse the
+    # no-sign-in login and lock the owner out of chat.
+    ("127.0.0.1", "false", False),
+    (None, "", False),
+    # Local-only with sign-in on, or published (sign-in forced on): kept.
+    ("127.0.0.1", "true", True),
+    (None, None, True),
+    ("0.0.0.0", "false", True),
+])
+def test_the_wrapper_hands_over_the_administrator_only_while_sign_in_is_on(tmp_path, bind, auth, handed_over):
+    stand_in = tmp_path / "python3"
+    stand_in.write_text("#!/bin/sh\nexit 0\n")
+    stand_in.chmod(0o755)
+    environment = {key: value for key, value in os.environ.items()
+                   if key not in ("ODS_WEBUI_BIND_ADDRESS", "ODS_WEBUI_PROXY_BIND", "WEBUI_AUTH")}
+    environment.update(PATH=f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+                       WEBUI_ADMIN_EMAIL="owner@example.test", WEBUI_ADMIN_PASSWORD="test-only")
+    if bind is not None:
+        environment["ODS_WEBUI_BIND_ADDRESS"] = bind
+    if auth is not None:
+        environment["WEBUI_AUTH"] = auth
+    started = subprocess.run(
+        ["sh", str(WRAPPER), "sh", "-c", 'printf "%s|%s" "${WEBUI_ADMIN_EMAIL-unset}" "${WEBUI_ADMIN_PASSWORD-unset}"'],
+        capture_output=True, text=True, env=environment, check=False)
+    assert started.returncode == 0, started.stderr
+    assert started.stdout == ("owner@example.test|test-only" if handed_over else "unset|unset")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the POSIX wrapper with sh")
 def test_the_wrapper_refuses_to_run_without_a_start_command():
     refused = subprocess.run(["sh", str(WRAPPER)], capture_output=True, text=True, check=False)
     assert refused.returncode == 64
@@ -515,6 +545,13 @@ def add_account(database: Path, email: str, password_hash: str, active: bool = T
 
 
 def run_published(data: Path, app: Path) -> int:
+    with pytest.MonkeyPatch.context() as env:
+        env.setenv("WEBUI_ADMIN_EMAIL", "owner@example.test")
+        env.setenv("WEBUI_ADMIN_PASSWORD", "test-only")
+        return run_published_unclaimed(data, app)
+
+
+def run_published_unclaimed(data: Path, app: Path) -> int:
     return prepare.main(["--data-dir", str(data), "--app-dir", str(app), "--published-on-network"], now=NOW)
 
 
@@ -562,3 +599,51 @@ def test_a_malformed_hash_is_not_the_default_password():
     assert prepare.is_default_password("not a hash") is False
     assert prepare.is_default_password("") is False
     assert prepare.is_default_password(None) is False
+
+
+@pytest.mark.parametrize("database", [False, True])
+def test_a_published_start_is_refused_while_the_first_signup_would_become_administrator(
+        tmp_path, monkeypatch, database):
+    monkeypatch.delenv("WEBUI_ADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("WEBUI_ADMIN_PASSWORD", raising=False)
+    app = new_image(tmp_path)
+    data = data_dir(tmp_path, recorded="0.11.4", revision=V0114_HEAD, database=database)
+    with pytest.raises(SystemExit) as refused:
+        run_published_unclaimed(data, app)
+    message = str(refused.value)
+    assert "no accounts" in message and "WEBUI_ADMIN_EMAIL" in message and "Nothing was changed" in message
+    assert not (data / prepare.BACKUP_DIR).exists()
+
+
+@pytest.mark.parametrize("case", ["admin-env", "existing-account", "local-only"])
+def test_an_unclaimed_open_webui_starts_when_the_first_signup_cannot_take_it_over(tmp_path, monkeypatch, case):
+    monkeypatch.delenv("WEBUI_ADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("WEBUI_ADMIN_PASSWORD", raising=False)
+    app = new_image(tmp_path)
+    data = data_dir(tmp_path, recorded="0.11.4", revision=V0114_HEAD)
+    if case == "admin-env":
+        monkeypatch.setenv("WEBUI_ADMIN_EMAIL", "owner@example.test")
+        monkeypatch.setenv("WEBUI_ADMIN_PASSWORD", "test-only")
+    if case == "existing-account":
+        add_account(data / prepare.DATABASE, "owner@example.test", "$2b$04$notthedefaultpasswordhash")
+    assert (run(data, app) if case == "local-only" else run_published_unclaimed(data, app)) == 0
+
+
+def test_compose_passes_the_bootstrap_administrator_to_open_webui():
+    block = service_block((ODS / "docker-compose.base.yml").read_text(encoding="utf-8"))
+    assert '      WEBUI_ADMIN_EMAIL: "${WEBUI_ADMIN_EMAIL:-}"\n' in block
+    assert '      WEBUI_ADMIN_PASSWORD: "${WEBUI_ADMIN_PASSWORD:-}"\n' in block
+
+
+def test_every_installer_writes_the_bootstrap_administrator_and_keeps_existing_values():
+    linux = (ODS / "installers/phases/06-directories.sh").read_text(encoding="utf-8")
+    assert 'WEBUI_ADMIN_EMAIL=$(_env_get WEBUI_ADMIN_EMAIL "admin@ods.local")' in linux
+    assert "WEBUI_ADMIN_PASSWORD=$(_phase06_env_hex_secret WEBUI_ADMIN_PASSWORD 16)" in linux
+    assert 'WEBUI_ADMIN_PASSWORD=$(dotenv_value "${WEBUI_ADMIN_PASSWORD}")' in linux
+    windows = (ODS / "installers/windows/lib/env-generator.ps1").read_text(encoding="utf-8")
+    assert 'Get-EnvOrNew "WEBUI_ADMIN_PASSWORD" (New-SecureHex -Bytes 16)' in windows
+    assert "WEBUI_ADMIN_PASSWORD=$webuiAdminPass" in windows
+    macos = (ODS / "installers/macos/lib/env-generator.sh").read_text(encoding="utf-8")
+    assert "WEBUI_ADMIN_PASSWORD=${webui_admin_password}" in macos
+    # An existing .env gains the account only where it has none.
+    assert 'if [[ -z "$(read_env_value "$env_path" "WEBUI_ADMIN_PASSWORD")" ]]; then' in macos

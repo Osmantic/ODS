@@ -215,6 +215,7 @@ fi
 bootline
 # Core services always shown
 [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || echo "  • Chat UI:       http://localhost:${SERVICE_PORTS[open-webui]:-3000}"
+[[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || echo "  • Chat admin:    ${WEBUI_ADMIN_EMAIL:-admin@ods.local} (password: WEBUI_ADMIN_PASSWORD in ${INSTALL_DIR:-.}/.env)"
 echo "  • Dashboard:     http://localhost:${SERVICE_PORTS[dashboard]:-3001}"
 if [[ -n "${EXTERNAL_LLM_URL:-}" || "${ODS_MODE:-local}" == "cloud" || -n "${NATIVE_LLM_BASE_URL:-}" ]]; then
     echo "  • LLM API:       http://localhost:${SERVICE_PORTS[litellm]:-4000}/v1  (managed LiteLLM gateway)"

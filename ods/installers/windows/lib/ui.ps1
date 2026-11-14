@@ -589,6 +589,8 @@ function Write-SuccessCard {
     Write-Host ""
     Write-Host "       Chat UI:    " -ForegroundColor DarkGray -NoNewline
     Write-Host "http://localhost:$WebUIPort" -ForegroundColor White
+    Write-Host "       Chat admin: " -ForegroundColor DarkGray -NoNewline
+    Write-Host "WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD in $(Join-Path $script:ODS_INSTALL_DIR '.env')" -ForegroundColor White
     Write-Host "       Dashboard:  " -ForegroundColor DarkGray -NoNewline
     Write-Host "http://localhost:$DashboardPort" -ForegroundColor White
     $_bindAddr = ""
