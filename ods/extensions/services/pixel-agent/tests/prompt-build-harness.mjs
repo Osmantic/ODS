@@ -8,7 +8,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import * as responseLanguage from '../plugin/response-language.mjs';
-import {managedTeamRole} from '../plugin/tool-loop-guard.mjs';
+import {currentUserText, managedTeamRole} from '../plugin/tool-loop-guard.mjs';
 import {longTaskContract, promptContractForAgent} from '../plugin/prompt-contract.mjs';
 import {ACTIVITY_CONTRACT} from '../plugin/activity-display.mjs';
 import {GOAL_CONTRACT} from '../plugin/goal-progress.mjs';
@@ -112,7 +112,8 @@ export async function realPromptBuild(t, {stateFiles = {}} = {}) {
   fs.mkdirSync(state, {recursive: true, mode: 0o700});
   for (const [name, content] of Object.entries(stateFiles)) fs.writeFileSync(path.join(state, name), content);
   // Every state root the full registration opens follows these.
-  setForTest(t, {OPENCLAW_STATE_DIR: state, HOME: root, USERPROFILE: root});
+  setForTest(t, {OPENCLAW_STATE_DIR: state, HOME: root, USERPROFILE: root,
+    ODS_PIXEL_INTEGRATIONS_SOCKET: path.join(root, 'no-integrations.sock')});
   const entry = new URL('../plugin/index.js', import.meta.url);
   const source = fs.readFileSync(entry, 'utf8').replace(/from\s+(['"])([^'"]+)\1/g, (match, _quote, specifier) =>
     specifier.startsWith('.') ? `from ${JSON.stringify(new URL(specifier, entry).href)}` : match);
@@ -183,6 +184,7 @@ export async function promptHookAlone({language, goal = false, clarificationNote
     promptContractForAgent, longTaskContract, configuredContextWindow: 131072, configuredLeanPrompt: false, configuredResponseLanguage: language,
     extensionRepositoryContext: async () => '', managedTeamRole, ACTIVITY_CONTRACT, GOAL_CONTRACT,
     executionLocationContext: () => '', executionContext,
+    memoryHooks: {promptContext: async () => ({})}, currentUserText, reminderHint: () => '',
   });
   return callback({prompt}, {agentId: 'pixel', runId: 'run'});
 }
