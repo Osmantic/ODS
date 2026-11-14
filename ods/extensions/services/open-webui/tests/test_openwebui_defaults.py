@@ -34,6 +34,13 @@ def test_plain_chat_defaults_to_legacy_without_disabling_builtin_capabilities(tm
     assert environment["ENABLE_PERSISTENT_CONFIG"] == "false"
 
 
+def test_the_upstream_changelog_does_not_open_for_a_new_owner(tmp_path):
+    # Open WebUI v0.11.4 merges these defaults under each user's own interface
+    # settings; its admin "What's New" modal checks showChangelog.
+    environment = render(tmp_path)
+    assert json.loads(environment["DEFAULT_INTERFACE_SETTINGS"]) == {"showChangelog": False}
+
+
 def test_explicit_owner_compose_default_still_overrides_compatibility_default(tmp_path):
     params = {"function_calling": "native", "temperature": 0.25}
     environment = render(tmp_path, {"services": {"open-webui": {

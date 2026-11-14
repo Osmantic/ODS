@@ -321,6 +321,51 @@ Stop an extension container. Runs `docker compose stop <service_id>`.
 
 **Request/response format:** Same as `/v1/extension/start` with `"action": "stop"`.
 
+### `GET /v1/extension/jobs`
+
+The extension operations this agent process is running now: installs, enable retries, image downloads, the Open WebUI add and OpenCode setup. The Dashboard compares this with the progress records, so a record that no running operation will finish shows as interrupted, with Retry and Cancel, instead of as frozen progress.
+
+**Authentication:** Required
+
+**Response (200):**
+```json
+{"schema_version": 1, "instance": "5f1c2a9e0b7d4e31", "now": "2026-10-25T12:00:00.000000+00:00", "live": ["open-webui"]}
+```
+
+`instance` identifies this agent process; every progress record it writes carries the same value as `agent_instance`. `now` is the host's clock, the one that stamps the records, read before `live`: a record written after it may belong to an operation that started after the list was read, and is not judged by this answer.
+
+When the agent starts, before it serves requests, it marks every progress record still in an active phase (`pulling`, `starting`, `setup_hook`) as an interrupted failure: `status` `error`, `interrupted: true`, `interrupted_phase`, and an error that says ODS stopped before the operation finished. No operation of the new process can be running yet. A record the Dashboard wrote less than two minutes earlier, for a request still on its way, is left alone.
+
+### `POST /v1/extension/remove`
+
+Remove a disabled Library extension under the native host's selection lock. The host rechecks selection and dependents, deletes owned stopped containers and optional data, then removes the definition, backup and progress record. The lock excludes native CLI selection through the entire operation. A Dashboard container lock is insufficient across macOS and its Docker VM; callers must release their graph lock before the RPC to avoid Linux lock inversion.
+
+Container ownership comes from Compose labels: the extension's own service and the `<id>-*` companions its disabled fragment declares, never another installation's containers. Running containers are refused, never stopped. A deletion failure may have partial effects; container/data failures retain the disabled definition for inspection or retry. The API must not report rollback after a timeout or partial failure.
+
+**Authentication:** Required
+
+**Request body:**
+```json
+{"service_id": "excalidraw", "delete_data": false}
+```
+
+`delete_data` (default `false`) also deletes the extension's own `data/<id>` directory, its anonymous volumes, and each named volume Compose created for it that no other container uses. Without it, all service data stays. Reserved ODS directories and redirected deletion paths are refused.
+
+**Response (200):**
+```json
+{"status": "ok", "service_id": "excalidraw", "containers": ["ods-excalidraw"], "volumes_removed": [], "volumes_kept": [], "definition_removed": true, "data_deleted": false, "data_freed_gb": null}
+```
+
+**Error responses:**
+| Code | Condition |
+|------|-----------|
+| 400 | Invalid `service_id` or `delete_data` |
+| 404 | Extension not found |
+| 409 | The extension is still enabled, is not a Library extension, has a running container, another operation holds it, or a Docker command failed |
+| 502 | The removal helper could not run |
+
+The legacy `POST /v1/extension/remove-containers` returns 410 without deletion. New Dashboards also refuse removal on older hosts that lack the complete operation; finish updating ODS instead of falling back to API-side file deletion.
+
 ### `POST /v1/extension/logs`
 
 Fetch recent container logs. Uses `docker logs --tail N ods-<service_id>` directly (bypasses compose for speed).
