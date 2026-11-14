@@ -524,9 +524,13 @@ def test_initial_absence_is_explicit_and_closes_every_probe_socket(tmp_path, mon
             installer._require_initial_absence(plan, source)
     else:
         installer._require_initial_absence(plan, source)
-        assert len(sockets) == 2
-        sockets[0].bind.assert_called_once_with(('127.0.0.1', 18789))
-        sockets[1].bind.assert_called_once_with(('127.0.0.1', 18790))
+        assert len(sockets) == 4
+        sockets[0].bind.assert_called_once_with(('0.0.0.0', 18789))
+        sockets[1].bind.assert_called_once_with(('127.0.0.1', 18789))
+        sockets[2].bind.assert_called_once_with(('0.0.0.0', 18790))
+        sockets[3].bind.assert_called_once_with(('127.0.0.1', 18790))
+        sockets[0].listen.assert_not_called()
+        sockets[2].listen.assert_not_called()
     for listener in sockets: listener.close.assert_called_once()
 
 
