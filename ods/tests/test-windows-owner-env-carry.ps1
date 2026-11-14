@@ -62,13 +62,14 @@ try {
         "HF_TOKEN='hf_owner token'"
         'LLAMA_ARC_IMAGE=ghcr.io/example/arc@sha256:abc'
         'AUDIO_TTS_VOICE=af_bella'
+        'PIXEL_RESPONSE_LANGUAGE=en'
         'HF_TOKEN_EXTRA=not-listed'
     )
     Add-Content -LiteralPath $envPath -Value $owner
     foreach ($run in 1..2) {
         $null = New-ODSEnv -InstallDir $tempRoot -TierConfig $tier -Tier '1' -GpuBackend 'none' -SystemRamGB 8
         foreach ($expected in @('N8N_API_KEY=n8n-api-current', "HF_TOKEN='hf_owner token'",
-                'LLAMA_ARC_IMAGE=ghcr.io/example/arc@sha256:abc', 'AUDIO_TTS_VOICE=af_bella')) {
+                'LLAMA_ARC_IMAGE=ghcr.io/example/arc@sha256:abc', 'AUDIO_TTS_VOICE=af_bella', 'PIXEL_RESPONSE_LANGUAGE=en')) {
             $key = $expected.Split('=')[0]
             $found = @(Get-Assignments $envPath $key)
             Assert-True (($found.Count -eq 1) -and ($found[0] -ceq $expected)) `
