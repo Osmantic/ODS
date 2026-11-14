@@ -192,6 +192,18 @@ try {
         throw "backup helper accepted a path outside the installation root"
     }
 
+    # Move-ODSDevelopmentPathsToBackup must succeed when InstallDir contains square brackets
+    $bracketInstallDir = Join-Path $testRoot "install-[bracket-test]"
+    [System.IO.Directory]::CreateDirectory($bracketInstallDir) | Out-Null
+    Set-Content -LiteralPath (Join-Path $bracketInstallDir "README.md") -Value "bracketed readme"
+    $bracketBackup = Move-ODSDevelopmentPathsToBackup -InstallDir $bracketInstallDir -RelativePaths @("README.md")
+    if ([string]::IsNullOrWhiteSpace($bracketBackup) -or -not (Test-Path -LiteralPath $bracketBackup -PathType Container)) {
+        throw "backup helper failed to create backup directory for bracketed install path: $bracketBackup"
+    }
+    if ((Get-Content -LiteralPath (Join-Path $bracketBackup "README.md") -Raw).Trim() -ne "bracketed readme") {
+        throw "stale file was not moved into backup directory for bracketed install path"
+    }
+
     Write-Host "[PASS] Windows installed-footprint contract"
     exit 0
 } finally {
