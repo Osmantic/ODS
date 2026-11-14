@@ -24,7 +24,8 @@ Inspect first (read-only; it does not test inference or modify the transaction):
 python3 "$HOME/ods/scripts/recover-macos-local-model.py"
 ```
 
-After support confirms this is the unchanged local-model split, explicitly repair:
+After inspection confirms this local-model split meets the proof requirements
+below, explicitly repair:
 
 ```bash
 python3 "$HOME/ods/scripts/recover-macos-local-model.py" --apply
@@ -46,7 +47,8 @@ Share only the status/error code, not credentials, `.env`, or protected records.
 
 The authenticated action owns the existing model lifecycle lock. It requires:
 
-- The same saved native transaction, with unchanged original host file hashes.
+- The same saved native transaction, with unchanged original host file hashes,
+  except for the narrowly validated switchboard record described below.
 - Local Apple inference, a regular installed GGUF, and identical saved/current
   context. Remote routes and other platforms are not reinterpreted.
 - Current inference identity/context and a real LiteLLM completion before apply.
@@ -58,6 +60,30 @@ It does not download models, restart inference, replace settings, invent receipt
 or discard the previous contract. An interrupted repair resumes only when the
 native controller proves the exact target is already applied. An ambiguous
 apply that still reads held is refused, not replayed.
+
+### Switchboard-only drift
+
+Older background route verification could change `data/model-state.json` after
+a switch was held. A matching list of changed files alone is not permission to
+recover. The action accepts this one-file difference only when the file is valid,
+stable, and already describes the configured local GGUF at the saved context,
+with a completed proof, the standard local endpoint and public alias, no remote
+native route, no active operation, and no queued requests. Both the original
+and current file must have readable fingerprints; a new/missing file is refused.
+All other tracked files must still match the original journal.
+
+Recovery independently proves live inference, the default LiteLLM route and
+`ods/current`, checks native transaction ownership, and repeats the stable alias
+proof after applying. It does not restore or rewrite `model-state.json` or replace
+the original `before` fingerprints. The existing transaction records the actual
+final fingerprints only when it proceeds to commit. Concurrent file changes or
+unconfirmed native application still stop without replaying a mutation. This
+does not infer what originally changed the file on a particular machine.
+
+This is explicit recovery, not an automatic fallback for every failed switch.
+The existing background-publication guard prevents new observational writes
+while a durable switch is pending; it cannot undo a change made before the guard
+was installed. Both controls are needed for those older affected installations.
 
 Other host file changes, changed ownership, a missing model or a failed proof
 require diagnosis; this command is not a general-purpose reset. Initial route
@@ -81,6 +107,18 @@ separate admission startup defect required intervention: macOS reused the old
 gateway PID for another service. After restarting the identified colliding
 service and gateway, live inference passed and Portal returned the requested
 answer in 2m37s. That was not an unattended successful boot.
+
+For the switchboard-only extension, an affected M1/16 GiB owner subsequently
+reported a successful `completed`/`commit` receipt for the same original held
+transaction after installing the scoped host fix. Independent M5 preflight
+validated the installed route, real inference and `ods/current` without changing
+files. Automated tests cover changed/unsafe routes and interrupted recovery.
+The M1 owner then reported Portal unavailable and an unknown chat-activity
+notice. The model recovery receipt does not establish Portal availability or
+chat completion. Do not repeat repair after a completed receipt: inspect the
+Portal/edge/native ingress path and use the existing chat activity/result check
+without resending the request. A working Portal conversation and post-reboot
+acceptance remain unverified; no fleet-wide claim is made.
 
 ## Darwin process ownership
 
