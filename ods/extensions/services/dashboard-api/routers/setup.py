@@ -21,6 +21,7 @@ from host_agent_client import (
     request_json as request_agent_json,
 )
 from models import PersonaRequest, ChatRequest
+import native_llm
 from security import verify_api_key
 from setup_chat_route import resolve_chat_route
 
@@ -208,15 +209,21 @@ async def chat(request: ChatRequest, api_key: str = Depends(verify_api_key)):
     if not system_prompt:
         system_prompt = await asyncio.to_thread(get_active_persona_prompt)
 
-    _llm = SERVICES.get("llama-server", {})
-    try:
-        llm_url, model, headers = resolve_chat_route(
-            f"http://{_llm.get('host', 'llama-server')}:{_llm.get('port', 0)}")
-    except ValueError:
-        raise HTTPException(status_code=503, detail="Invalid LLM route configuration")
+    native = native_llm.configured()
+    if native is not None:
+        # Windows Desktop: its own loopback llama-server, with its key file.
+        # There is no LiteLLM, and its model is the one llama-server serves.
+        llm_url, model, headers = f"{native.base_url}/v1/chat/completions", "", native_llm.headers(native)
+    else:
+        _llm = SERVICES.get("llama-server", {})
+        try:
+            llm_url, model, headers = resolve_chat_route(
+                f"http://{_llm.get('host', 'llama-server')}:{_llm.get('port', 0)}")
+        except ValueError:
+            raise HTTPException(status_code=503, detail="Invalid LLM route configuration")
 
     payload = {
-        "model": model,
+        **({"model": model} if model else {}),
         "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": request.message}],
         "max_tokens": 2048, "temperature": 0.7
     }
