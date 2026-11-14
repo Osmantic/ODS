@@ -999,3 +999,13 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_hybrid_switchboard_keeps_local_to_cloud_fallback() -> None:
+    hybrid = run_renderer("--surface", "all", "--ods-mode", "hybrid", "--switchboard-mode", "enabled")
+    legacy = file_by_surface(hybrid, "litellm-hybrid")["content"]
+    switchboard = file_by_surface(hybrid, "litellm-switchboard")["content"]
+    assert "fallbacks:\n    - local:\n        - cloud" in legacy
+    assert "fallbacks:\n    - local:\n        - cloud" in switchboard
+    local = run_renderer("--surface", "all", "--switchboard-mode", "enabled")
+    assert "fallbacks:" not in file_by_surface(local, "litellm-switchboard")["content"]
