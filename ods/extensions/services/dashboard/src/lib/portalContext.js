@@ -119,7 +119,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     const modelMatches=!expected || (!expected.model || snapshot.model?.id===expected.model)
       && (!expected.provider || snapshot.model?.provider===expected.provider)
       && (!expected.routeFingerprint || snapshot.model?.routeFingerprint===expected.routeFingerprint)
-      && (expected.source!=='local-switchboard' || !snapshot.model?.routeFingerprint)
+      && (!['local-switchboard','windows-desktop'].includes(expected.source) || !snapshot.model?.routeFingerprint)
     const measurement=snapshot.context?JSON.stringify([snapshot.model?.id,snapshot.model?.provider,snapshot.model?.routeFingerprint || null,snapshot.context.used,snapshot.context.window,snapshot.context.measuredAt || null]):null
     const context=['ready','busy'].includes(snapshot.status) && snapshot.context
       && (!snapshot.model || snapshot.model.contextWindow===snapshot.context.window)

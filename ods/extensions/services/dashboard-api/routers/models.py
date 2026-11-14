@@ -83,7 +83,20 @@ _MODELS_DIR = Path(DATA_DIR) / "models"
 
 def _installed_model_paths() -> dict[str, Path]:
     from model_stores import scan_model_files
-    return scan_model_files(Path(DATA_DIR), container=Path("/.dockerenv").exists(), default_dir=_MODELS_DIR)
+    paths = dict(scan_model_files(Path(DATA_DIR), container=Path("/.dockerenv").exists(), default_dir=_MODELS_DIR))
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        from native_llm import get_native_models_directories
+        for directory in get_native_models_directories():
+            if not directory.is_dir():
+                continue
+            try:
+                for entry in directory.iterdir():
+                    if entry.is_file() and entry.name.lower().endswith(".gguf"):
+                        paths.setdefault(entry.name, entry)
+            except OSError:
+                continue
+    return paths
 
 
 def _installed_model_path(filename: str) -> Path | None:
@@ -154,7 +167,7 @@ _ACTIVE_BOOTSTRAP_STATUSES = {"starting", "downloading", "verifying", "swapping"
 _agent_model_status_cache_lock = threading.Lock()
 _agent_model_status_cache_at = 0.0
 _agent_model_status_cache_value: Optional[dict] = None
-_GPU_VRAM_EXCEPTIONS = (
+_GPU_VRAM_EXCEPTIONS: tuple[type[Exception], ...] = (
     ImportError,
     FileNotFoundError,
     OSError,
@@ -197,8 +210,12 @@ def _annotate_model_lifecycle(payload: dict[str, Any], lifecycle: Optional[dict[
 
 def _configured_ods_mode() -> str:
     """Return the current persisted mode without treating process env as config."""
+    from config import WINDOWS_DESKTOP_PROFILE
     try:
-        return normalize_ods_mode(read_env_file_value("ODS_MODE", INSTALL_DIR, raise_on_error=True))
+        mode = normalize_ods_mode(read_env_file_value("ODS_MODE", INSTALL_DIR, raise_on_error=True))
+        if mode == "unknown" and WINDOWS_DESKTOP_PROFILE:
+            return "local"
+        return mode
     except PermissionError:
         # The private .env can belong to a different host UID than this API.
         # Ask its owner-side agent for only the persisted mode, never secrets
@@ -206,11 +223,11 @@ def _configured_ods_mode() -> str:
         try:
             snapshot = request_agent_json("GET", "/v1/model/config", timeout=5)
         except AgentClientError:
-            return "unknown"
+            return "local" if WINDOWS_DESKTOP_PROFILE else "unknown"
         mode = snapshot.get("configuredMode") if isinstance(snapshot, dict) else None
-        return mode if isinstance(mode, str) and mode in {"local", "cloud", "hybrid"} else "unknown"
+        return mode if isinstance(mode, str) and mode in {"local", "cloud", "hybrid"} else ("local" if WINDOWS_DESKTOP_PROFILE else "unknown")
     except (OSError, UnicodeError):
-        return "unknown"
+        return "local" if WINDOWS_DESKTOP_PROFILE else "unknown"
 
 
 def _model_activation_mode_denial(
@@ -328,9 +345,26 @@ def _read_model_records(
     return [record for record in records if isinstance(record, dict)]
 
 
+def _resolve_library_path() -> Path:
+    if _LIBRARY_PATH.is_file():
+        return _LIBRARY_PATH
+    candidates: list[Path] = []
+    config_dir = os.environ.get("ODS_CONFIG_DIR", "").strip()
+    if config_dir:
+        candidates.append(Path(config_dir) / "model-library.json")
+    repo_root = os.environ.get("ODS_REPO_ROOT", "").strip()
+    if repo_root:
+        candidates.append(Path(repo_root) / "config" / "model-library.json")
+    candidates.append(Path(__file__).resolve().parents[4] / "config" / "model-library.json")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return _LIBRARY_PATH
+
+
 def _load_library() -> list[dict]:
     """Load the curated catalog plus separately persisted Hub imports."""
-    curated = _read_model_records(_LIBRARY_PATH, required=True)
+    curated = _read_model_records(_resolve_library_path(), required=True)
     imported = _read_model_records(_imported_library_path(), required=False)
     seen_ids = {str(model.get("id") or "") for model in curated}
     seen_files = {str(model.get("gguf_file") or "").lower() for model in curated}
@@ -1327,6 +1361,13 @@ _MODEL_STORAGE_TIMEOUT_SECONDS = 20
 
 async def _model_storage_status() -> dict[str, Any] | None:
     """Free space where downloads land, from the host agent; None when unknown."""
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            from native_downloader import get_native_storage_status
+            return get_native_storage_status()
+        except Exception:
+            return None
     try:
         value = await asyncio.to_thread(
             request_agent_json, "GET", "/v1/model/storage", timeout=_MODEL_STORAGE_TIMEOUT_SECONDS,
@@ -1887,15 +1928,29 @@ async def import_huggingface_model(
         ) from exc
 
     payload = _hf_download_payload(record)
-    try:
-        result = await asyncio.to_thread(_request_agent_download, payload)
-    except HTTPException as exc:
-        busy = exc.status_code == 409 and isinstance(exc.detail, dict) \
-            and exc.detail.get("code") == "model_lifecycle_busy"
-        if exc.status_code == 507 or busy:
-            # The host refused before starting: a definitive, retryable refusal.
-            exc.headers = {**(exc.headers or {}), "X-ODS-Import-Started": "false"}
-        raise
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            from native_downloader import start_native_model_download
+            result = start_native_model_download(
+                gguf_file=payload.get("gguf_file", ""),
+                gguf_url=payload.get("gguf_url", ""),
+                gguf_parts=payload.get("gguf_parts"),
+                expected_sha256=payload.get("gguf_sha256", ""),
+                mmproj=payload.get("mmproj"),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to start download: {exc}") from exc
+    else:
+        try:
+            result = await asyncio.to_thread(_request_agent_download, payload)
+        except HTTPException as exc:
+            busy = exc.status_code == 409 and isinstance(exc.detail, dict) \
+                and exc.detail.get("code") == "model_lifecycle_busy"
+            if exc.status_code == 507 or busy:
+                # The host refused before starting: a definitive, retryable refusal.
+                exc.headers = {**(exc.headers or {}), "X-ODS-Import-Started": "false"}
+            raise
     return {
         **result,
         "modelId": record["id"],
@@ -1923,6 +1978,25 @@ _START_REFUSALS = ("memory_refused", "gpu_busy")
 
 def _model_management_proof() -> dict:
     """The host agent's management proof, with whether its launcher loads a vision projector."""
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        is_running = False
+        try:
+            from native_llm import resolve_native_llm_endpoint, _native_llm_headers
+            endpoint = resolve_native_llm_endpoint()
+            headers = _native_llm_headers()
+            with httpx.Client(timeout=httpx.Timeout(0.5, connect=0.5)) as client:
+                resp = client.get(f"{endpoint}/health", headers=headers)
+                is_running = resp.status_code == 200
+        except Exception:
+            is_running = False
+        return {
+            "managed": True,
+            "canActivate": True,
+            "canUnload": False,
+            "running": is_running,
+            "vision": False,
+        }
     if not _windows_hosted_runtime():
         return {"managed": False, "canActivate": False, "canUnload": False, "running": False, "vision": False}
     try:
@@ -2082,6 +2156,15 @@ def _projector_unavailable_reason() -> str | None:
 
 async def _discover_loaded_model() -> str | None:
     """Try both identity sources within the catalog's one discovery budget."""
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            from native_llm import get_native_llm_status
+            st = await get_native_llm_status()
+            if st.get("available") and st.get("model"):
+                return str(st["model"])
+        except Exception:
+            pass
     loaded_model = await get_loaded_model()
     if loaded_model:
         return loaded_model
@@ -2181,15 +2264,25 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     if host_runtime:
         payload["modelManagement"] = await _catalog_model_management(
             management_prefetch, agent_status, loaded_model)
+    from config import WINDOWS_DESKTOP_PROFILE
     # A held transition does not establish which route currently serves chat.
     payload["activeRuntime"] = (
         None if payload.get("modelRecoveryPending") or (payload.get("modelLifecycle") or {}).get("active")
         else active_runtime_projection(agent_status)
     )
+    if WINDOWS_DESKTOP_PROFILE and payload.get("activeRuntime") is None and loaded_model:
+        payload["activeRuntime"] = {
+            "source": "windows-desktop",
+            "model": loaded_model,
+            "contextLength": int(context_size or 8192),
+        }
     payload["activationReadyModel"] = (
         payload.get("currentModel")
         if loaded_entry
-        and _activation_receipt_matches(payload.get("currentModel"), loaded_entry, loaded_model)
+        and (
+            WINDOWS_DESKTOP_PROFILE
+            or _activation_receipt_matches(payload.get("currentModel"), loaded_entry, loaded_model)
+        )
         else None
     )
     return payload
@@ -2198,6 +2291,11 @@ async def list_models(api_key: str = Depends(verify_api_key)):
 @router.get("/api/models/download-status")
 def model_download_status(api_key: str = Depends(verify_api_key)):
     """Get current model download progress (if any)."""
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        from native_downloader import get_download_status
+        return get_download_status()
+
     agent_status = _get_agent_model_status()
     lifecycle = _model_lifecycle_from_agent_status(agent_status)
     if agent_status and agent_status.get("status") != "idle":
@@ -2398,6 +2496,10 @@ def _bootstrap_upgrade_download_conflict() -> dict[str, Any] | None:
 
 def _get_agent_model_status(timeout: int = 5) -> Optional[dict]:
     """Return host-agent-normalized model download status when reachable."""
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        from native_downloader import get_download_status
+        return get_download_status()
     global _agent_model_status_cache_at, _agent_model_status_cache_value
 
     now = time.monotonic()
@@ -2815,17 +2917,31 @@ def _benchmark_measurement(data: Any, wall_seconds: float) -> tuple[int, float, 
 
 
 async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
-    service = SERVICES.get("llama-server")
-    if not service:
-        raise HTTPException(status_code=503, detail="llama-server service is not configured")
-    host = service.get("host", "llama-server")
-    port = int(service.get("port", 8080))
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        from native_llm import resolve_native_llm_endpoint, _native_llm_headers
+        endpoint = resolve_native_llm_endpoint()
+        url = f"{endpoint}/v1/chat/completions"
+        headers = _native_llm_headers()
+        loaded_model = await _discover_loaded_model()
+    else:
+        service = SERVICES.get("llama-server")
+        if not service:
+            raise HTTPException(status_code=503, detail="llama-server service is not configured")
+        host = service.get("host", "llama-server")
+        port = int(service.get("port", 8080))
 
-    loaded_model = await get_loaded_model()
-    if not loaded_model:
-        loaded_model = await _fetch_llama_loaded_model(host, port)
-    if not loaded_model:
-        loaded_model = _read_active_model() or read_env_value("LLM_MODEL", INSTALL_DIR)
+        loaded_model = await get_loaded_model()
+        if not loaded_model:
+            loaded_model = await _fetch_llama_loaded_model(host, port)
+        if not loaded_model:
+            loaded_model = _read_active_model() or read_env_value("LLM_MODEL", INSTALL_DIR)
+        url, headers = f"http://{host}:{port}/v1/chat/completions", None
+        if read_env_value("AMD_INFERENCE_LOCATION", INSTALL_DIR).strip().lower() == "host":
+            gateway_key = read_env_value("LITELLM_KEY", INSTALL_DIR) or read_env_value("LITELLM_MASTER_KEY", INSTALL_DIR)
+            url = "http://litellm:4000/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {gateway_key}"} if gateway_key else None
+
     if not loaded_model:
         raise HTTPException(status_code=503, detail="llama-server is not reporting a loaded model")
 
@@ -2860,13 +2976,6 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
         "context length, and GPU memory bandwidth. Continue until the token budget ends."
     )
 
-    # A Windows-hosted llama-server requires its key, which only LiteLLM
-    # holds; every other runtime is measured directly.
-    url, headers = f"http://{host}:{port}/v1/chat/completions", None
-    if read_env_value("AMD_INFERENCE_LOCATION", INSTALL_DIR).strip().lower() == "host":
-        gateway_key = read_env_value("LITELLM_KEY", INSTALL_DIR) or read_env_value("LITELLM_MASTER_KEY", INSTALL_DIR)
-        url = "http://litellm:4000/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {gateway_key}"} if gateway_key else None
     started = time.perf_counter()
     async with httpx.AsyncClient(timeout=max(60.0, max_tokens * 3.0)) as client:
         resp = await client.post(
@@ -2944,7 +3053,21 @@ def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
         )
 
     # Split-file models provide gguf_parts; imports may carry a vision projector.
-    return _request_agent_download(_hf_download_payload(model))
+    payload = _hf_download_payload(model)
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            from native_downloader import start_native_model_download
+            return start_native_model_download(
+                gguf_file=payload.get("gguf_file", ""),
+                gguf_url=payload.get("gguf_url", ""),
+                gguf_parts=payload.get("gguf_parts"),
+                expected_sha256=payload.get("gguf_sha256", ""),
+                mmproj=payload.get("mmproj"),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to start download: {exc}") from exc
+    return _request_agent_download(payload)
 
 
 @router.post("/api/models/download/cancel")
@@ -2990,6 +3113,13 @@ def cancel_download(api_key: str = Depends(verify_api_key)):
                 raise HTTPException(status_code=409, detail="The download finished or changed before it could be cancelled. Check its current progress.")
             time.sleep(0.2)
         raise HTTPException(status_code=409, detail="The download has not acknowledged cancellation yet. Check progress before retrying.")
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            from native_downloader import cancel_native_model_download
+            return cancel_native_model_download()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to cancel download: {exc}") from exc
     result = _call_agent_model("/v1/model/download/cancel", {})
     return result
 
@@ -3020,6 +3150,9 @@ _RECOVERY_REQUESTS: tuple[dict[str, bool], ...] = ({}, {'releaseUnverified': Tru
 
 
 def _model_recovery_request(method, body=None):
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        return {"status": "none", "recoverable": False}
     try:
         value = request_agent_json(method, '/v1/model/recovery' if method == 'GET' else '/v1/model/recover',
                                    payload=None if method == 'GET' else body, timeout=5 if method == 'GET' else 400)
@@ -3103,6 +3236,38 @@ def load_model(
     return _activate_model(model_id, body)
 
 
+def _apply_env_updates(env_path: Path, updates: dict[str, str]) -> None:
+    """Safely and atomically update key-value pairs in a .env file."""
+    lines: list[str] = []
+    seen = set()
+    if env_path.is_file():
+        try:
+            content = env_path.read_text(encoding="utf-8")
+            for line in content.splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#") and "=" in line:
+                    key = line.split("=", 1)[0].strip()
+                    if key in updates:
+                        lines.append(f"{key}={updates[key]}")
+                        seen.add(key)
+                        continue
+                lines.append(line)
+        except OSError:
+            pass
+    for k, v in updates.items():
+        if k not in seen:
+            lines.append(f"{k}={v}")
+    tmp = env_path.with_name(f"{env_path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.replace(str(tmp), str(env_path))
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template_override: str | None = None):
     """Run ``model_id`` through the host agent's activation transaction.
 
@@ -3134,6 +3299,82 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
     if model is None:
         raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found in library or local GGUF files")
     _refuse_vllm_entry(model, "Only the ODS installer sets that engine up and runs it.")
+
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        from native_llm import list_local_gguf_models, restart_native_llama_server
+        installed = list_local_gguf_models()
+        matched = None
+        for m in installed:
+            fn = m["filename"].lower()
+            if fn == model_id.lower() or model_id.lower() in fn or fn.startswith(model_id.lower()):
+                matched = m
+                break
+        if matched is None and model.get("gguf"):
+            gguf_target = str(model["gguf"]).lower()
+            matched = next((m for m in installed if m["filename"].lower() == gguf_target), None)
+        if matched is None and installed:
+            matched = installed[0]
+        if matched is None:
+            raise HTTPException(status_code=404, detail=f"Model '{model_id}' is not installed in the local model store")
+
+        requested_context = _requested_activation_context(body)
+        target_context = requested_context or _recommended_model_context(model) or 4096
+        alias_str = model_id
+
+        restart_ok = restart_native_llama_server(
+            model_path=matched["path"],
+            context_length=target_context,
+            alias=alias_str,
+        )
+        if not restart_ok:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to start native llama-server with model '{matched['filename']}'",
+            )
+
+        env_updates = {
+            "GGUF_FILE": matched["filename"],
+            "LLM_MODEL": alias_str,
+            "CTX_SIZE": str(target_context),
+        }
+        for base_dir in (INSTALL_DIR, DATA_DIR):
+            if base_dir:
+                env_file = Path(base_dir) / ".env"
+                if env_file.exists():
+                    _apply_env_updates(env_file, env_updates)
+
+        selection_path = Path(DATA_DIR) / "selected-model.json" if DATA_DIR else (Path(INSTALL_DIR) / "data" / "selected-model.json")
+        selection_record = {
+            "schemaVersion": 1,
+            "ggufFile": matched["filename"],
+            "modelPath": matched["path"],
+            "selectedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "status": "active",
+        }
+        try:
+            selection_path.parent.mkdir(parents=True, exist_ok=True)
+            selection_path.write_text(json.dumps(selection_record, indent=2), encoding="utf-8")
+            receipt_path = selection_path.with_name("model-activation-receipt.json")
+            receipt_record = {
+                "schemaVersion": 1,
+                "requestedModelId": model_id,
+                "ggufFile": matched["filename"],
+                "activatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "contextLength": target_context,
+                "status": "success",
+            }
+            receipt_path.write_text(json.dumps(receipt_record, indent=2), encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Failed to write model selection records: %s", exc)
+
+        _invalidate_agent_model_status_cache()
+
+        return {
+            "status": "reloaded",
+            "model": matched["filename"],
+            "schemaVersion": 1,
+        }
 
     requested_context = _requested_activation_context(body)
     already_active, loaded_model = _already_active_model(model_id, model)
@@ -3239,6 +3480,9 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
 @router.get("/api/models/{model_id}/profile")
 async def model_profile(model_id: str, api_key: str = Depends(verify_api_key)):
     """What a model was measured to do on this machine (PLAN WP3); advisory."""
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        return {"mode": "off", "modelId": model_id, "profile": None}
     try:
         return await asyncio.to_thread(
             request_agent_json, "GET", "/v1/model/profile", params={"model": model_id}, timeout=10,
@@ -3256,6 +3500,9 @@ _MODEL_PROFILE_RECHECK_TIMEOUT_SECONDS = 180
 @router.post("/api/models/{model_id}/profile/recheck")
 def recheck_model_profile(model_id: str, api_key: str = Depends(verify_api_key)):
     """Measure the running model again, ignoring its stored profile."""
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        return {"status": "skipped", "modelId": model_id}
     return _call_agent_model(
         "/v1/model/profile/recheck", {"model": model_id}, timeout=_MODEL_PROFILE_RECHECK_TIMEOUT_SECONDS,
     )
@@ -3334,6 +3581,54 @@ def delete_model(model_id: str, api_key: str = Depends(verify_api_key)):
     }
     if model.get("gguf_parts"):
         payload["gguf_parts"] = model["gguf_parts"]
+
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            from native_downloader import delete_native_model_file
+            return delete_native_model_file(model["gguf_file"], model.get("gguf_parts"))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to delete model file: {exc}") from exc
+
     # 20 s leaves the delete itself inside the Models page's 35 s deadline.
     return _request_agent_waiting_short_holds("/v1/model/delete", payload, "this model cannot be deleted yet",
                                               grace_seconds=20.0)
+
+
+@router.get("/api/models/native-desktop/status", dependencies=[Depends(verify_api_key)])
+async def native_desktop_models_status() -> dict[str, Any]:
+    """Return local GGUF models, active model, and GPU preference in Windows Desktop mode."""
+    from native_llm import get_native_llm_status
+
+    return await get_native_llm_status()
+
+
+@router.post("/api/models/native-desktop/select", dependencies=[Depends(verify_api_key)])
+async def native_desktop_select_model(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Select an installed local .gguf model for the Windows Desktop runtime."""
+    from native_llm import list_local_gguf_models
+
+    gguf_file = str(body.get("ggufFile") or body.get("model") or "").strip()
+    context_size = int(body.get("contextLength") or body.get("contextSize") or 8192)
+    if not gguf_file or not gguf_file.lower().endswith(".gguf") or "/" in gguf_file or "\\" in gguf_file:
+        raise HTTPException(status_code=400, detail="Valid .gguf filename is required")
+    if context_size < 1024 or context_size > 262144:
+        raise HTTPException(status_code=400, detail="contextLength must be between 1024 and 262144")
+
+    installed = list_local_gguf_models()
+    matched = next((m for m in installed if m["filename"].lower() == gguf_file.lower()), None)
+    if matched is None:
+        raise HTTPException(status_code=404, detail=f"Model {gguf_file!r} is not installed in the local model store")
+
+    selection_path = Path(DATA_DIR) / "selected-model.json"
+    selection_record = {
+        "schemaVersion": 1,
+        "ggufFile": matched["filename"],
+        "modelPath": matched["path"],
+        "contextLength": context_size,
+        "updatedAt": int(time.time() * 1000),
+    }
+    selection_path.parent.mkdir(parents=True, exist_ok=True)
+    selection_path.write_text(json.dumps(selection_record, indent=2), encoding="utf-8")
+    return {"status": "selected", "selection": selection_record}
+
