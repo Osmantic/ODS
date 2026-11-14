@@ -1,3 +1,4 @@
+import { installTalkFetch, boundFrame } from '../test/talk-session'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import ODSTalk from './ODSTalk' // eslint-disable-line no-unused-vars
@@ -14,7 +15,7 @@ const response = (body, status = 200) => ({
 // emits those frames in one reader.read() pass, simulating partial transport.
 const sseResponse = (frames, { status = 200, chunks, holdOpen = false } = {}) => {
   const encoder = new TextEncoder()
-  const frameBytes = frames.map(f => encoder.encode(`data: ${JSON.stringify(f)}\n\n`))
+  const frameBytes = frames.map(f => encoder.encode(`data: ${JSON.stringify(boundFrame(f))}\n\n`))
   const concatFrames = (group) => {
     const totalLen = group.reduce((acc, i) => acc + frameBytes[i].byteLength, 0)
     const out = new Uint8Array(totalLen)
@@ -87,7 +88,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
 
@@ -121,7 +122,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
 
@@ -156,7 +157,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
 
@@ -185,7 +186,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
 
@@ -213,7 +214,7 @@ describe('ODSTalk', () => {
     'tools-unavailable',
     null,
   ])('ignores an unknown tools advisory: %j', async hermesTalkAdvisory => {
-    vi.stubGlobal('fetch', vi.fn(async (url) => {
+    installTalkFetch(vi.fn(async (url) => {
       if (url === '/api/talk/status') {
         return response({
           modelCompatibility: { hermesTalkAdvisory },
@@ -232,7 +233,7 @@ describe('ODSTalk', () => {
   })
 
   test('keeps the blocking model notice unchanged when a block and the advisory arrive together', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (url) => {
+    installTalkFetch(vi.fn(async (url) => {
       if (url === '/api/talk/status') {
         return response({
           reason: TALK_NOT_SUPPORTED_COPY,
@@ -268,7 +269,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
 
@@ -303,7 +304,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
 
@@ -333,7 +334,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
 
@@ -358,7 +359,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
 
@@ -380,7 +381,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
 
@@ -412,7 +413,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
     expect(await screen.findByText('Ready')).toBeInTheDocument()
@@ -438,7 +439,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     const { container } = render(<ODSTalk />)
     expect(await screen.findByText('Ready')).toBeInTheDocument()
@@ -474,7 +475,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     const { container } = render(<ODSTalk />)
     expect(await screen.findByText('Ready')).toBeInTheDocument()
@@ -503,7 +504,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
     expect(await screen.findByText('Ready')).toBeInTheDocument()
@@ -539,7 +540,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
     expect(await screen.findByText('Ready')).toBeInTheDocument()
@@ -582,7 +583,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     const { container } = render(<ODSTalk />)
     expect(await screen.findByText('Ready')).toBeInTheDocument()
@@ -647,7 +648,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     const { container } = render(<ODSTalk />)
     expect(await screen.findByText('Ready')).toBeInTheDocument()
@@ -680,7 +681,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
     expect(await screen.findByText('Ready')).toBeInTheDocument()
@@ -697,7 +698,7 @@ describe('ODSTalk', () => {
       if (url === '/api/talk/status') return response({ detail: 'expired' }, 401)
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
 
@@ -720,7 +721,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
 
@@ -765,7 +766,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
     expect(await screen.findByText('Ready')).toBeInTheDocument()
@@ -804,7 +805,7 @@ describe('ODSTalk', () => {
       if (url === '/api/talk/approval' && options.method === 'POST') return approvalResponse
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
     expect(await screen.findByText('Ready')).toBeInTheDocument()
@@ -847,7 +848,7 @@ describe('ODSTalk', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     })
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
 
     render(<ODSTalk />)
     expect(await screen.findByText('Ready')).toBeInTheDocument()

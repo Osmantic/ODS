@@ -5,6 +5,7 @@ import {
   Send, Volume2, VolumeX,
 } from 'lucide-react'
 import HelpLink from '../components/HelpLink'
+import useTalkConversation from '../hooks/useTalkConversation'
 
 // Hermes likes to format with markdown (bold, lists, code). Rendering it as
 // HTML keeps the chat bubbles readable instead of showing raw `**` and `-`.
@@ -99,7 +100,7 @@ function makeId(prefix) {
 
 async function parseError(resp, fallback) {
   const body = await resp.json().catch(() => ({}))
-  return body.detail || fallback || `Request failed: ${resp.status}`
+  return (typeof body.detail === 'string' ? body.detail : body.detail?.message) || fallback || `Request failed: ${resp.status}`
 }
 
 // Hermes ends failed and interrupted turns with the same terminal reply as
@@ -113,7 +114,13 @@ function failedOutcomeMessage(status) {
 }
 
 export default function ODSTalk() {
-  const [messages, setMessages] = useState([welcomeMessage])
+  const {
+    messages, setMessages, conversationId, ready: conversationReady, hydrated,
+    busy: conversationBusy, notice: conversationNotice, storageNotice,
+    ensureConversation, newConversation, markUnknown, hideHistory,
+  } = useTalkConversation(welcomeMessage)
+  const sendInFlightRef = useRef(false)
+  const mountedRef = useRef(true)
   const [input, setInput] = useState('')
   const [status, setStatus] = useState('loading')
   const [statusText, setStatusText] = useState('Connecting to ODS Talk...')
@@ -187,6 +194,7 @@ export default function ODSTalk() {
     try {
       const resp = await fetch('/api/talk/status', { credentials: 'same-origin' })
       if (resp.status === 401) {
+        hideHistory()
         setStatus('expired')
         setStatusText('Session expired. Scan the owner card again.')
         setRetryStatusRefresh(false)
@@ -227,7 +235,7 @@ export default function ODSTalk() {
       setStatusText(err.message || 'ODS Talk is offline.')
       setRetryStatusRefresh(true)
     }
-  }, [liveMicSupported])
+  }, [hideHistory, liveMicSupported])
 
   useEffect(() => { refreshStatus() }, [refreshStatus])
 
@@ -264,7 +272,9 @@ export default function ODSTalk() {
   }, [spokenReplies])
 
   useEffect(() => {
+    mountedRef.current = true
     return () => {
+      mountedRef.current = false
       streamControllerRef.current?.abort()
       streamControllerRef.current = null
     }
@@ -444,7 +454,7 @@ export default function ODSTalk() {
   }, [spokenReplies, voiceState.tts, stopActiveSpeech])
 
   const submitApproval = useCallback(async (messageId, choice) => {
-    if (!['once', 'deny'].includes(choice) || approvalRequestsRef.current.has(messageId)) return
+    if (!conversationId || !['once', 'deny'].includes(choice) || approvalRequestsRef.current.has(messageId)) return
     approvalRequestsRef.current.add(messageId)
     setMessages(items => items.map(item =>
       item.id === messageId && item.approval
@@ -455,11 +465,12 @@ export default function ODSTalk() {
     try {
       const resp = await fetch('/api/talk/approval', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-ODS-Talk-Conversation': conversationId },
         credentials: 'same-origin',
         body: JSON.stringify({ choice }),
       })
       if (resp.status === 401) {
+        hideHistory()
         setStatus('expired')
         setStatusText('Session expired. Scan the owner card again.')
         throw new Error('Session expired.')
@@ -487,7 +498,7 @@ export default function ODSTalk() {
     } finally {
       approvalRequestsRef.current.delete(messageId)
     }
-  }, [])
+  }, [conversationId, hideHistory, setMessages])
 
   const sendText = useCallback(async (text, { transcriptId = null, attachment = null } = {}) => {
     const clean = text.trim()
@@ -495,8 +506,17 @@ export default function ODSTalk() {
     // prompt for images ("Describe what you see in this image."). Without
     // either a caption or an attachment, there's nothing to send.
     if (!clean && !attachment) return
-    if (sending || recorderRef.current || status !== 'ready') return
+    if (sendInFlightRef.current || sending || recorderRef.current || status !== 'ready' || !conversationReady) return
+    sendInFlightRef.current = true
     setSending(true)
+    let cid
+    try { cid = await ensureConversation() } catch {
+      sendInFlightRef.current = false
+      setSending(false)
+      return
+    }
+    if (!mountedRef.current) { sendInFlightRef.current = false; return }
+    const isImage = attachment?.kind === 'image'
 
     const userId = transcriptId || makeId('user')
     const assistantId = makeId('assistant')
@@ -510,7 +530,8 @@ export default function ODSTalk() {
         role: 'user',
         text: clean,
         imageUrl: attachment?.kind === 'image' ? attachment.previewUrl : null,
-        fileName: attachment?.kind === 'text' ? attachment.name : null,
+        fileName: attachment?.name || null,
+        attachmentKind: attachment?.kind || null,
         attachmentForRetry: attachment,
         status: 'done',
       }])
@@ -531,6 +552,7 @@ export default function ODSTalk() {
     let finalWarning = null
     let errorDetail = null
     let completed = false
+    let knownOutcome = false
     let streamDone = false
     let reader
 
@@ -552,7 +574,7 @@ export default function ODSTalk() {
           method: 'POST',
           // Don't set Content-Type — fetch fills in multipart/form-data
           // with the right boundary string automatically.
-          headers: { 'Accept': 'text/event-stream' },
+          headers: { 'Accept': 'text/event-stream', 'X-ODS-Talk-Conversation': cid },
           credentials: 'same-origin',
           body: form,
           signal: controller.signal,
@@ -560,18 +582,22 @@ export default function ODSTalk() {
       } else {
         resp = await fetch('/api/talk/message/stream', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+          headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream', 'X-ODS-Talk-Conversation': cid },
           credentials: 'same-origin',
           body: JSON.stringify({ text: clean }),
           signal: controller.signal,
         })
       }
       if (resp.status === 401) {
+        hideHistory()
         setStatus('expired')
         setStatusText('Session expired. Scan the owner card again.')
         throw new Error('Session expired.')
       }
       if (!resp.ok || !resp.body) {
+        // HTTP validation errors occur before the streaming bridge dispatches.
+        knownOutcome = resp.status >= 400 && resp.status < 500 && resp.status !== 409
+        if (resp.status === 410) hideHistory()
         // 409: the active model changed and is not supported in Talk. The
         // detail is user copy; refresh so the notice replaces the composer.
         if (resp.status === 409) refreshStatus()
@@ -602,6 +628,9 @@ export default function ODSTalk() {
           } catch {
             continue
           }
+          if (!isImage && ['session', 'complete'].includes(payload.type) && payload.conversation_id !== cid) {
+            throw new Error('The response belongs to a different conversation. Start a new conversation.')
+          }
           if (payload.type === 'delta' && typeof payload.text === 'string') {
             assembled += payload.text
             const snapshot = assembled
@@ -631,6 +660,7 @@ export default function ODSTalk() {
             break
           } else if (payload.type === 'complete') {
             // Hermes uses this terminal event for failed/interrupted turns too.
+            knownOutcome = [undefined, null, '', 'ok', 'complete', 'error', 'interrupted'].includes(payload.status)
             const failure = failedOutcomeMessage(payload.status)
             if (typeof payload.text === 'string' && payload.text && (!failure || !assembled)) {
               assembled = payload.text
@@ -667,7 +697,7 @@ export default function ODSTalk() {
       if (errorDetail) throw new Error(errorDetail)
       // A closed connection is not a completion receipt. Keep received text
       // for recovery, but never announce or speak an interrupted answer.
-      if (!completed) throw new Error('The response ended before it was complete. Retry the message when the connection is available.')
+      if (!completed) throw new Error('The response ended before it was complete. It has not been sent again.')
       const reply = assembled || 'I did not get a response back.'
       setMessages(items => items.map(item =>
         item.id === assistantId
@@ -676,6 +706,7 @@ export default function ODSTalk() {
       ))
       speak(reply)
     } catch (err) {
+      if (!isImage && !knownOutcome) markUnknown()
       if (err.name === 'AbortError') {
         // User-initiated cancellation. Drop the placeholder bubble silently.
         setMessages(items => items.filter(item => item.id !== assistantId))
@@ -696,13 +727,25 @@ export default function ODSTalk() {
       if (streamControllerRef.current === controller) {
         streamControllerRef.current = null
       }
+      sendInFlightRef.current = false
       setSending(false)
     }
-  }, [refreshStatus, sending, speak, status])
+  }, [conversationReady, ensureConversation, hideHistory, markUnknown, refreshStatus, sending, setMessages, speak, status])
 
   const sendAudioFile = useCallback(async (file) => {
-    if (!file || sending || status === 'expired') return
+    if (!file || sendInFlightRef.current || sending || status !== 'ready' || !conversationReady) return
+    sendInFlightRef.current = true
     setSending(true)
+    let cid
+    try { cid = await ensureConversation() } catch {
+      sendInFlightRef.current = false
+      setSending(false)
+      return
+    }
+    if (!mountedRef.current) { sendInFlightRef.current = false; return }
+    let knownOutcome = false
+    const controller = new AbortController()
+    streamControllerRef.current = controller
     const userId = makeId('voice')
     const assistantId = makeId('assistant')
     setMessages(items => [
@@ -716,10 +759,13 @@ export default function ODSTalk() {
       body.set('file', file, file.name || 'ods-talk-audio.webm')
       const resp = await fetch('/api/talk/audio-message', {
         method: 'POST',
+        headers: { 'X-ODS-Talk-Conversation': cid },
+        signal: controller.signal,
         body,
         credentials: 'same-origin',
       })
       if (resp.status === 401) {
+        hideHistory()
         setStatus('expired')
         setStatusText('Session expired. Scan the owner card again.')
         throw new Error('Session expired.')
@@ -729,6 +775,8 @@ export default function ODSTalk() {
         throw new Error(await parseError(resp, 'Voice message could not be sent.'))
       }
       const data = await resp.json()
+      if (data.conversation_id !== cid) throw new Error('The voice response belongs to a different conversation.')
+      knownOutcome = [undefined, null, '', 'ok', 'complete', 'error', 'interrupted'].includes(data.status)
       const transcript = data.transcript || 'Voice message'
       // The bridge passes Hermes' turn status through, as on the text path.
       // A failed or interrupted turn keeps what Hermes returned, is never
@@ -750,15 +798,18 @@ export default function ODSTalk() {
       }))
       speak(reply)
     } catch (err) {
+      if (!knownOutcome) markUnknown()
       setMessages(items => items.map(item => {
         if (item.id === userId) return { ...item, status: 'error' }
         if (item.id === assistantId) return { ...item, text: err.message || 'Something went wrong.', status: 'error' }
         return item
       }))
     } finally {
+      if (streamControllerRef.current === controller) streamControllerRef.current = null
+      sendInFlightRef.current = false
       setSending(false)
     }
-  }, [refreshStatus, sending, speak, status])
+  }, [conversationReady, ensureConversation, hideHistory, markUnknown, refreshStatus, sending, setMessages, speak, status])
 
   // Each permission request owns its recorder, tracks and callbacks. Removing
   // that identity cancels capture even when browser permission resolves later.
@@ -777,7 +828,7 @@ export default function ODSTalk() {
   }, [])
 
   const startRecording = async () => {
-    if (!voiceState.liveMic || recorderRef.current || sending) return
+    if (!voiceState.liveMic || recorderRef.current || sending || !conversationReady) return
     const capture = { stream: null, recorder: null, chunks: [] }
     recorderRef.current = capture
     setRecording(true)
@@ -854,13 +905,15 @@ export default function ODSTalk() {
   }
 
   const retryLast = () => {
+    if (!conversationReady || sendInFlightRef.current) return
     const lastUser = [...messages].reverse().find(message => message.role === 'user' && message.status !== 'pending')
+    if (lastUser?.attachmentKind && !lastUser.attachmentForRetry) return
     if (lastUser) sendText(lastUser.text, { attachment: lastUser.attachmentForRetry || null })
   }
 
   // Send is enabled either with text OR an attachment (an image alone is a
   // valid message — the model gets a default "describe this" prompt).
-  const canSend = (input.trim().length > 0 || pendingAttachment) && !sending && !recording && status === 'ready'
+  const canSend = (input.trim().length > 0 || pendingAttachment) && !sending && !recording && status === 'ready' && conversationReady
 
   return (
     <div className="pixel-app ods-talk min-h-dvh bg-theme-bg text-theme-text antialiased">
@@ -877,6 +930,21 @@ export default function ODSTalk() {
               </div>
             </div>
             <div className="flex items-center gap-1">
+              <button type="button"
+                disabled={!hydrated || conversationBusy || sending || recording || status === 'expired'}
+                onClick={async () => {
+                  if (sendInFlightRef.current || recorderRef.current) return
+                  sendInFlightRef.current = true
+                  try {
+                    await newConversation()
+                    for (const message of messages) if (message.imageUrl) URL.revokeObjectURL(message.imageUrl)
+                    setInput(''); clearPendingAttachment()
+                  } catch { /* notice retains the old conversation */ }
+                  finally { sendInFlightRef.current = false }
+                }}
+                className="rounded-lg border border-zinc-200 px-2 py-2 text-xs disabled:opacity-50">
+                New conversation
+              </button>
               <button
                 type="button"
                 onClick={() => setSpokenReplies(value => !value)}
@@ -900,6 +968,14 @@ export default function ODSTalk() {
             </div>
           </div>
         </header>
+
+        {(conversationNotice || storageNotice) && (
+          <div role="status" data-testid="talk-conversation-notice"
+            className="mx-4 mt-3 rounded-lg border border-theme-border px-3 py-2 text-sm">
+            {conversationNotice && <p>{conversationNotice}</p>}
+            {storageNotice && <p>{storageNotice}</p>}
+          </div>
+        )}
 
         <main className="flex-1 overflow-y-auto px-4 py-4">
           <div className="space-y-3">
@@ -1005,7 +1081,7 @@ export default function ODSTalk() {
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={sending || status === 'expired' || pendingAttachment}
+              disabled={sending || status === 'expired' || pendingAttachment || !conversationReady}
               className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-zinc-500 disabled:opacity-40"
               aria-label="Attach image or file"
               title="Attach image or file"
@@ -1030,7 +1106,7 @@ export default function ODSTalk() {
               <button
                 type="button"
                 onClick={recording ? stopRecording : startRecording}
-                disabled={sending}
+                disabled={sending || !conversationReady}
                 className={`grid h-11 w-11 shrink-0 place-items-center rounded-full ${
                   recording ? 'bg-red-600 text-white' : 'bg-zinc-100 text-zinc-700'
                 } disabled:opacity-40`}
@@ -1052,7 +1128,9 @@ export default function ODSTalk() {
           </div>
           {messages.some(message => message.status === 'error') && (
             <div className="mt-2 flex justify-end">
-              <button type="button" onClick={retryLast} className="text-sm font-medium text-zinc-700">
+              <button type="button" onClick={retryLast}
+                disabled={!conversationReady || sending || recording}
+                className="text-sm font-medium text-zinc-700 disabled:opacity-50">
                 Retry last message
               </button>
             </div>
@@ -1138,6 +1216,7 @@ function MessageBubble({ message, onApproval }) {
           // in those contexts would let typos render as headings or
           // accidental bold, which we don't want.
           <>
+            {message.attachmentKind === 'image' && <p className="mb-2 text-xs">Image question — separate from the conversation memory.</p>}
             {message.imageUrl && (
               <img
                 src={message.imageUrl}

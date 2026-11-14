@@ -1,3 +1,4 @@
+import { installTalkFetch } from '../test/talk-session'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import ODSTalk from './ODSTalk' // eslint-disable-line no-unused-vars
@@ -35,7 +36,7 @@ describe('Talk microphone ownership', () => {
     fetchMock = vi.fn(async url => ({ ok: true, status: 200, json: async () => url === '/api/talk/status'
       ? { capabilities: { text_chat: true, audio_message: true } }
       : { text: 'Voice received', transcript: 'Hello' } }))
-    vi.stubGlobal('fetch', fetchMock)
+    installTalkFetch(fetchMock)
   })
   afterEach(() => { vi.unstubAllGlobals(); Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false }) })
   const mount = async () => { const view = render(<ODSTalk />); await screen.findByText('Ready'); return view }
