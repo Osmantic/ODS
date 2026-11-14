@@ -51,4 +51,5 @@ it('editing the opened conversation still moves it to the top', async () => {
   expect(titles()).toEqual(['Older task', 'Newer task'])
   expect(highlighted()).toEqual(['Older task'])
   expect(readConversations()[0]).toMatchObject({chatId: 'older', draft: 'Next step'})
+  expect(readConversations()[0].updatedAt).toBeGreaterThan(2000)
 })
