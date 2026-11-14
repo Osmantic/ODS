@@ -20,9 +20,9 @@ function Install-ODSOpenCode {
         return $true
     }
     $bin = Split-Path -Parent $Destination
-    New-Item -ItemType Directory -Path $bin -Force | Out-Null
+    [System.IO.Directory]::CreateDirectory($bin) | Out-Null
     $stage = Join-Path $bin ('.ods-update-' + [guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $stage | Out-Null
+    [System.IO.Directory]::CreateDirectory($stage) | Out-Null
     try {
         $archive = Join-Path $stage 'release.zip'
         $url = "https://github.com/anomalyco/opencode/releases/download/v$($release.version)/$($release.asset)"
