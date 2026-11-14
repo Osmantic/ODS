@@ -80,16 +80,39 @@ function Get-WindowsODSHttpErrorDetail {
     try {
         $response = $ErrorRecord.Exception.Response
         if ($null -eq $response) { return $fallback }
-        $stream = $response.GetResponseStream()
-        if ($null -eq $stream) { return $fallback }
-        $reader = New-Object IO.StreamReader($stream)
-        try { $body = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        if ($response.PSObject.Methods.Name -contains 'GetResponseStream') {
+            $stream = $response.GetResponseStream()
+            if ($null -eq $stream) { return $fallback }
+            $reader = New-Object IO.StreamReader($stream)
+            try { $body = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        } else {
+            # PowerShell 7 exposes HttpResponseMessage instead of WebResponse.
+            $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        }
         if ([string]::IsNullOrWhiteSpace($body)) { return $fallback }
         try {
             $parsed = $body | ConvertFrom-Json -ErrorAction Stop
-            if (-not [string]::IsNullOrWhiteSpace([string]$parsed.error)) {
-                return [string]$parsed.error
+            $code = $null
+            $detail = $null
+            foreach ($name in @('code', 'error')) {
+                $field = $parsed.PSObject.Properties[$name]
+                if ($null -ne $field -and $field.Value -is [string] -and
+                    -not [string]::IsNullOrWhiteSpace($field.Value)) {
+                    $code = $field.Value
+                    break
+                }
             }
+            foreach ($name in @('message', 'reason')) {
+                $field = $parsed.PSObject.Properties[$name]
+                if ($null -ne $field -and $field.Value -is [string] -and
+                    -not [string]::IsNullOrWhiteSpace($field.Value)) {
+                    $detail = $field.Value
+                    break
+                }
+            }
+            if ($code -and $detail -and $code -cne $detail) { return "${code}: $detail" }
+            if ($detail) { return $detail }
+            if ($code) { return $code }
         } catch { }
         return $body.Substring(0, [Math]::Min(500, $body.Length))
     } catch {

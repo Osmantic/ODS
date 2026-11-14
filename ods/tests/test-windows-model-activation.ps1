@@ -27,6 +27,64 @@ function Assert-Throws {
     throw "$Label did not throw"
 }
 
+# Real PowerShell HTTP exception shapes with in-memory response bodies only.
+Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Net;
+using System.Text;
+public sealed class ODSActivationErrorResponse : WebResponse {
+    private readonly string body;
+    public ODSActivationErrorResponse(string value) { body = value; }
+    public override Stream GetResponseStream() {
+        return new MemoryStream(Encoding.UTF8.GetBytes(body));
+    }
+}
+'@
+function New-ActivationError {
+    param([string]$Body, [switch]$Modern)
+    if ($Modern) {
+        $response = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]::Conflict)
+        $response.Content = [Net.Http.StringContent]::new($Body)
+        $exception = [Microsoft.PowerShell.Commands.HttpResponseException]::new('HTTP fixture fallback', $response)
+    } else {
+        $response = [ODSActivationErrorResponse]::new($Body)
+        $exception = [Net.WebException]::new('HTTP fixture fallback', $null,
+            [Net.WebExceptionStatus]::ProtocolError, $response)
+    }
+    return [Management.Automation.ErrorRecord]::new($exception, 'fixture409',
+        [Management.Automation.ErrorCategory]::InvalidOperation, $null)
+}
+
+$errorCases = @(
+    @('{"error":"local_mode_required","code":"ods_mode_mismatch","reason":"mode_mismatch","message":"Effective cloud does not match configured local."}', 'ods_mode_mismatch: Effective cloud does not match configured local.'),
+    @('{"error":"local_mode_required","code":"ods_mode_unknown","message":"The effective or configured mode is unknown."}', 'ods_mode_unknown: The effective or configured mode is unknown.'),
+    @('{"error":"local_mode_required","code":"local_mode_required","message":"Effective mode is cloud."}', 'local_mode_required: Effective mode is cloud.'),
+    @('{"error":"legacy error","message":"Actionable message"}', 'legacy error: Actionable message'),
+    @('{"error":"legacy error","code":"specific_code","message":{},"reason":"specific_reason"}', 'specific_code: specific_reason'),
+    @('{"code":"specific_code","message":"   ","reason":false}', 'specific_code'),
+    @('{"message":"Message without code"}', 'Message without code'),
+    @('{"reason":"Reason without code"}', 'Reason without code'),
+    @('{"error":"legacy error"}', 'legacy error'),
+    @('{"code":"same","message":"same"}', 'same'),
+    @('not JSON', 'not JSON'),
+    @(('x' * 600), ('x' * 500)),
+    @('', 'HTTP fixture fallback')
+)
+$responseShapes = @($false)
+if ($PSVersionTable.PSVersion.Major -ge 7) { $responseShapes += $true }
+foreach ($modern in $responseShapes) {
+    foreach ($case in $errorCases) {
+        $record = New-ActivationError -Body $case[0] -Modern:$modern
+        try {
+            Assert-Equal (Get-WindowsODSHttpErrorDetail -ErrorRecord $record) $case[1] "HTTP error detail modern=$modern"
+        } finally { $record.Exception.Response.Dispose() }
+    }
+}
+$noResponse = [Management.Automation.ErrorRecord]::new([Exception]::new('no response fallback'),
+    'fixture', [Management.Automation.ErrorCategory]::InvalidOperation, $null)
+Assert-Equal (Get-WindowsODSHttpErrorDetail -ErrorRecord $noResponse) 'no response fallback' 'Missing response fallback'
+
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) "ods-windows-model-activation-contract"
 Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path (Join-Path $tempRoot "config") -Force | Out-Null
@@ -119,17 +177,22 @@ MAX_CONTEXT=65536
 
     $script:activationMode = "success"
     $script:lastActivation = $null
+    $script:activationCalls = 0
     function Invoke-WebRequest {
         param($Method, $Uri, [switch]$UseBasicParsing, $TimeoutSec, $ErrorAction)
         return [pscustomobject]@{ StatusCode = 200 }
     }
     function Invoke-RestMethod {
         param($Method, $Uri, $Headers, $ContentType, $Body, [switch]$UseBasicParsing, $TimeoutSec, $ErrorAction)
+        $script:activationCalls++
         $script:lastActivation = @{
             Uri = $Uri; Headers = $Headers; ContentType = $ContentType
             Body = $Body; TimeoutSec = $TimeoutSec
         }
         if ($script:activationMode -eq "failure") { throw "simulated activation failure" }
+        if ($script:activationMode -eq "structured") {
+            throw (New-ActivationError -Body $errorCases[0][0] -Modern:$script:modernResponse)
+        }
         if ($script:activationMode -eq "invalid") {
             return [pscustomobject]@{ status = "activated"; model_id = "wrong-model"; tier = "1"; context_length = 8192 }
         }
@@ -174,6 +237,17 @@ MAX_CONTEXT=65536
         Invoke-WindowsODSModelActivationTransaction -EnvMap $envMap `
             -ModelId "catalog-model" -Tier "1" -ContextLength 8192
     } "Model activation failed" "Activation failure propagation"
+
+    $script:activationMode = "structured"
+    foreach ($modern in $responseShapes) {
+        $script:modernResponse = $modern
+        $beforeCalls = $script:activationCalls
+        Assert-Throws {
+            Invoke-WindowsODSModelActivationTransaction -EnvMap $envMap `
+                -ModelId "catalog-model" -Tier "1" -ContextLength 8192
+        } 'Model activation failed: ods_mode_mismatch: Effective cloud does not match configured local\.' 'Structured activation failure'
+        Assert-Equal $script:activationCalls ($beforeCalls + 1) 'Failure is not retried'
+    }
 
     Write-Host "[PASS] Windows transactional model activation"
 } finally {
