@@ -79,7 +79,9 @@ jobs:
           python -m pip install 'uv==0.12.19'
           # The API image uses Python 3.11; Pillow 13 no longer supports 3.10.
           lock_python=3.10
-          if [ "$SERVICE" = dashboard-api ]; then lock_python=3.11; fi
+          # Their images run Python 3.11+ (privacy-shield 3.11, ape 3.12), and
+          # Starlette 1.10 requires 3.11; dashboard-api already locks for 3.11.
+          case "$SERVICE" in dashboard-api|ape|privacy-shield) lock_python=3.11 ;; esac
           uv pip compile "ods/extensions/services/$SERVICE/requirements.txt" --universal --python-version "$lock_python" --generate-hashes --no-header --no-annotate --index-url https://pypi.org/simple -o "ods/extensions/services/$SERVICE/requirements.lock"
           git diff --exit-code -- "ods/extensions/services/$SERVICE/requirements.lock"
           python .github/scripts/test_runtime_locks.py
