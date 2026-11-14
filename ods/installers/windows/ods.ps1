@@ -2286,13 +2286,13 @@ function Invoke-Start {
 }
 
 function Stop-ODSOwnedContainersForRecovery {
-    param([string]$Service)
+    param([string[]]$Service)
     $python = Resolve-ODSHostAgentPython
     if (-not $python) { throw 'Python 3 is required to verify ODS container ownership before stopping' }
     $helper = Join-Path $InstallDir 'scripts/stop-owned-containers.py'
     if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw 'ODS container recovery helper is missing' }
     $arguments = @($python.PrefixArgs) + @('-X', 'utf8', $helper, '--install-dir', $InstallDir)
-    if ($Service) { $arguments += @('--service', $Service) }
+    foreach ($name in @($Service | Where-Object { $_ })) { $arguments += @('--service', $name) }
     Write-AIWarn 'Compose validation failed; stopping only existing containers verified as belonging to this installation.'
     & $python.FilePath @arguments
     if ($LASTEXITCODE -ne 0) { throw 'Could not stop verified ODS containers' }
@@ -3444,6 +3444,41 @@ function Invoke-Enable {
     exit 1
 }
 
+function Get-ODSExtensionStopTargets {
+    <#
+    .SYNOPSIS
+        The extension's service plus the namespaced companions its compose
+        fragment owns: its database, worker or cache, named <id>-*.
+
+        Same rule as the host agent's _extension_stop_targets and
+        scripts/extension-selection.py: a service with its own extension
+        directory keeps its own lifecycle. Reads the fragment's top-level
+        service keys line by line, like the manifest readers above; every
+        shipped fragment indents them by two spaces.
+    #>
+    param(
+        [Parameter(Mandatory=$true)][string]$ServiceId,
+        [Parameter(Mandatory=$true)][string]$ComposePath
+    )
+
+    $targets = @($ServiceId)
+    $inServices = $false
+    foreach ($line in [IO.File]::ReadAllLines($ComposePath)) {
+        if ($line -match '^\s*(#|$)') { continue }
+        if ($line -match '^\S') { $inServices = ($line -match '^services:\s*(#.*)?$'); continue }
+        if (-not $inServices -or $line -notmatch '^  ([A-Za-z0-9][A-Za-z0-9_.-]*):\s*(#.*)?$') { continue }
+        $name = $Matches[1]
+        if (-not $name.StartsWith("$ServiceId-") -or $targets -contains $name) { continue }
+        $ownDirs = @(
+            (Join-Path (Join-Path (Join-Path $InstallDir "extensions") "services") $name),
+            (Join-Path (Join-Path (Join-Path $InstallDir "data") "user-extensions") $name)
+        )
+        if (@($ownDirs | Where-Object { Test-Path -LiteralPath $_ -PathType Container }).Count) { continue }
+        $targets += $name
+    }
+    return $targets
+}
+
 function Invoke-Disable {
     <#
     .SYNOPSIS
@@ -3517,6 +3552,10 @@ function Invoke-Disable {
         Write-AIWarn "'.\ods.ps1 start' will fail until those extensions are disabled too."
     }
 
+    # Companions (<id>-*) leave the project with the fragment; stop them now,
+    # or they keep running and '.\ods.ps1 stop' can no longer reach them.
+    $stopTargets = @(Get-ODSExtensionStopTargets -ServiceId $ServiceId -ComposePath $composePath)
+
     # Best-effort container stop -- skip gracefully when Docker Desktop is
     # offline so the rename + flags update always succeeds.
     $dockerRunning = $false
@@ -3524,14 +3563,14 @@ function Invoke-Disable {
     if ($dockerRunning) {
         try { $flags = Get-ComposeFlags }
         catch {
-            Stop-ODSOwnedContainersForRecovery -Service $ServiceId
+            Stop-ODSOwnedContainersForRecovery -Service $stopTargets
             $flags = $null
         }
         if ($flags) {
-            Write-AI "Stopping $ServiceId..."
+            Write-AI "Stopping $($stopTargets -join ', ')..."
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "SilentlyContinue"
-            & docker compose @flags stop $ServiceId 2>$null
+            & docker compose @flags stop @stopTargets 2>$null
             $ErrorActionPreference = $prevEAP
         }
     } else {
