@@ -315,3 +315,73 @@ def test_invalid_or_foreign_thinking_control_is_refused_without_staging(tmp_path
     assert ('route does not match' if control is None else 'invalid ODS Pixel thinking-control contract') in result.stderr
     assert path.read_bytes() == before
     assert not list(tmp_path.glob('.ods-pixel-runtime-budget.*'))
+
+
+def run_with_apparmor(tmp_path, enabled, profile_present, prior=None):
+    tmp_path.chmod(0o700)
+    value = configuration()
+    if prior is not None:
+        value['agents']['defaults']['sandbox'] = {'docker': {'apparmorProfile': prior}}
+    path = tmp_path / 'openclaw.json'
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    enabled_file = tmp_path / 'apparmor-enabled'
+    enabled_file.write_text(enabled + '\n')
+    profile = tmp_path / 'ods-pixel-sandbox'
+    if profile_present:
+        profile.write_text('profile ods-pixel-sandbox {}\n')
+    env = {**os.environ, 'HOME': str(tmp_path),
+           'ODS_PIXEL_APPARMOR_ENABLED_FILE': str(enabled_file),
+           'ODS_PIXEL_SANDBOX_APPARMOR_FILE': str(profile)}
+    result = subprocess.run([sys.executable, str(WRITER), str(path), '3099', ''],
+                            env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    staged = result.stdout.strip()
+    document = value if staged == 'unchanged' else json.loads(Path(staged).read_text())
+    return document['agents']['defaults']['sandbox']['docker']
+
+
+@pytest.mark.parametrize('enabled,profile_present,expected', [
+    ('Y', True, 'ods-pixel-sandbox'),   # AppArmor host with ODS's profile loaded
+    ('Y', False, None),                 # AppArmor host where Docker does not use it
+    ('N', True, None),                  # stale profile file with AppArmor disabled
+])
+def test_sandbox_uses_the_ods_apparmor_profile_only_where_it_is_loaded(tmp_path, enabled, profile_present, expected):
+    docker = run_with_apparmor(tmp_path, enabled, profile_present)
+    assert docker.get('apparmorProfile') == expected
+
+
+@pytest.mark.parametrize('enabled,profile_present,prior,expected', [
+    ('N', False, 'ods-pixel-sandbox', None),          # ODS's own value goes where it cannot load
+    ('N', False, 'owner-profile', 'owner-profile'),
+    ('Y', True, 'owner-profile', 'owner-profile'),    # an owner's choice wins where ODS's loads
+    ('Y', True, 'ods-pixel-sandbox', 'ods-pixel-sandbox'),
+])
+def test_sandbox_keeps_an_owner_apparmor_profile(tmp_path, enabled, profile_present, prior, expected):
+    assert run_with_apparmor(tmp_path, enabled, profile_present, prior).get('apparmorProfile') == expected
+
+
+def test_profile_lets_exec_sessions_signal_within_the_sandbox():
+    profile = (Path(__file__).resolve().parents[1]
+               / 'extensions/services/pixel-agent/host/ods-pixel-sandbox.apparmor').read_text()
+    assert 'profile ods-pixel-sandbox ' in profile
+    for rule in ('signal (send,receive) peer="ods-pixel-sandbox",',
+                 'signal (send,receive) peer="ods-pixel-sandbox//&unconfined",',
+                 'signal (receive) peer=unconfined,', 'deny mount,',
+                 'deny /sys/kernel/security/** rwklx,', 'deny network vsock,'):
+        assert rule in profile
+    # Docker's own docker-default rules stay: no broader signal or capability grant.
+    assert 'signal,' not in profile and 'signal (send) peer=unconfined' not in profile
+
+
+def test_installer_loads_the_profile_before_its_first_runtime_overlay_and_uninstall_removes_it():
+    root = Path(__file__).resolve().parents[1]
+    host = (root / 'installers/lib/pixel-host-install.sh').read_text()
+    load = host.index('if ! _ods_pixel_install_sandbox_apparmor_profile "$owner" "$home"; then')
+    overlay = host.index('runtime_budget_status="$(_ods_pixel_apply_runtime_budget', load - 2000)
+    assert load < overlay
+    # The managed-update check accepts exactly what the writer sets.
+    assert host.count('normalized_sandbox_docker.setdefault("apparmorProfile", "ods-pixel-sandbox")') == 1
+    assert 'install -o root -g root -m 0644 "$source" "$target"' in host
+    uninstall = (root / 'lib/pixel-uninstall.sh').read_text()
+    assert '/ods-pixel-sandbox"' in uninstall and '-R "$apparmor_profile"' in uninstall
