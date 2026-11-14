@@ -1831,6 +1831,11 @@ if [[ "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_ap
     fi
 fi
 
+# Retain the legacy native model before promotion rewrites GGUF_FILE. Process
+# listings join argv without quoting, so they cannot preserve model paths with
+# spaces. This capture also works when no Docker config snapshot was needed.
+MACOS_LEGACY_PREVIOUS_GGUF="$(read_env_value GGUF_FILE)"
+
 # ── Phase 3: Update .env ──
 BOOTSTRAP_PIXEL_CONFIG_MUTATED=true
 write_status "swapping" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 ""
@@ -2312,8 +2317,9 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             # Capture old model path for rollback before we kill the process
             _old_pid=$(cat "$LLAMA_SERVER_PID_FILE" 2>/dev/null | tr -d '[:space:]')
             _old_model_path=""
-            if [[ -n "$_old_pid" ]] && kill -0 "$_old_pid" 2>/dev/null; then
-                _old_model_path=$(ps -p "$_old_pid" -o args= 2>/dev/null | grep -oE '\-\-model [^ ]+' | awk '{print $2}') || true
+            if [[ -n "$_old_pid" && -n "${MACOS_LEGACY_PREVIOUS_GGUF:-}" ]] \
+                && kill -0 "$_old_pid" 2>/dev/null; then
+                _old_model_path="$MODELS_DIR/$MACOS_LEGACY_PREVIOUS_GGUF"
             fi
 
             # Stop existing native llama-server
