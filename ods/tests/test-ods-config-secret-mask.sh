@@ -214,5 +214,32 @@ else
 fi
 
 echo ""
+# Owners can append a final setting without a newline, including a secret.
+for eof_path in "$PATH_FULL" "$PATH_NO_JQ" "$PATH_NO_TOOLS"; do
+    printf 'ODS_VERSION=2.0.0-test\nOWNER_LAST_SETTING=kept' > "$INSTALL_SCAFFOLD/.env"
+    eof_output=$(run_ods_config_show "$eof_path" "unterminated")
+    if grep -qF 'OWNER_LAST_SETTING=kept' <<<"$eof_output"; then
+        pass "unterminated final setting is shown"
+    else
+        fail "unterminated final setting was dropped"
+    fi
+
+    printf 'ODS_VERSION=2.0.0-test\nN8N_USER=%s' "$SECRET_USER" > "$INSTALL_SCAFFOLD/.env"
+    eof_output=$(run_ods_config_show "$eof_path" "unterminated-secret")
+    if grep -qF 'N8N_USER=***' <<<"$eof_output" && ! grep -qF "$SECRET_USER" <<<"$eof_output"; then
+        pass "unterminated final secret remains masked"
+    else
+        fail "unterminated final secret is missing or exposed"
+    fi
+done
+
+printf 'ODS_VERSION=2.0.0-test\n# EOF comment' > "$INSTALL_SCAFFOLD/.env"
+eof_output=$(run_ods_config_show "$PATH_FULL" "unterminated-comment")
+if grep -qF 'ODS_VERSION=2.0.0-test' <<<"$eof_output" && ! grep -qF 'EOF comment' <<<"$eof_output"; then
+    pass "unterminated comment is skipped"
+else
+    fail "unterminated comment changed the config listing"
+fi
+
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

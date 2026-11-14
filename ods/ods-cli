@@ -2780,7 +2780,7 @@ cmd_config() {
             _cmd_config_load_secret_schema
 
             local _line _key
-            while IFS= read -r _line; do
+            while IFS= read -r _line || [[ -n "$_line" ]]; do
                 [[ -z "$_line" || "$_line" =~ ^[[:space:]]*# ]] && continue
                 _key="${_line%%=*}"
                 if _cmd_config_is_secret "$_key"; then
@@ -4137,12 +4137,12 @@ META
 
                 # Parse both env files
                 declare -A env1 env2
-                while IFS='=' read -r key value; do
+                while IFS='=' read -r key value || [[ -n "$key" ]]; do
                     [[ "$key" =~ ^[[:space:]]*# ]] && continue
                     [[ -z "$key" ]] && continue
                     env1["$key"]="$value"
                 done < "$dir1/env"
-                while IFS='=' read -r key value; do
+                while IFS='=' read -r key value || [[ -n "$key" ]]; do
                     [[ "$key" =~ ^[[:space:]]*# ]] && continue
                     [[ -z "$key" ]] && continue
                     env2["$key"]="$value"
