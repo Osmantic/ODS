@@ -1828,7 +1828,7 @@ normalized_agent_tools["deny"] = [
     if item not in {
         "web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
         "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-        "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry",
+        "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry", "pixel_ods_notes", "pixel_ods_notify", "pixel_ods_mcp",
         "pixel_web_extract"
     }
 ]
@@ -1838,7 +1838,7 @@ for extension_tool in (
     "cron", "create_goal", "get_goal", "update_goal", "update_plan",
     "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
     "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_artifact", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"
+    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_artifact", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry", "pixel_ods_notes", "pixel_ods_notify", "pixel_ods_mcp"
 ):
     if extension_tool not in normalized_also_allow:
         normalized_also_allow.append(extension_tool)
@@ -1846,7 +1846,7 @@ for permitted_tool in (
     "cron", "create_goal", "get_goal", "update_goal", "update_plan",
     "web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
     "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_artifact", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"
+    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_artifact", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry", "pixel_ods_notes", "pixel_ods_notify", "pixel_ods_mcp"
 ):
     if permitted_tool not in normalized_sandbox_allow:
         normalized_sandbox_allow.append(permitted_tool)
@@ -2093,7 +2093,7 @@ _ods_pixel_refresh_plugin_registry() {
     registry="$(ods_pixel_run_as_owner "$owner" "$home" "$openclaw_bin" \
         plugins registry --refresh --json 2>/dev/null)" || return 1
     jq -e --arg root "$plugin_root" '
-        (["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_project_build", "pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] | sort) as $tools
+        (["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_project_build", "pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry", "pixel_ods_notes", "pixel_ods_notify", "pixel_ods_mcp"] | sort) as $tools
         | .refreshed == true
         and .registry.version == 1
         and .registry.refreshReason == "manual"
@@ -2113,7 +2113,7 @@ _ods_pixel_verify_plugin_loaded() {
     local owner="$1" home="$2" openclaw_bin="$3" plugin_root="$4"
     ods_pixel_run_as_owner "$owner" "$home" "$openclaw_bin" plugins list --json 2>/dev/null \
         | jq -e --arg root "$plugin_root" '
-            ["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_project_build", "pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] as $tools
+            ["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_project_build", "pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry", "pixel_ods_notes", "pixel_ods_notify", "pixel_ods_mcp"] as $tools
             | [
                 .plugins[]?
                 | select(
@@ -5307,6 +5307,60 @@ PY
     ods_sudo systemctl enable ods-pixel-project.service || return 1
 }
 
+# Portal integrations: the owner's notes, ntfy notifications and MCP servers.
+# Programs are root-owned in their own libexec folder; the unit runs as the owner.
+_ods_pixel_install_integrations() {
+    local owner="$1" home="$2" source="$3" stage name
+    local target=/usr/local/libexec/ods-pixel-integrations
+    local unit=/etc/systemd/system/pixel-integrations.service
+    [[ "$owner" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || return 1
+    [[ "$home" == /* && "$home" != / && ! "$home" =~ [[:space:]\"\\%] ]] || return 1
+    # The owner socket is safe only while the gateway sandbox cannot see the
+    # state folder: refuse a gateway bind that covers it.
+    local state="$home/.config/ods/pixel-integrations" bound
+    bound="$(systemctl show openclaw-gateway.service -p BindPaths -p BindReadOnlyPaths --value)" || return 1
+    for name in $bound; do
+        name="${name#-}"; name="${name%%:*}"
+        if [[ "$state/" == "${name%/}/"* ]]; then
+            ai_bad "The Portal gateway can see $name, which holds the integrations owner socket."
+            return 1
+        fi
+    done
+    stage="$(mktemp -d)" || return 1
+    local text
+    text="$(<"$source/pixel-integrations.service")" || { rm -rf -- "$stage"; return 1; }
+    text="${text//__PIXEL_SERVICE_USER__/$owner}"
+    text="${text//__PIXEL_HOME__/$home}"
+    [[ "$text" != *__PIXEL_* ]] || { rm -rf -- "$stage"; return 1; }
+    printf '%s\n' "$text" >"$stage/pixel-integrations.service" || { rm -rf -- "$stage"; return 1; }
+    ods_sudo install -d -o root -g root -m 0755 "$target" || { rm -rf -- "$stage"; return 1; }
+    for name in integrations_service.py integrations_common.py integrations_notes.py integrations_mcp.py unix_peer.py; do
+        ods_sudo install -o root -g root -m 0644 "$source/$name" "$target/$name" || { rm -rf -- "$stage"; return 1; }
+    done
+    ods_sudo install -o root -g root -m 0644 "$stage/pixel-integrations.service" "$unit" || { rm -rf -- "$stage"; return 1; }
+    rm -rf -- "$stage"
+    ods_sudo systemctl daemon-reload || return 1
+    ods_sudo systemctl enable pixel-integrations.service || return 1
+    ods_sudo systemctl restart pixel-integrations.service || return 1
+    ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 - "$home/.config/ods/pixel-integrations/owner.sock" <<'PY' || return 1
+import json, socket, sys, time
+for attempt in range(50):
+    try:
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(10)
+            client.connect(sys.argv[1])
+            client.sendall(b'{"schemaVersion":1,"action":"get"}\n')
+            with client.makefile('rb') as stream:
+                if json.loads(stream.readline(1 << 20)).get('ok') is True:
+                    break
+    except (OSError, ValueError):
+        pass
+    if attempt == 49:
+        raise SystemExit('Portal integrations did not answer on the owner socket')
+    time.sleep(.2)
+PY
+}
+
 _ods_pixel_wait_ingress() {
     local owner="$1" home="$2" attempts="${3:-60}" delay="${4:-1}" response
     [[ "$attempts" =~ ^[0-9]+$ && "$attempts" -ge 1 && "$attempts" -le 300 ]] || return 1
@@ -6229,6 +6283,10 @@ ods_pixel_install_default_agent() {
     # owner transport have passed installation health. Existing model-budget
     # reconciliation never grants this capability to an older installation.
     _ods_pixel_install_project_runtime "$owner" "$home" "$plugin_root/host" || return 1
+    if ! _ods_pixel_install_integrations "$owner" "$home" "$plugin_root/host"; then
+        ai_bad "Could not install and start the Portal integrations service."
+        return 1
+    fi
     runtime_budget_status="$(_ods_pixel_apply_runtime_budget "$owner" "$home" \
         "$home/.openclaw/openclaw.json" "$openclaw_bin" "$answers" unix /var/lib/ods-pixel-project/control.sock)" || return 1
     case "$runtime_budget_status" in
