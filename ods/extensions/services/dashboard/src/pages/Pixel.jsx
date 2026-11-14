@@ -1262,7 +1262,7 @@ export default function Pixel({ systemStatus = null }) {
       if (hydrating.current) {
         hydrating.current = false
         if (hydrationAction.current === 'activate') conversationWriter.current.activate()
-        else if (hydrationAction.current === 'normalize') conversationWriter.current(snapshot)
+        else if (hydrationAction.current === 'normalize') conversationWriter.current(snapshot, true)
         hydrationAction.current = null
         savedView.current = view
         return
