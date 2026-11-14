@@ -1583,9 +1583,21 @@ def _require_initial_absence(plan, source):
     sockets = []
     try:
         for port in (plan['access_settings']['gateway_port'], plan['access_port']):
+            # Darwin permits a reusable loopback bind beside a wildcard owner.
+            # Check that exact address too, without ever listening publicly.
+            wildcard = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                wildcard.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                wildcard.bind(('0.0.0.0', port))
+            finally:
+                wildcard.close()
             listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sockets.append(listener)
+            # Match server restart semantics: retired TIME_WAIT connections are
+            # not owners. Never enable SO_REUSEPORT to share a live listener.
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(('127.0.0.1', port))
+            listener.listen(1)
     except OSError:
         raise InstallError('initial-install-port-unavailable') from None
     finally:

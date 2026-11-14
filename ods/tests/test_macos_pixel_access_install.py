@@ -494,7 +494,7 @@ def test_initial_plan_requires_bundle_and_does_not_adopt_installed_agent(deploym
         installer.make_plan(**dict(bundled_deployment, source_plist=str(agent)), initial_install=True)
 
 
-@pytest.mark.parametrize('fault', [None, 'loaded', 'unknown', 'timeout', 'definition', 'registered', 'port'])
+@pytest.mark.parametrize('fault', [None, 'loaded', 'unknown', 'timeout', 'definition', 'registered', 'port', 'option', 'listen'])
 def test_initial_absence_is_explicit_and_closes_every_probe_socket(tmp_path, monkeypatch, fault):
     source = SimpleNamespace(target='gui/501/fixture', verify_definition=Mock(
         side_effect=installer.InstallError('changed-template') if fault == 'definition' else None))
@@ -514,6 +514,8 @@ def test_initial_absence_is_explicit_and_closes_every_probe_socket(tmp_path, mon
     def create(*args):
         listener = Mock()
         if fault == 'port' and sockets: listener.bind.side_effect = OSError('busy')
+        if fault == 'option': listener.setsockopt.side_effect = OSError('unavailable')
+        if fault == 'listen': listener.listen.side_effect = OSError('busy')
         sockets.append(listener)
         return listener
     monkeypatch.setattr(installer.socket, 'socket', create)
@@ -522,9 +524,13 @@ def test_initial_absence_is_explicit_and_closes_every_probe_socket(tmp_path, mon
             installer._require_initial_absence(plan, source)
     else:
         installer._require_initial_absence(plan, source)
-        assert len(sockets) == 2
-        sockets[0].bind.assert_called_once_with(('127.0.0.1', 18789))
-        sockets[1].bind.assert_called_once_with(('127.0.0.1', 18790))
+        assert len(sockets) == 4
+        sockets[0].bind.assert_called_once_with(('0.0.0.0', 18789))
+        sockets[1].bind.assert_called_once_with(('127.0.0.1', 18789))
+        sockets[2].bind.assert_called_once_with(('0.0.0.0', 18790))
+        sockets[3].bind.assert_called_once_with(('127.0.0.1', 18790))
+        sockets[0].listen.assert_not_called()
+        sockets[2].listen.assert_not_called()
     for listener in sockets: listener.close.assert_called_once()
 
 
@@ -537,6 +543,57 @@ def test_initial_absence_rejects_actual_occupied_loopback_port(tmp_path, monkeyp
         listener.bind(('127.0.0.1', 0))
         plan = {'owner': SimpleNamespace(pw_dir=str(tmp_path)),
                 'access_settings': {'gateway_port': listener.getsockname()[1]}, 'access_port': 18790}
+        with pytest.raises(installer.InstallError, match='initial-install-port-unavailable'):
+            installer._require_initial_absence(plan, source)
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX server restart semantics')
+def test_initial_absence_allows_retired_server_time_wait(tmp_path, monkeypatch):
+    import errno
+    import socket
+    source = SimpleNamespace(target='gui/501/fixture', verify_definition=Mock())
+    monkeypatch.setattr(installer, '_command', Mock(side_effect=
+        installer.InstallError('host-command-failed', returncode=113)))
+    with socket.socket() as server:
+        server.settimeout(2)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(('127.0.0.1', 0))
+        address = server.getsockname()
+        server.listen(1)
+        with socket.create_connection(address, timeout=2) as client:
+            accepted, _ = server.accept()
+            # The server closes first, leaving TIME_WAIT on its listening port.
+            accepted.close()
+            assert client.recv(1) == b''
+    with socket.socket() as bare_probe:
+        with pytest.raises(OSError) as busy:
+            bare_probe.bind(address)
+        assert busy.value.errno == errno.EADDRINUSE
+    plan = {'owner': SimpleNamespace(pw_dir=str(tmp_path)),
+            'access_settings': {'gateway_port': address[1]}, 'access_port': 0}
+    installer._require_initial_absence(plan, source)
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX server restart semantics')
+@pytest.mark.parametrize('address', ['127.0.0.1', '0.0.0.0'])
+@pytest.mark.parametrize('mode', ['bound', 'listen', 'reuseaddr', 'reuseport'])
+def test_initial_absence_rejects_live_port_owners(tmp_path, monkeypatch, address, mode):
+    import socket
+    source = SimpleNamespace(target='gui/501/fixture', verify_definition=Mock())
+    monkeypatch.setattr(installer, '_command', Mock(side_effect=
+        installer.InstallError('host-command-failed', returncode=113)))
+    with socket.socket() as owner:
+        if mode in ('reuseaddr', 'reuseport'):
+            owner.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if mode == 'reuseport':
+            if not hasattr(socket, 'SO_REUSEPORT'):
+                pytest.skip('SO_REUSEPORT unavailable')
+            owner.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        owner.bind((address, 0))
+        if mode != 'bound':
+            owner.listen(1)
+        plan = {'owner': SimpleNamespace(pw_dir=str(tmp_path)),
+                'access_settings': {'gateway_port': owner.getsockname()[1]}, 'access_port': 0}
         with pytest.raises(installer.InstallError, match='initial-install-port-unavailable'):
             installer._require_initial_absence(plan, source)
 
