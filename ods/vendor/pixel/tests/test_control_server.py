@@ -231,6 +231,9 @@ class ControlServerTests(unittest.TestCase):
             "PIXEL_SOURCE_PROJECTION_DIR": str(self.base / "source-projection"),
             "PIXEL_ACTION_PROPOSAL_DIR": str(self.base / "source-proposals"),
             "PIXEL_LIMB_CALENDAR_ENABLED": "1",
+            # The gateway's Calendar-write and web flags reach the chat plugin too.
+            "PIXEL_LIMB_CALENDAR_WRITE_ENABLED": "0",
+            "PIXEL_LIMB_WEB_ENABLED": "0",
             "PIXEL_SOURCE_STALE_AFTER_MS": "3600000",
             "SEARXNG_BASE_URL": "http://127.0.0.1:8890",
         }

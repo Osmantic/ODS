@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "clientId": "example-client",
   "core": {
-    "pixel": "4.3.33",
+    "pixel": "4.3.34",
     "modificationAllowed": false,
     "privateStateOutsideCore": true
   },

@@ -1,5 +1,30 @@
 # Changelog
 
+## 4.3.34 - ODS-maintained candidate
+
+- Source Broker readiness for owner-connected Google accounts:
+  - Calendar follows `nextPageToken` up to a page cap and records the synced
+    window and truncation; the list tool says when a request falls outside it.
+  - Each refresh reads every source on its own. A failing source keeps its
+    last snapshot and marks only itself in a new content-free `status.json`.
+  - Scopes Google granted are recorded; a missing read scope is reported
+    without calling that API.
+  - `--exchange FLOW` turns a root-written sign-in handoff into a token held
+    only by the broker identity; `--revoke` revokes the grant and deletes it.
+    The token and result name only the account Google's ID token verifies,
+    never the requested account hint.
+    `./pixel source-broker --prepare` installs the identity and units without
+    starting anything.
+  - Every release carries the plugin's `typebox` dependency, so a source turned
+    on later loads the plugin from the active release.
+  - `pixel verify` accepts a broker whose first refresh is still running, which
+    a large mailbox can take minutes to finish.
+- Optional answers-file keys `calendarWriteEnabled`, `gmailWindowDays` and
+  `userTimezone` default to the previous behaviour. The gateway environment
+  carries the real web and Calendar-write flags.
+- See `ODS-QUALIFICATION-4.3.34.md` for scoped validation and pending installed
+  upgrade qualification. Prior compatibility records remain historical.
+
 ## 4.3.33 - ODS-maintained candidate
 
 - Patch Web Courier's hash-locked certifi to 2026.10.19 and urllib3 to 2.8.0.
