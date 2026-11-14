@@ -1295,6 +1295,7 @@ const contracts = [
   ]),
   ["deploy/sandbox/Dockerfile", `LABEL org.osmantic.pixel.sandbox-node="${manifest.sandboxNodeRuntime.version}"`],
   ["scripts/bootstrap.sh", 'pixel_prove_sandbox_runtime "$candidate_sandbox_id" "$PIXEL_GENERATED_SANDBOX_NODE_VERSION"'],
+  ["deploy/sandbox/Dockerfile", "python-is-python3"],
   ["deploy/compose.yaml", manifest.referenceImages.searxng],
   ["deploy/compose.yaml", 'driver: "none"'],
   ["deploy/searxng/settings.yml.template", 'method: "POST"'],
