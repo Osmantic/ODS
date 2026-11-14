@@ -13,14 +13,18 @@ import socket
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-import aiohttp
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None  # type: ignore[assignment]
 import httpx
 
 from config import (
     SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, EXTENSIONS_DIR, GPU_BACKEND,
-    LIBRARY_MANAGEABLE_BUILTINS, get_env_file_read_error, load_extension_manifests, read_live_env_value,
+    LIBRARY_MANAGEABLE_BUILTINS, WINDOWS_DESKTOP_PROFILE, get_env_file_read_error,
+    load_extension_manifests, read_live_env_value,
 )
 from env_values import parse_env_value
 from host_metrics import apple_host_metrics, linux_scope, windows_host_metrics
@@ -77,13 +81,15 @@ logger = logging.getLogger(__name__)
 # Re-using sessions avoids creating/destroying TCP connections every
 # poll cycle and prevents file-descriptor exhaustion.
 
-_aio_session: Optional[aiohttp.ClientSession] = None
+_aio_session: Optional[Any] = None
 _aio_session_lock: Optional[asyncio.Lock] = None
 _health_resolver: Optional[ServiceHealthResolver] = None
-_HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=30)
+_ClientError = (aiohttp.ClientError, OSError, ValueError) if aiohttp is not None else (OSError, ValueError)
+_ClientConnectorError = aiohttp.ClientConnectorError if aiohttp is not None else OSError
+_HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=30) if aiohttp is not None else None
 # Short timeout for the catalog fan-out: one slow probe must not stall the
 # whole Extensions page (frontend aborts after 8 s).
-_CATALOG_HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=5)
+_CATALOG_HEALTH_TIMEOUT = aiohttp.ClientTimeout(total=5) if aiohttp is not None else None
 
 
 def _get_aio_session_lock() -> asyncio.Lock:
@@ -93,9 +99,11 @@ def _get_aio_session_lock() -> asyncio.Lock:
     return _aio_session_lock
 
 
-async def _get_aio_session() -> aiohttp.ClientSession:
+async def _get_aio_session() -> Optional[Any]:
     """Return (and lazily create) a module-level aiohttp session."""
     global _aio_session, _health_resolver
+    if aiohttp is None:
+        return None
     if _aio_session is not None and not _aio_session.closed:
         return _aio_session
     async with _get_aio_session_lock():
@@ -103,8 +111,13 @@ async def _get_aio_session() -> aiohttp.ClientSession:
             if _health_resolver is not None:
                 await _health_resolver.close()
             _health_resolver = ServiceHealthResolver()
+            session_timeout = (
+                aiohttp.ClientTimeout(total=2.0, sock_connect=0.25)
+                if WINDOWS_DESKTOP_PROFILE
+                else _HEALTH_TIMEOUT
+            )
             _aio_session = aiohttp.ClientSession(
-                timeout=_HEALTH_TIMEOUT,
+                timeout=session_timeout,
                 connector=aiohttp.TCPConnector(family=socket.AF_INET, resolver=_health_resolver),
             )
     return _aio_session
@@ -141,7 +154,12 @@ async def _get_httpx_client() -> httpx.AsyncClient:
         return _httpx_client
     async with _get_httpx_client_lock():
         if _httpx_client is None or _httpx_client.is_closed:
-            _httpx_client = httpx.AsyncClient(timeout=5.0)
+            client_timeout = (
+                httpx.Timeout(connect=0.25, read=5.0, write=5.0, pool=2.0)
+                if WINDOWS_DESKTOP_PROFILE
+                else 5.0
+            )
+            _httpx_client = httpx.AsyncClient(timeout=client_timeout)
     return _httpx_client
 
 
@@ -1099,6 +1117,8 @@ async def check_service_health(
 
     try:
         session = await _get_aio_session()
+        if session is None:
+            return _service_status_from_config(service_id, config, "not_deployed" if WINDOWS_DESKTOP_PROFILE else "down")
         start = asyncio.get_event_loop().time()
         # Send Host header so reverse-proxy services (e.g. Caddy in Baserow)
         # route the request correctly instead of returning 404. Some API
@@ -1131,12 +1151,12 @@ async def check_service_health(
         # Service is reachable but slow — report degraded rather than down
         # to avoid false "offline" flashes during startup or heavy load.
         status = "degraded"
-    except aiohttp.ClientConnectorError as e:
+    except _ClientConnectorError as e:
         if "Name or service not known" in str(e) or "nodename nor servname" in str(e):
             status = "not_deployed"
         else:
             status = "down"
-    except (aiohttp.ClientError, OSError, ValueError) as e:
+    except _ClientError as e:
         if config.get("health_auth_env") is None:
             logger.debug(f"Health check failed for {service_id} at {url}: {e}")
         else:
@@ -1233,19 +1253,20 @@ async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> li
     # omitted service becomes visible after Add, and disappears after Disable,
     # without changing the import-time registry or probing every omitted app.
     service_configs = dict(SERVICES)
-    try:
-        current_optional, _, _ = await asyncio.to_thread(
-            load_extension_manifests, EXTENSIONS_DIR, GPU_BACKEND,
-            only_service_ids=LIBRARY_MANAGEABLE_BUILTINS,
-        )
-    except OSError as exc:
-        logger.warning("Library built-in manifest refresh failed: %s", exc)
-    else:
-        for service_id in LIBRARY_MANAGEABLE_BUILTINS:
-            if service_id in current_optional:
-                service_configs.setdefault(service_id, current_optional[service_id])
-            else:
-                service_configs.pop(service_id, None)
+    if not WINDOWS_DESKTOP_PROFILE:
+        try:
+            current_optional, _, _ = await asyncio.to_thread(
+                load_extension_manifests, EXTENSIONS_DIR, GPU_BACKEND,
+                only_service_ids=LIBRARY_MANAGEABLE_BUILTINS,
+            )
+        except OSError as exc:
+            logger.warning("Library built-in manifest refresh failed: %s", exc)
+        else:
+            for service_id in LIBRARY_MANAGEABLE_BUILTINS:
+                if service_id in current_optional:
+                    service_configs.setdefault(service_id, current_optional[service_id])
+                else:
+                    service_configs.pop(service_id, None)
     if only_service_ids is not None:
         service_configs = {sid: cfg for sid, cfg in service_configs.items() if sid in only_service_ids}
     health_kwargs = {"timeout": _CATALOG_HEALTH_TIMEOUT} if only_service_ids is not None else {}
@@ -1601,7 +1622,9 @@ def get_uptime() -> int:
                     return int(_time.time()) - int(match.group(1))
         elif _system == "Windows":
             import ctypes
-            return ctypes.windll.kernel32.GetTickCount64() // 1000
+            windll = getattr(ctypes, "windll", None)
+            if windll is not None:
+                return windll.kernel32.GetTickCount64() // 1000
     except (OSError, subprocess.SubprocessError, ValueError, IndexError, AttributeError) as e:
         logger.debug("get_uptime failed on %s: %s", _system, e)
     return 0
@@ -1674,6 +1697,55 @@ def _get_cpu_metrics_darwin() -> dict:
     return result
 
 
+def _get_cpu_metrics_windows() -> dict:
+    """Get CPU usage on Windows via kernel32 GetSystemTimes (zero child processes)."""
+    result: dict[str, float | None] = {"percent": None, "temp_c": None}
+    try:
+        import ctypes
+
+        class _FILETIME(ctypes.Structure):
+            _fields_ = [("dwLowDateTime", ctypes.c_uint32), ("dwHighDateTime", ctypes.c_uint32)]
+
+            def to_int(self) -> int:
+                return (int(self.dwHighDateTime) << 32) | int(self.dwLowDateTime)
+
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return result
+        kernel32 = windll.kernel32
+
+        def _sample_times() -> tuple[int, int] | None:
+            idle_ft, kernel_ft, user_ft = _FILETIME(), _FILETIME(), _FILETIME()
+            if not kernel32.GetSystemTimes(
+                ctypes.byref(idle_ft), ctypes.byref(kernel_ft), ctypes.byref(user_ft)
+            ):
+                return None
+            idle_t = idle_ft.to_int()
+            total_t = kernel_ft.to_int() + user_ft.to_int()
+            return idle_t, total_t
+
+        sample = _sample_times()
+        if sample is None:
+            return result
+        idle, total = sample
+        prev = getattr(get_cpu_metrics, "_win_prev", None)
+        if prev is None:
+            time.sleep(0.05)
+            second = _sample_times()
+            if second is not None:
+                prev = (idle, total)
+                idle, total = second
+        setattr(get_cpu_metrics, "_win_prev", (idle, total))
+        if prev is not None:
+            d_idle = idle - prev[0]
+            d_total = total - prev[1]
+            if d_total > 0:
+                result["percent"] = max(0.0, min(100.0, round((1.0 - d_idle / d_total) * 100.0, 1)))
+    except (OSError, AttributeError, ValueError) as e:
+        logger.debug("Windows CPU metrics failed: %s", e)
+    return result
+
+
 def get_cpu_metrics() -> dict:
     """Get CPU usage percentage and temperature (cross-platform)."""
     _system = platform.system()
@@ -1687,12 +1759,14 @@ def get_cpu_metrics() -> dict:
         return {**_get_cpu_metrics_linux(), "scope": linux_scope(), "source": "linux-procfs"}
     elif _system == "Darwin":
         return {**_get_cpu_metrics_darwin(), "scope": "host", "source": "macos-top"}
+    elif _system == "Windows":
+        return {**_get_cpu_metrics_windows(), "scope": "host", "source": "windows-kernel32"}
     return {"percent": None, "temp_c": None}
 
 
 def _get_ram_metrics_linux() -> dict:
     """Get RAM usage from /proc/meminfo (Linux only)."""
-    result = {"used_gb": None, "total_gb": None, "percent": None}
+    result: dict[str, float | None] = {"used_gb": None, "total_gb": None, "percent": None}
     try:
         meminfo = {}
         with open("/proc/meminfo") as f:
@@ -1716,7 +1790,7 @@ def _get_ram_metrics_linux() -> dict:
 
 def _get_ram_metrics_sysctl() -> dict:
     """Get RAM usage on macOS via sysctl."""
-    result = {"used_gb": None, "total_gb": None, "percent": None}
+    result: dict[str, float | None] = {"used_gb": None, "total_gb": None, "percent": None}
     try:
         import subprocess
         out = subprocess.run(
@@ -1758,6 +1832,45 @@ def _get_ram_metrics_sysctl() -> dict:
     return result
 
 
+def _get_ram_metrics_windows() -> dict:
+    """Get RAM usage on Windows via kernel32 GlobalMemoryStatusEx (zero child processes)."""
+    result: dict[str, float | None] = {"used_gb": None, "total_gb": None, "percent": None}
+    try:
+        import ctypes
+
+        class _MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_uint32),
+                ("dwMemoryLoad", ctypes.c_uint32),
+                ("ullTotalPhys", ctypes.c_uint64),
+                ("ullAvailPhys", ctypes.c_uint64),
+                ("ullTotalPageFile", ctypes.c_uint64),
+                ("ullAvailPageFile", ctypes.c_uint64),
+                ("ullTotalVirtual", ctypes.c_uint64),
+                ("ullAvailVirtual", ctypes.c_uint64),
+                ("ullAvailExtendedVirtual", ctypes.c_uint64),
+            ]
+
+        mem = _MEMORYSTATUSEX()
+        mem.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return result
+        if not windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
+            return result
+        total_bytes = int(mem.ullTotalPhys)
+        avail_bytes = int(mem.ullAvailPhys)
+        if total_bytes <= 0:
+            return result
+        used_bytes = max(0, total_bytes - avail_bytes)
+        result["total_gb"] = round(total_bytes / (1024 ** 3), 1)
+        result["used_gb"] = round(used_bytes / (1024 ** 3), 1)
+        result["percent"] = max(0.0, min(100.0, round(used_bytes / total_bytes * 100.0, 1)))
+    except (OSError, AttributeError, ValueError) as e:
+        logger.debug("Windows RAM metrics failed: %s", e)
+    return result
+
+
 def get_ram_metrics() -> dict:
     """Get RAM usage (cross-platform)."""
     _system = platform.system()
@@ -1771,6 +1884,8 @@ def get_ram_metrics() -> dict:
         return {**_get_ram_metrics_linux(), "scope": linux_scope(), "source": "linux-procfs"}
     elif _system == "Darwin":
         return {**_get_ram_metrics_sysctl(), "scope": "host", "source": "macos-vm-stat"}
+    elif _system == "Windows":
+        return {**_get_ram_metrics_windows(), "scope": "host", "source": "windows-kernel32"}
     return {"used_gb": None, "total_gb": None, "percent": None}
 
 
