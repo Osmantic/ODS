@@ -63,6 +63,22 @@ def projection(records, intent, snapshots):
                                     owner=OWNER, snapshots=snapshots)
 
 
+@pytest.mark.parametrize('name', ['first.last', 'fixture'])
+def test_intent_accepts_dotted_macos_short_name(name):
+    _, _, snapshots, intent, _ = fixture()
+    owner = dict(OWNER, name=name)
+    assert repair.make_intent(current=CURRENT, candidate=CANDIDATE, owner=owner, snapshots=snapshots,
+        identities=intent['identities'])['owner'] == owner
+
+
+@pytest.mark.parametrize('name', ['', '.', '..', '.first', '-first', 'first/last', '../first', 'first last', 'first\tlast', 'first\nlast', 'first"last', "first'last", None])
+def test_intent_rejects_unsafe_owner_name(name):
+    _, _, snapshots, intent, _ = fixture()
+    with pytest.raises(repair.RepairError):
+        repair.make_intent(current=CURRENT, candidate=CANDIDATE, owner=dict(OWNER, name=name),
+            snapshots=snapshots, identities=intent['identities'])
+
+
 def test_exact_reviewed_hunk_only():
     before, after, *_ = fixture()
     assert repair.replacement(before) == after

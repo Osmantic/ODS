@@ -471,7 +471,7 @@ class SystemdAccessBridge:
         self.verify_host_agent_custody()
         import pwd
         user = self.command(["systemctl", "show", UNIT, "--property=User", "--value"])
-        if not re.fullmatch(r"[a-z_][a-z0-9_-]*", user): raise AccessError("gateway-owner-unavailable")
+        if not re.fullmatch(r"[a-z_][a-z0-9_.-]*", user): raise AccessError("gateway-owner-unavailable")
         if user != self.gateway_owner: raise AccessError("installed-owner-changed")
         owner = pwd.getpwnam(user)
         home = Path(owner.pw_dir)

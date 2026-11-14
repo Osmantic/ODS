@@ -54,6 +54,17 @@ def test_invalid_manager_plan_is_refused(arguments, fault):
     with pytest.raises(ValueError): manager.render(**arguments)
 
 
+def test_dotted_macos_short_name_runs_the_manager(arguments):
+    arguments['owner'] = 'first.last'
+    assert plistlib.loads(manager.render(**arguments)['plist'])['UserName'] == 'first.last'
+
+
+@pytest.mark.parametrize('owner', ['', 'root', '.', '..', '.first', '-first', 'first/last', '../first', 'first last', 'first\tlast', 'first\nlast', 'first"last', "first'last", None])
+def test_unsafe_manager_owner_is_refused(arguments, owner):
+    arguments['owner'] = owner
+    with pytest.raises(ValueError, match='invalid-native-manager-identity'): manager.render(**arguments)
+
+
 @pytest.fixture
 def publication(arguments, monkeypatch, tmp_path):
     environment = tmp_path / 'ods.env'

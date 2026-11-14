@@ -52,7 +52,7 @@ def decode(raw):
             or value['modules']['pixel_access_bridge.py'] != AFTER): deny()
     owner, identity = value['owner'], value['gatewayIdentity']
     if (type(owner) is not dict or set(owner) != {'name','uid','gid'}
-            or type(owner['name']) is not str or not re.fullmatch('[A-Za-z_][A-Za-z0-9_-]{0,127}', owner['name'])
+            or type(owner['name']) is not str or not re.fullmatch('[A-Za-z_][A-Za-z0-9_.-]{0,127}', owner['name'])
             or type(owner['uid']) is not int or owner['uid'] <= 0 or type(owner['gid']) is not int or owner['gid'] < 0
             or type(identity) is not list or len(identity) != 10
             or any(type(item) is not int or item < 0 for item in identity[:9])

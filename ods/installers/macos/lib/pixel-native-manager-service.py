@@ -33,7 +33,7 @@ def render(*, python, program_root, environment, owner, port,
            results='/private/var/lib/pixel-ops-broker/results',
            logs='/private/var/log/ods-pixel-manager', label='com.ods.pixel-native-manager'):
     if (not isinstance(owner, str) or owner == 'root'
-            or not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', owner)
+            or not re.fullmatch(r'[a-z_][a-z0-9_.-]{0,31}', owner)
             or type(port) is not int or not 1 <= port <= 65535
             or not re.fullmatch(r'com\.ods\.pixel-native-manager(?:\.[a-z0-9-]+)?', label)):
         raise ValueError('invalid-native-manager-identity')
