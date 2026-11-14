@@ -433,6 +433,20 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-uninstall-leftovers.ps1
 
+      - name: Windows Desktop Settings and Model Download Contracts (PowerShell 7)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          ./tests/contracts/test-windows-desktop-settings.ps1
+          ./tests/contracts/test-windows-desktop-model.ps1
+
+      - name: Windows Desktop Settings and Model Download Contracts (Windows PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: |
+          ./tests/contracts/test-windows-desktop-settings.ps1
+          ./tests/contracts/test-windows-desktop-model.ps1
+
       - name: Windows Docker Pull Contract
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
