@@ -2,8 +2,10 @@
 import os
 from pathlib import Path
 import plistlib
+import select
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -12,6 +14,36 @@ SCRIPT = Path(__file__).resolve().parents[1] / "installers/macos/lib/native-llam
 
 
 class NativeServiceTests(unittest.TestCase):
+    def live_owned_process(self, binary):
+        # Copied Apple platform binaries can die on launch. Compile a fixture
+        # and require a readiness message before testing whether stop reaps it.
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("cc is required to build a live native process fixture")
+        subprocess.run(
+            [compiler, "-x", "c", "-o", str(binary), "-"],
+            input='#include <stdio.h>\n#include <unistd.h>\n'
+                  'int main(void) { puts("ready"); fflush(stdout); for (;;) pause(); }\n',
+            text=True, capture_output=True, check=True, timeout=30,
+        )
+        child = subprocess.Popen([str(binary), "120"], stdout=subprocess.PIPE)
+
+        def cleanup():
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+            child.stdout.close()
+
+        self.addCleanup(cleanup)
+        self.assertTrue(select.select([child.stdout], [], [], 5)[0], "fixture did not become ready")
+        self.assertEqual(child.stdout.readline(), b"ready\n")
+        self.assertIsNone(child.poll(), "fixture died before stop")
+        command = subprocess.check_output(
+            ["ps", "-p", str(child.pid), "-o", "command="], text=True,
+        ).strip()
+        self.assertEqual(command, f"{binary} 120")
+        return child
+
     def test_stop_reaps_untracked_install_owned_process(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -22,12 +54,7 @@ class NativeServiceTests(unittest.TestCase):
             install = root / "ods"
             binary = install / "bin" / "llama-server"
             binary.parent.mkdir(parents=True)
-            # macOS system binaries can carry protected flags that an
-            # unprivileged temp fixture cannot reproduce with copy2.
-            shutil.copyfile("/bin/sleep", binary)
-            binary.chmod(0o700)
-            child = subprocess.Popen([str(binary), "120"])
-            self.addCleanup(lambda: child.poll() is None and child.kill())
+            child = self.live_owned_process(binary)
             pid_file = install / "data" / ".llama-server.pid"
             pid_file.parent.mkdir(parents=True)
             pid_file.write_text("999999\n")
@@ -49,6 +76,81 @@ class NativeServiceTests(unittest.TestCase):
             child.wait(timeout=5)
             self.assertIsNotNone(child.returncode)
             self.assertFalse(pid_file.exists())
+
+    def test_stop_reaps_process_when_install_path_contains_spaces(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            commands = root / "commands"
+            commands.mkdir()
+            (commands / "launchctl").write_text("#!/bin/sh\nexit 1\n")
+            (commands / "launchctl").chmod(0o700)
+            install = root / "ods install with spaces"
+            binary = install / "bin" / "llama-server"
+            binary.parent.mkdir(parents=True)
+            child = self.live_owned_process(binary)
+            pid_file = install / "data" / ".llama-server.pid"
+            pid_file.parent.mkdir(parents=True)
+            pid_file.write_text("999999\n")
+            env = dict(
+                os.environ,
+                HOME=str(root),
+                PATH=f"{commands}:{os.environ['PATH']}",
+            )
+
+            result = subprocess.run(
+                ["bash", str(SCRIPT), "stop", str(install), str(binary), str(pid_file)],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            child.wait(timeout=5)
+            self.assertIsNotNone(child.returncode)
+            self.assertFalse(pid_file.exists())
+
+    def test_stop_spares_processes_that_only_mention_llama_server(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            commands = root / "commands"
+            commands.mkdir()
+            (commands / "launchctl").write_text("#!/bin/sh\nexit 1\n")
+            (commands / "launchctl").chmod(0o700)
+            install = root / "ods install with spaces"
+            binary = install / "bin" / "llama-server"
+            binary.parent.mkdir(parents=True)
+            model_argument = ["--model", str(install / "data" / "models" / "model.gguf")]
+            sleeper = ["-c", "import time; time.sleep(120)"]
+            lookalike = root / "bin" / "notllama-server"
+            lookalike.parent.mkdir()
+            lookalike.symlink_to(sys.executable)
+            bystanders = [
+                subprocess.Popen([sys.executable, *sleeper, "llama-server", *model_argument]),
+                subprocess.Popen([str(lookalike), *sleeper, *model_argument]),
+            ]
+            for bystander in bystanders:
+                self.addCleanup(bystander.wait, timeout=5)
+                self.addCleanup(bystander.kill)
+            pid_file = install / "data" / ".llama-server.pid"
+            pid_file.parent.mkdir(parents=True)
+            env = dict(
+                os.environ,
+                HOME=str(root),
+                PATH=f"{commands}:{os.environ['PATH']}",
+            )
+
+            result = subprocess.run(
+                ["bash", str(SCRIPT), "stop", str(install), str(binary), str(pid_file)],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for bystander in bystanders:
+                self.assertIsNone(bystander.poll(), bystander.args)
 
     def test_live_old_process_blocks_replacement_and_preserves_recovery_files(self):
         with tempfile.TemporaryDirectory() as temporary:
