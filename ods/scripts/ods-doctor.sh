@@ -557,7 +557,31 @@ _doctor_check_llm_backend() {
     fi
 }
 
-_doctor_check_llm_backend
+export ODS_DOCTOR_REMOTE_PROVIDER_REPORT="$DOCTOR_WORK_DIR/remote-provider.json"
+if [[ -f "$ROOT_DIR/scripts/doctor-remote-provider.py" ]]; then
+    python3 "$ROOT_DIR/scripts/doctor-remote-provider.py" "$ROOT_DIR" "$ODS_DOCTOR_REMOTE_PROVIDER_REPORT"
+else
+    printf '{"state":"absent","ready":false}\n' > "$ODS_DOCTOR_REMOTE_PROVIDER_REPORT"
+fi
+_remote_provider_state="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$ODS_DOCTOR_REMOTE_PROVIDER_REPORT")"
+if [[ "$_remote_provider_state" != absent ]]; then
+    LLM_PROVIDER="remote-provider"
+    LLM_URL="http://litellm:4000 (ODS network only)"
+    LLM_LOCAL_WARNING="false"
+    if [[ "$_remote_provider_state" == ready ]]; then
+        LLM_STATUS="ok"
+        LLM_MODEL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["model"])' "$ODS_DOCTOR_REMOTE_PROVIDER_REPORT")"
+        LLM_RECOVERY=""
+        log_ok "LLM backend: managed remote provider — active route and consumer proof verified"
+    else
+        LLM_STATUS="fail"
+        LLM_MODEL=""
+        LLM_RECOVERY="Check Settings > Remote model; reconnect only after reviewing its diagnostics."
+        log_fail "LLM backend: managed remote provider — readiness could not be proven"
+    fi
+else
+    _doctor_check_llm_backend
+fi
 
 export LLM_STATUS
 export LLM_PROVIDER
@@ -1202,8 +1226,10 @@ def _inference_issue(issue_id, severity, source, detail):
     }
 
 
-def _collect_inference_contract():
+def _collect_inference_contract(remote_provider=None):
     env_values = _env_file_values()
+    remote_provider = remote_provider or {}
+    remote_ready = remote_provider.get("ready") is True
 
     def env_get(name, default=""):
         return env_values.get(name) or _clean_env(name, default)
@@ -1278,7 +1304,11 @@ def _collect_inference_contract():
         )
 
     if ods_mode == "cloud":
-        if compose_flags_exists and not cloud_overlay:
+        if remote_provider.get("state") in {"unavailable", "unproven"}:
+            issues.append(_inference_issue(
+                "ODS-RUNTIME-REMOTE-PROVIDER-NOT-READY", "blocker", "Remote model status API",
+                "The managed remote-provider route or its active consumer could not be proven. Check Settings > Remote model."))
+        if compose_flags_exists and not cloud_overlay and not remote_ready:
             issues.append(
                 _inference_issue(
                     "ODS-RUNTIME-CLOUD-OVERLAY-MISSING",
@@ -1296,7 +1326,7 @@ def _collect_inference_contract():
                     f"ODS_MODE=cloud but LLM_API_URL points at local llama-server ({llm_api_url}).",
                 )
             )
-        if _looks_like_local_llama_route(hermes_base_url):
+        if _looks_like_local_llama_route(hermes_base_url) and remote_provider.get("hermesDisabled") is not True:
             issues.append(
                 _inference_issue(
                     "ODS-RUNTIME-CLOUD-HERMES-LOCAL-ROUTE",
@@ -1752,7 +1782,10 @@ def _collect_install_diagnoses(artifacts):
 
 
 install_artifacts = _collect_install_artifacts()
-inference_contract = _collect_inference_contract()
+remote_report_path = os.environ.get("ODS_DOCTOR_REMOTE_PROVIDER_REPORT")
+remote_provider = (json.loads(pathlib.Path(remote_report_path).read_text())
+                   if remote_report_path else {"state": "absent", "ready": False})
+inference_contract = _collect_inference_contract(remote_provider)
 diagnoses = _collect_install_diagnoses(install_artifacts) + inference_contract.get("diagnoses", [])
 inference_contract_public = dict(inference_contract)
 inference_contract_public.pop("diagnoses", None)
@@ -1766,6 +1799,7 @@ report = {
     "install_artifacts": install_artifacts,
     "diagnoses": diagnoses,
     "runtime": {
+        "remote_provider": remote_provider,
         "docker_cli": docker_cli == "true",
         "docker_daemon": docker_daemon == "true",
         "docker_access_denied": docker_access_denied == "true",
