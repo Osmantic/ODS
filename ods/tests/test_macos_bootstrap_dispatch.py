@@ -157,3 +157,70 @@ def test_darwin_with_docker_sentinel_still_skips_docker(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert "LOCK" not in trace
     assert not (install / "models" / "bootstrap.gguf").exists()
+
+
+@pytest.mark.parametrize("install_name,previous", [
+    ("install", "old.gguf"),
+    ("My ODS", "old.gguf"),
+    ("install", "old model.gguf"),
+    ("My ODS", "old model.gguf"),
+    ("My ODS", ""),
+])
+def test_legacy_native_failure_retains_previous_model_path(tmp_path, install_name, previous):
+    install = tmp_path / install_name
+    for directory in ("models", "data", "bin", "scripts", "installers/macos/lib"):
+        (install / directory).mkdir(parents=True, exist_ok=True)
+    (install / "scripts/macos-bootstrap-promote.py").write_text("fixture")
+    (install / "models/full-model.gguf").write_text("full")
+    if previous:
+        (install / "models" / previous).write_text("previous")
+    (install / ".env").write_text("GGUF_FILE=" + previous + "\nOLLAMA_PORT=8080\n")
+    # Impossible PIDs and shell stubs prevent any signal or live service call.
+    (install / "data/.llama-server.pid").write_text("999999991\n")
+    binary = install / "bin/llama-server"
+    binary.write_text("#!/bin/sh\nexit 99\n")
+    binary.chmod(0o755)
+    helper = install / "installers/macos/lib/native-llama-service.sh"
+    helper.write_text('''#!/bin/sh
+set -eu
+printf '%s\\0' "$@" >> "$2/launches"
+printf '\\n' >> "$2/launches"
+printf '999999992\\n' > "$4"
+''')
+    overrides = r'''
+read_env_value() { sed -n "s/^$1=//p" "$ENV_FILE" | head -1; }
+promote_full_model_env() {
+    printf 'GGUF_FILE=%s\nCTX_SIZE=32768\nOLLAMA_PORT=8080\n' "$FULL_GGUF_FILE" > "$ENV_FILE"
+}
+kill() { return 0; }
+sleep() { return 0; }
+curl() { return 22; }
+ps() {
+    case " $* " in
+        *' args= '*)
+            if [[ -n "$PREVIOUS_MODEL" ]]; then
+                printf '%s --model %s --port 8080\n' "$INSTALL_DIR/bin/llama-server" "$MODELS_DIR/$PREVIOUS_MODEL"
+            fi ;;
+        *) printf 'llama-server\n' ;;
+    esac
+}
+'''
+    body = HARNESS.replace('set -eu', 'set -u', 1)
+    body = body.replace('__DISPATCH__', 'PREVIOUS_MODEL="$4"\n' + overrides + _extract_dispatch())
+    script = tmp_path / "legacy-harness.sh"
+    script.write_text(body)
+    proc = subprocess.run(
+        [os.environ.get('ODS_TEST_BASH', 'bash'), str(script), str(install), "Darwin", "10", previous],
+        capture_output=True, text=True, env=dict(os.environ, PATH="/usr/bin:/bin"), timeout=15,
+    )
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    launches = [row.split(b'\0')[:-1] for row in (install / "launches").read_bytes().splitlines()]
+    assert len(launches) == (2 if previous else 1), proc.stdout + proc.stderr
+    first = [value.decode() for value in launches[0]]
+    assert first[first.index('--model') + 1] == str(install / "models/full-model.gguf")
+    if previous:
+        rollback = [value.decode() for value in launches[1]]
+        assert rollback[rollback.index('--model') + 1] == str(install / "models" / previous)
+        assert (install / "models" / previous).read_text() == "previous"
+    assert "GGUF_FILE=full-model.gguf\n" in (install / ".env").read_text()
+    assert "STATUS failed" in (install / "trace").read_text()
