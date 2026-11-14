@@ -91,6 +91,7 @@ from routers import (
     pixel_handoff,
     pixel_scopes,
     pixel_advice_runtime,
+    pixel_integrations,
     pixel_sharing,
     pixel_model_failure,
     opencode_app,
@@ -1295,6 +1296,7 @@ app.include_router(pixel_handoff.router)
 app.include_router(pixel_scopes.router)
 app.include_router(pixel_advice_runtime.router)
 app.include_router(pixel_sharing.router)
+app.include_router(pixel_integrations.router)
 app.include_router(pixel_model_failure.router)
 app.include_router(opencode_app.router)
 
