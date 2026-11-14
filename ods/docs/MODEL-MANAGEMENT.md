@@ -1,7 +1,7 @@
 # Model Management
 
-ODS runs local language models as GGUF files from `data/models/` or an
-installer-registered model store. Windows AMD with Portal in WSL uses the
+ODS runs local language models as GGUF files or pinned vLLM snapshots from
+`data/models/` or an installer-registered model store. Windows AMD with Portal in WSL uses the
 Windows model store described below.
 The recommended path is the Dashboard Models page. Manual model swaps are also
 available for headless maintenance and advanced operator workflows.
@@ -36,6 +36,50 @@ declares a context floor such as `65536`, models below that floor should be
 shown as gated or warned before the swap. Badges should distinguish downloaded,
 loaded, swap-safe, not-swap-safe, gated, and probe-failed states so a model
 cannot look ready while an enabled app is known to be incompatible.
+
+### vLLM snapshots on Linux NVIDIA installations
+
+The Models page lists the curated vLLM snapshots alongside GGUF models. You can
+download an inactive snapshot, cancel and resume its download, or delete its
+files. Downloads check the pinned manifest and file digests before completing.
+The catalog's presence indicator checks file sizes; it is not a new checksum
+verification on every refresh.
+
+For an explicit read-only checksum check, run this from the ODS install directory
+with the catalog model ID you want to verify:
+
+```bash
+python3 scripts/download-hf-manifest.py --catalog config/model-library.json \
+  --model-id qwen3.6-35b-a3b-nvfp4-vllm --models-dir data/models --verify-only
+```
+
+This leaves missing files and partial downloads untouched and does not contact
+Hugging Face. A successful check prints a JSON receipt after the progress lines.
+It verifies the cached bytes, not GPU fit, model behavior, or cold-start recovery.
+
+On a vLLM installation, `ods update` also waits for the engine's Docker
+healthcheck before reporting success, allowing up to 60 minutes of polling for a
+cold load. A failed health check leaves the pre-update snapshot available through
+`ods rollback`. Container health alone does not qualify Portal or model behavior.
+
+On Linux, the host agent, installer, bootstrap promotion, CLI update, and source
+update/backup/rollback share a process lock for the same installation. Updates
+retain ownership while their child scripts run. A timed-out host-agent update
+terminates its process group; detached host agents and downloads discard the
+inherited lock before starting. Bootstrap downloads may continue independently,
+but their activation waits for ownership. Do not delete lock files to clear a
+busy operation: the live file descriptor, rather than the file's presence, owns
+the lock. This serialization requires the participating components to be updated.
+
+The configured vLLM snapshot is protected from download replacement and deletion.
+Deletion also refuses unexpected files, links, and snapshots that change while
+being removed. The host agent serializes these actions with other model lifecycle
+operations.
+
+Activating a vLLM model and changing its context still require the installer.
+Downloading a snapshot does not establish that it fits this machine or that
+Portal has been qualified with it. The Models page keeps those distinctions
+visible and disables Run for these entries.
 
 ### Windows AMD with Portal in WSL
 

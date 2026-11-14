@@ -187,7 +187,13 @@ def test_image_only_cli_does_not_call_source_guard():
     text = (ROOT / 'ods-cli').read_text()
     body = text.split('cmd_update() {', 1)[1].split('\n}\n', 1)[0]
     assert 'source-update-preflight' not in body
-    assert '_ods_cli_pull_external_images' in body
+    assert '_ods_cli_run_update_locked "$rebuild_images"' in body
+    locked = text.split('_ods_cli_run_update_locked() (', 1)[1].split('\n)\n', 1)[0]
+    assert 'source-update-preflight' not in locked
+    assert '_ods_cli_do_update "$1"' in locked
+    mutation = text.split('_ods_cli_do_update() {', 1)[1].split('\n}\n', 1)[0]
+    assert 'source-update-preflight' not in mutation
+    assert '_ods_cli_pull_external_images' in mutation
 
 @pytest.mark.parametrize('state', ['ready', 'incomplete', 'partial', 'symlink'])
 def test_actual_macos_selection_guard(tmp_path, monkeypatch, state):

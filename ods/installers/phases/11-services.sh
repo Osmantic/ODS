@@ -620,6 +620,7 @@ else
 
     _phase11_close_inherited_fds_for_daemon() {
         local fd fd_dir fd_name
+        unset ODS_MODEL_LIFECYCLE_LOCK_FD ODS_MODEL_LIFECYCLE_LOCK_FILE
 
         for fd_dir in "/proc/${BASHPID:-$$}/fd" "/dev/fd"; do
             [[ -d "$fd_dir" ]] || continue

@@ -192,8 +192,6 @@ VLLM_ENV = ("ODS_MODE=local\nLLM_BACKEND=vllm\nLLM_MODEL=glm-5.3-flash-nvfp4\n"
 
 
 @pytest.mark.parametrize("method,path", [
-    ("post", "/api/models/glm-5.3-flash-nvfp4-vllm/download"),
-    ("delete", "/api/models/glm-5.3-flash-nvfp4-vllm"),
     ("post", "/api/models/glm-5.3-flash-nvfp4-vllm/load"),
 ])
 def test_vllm_entries_are_refused_with_a_clear_409(test_client, monkeypatch, tmp_path, method, path):
@@ -226,7 +224,7 @@ def _gpu():
                    utilization_percent=10, temperature_c=40, gpu_backend="nvidia")
 
 
-@pytest.mark.parametrize("loaded,status", [(SERVED, "loaded"), (None, "downloaded")])
+@pytest.mark.parametrize("loaded,status", [(SERVED, "loaded"), (None, "available")])
 def test_models_page_shows_the_installed_vllm_model(test_client, monkeypatch, tmp_path, loaded, status):
     models_router, _install, _data = _vllm_install(monkeypatch, tmp_path, VLLM_ENV)
     monkeypatch.setattr(models_router, "get_gpu_info", _gpu)
@@ -247,11 +245,11 @@ def test_models_page_shows_the_installed_vllm_model(test_client, monkeypatch, tm
     row = rows[0]
     assert row["status"] == status
     assert row["name"] == "GLM 5.3 Flash NVFP4 (vLLM)"
-    assert row["size"] == "199.7 GB" and row["sizeGb"] == 199.7
+    assert row["size"] == "190.4 GB" and row["sizeGb"] == 190.4
     assert row["contextLength"] == 131072 and row["maxContextLength"] == 131072
     assert row["quantization"] == "NVFP4"
     assert row["vramRequired"] == 239.0
-    assert row["metadata"]["source"] == "runtime" and row["metadata"]["runtime"] == "vllm"
+    assert row["metadata"]["source"] == "ods" and row["metadata"]["runtime"] == "vllm"
     assert row["metadata"]["servedModelName"] == SERVED
     assert row["gguf"] is None and row["downloadUrl"] is None
     assert payload["configuredModel"] == "glm-5.3-flash-nvfp4-vllm"
@@ -261,8 +259,8 @@ def test_models_page_shows_the_installed_vllm_model(test_client, monkeypatch, tm
     # and no GGUF claims to be the installer's selection.
     assert not [row for row in payload["models"] if row["id"].startswith("runtime-")]
     assert not [row for row in payload["models"] if row["recommended"]]
-    # Only the installed vLLM entry is listed; others need the installer.
-    assert "qwen3.8-flash-next-nvfp4-vllm" not in {row["id"] for row in payload["models"]}
+    # Other catalog snapshots can be downloaded without changing the engine.
+    assert "qwen3.8-flash-next-nvfp4-vllm" in {row["id"] for row in payload["models"]}
 
 
 def test_status_names_the_served_vllm_model_by_its_catalog_name(monkeypatch, tmp_path):
@@ -275,7 +273,7 @@ def test_status_names_the_served_vllm_model_by_its_catalog_name(monkeypatch, tmp
     assert models_router.loaded_model_display_name(SERVED) is None
 
 
-def test_llama_install_never_lists_vllm_entries(monkeypatch, tmp_path):
+def test_llama_install_lists_vllm_snapshots_without_claiming_activation(monkeypatch, tmp_path):
     from performance_oracle import build_models_payload
 
     install = tmp_path / "ods"
@@ -285,7 +283,9 @@ def test_llama_install_never_lists_vllm_entries(monkeypatch, tmp_path):
     monkeypatch.delenv("LLM_MODEL", raising=False)
     payload = build_models_payload(None, None, 0.0, install, install / "data", None,
                                    catalog=[_vllm_entry()], downloaded_files_override={})
-    assert payload["models"] == []
+    assert len(payload["models"]) == 1
+    assert payload["models"][0]["configured"] is False
+    assert payload["models"][0]["activationSupport"]["available"] is False
 
 
 # --- setup chat ---
@@ -311,3 +311,32 @@ def test_setup_chat_reaches_the_vllm_engine(monkeypatch, tmp_path, values, url, 
     (tmp_path / ".env").write_text("".join(f"{key}={value}\n" for key, value in values.items()))
     actual_url, actual_model, _headers = resolve_chat_route("http://vllm-server:8000")
     assert (actual_url, actual_model) == (url + "/chat/completions", model)
+
+
+@pytest.mark.parametrize("method,path", [
+    ("post", "/api/models/glm-5.3-flash-nvfp4-vllm/download"),
+    ("delete", "/api/models/glm-5.3-flash-nvfp4-vllm"),
+])
+def test_snapshot_actions_forward_only_catalog_identity(test_client, monkeypatch, tmp_path, method, path):
+    router, _install, _data = _vllm_install(monkeypatch, tmp_path, VLLM_ENV)
+    requests: list[dict] = []
+    def download(body):
+        requests.append(body)
+        return {"status": "downloading"}
+    def delete(endpoint, body, *args, **kwargs):
+        requests.append(body)
+        return {"status": "deleted"}
+    monkeypatch.setattr(router, "_bootstrap_upgrade_download_conflict", lambda: None)
+    monkeypatch.setattr(router, "_request_agent_download", download)
+    monkeypatch.setattr(router, "_request_agent_waiting_short_holds", delete)
+    response = getattr(test_client, method)(path, headers=test_client.auth_headers)
+    assert response.status_code == 200
+    assert requests == [{"model_id": "glm-5.3-flash-nvfp4-vllm"}]
+
+
+def test_vllm_download_preserves_bootstrap_conflict(test_client, monkeypatch, tmp_path):
+    router, _install, _data = _vllm_install(monkeypatch, tmp_path, VLLM_ENV)
+    monkeypatch.setattr(router, "_bootstrap_upgrade_download_conflict", lambda: {"code": "bootstrap_busy"})
+    response = test_client.post("/api/models/glm-5.3-flash-nvfp4-vllm/download", headers=test_client.auth_headers)
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "bootstrap_busy"

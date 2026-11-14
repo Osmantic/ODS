@@ -2,7 +2,12 @@
 
 This is a recipe, not a turnkey extension. ODS's default inference backend is `llama-server` (llama.cpp), which is the right choice for the platform's portability story — it runs on CPU, NVIDIA, AMD, and Apple Silicon. **vLLM** is an alternate backend that wins on a narrower slice of hardware (mostly high-end NVIDIA), and only for specific workload shapes. This guide explains when to reach for it, what to install, and which flags actually matter — so you can stand it up without having to learn the same lessons through trial and error.
 
-There is no installer support for vLLM yet. If there's maintainer interest in shipping a first-class `vllm` extension, this doc is the precursor — see *Future work* at the bottom.
+ODS now includes an installer-managed vLLM backend for curated NVIDIA model
+snapshots, with pinned manifests and a dedicated Compose configuration. See
+[Model management](MODEL-MANAGEMENT.md#vllm-snapshots-on-linux-nvidia-installations)
+for download, verification, and update behavior. The manual recipe below is
+historical guidance for separately managed containers; its flags and performance
+observations do not qualify an installer-selected model on another machine.
 
 ---
 
@@ -136,13 +141,20 @@ The cost of doubling `--max-model-len` is doubling the per-slot KV allocation, w
 
 ## Existing ODS integration
 
-vLLM is not a first-class extension yet, but Perplexica can already be pointed at an OpenAI-compatible vLLM container on the `ods-network` in place of the default `llama-server` by changing `LLM_API_URL`. Treat that as the current integration seam: ODS has a consumer that can talk to vLLM, while a production-ready vLLM service wrapper still belongs in future work.
+The installer selects supported vLLM catalog entries through the NVIDIA backend
+and `docker-compose.vllm.yml`. ODS's model router connects consumers to that
+managed engine. The Models page manages inactive snapshots; activation and
+context changes remain installer-managed. Separately launched containers such
+as the example above remain the operator's responsibility.
 
 ---
 
 ## Future work
 
-If maintainers and contributors are interested, the natural follow-up is a first-class `extensions/services/vllm/` extension: `manifest.yaml` + `compose.yaml` + a Dockerfile that pins a vLLM digest, with `gpu_backends: [nvidia]` and `category: optional`. Open a discussion on the issue tracker before sending that PR — it touches inference-backend territory and the maintainers should weigh whether it fits the platform's portability-first philosophy or stays a recipe in this doc.
+Remaining work includes transactional activation and rollback from the Models
+page, plus installed model, Portal, update, and recovery acceptance on supported
+x86 and ARM hardware. Snapshot verification and component tests do not establish
+those outcomes.
 
 ---
 

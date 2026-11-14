@@ -1,85 +1,113 @@
 #!/usr/bin/env bash
-# Serialize Linux installer model configuration with background model activation.
-
+# Model lifecycle lock helpers (Linux only).
+# Children borrow the same open-file description. Release closes only this copy.
 ODS_MODEL_LIFECYCLE_LOCK_FD="${ODS_MODEL_LIFECYCLE_LOCK_FD:-}"
 ODS_MODEL_LIFECYCLE_LOCK_FILE="${ODS_MODEL_LIFECYCLE_LOCK_FILE:-}"
 
 _ods_model_lifecycle_log() {
-    if declare -F log >/dev/null 2>&1; then
-        log "$*"
-    else
-        printf '[MODEL-LIFECYCLE] %s\n' "$*" >&2
-    fi
+  if declare -F log >/dev/null 2>&1; then
+    log "$*"
+  else
+    printf '%s\n' "$*" >&2
+  fi
+}
+
+_ods_model_lifecycle_helper() {
+  local lib_dir helper
+  lib_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) || return 1
+  helper="$lib_dir/../../bin/model_lifecycle_lock.py"
+  [ -f "$helper" ] || { _ods_model_lifecycle_log "model lifecycle lock helper missing: $helper"; return 1; }
+  command -v python3 >/dev/null 2>&1 || { _ods_model_lifecycle_log "python3 not found"; return 1; }
+  printf '%s\n' "$helper"
 }
 
 ods_model_lifecycle_lock_file() {
-    local install_dir="$1" resolved parent base lock_root lock_key
+  local install_dir=$1 helper
+  helper=$(_ods_model_lifecycle_helper) || return 1
+  python3 "$helper" name --install-dir "$install_dir"
+}
 
-    resolved="${install_dir%/}"
-    if [[ -d "$install_dir" ]]; then
-        resolved="$(cd "$install_dir" && pwd -P)" || return 1
-    else
-        parent="$(dirname "$install_dir")"
-        base="$(basename "$install_dir")"
-        if [[ -d "$parent" ]]; then
-            resolved="$(cd "$parent" && pwd -P)/$base" || return 1
-        fi
-    fi
-
-    # Keep the default independent of XDG_RUNTIME_DIR. The background upgrader
-    # and a later SSH/systemd installer can have different environment values
-    # while still operating on the same installation.
-    lock_root="${ODS_MODEL_LIFECYCLE_LOCK_ROOT:-/tmp/ods-model-lifecycle-${UID:-$(id -u)}}"
-    lock_key="$(printf '%s\0' "$resolved" | cksum | awk '{print $1}')"
-    printf '%s/ods-model-lifecycle-%s.lock\n' "${lock_root%/}" "$lock_key"
+_ods_model_lifecycle_validate_fd() {
+  local install_dir=$1 fd=$2 helper
+  helper=$(_ods_model_lifecycle_helper) || return 1
+  python3 "$helper" validate --install-dir "$install_dir" --fd "$fd" </dev/null
 }
 
 ods_model_lifecycle_lock_acquire() {
-    local install_dir="$1" actor="${2:-model lifecycle operation}" lock_file
+  local install_dir=$1 actor=${2:-unknown}
+  local fd=${ODS_MODEL_LIFECYCLE_LOCK_FD:-}
+  local helper new_fd resolved
 
-    [[ "$(uname -s 2>/dev/null || true)" == "Linux" ]] || return 0
-    if [[ -n "${ODS_MODEL_LIFECYCLE_LOCK_FD:-}" ]]; then
-        return 0
-    fi
-    if ! command -v flock >/dev/null 2>&1; then
-        _ods_model_lifecycle_log "Cannot safely run $actor: flock is unavailable."
-        return 1
-    fi
+  if [ "$(uname -s 2>/dev/null)" != "Linux" ]; then
+    return 0
+  fi
+  command -v flock >/dev/null 2>&1 || { _ods_model_lifecycle_log "flock not found"; return 1; }
 
-    lock_file="$(ods_model_lifecycle_lock_file "$install_dir")" || return 1
-    if ! (umask 077 && mkdir -p "$(dirname "$lock_file")"); then
-        return 1
+  if [ -n "$fd" ]; then
+    case "$fd" in
+      ''|*[!0-9]*) _ods_model_lifecycle_log "invalid inherited lock fd: $fd"; return 1 ;;
+    esac
+    if [ "$fd" -lt 3 ]; then
+      _ods_model_lifecycle_log "inherited lock fd must be >= 3: $fd"
+      return 1
     fi
-    if [[ ! -O "$(dirname "$lock_file")" ]]; then
-        _ods_model_lifecycle_log "Refusing model lifecycle lock directory not owned by this user: $(dirname "$lock_file")"
-        return 1
-    fi
-    if ! exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>"$lock_file"; then
-        ODS_MODEL_LIFECYCLE_LOCK_FD=""
-        _ods_model_lifecycle_log "Cannot open model lifecycle lock for $actor: $lock_file"
-        return 1
-    fi
+    _ods_model_lifecycle_validate_fd "$install_dir" "$fd" || {
+      _ods_model_lifecycle_log "inherited lock fd $fd failed validation"
+      return 1
+    }
+    flock -xn "$fd" || {
+      _ods_model_lifecycle_log "inherited lifecycle descriptor is not available (actor=$actor)"
+      return 1
+    }
+    _ods_model_lifecycle_validate_fd "$install_dir" "$fd" || {
+      _ods_model_lifecycle_log "inherited lock fd $fd invalid after lock"
+      return 1
+    }
+    ODS_MODEL_LIFECYCLE_LOCK_FD=$fd
+    ODS_MODEL_LIFECYCLE_LOCK_FILE=$(ods_model_lifecycle_lock_file "$install_dir") || return 1
+    export ODS_MODEL_LIFECYCLE_LOCK_FD ODS_MODEL_LIFECYCLE_LOCK_FILE
+    return 0
+  fi
 
-    if ! flock -xn "$ODS_MODEL_LIFECYCLE_LOCK_FD"; then
-        _ods_model_lifecycle_log "Waiting for another model lifecycle operation before $actor..."
-        if ! flock -x "$ODS_MODEL_LIFECYCLE_LOCK_FD"; then
-            { exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&-; } 2>/dev/null || true
-            ODS_MODEL_LIFECYCLE_LOCK_FD=""
-            return 1
-        fi
-    fi
+  helper=$(_ods_model_lifecycle_helper) || return 1
+  resolved=$(python3 "$helper" path --install-dir "$install_dir") || return 1
+  [ -n "$resolved" ] || { _ods_model_lifecycle_log "empty lock path"; return 1; }
 
-    ODS_MODEL_LIFECYCLE_LOCK_FILE="$lock_file"
-    _ods_model_lifecycle_log "Acquired model lifecycle lock for $actor."
+  exec {new_fd}<"$resolved" || { _ods_model_lifecycle_log "cannot open lock file: $resolved"; return 1; }
+
+  if ! _ods_model_lifecycle_validate_fd "$install_dir" "$new_fd"; then
+    _ods_model_lifecycle_log "lock fd $new_fd failed validation"
+    exec {new_fd}<&-
+    return 1
+  fi
+
+  if ! flock -xn "$new_fd"; then
+    _ods_model_lifecycle_log "waiting for model lifecycle lock (actor=$actor)"
+    if ! flock -x "$new_fd"; then
+      _ods_model_lifecycle_log "failed to acquire model lifecycle lock"
+      exec {new_fd}<&-
+      return 1
+    fi
+  fi
+
+  if ! _ods_model_lifecycle_validate_fd "$install_dir" "$new_fd"; then
+    _ods_model_lifecycle_log "lock fd $new_fd invalid after acquisition (path replaced?)"
+    exec {new_fd}<&-
+    return 1
+  fi
+
+  ODS_MODEL_LIFECYCLE_LOCK_FD=$new_fd
+  ODS_MODEL_LIFECYCLE_LOCK_FILE=$resolved
+  export ODS_MODEL_LIFECYCLE_LOCK_FD ODS_MODEL_LIFECYCLE_LOCK_FILE
+  return 0
 }
 
 ods_model_lifecycle_lock_release() {
-    [[ -n "${ODS_MODEL_LIFECYCLE_LOCK_FD:-}" ]] || return 0
-
-    flock -u "$ODS_MODEL_LIFECYCLE_LOCK_FD" 2>/dev/null || true
-    # Scope stderr suppression to closing the descriptor. A bare exec with
-    # 2>/dev/null would hide every subsequent installer/helper diagnostic.
-    { exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&-; } 2>/dev/null || true
-    ODS_MODEL_LIFECYCLE_LOCK_FD=""
-    ODS_MODEL_LIFECYCLE_LOCK_FILE=""
+  local fd=${ODS_MODEL_LIFECYCLE_LOCK_FD:-}
+  if [[ "$fd" =~ ^[0-9]+$ ]] && (( fd >= 3 )); then
+    # Closing a borrowed descriptor must not unlock the parent's lease.
+    { exec {fd}<&-; } 2>/dev/null || true
+  fi
+  ODS_MODEL_LIFECYCLE_LOCK_FD=""
+  ODS_MODEL_LIFECYCLE_LOCK_FILE=""
 }

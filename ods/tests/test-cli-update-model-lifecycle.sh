@@ -45,7 +45,8 @@ run_update() {
             esac
         }
         # The pre-update snapshot is the first change; stop there.
-        bash() { echo "UPDATE-PROCEEDED"; exit 99; }
+        _ods_cli_wait_for_bootstrap_compose_safe() { :; }
+        _ods_cli_run_update_locked() { echo "UPDATE-PROCEEDED"; exit 99; }
         STATUS_BODY="$status" RECOVERY_BODY="$recovery"
         eval "$(extract _agent_model_lifecycle_busy)"
         eval "$(extract _ods_cli_refuse_under_model_lifecycle)"

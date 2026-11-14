@@ -897,6 +897,11 @@ function ModelTableRow({
   const isLoadedLocally = isLoaded && remoteRouteActive
   const isDownloaded = model.status === 'downloaded'
   const isRuntimeManaged = model.metadata?.source === 'runtime'
+  const isVllm = model.metadata?.source === 'ods' && model.metadata?.runtime === 'vllm'
+  const snapshotState = isVllm ? model.metadata?.snapshotState : null
+  const canDownload = isVllm ? model.metadata?.canDownload === true : true
+  const canDelete = isVllm ? model.metadata?.canDelete === true : true
+  const configured = isVllm ? model.configured === true : false
   const memory = getMemoryMeta(model, gpu)
   const compatibility = getCompatibilityMeta(model, memory, pixelMinimumContext)
   const compatibilityNotes = getCompatibilityNotes(model)
@@ -904,7 +909,13 @@ function ModelTableRow({
   const tags = getModelTags(model, hermesMinimumContext)
   const iconTone = getIconTone(model, compatibility)
   const performanceBadge = getPerformanceBadge(model, gpu)
-  const runDisabledReason = isRuntimeManaged ? null : getRunDisabledReason({
+  const runDisabledReason = isRuntimeManaged ? null : isVllm ? getVllmRunDisabledReason({
+    model,
+    snapshotState,
+    configured,
+    loadBusy,
+    activationBusy,
+  }) : getRunDisabledReason({
     model,
     gpu,
     canActivateModels,
@@ -914,7 +925,7 @@ function ModelTableRow({
     loadBusy,
     activationBusy,
   })
-  const runWarning = isRuntimeManaged ? null : getRunMemoryWarning({ model, gpu, pixelMinimumContext })
+  const runWarning = isRuntimeManaged || isVllm ? null : getRunMemoryWarning({ model, gpu, pixelMinimumContext })
   const runNote = runDisabledReason || runWarning
 
   if (compact) return <article className="model-entry" aria-label={model.name}>
@@ -922,9 +933,9 @@ function ModelTableRow({
     <dl className="model-entry-metrics"><div><dt>Context</dt><dd>{formatContext(model.contextLength)}</dd></div><div><dt>VRAM estimate</dt><dd>{memory.value}</dd></div><div className="model-speed-reading"><dt>Speed</dt><dd>{speed.label}</dd></div></dl>
     <div className="model-fit"><span>{compatibility.label}</span><span>{compatibility.detail}</span></div>
     <footer><div className="model-entry-actions">
-      <PrimaryAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} downloadBusy={downloadBusy} downloadStarting={downloadStarting} runDisabledReason={runDisabledReason} runWarning={runWarning} apiMode={apiMode} hermesMinimumContext={hermesMinimumContext} onDownload={onDownload} onLoad={onLoad} onBenchmark={onBenchmark}/>
-      {isLoaded && !isRuntimeManaged && <button aria-label={`Configure context for ${model.name}`} title={activationModeError || `Configure context for ${model.name}`} disabled={activationBusy || !canActivateModels} onClick={onLoad}><MetalMetricIcon icon={SlidersHorizontal} size={14}/></button>}
-      <DeleteAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} onDelete={onDelete}/>
+      <PrimaryAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} downloadBusy={downloadBusy} downloadStarting={downloadStarting} runDisabledReason={runDisabledReason} runWarning={runWarning} apiMode={apiMode} hermesMinimumContext={hermesMinimumContext} isVllm={isVllm} snapshotState={snapshotState} canDownload={canDownload} configured={configured} onDownload={onDownload} onLoad={onLoad} onBenchmark={onBenchmark}/>
+      {isLoaded && !isRuntimeManaged && !isVllm && <button aria-label={`Configure context for ${model.name}`} title={activationModeError || `Configure context for ${model.name}`} disabled={activationBusy || !canActivateModels} onClick={onLoad}><MetalMetricIcon icon={SlidersHorizontal} size={14}/></button>}
+      <DeleteAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} isVllm={isVllm} snapshotState={snapshotState} canDelete={canDelete} configured={configured} onDelete={onDelete}/>
     </div><details className="model-entry-details"><summary>Details <ChevronRight size={12}/></summary><div><p>{model.description || 'No description available.'}</p><p>{tags.join(' · ')}</p>{performanceBadge && <p>{performanceBadge.label}</p>}<p>{compatibility.label}: {compatibility.detail}</p>{compatibilityNotes.map(note => <p key={note}>{note}</p>)}{runNote && <p>{runNote}</p>}</div></details></footer>
   </article>
 
@@ -963,11 +974,15 @@ function ModelTableRow({
           runWarning={runWarning}
           apiMode={apiMode}
           hermesMinimumContext={hermesMinimumContext}
+          isVllm={isVllm}
+          snapshotState={snapshotState}
+          canDownload={canDownload}
+          configured={configured}
           onDownload={onDownload}
           onLoad={onLoad}
           onBenchmark={onBenchmark}
         />
-        {isLoaded && !isRuntimeManaged && (
+        {isLoaded && !isRuntimeManaged && !isVllm && (
           <button
             type="button"
             onClick={onLoad}
@@ -985,6 +1000,10 @@ function ModelTableRow({
           isDownloaded={isDownloaded}
           isLoading={isLoading}
           activationBusy={activationBusy}
+          isVllm={isVllm}
+          snapshotState={snapshotState}
+          canDelete={canDelete}
+          configured={configured}
           onDelete={onDelete}
         />
       </div>
@@ -1040,12 +1059,20 @@ function PrimaryAction({
   runWarning = null,
   apiMode = false,
   hermesMinimumContext,
+  isVllm = false,
+  snapshotState = null,
+  canDownload = true,
+  configured = false,
   onDownload,
   onLoad,
   onBenchmark,
 }) {
   if (model.metadata?.source === 'runtime') {
     return <span className="text-xs text-theme-text-muted">Managed by runtime</span>
+  }
+
+  if (isVllm) {
+    return <VllmPrimaryAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} downloadBusy={downloadBusy} downloadStarting={downloadStarting} runDisabledReason={runDisabledReason} snapshotState={snapshotState} canDownload={canDownload} configured={configured} onDownload={onDownload} onLoad={onLoad}/>
   }
 
   if (isLoading) {
@@ -1125,7 +1152,125 @@ function PrimaryAction({
   )
 }
 
-function DeleteAction({ model, isLoaded, isDownloaded, isLoading, activationBusy, onDelete }) {
+function VllmPrimaryAction({ model, isLoaded, isDownloaded, isLoading, activationBusy, downloadBusy, downloadStarting, runDisabledReason, snapshotState, canDownload, configured, onDownload, onLoad }) {
+  if (isLoading) {
+    return (
+      <button disabled className="inline-flex h-8 min-w-24 items-center justify-center gap-2 rounded-md bg-theme-accent/20 px-3 text-xs font-semibold text-theme-accent">
+        <Loader2 size={14} className="animate-spin" />
+        Working
+      </button>
+    )
+  }
+
+  if (isLoaded || configured) {
+    return (
+      <span className="inline-flex" title="This model is configured for the vLLM runtime.">
+        <button
+          type="button"
+          disabled
+          className="inline-flex h-8 min-w-24 cursor-not-allowed items-center justify-center gap-2 rounded-md border border-theme-border bg-theme-bg/45 px-3 text-xs font-semibold text-theme-text-muted"
+        >
+          <Check size={13} />
+          {isLoaded ? 'Loaded' : 'Configured'}
+        </button>
+      </span>
+    )
+  }
+
+  if (isDownloaded) {
+    const runDisabled = Boolean(runDisabledReason)
+    const title = runDisabledReason || `Run ${model.name}`
+    return (
+      <span className="inline-flex" title={title}>
+        <button
+          type="button"
+          onClick={onLoad}
+          disabled={runDisabled}
+          title={title}
+          className={`inline-flex h-8 min-w-24 items-center justify-center gap-2 rounded-md px-3 text-xs font-semibold transition-colors ${
+            !runDisabled
+              ? 'bg-theme-accent text-white shadow-[0_0_18px_rgba(168,85,247,0.32)] hover:bg-theme-accent-hover'
+              : 'cursor-not-allowed border border-theme-border bg-theme-bg/45 text-theme-text-muted'
+          }`}
+        >
+          <Play size={13} />
+          Run
+        </button>
+      </span>
+    )
+  }
+
+  if (downloadStarting) {
+    return (
+      <button disabled className="inline-flex h-8 min-w-24 items-center justify-center gap-2 rounded-md bg-theme-accent/20 px-3 text-xs font-semibold text-theme-accent">
+        <Loader2 size={14} className="animate-spin" />
+        Starting
+      </button>
+    )
+  }
+
+  const resuming = snapshotState === 'partial'
+  const label = resuming ? 'Resume' : 'Download'
+  const disabled = !canDownload || downloadBusy || activationBusy
+  const title = !canDownload
+    ? 'This model snapshot cannot be downloaded safely.'
+    : downloadBusy || activationBusy
+      ? 'Wait for the current model action to finish.'
+      : `${label} ${model.name}`
+  return (
+    <span className="inline-flex" title={title}>
+      <button
+        type="button"
+        onClick={onDownload}
+        disabled={disabled}
+        title={title}
+        className={`inline-flex h-8 min-w-24 items-center justify-center gap-2 rounded-md border px-3 text-xs font-semibold transition-colors ${
+          disabled
+            ? 'cursor-not-allowed border-theme-border bg-theme-bg/45 text-theme-text-muted'
+            : 'border-theme-border bg-theme-bg/45 text-theme-text-secondary hover:border-theme-accent/35 hover:text-theme-text'
+        }`}
+      >
+        <Download size={13} />
+        {label}
+      </button>
+    </span>
+  )
+}
+
+function DeleteAction({ model, isLoaded, isDownloaded, isLoading, activationBusy, isVllm = false, snapshotState = null, canDelete = true, configured = false, onDelete }) {
+  if (isVllm) {
+    const showVllmDelete = isDownloaded || snapshotState === 'partial'
+    if (!showVllmDelete) return null
+    const disabledReason = configured || isLoaded
+      ? 'The configured model cannot be deleted. Choose another model first.'
+      : !canDelete
+        ? 'This model snapshot cannot be deleted safely.'
+        : isLoading
+          ? 'Wait for the current model action to finish before deleting it.'
+          : activationBusy
+            ? 'Wait for the current model swap to finish before deleting another model.'
+            : null
+    const title = disabledReason || `Delete ${model.name} from this device`
+    return (
+      <span className="inline-flex" title={title}>
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={Boolean(disabledReason)}
+          aria-label={disabledReason ? `Delete ${model.name} unavailable` : `Delete ${model.name}`}
+          title={title}
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border transition-colors ${
+            disabledReason
+              ? 'cursor-not-allowed border-theme-border bg-theme-bg/45 text-theme-text-muted/45'
+              : 'border-red-400/20 bg-red-500/[0.07] text-red-300 hover:border-red-300/40 hover:bg-red-500/15'
+          }`}
+        >
+          <Trash2 size={14} />
+        </button>
+      </span>
+    )
+  }
+
   if (!isLoaded && !isDownloaded) return null
 
   const disabledReason = isLoaded
@@ -1705,6 +1850,14 @@ function getRunDisabledReason({
   return null
 }
 
+function getVllmRunDisabledReason({ model, snapshotState, configured, loadBusy, activationBusy }) {
+  if (configured) return 'This model is already configured for the vLLM runtime.'
+  if (snapshotState !== 'complete') return 'The model snapshot is not complete. Download it before running.'
+  if (activationBusy) return 'Wait for the current model swap to finish.'
+  if (loadBusy) return 'Another model action is in progress.'
+  return model.activationSupport?.message || 'Use the installer to activate this vLLM model.'
+}
+
 function requiredMemoryGb(model) {
   return Number(model.estimatedRequired || model.vramRequired || 0)
 }
@@ -2002,6 +2155,9 @@ function getMemoryMeta(model, gpu) {
 function getCompatibilityMeta(model, memory, pixelMinimumContext = 0) {
   if (model?.metadata?.source === 'runtime') {
     return { label: 'Runtime managed', detail: 'Fit not verified by ODS', tone: 'purple' }
+  }
+  if (model?.metadata?.source === 'ods' && model?.metadata?.runtime === 'vllm') {
+    return { label: 'Fit unknown', detail: 'Requires NVIDIA GPU on Linux', tone: 'amber' }
   }
   if (!Number.isFinite(memory.total) || memory.total <= 0) {
     return { label: 'Fit unknown', detail: 'GPU capacity unavailable', tone: 'amber' }

@@ -45,6 +45,9 @@ make_install() {
     local dir="$1"
     mkdir -p "$dir/data"
     cp "$UPDATE_SCRIPT" "$dir/ods-update.sh"
+    mkdir -p "$dir/installers/lib" "$dir/bin"
+    cp "$ROOT_DIR/installers/lib/model-lifecycle-lock.sh" "$dir/installers/lib/"
+    cp "$ROOT_DIR/bin/model_lifecycle_lock.py" "$dir/bin/"
     # Use the reviewed real guard; synthetic target remains separate from helper code.
     mkdir -p "$dir/scripts"
     ln -s "$ROOT_DIR/scripts/source-update-preflight.py" "$dir/scripts/source-update-preflight.py"

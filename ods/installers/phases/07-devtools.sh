@@ -429,6 +429,7 @@ _ods_start_session_host_agent() {
     # long-lived session agent must not keep the installer's lock forever.
     if ( [[ -z "${ODS_MODEL_LIFECYCLE_LOCK_FD:-}" ]] \
             || exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&-; \
+         unset ODS_MODEL_LIFECYCLE_LOCK_FD ODS_MODEL_LIFECYCLE_LOCK_FILE; \
          ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent start \
             >> "$LOG_FILE" 2>&1 ); then
         ai_ok "ODS host agent started for this session (background mode)"
