@@ -32,13 +32,50 @@ for _ods_bootstrap_arg in "$@"; do
   fi
 done
 
+# Apple Silicon reports hw.optional.arm64=1 even to a process that Rosetta
+# translates, where `uname -m` says x86_64 (for example under the bash of an
+# Intel Homebrew in /usr/local). Intel Macs lack the key and sysctl fails
+# there, which correctly means "not Apple Silicon".
+_ods_apple_silicon=false
+if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+  _ods_apple_silicon=true
+fi
+
+# On Apple Silicon, bash and brew run as arm64: `arch -arm64` refuses an
+# Intel-only build and keeps a universal one native, so the hand-off below
+# never moves the install under Rosetta (#3256).
+_ods_native() {
+  if [ "$_ods_apple_silicon" = true ]; then
+    arch -arm64 "$@"
+  else
+    "$@"
+  fi
+}
+
 _ods_bash_is_modern() {
   [ -x "$1" ] || return 1
-  "$1" -c '[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]' >/dev/null 2>&1
+  _ods_native "$1" -c '[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]' >/dev/null 2>&1
+}
+
+# Re-run this installer under the given bash, natively on Apple Silicon.
+_ods_handoff() {
+  local bash_path="$1"
+  shift
+  if [ "$_ods_apple_silicon" = true ]; then
+    exec arch -arm64 "$bash_path" "$0" "$@"
+  fi
+  exec "$bash_path" "$0" "$@"
 }
 
 # Guard: macOS ships Bash 3.2 (GPL). ods-cli and our libs need Bash 4+.
-if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+# A bash that Rosetta translates on Apple Silicon (an Intel one first on PATH)
+# hands off too: under it the install sees x86_64 and stops as an Intel Mac.
+# sysctl.proc_translated is 1 only inside a translated process.
+_ods_rosetta=false
+if [ "$_ods_apple_silicon" = true ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ]; then
+  _ods_rosetta=true
+fi
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] || [ "$_ods_rosetta" = true ]; then
   # Default candidate paths cover standard Apple Silicon and Intel Homebrew
   # prefixes. If brew is already on PATH we also ask it for its actual prefix,
   # which handles custom installs (e.g. /Volumes/X/homebrew).
@@ -49,7 +86,7 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
   fi
   for candidate in "${candidates[@]}"; do
     if _ods_bash_is_modern "$candidate"; then
-      exec "$candidate" "$0" "$@"
+      _ods_handoff "$candidate" "$@"
     fi
   done
   if [ "$_ods_bootstrap_dry_run" = true ]; then
@@ -57,7 +94,27 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     echo "[DRY RUN] No host changes were made."
     exit 0
   fi
-  if ! command -v brew >/dev/null 2>&1; then
+  # Install with a Homebrew whose bash this Mac runs natively. On Apple
+  # Silicon an Intel Homebrew in /usr/local cannot: its bash runs under
+  # Rosetta, and it refuses to install from a native shell.
+  _ods_brew=""
+  command -v brew >/dev/null 2>&1 && _ods_brew=brew
+  if [ "$_ods_apple_silicon" = true ] && { [ -z "$_ods_brew" ] || [ "${brew_prefix:-}" = /usr/local ]; }; then
+    _ods_brew=""
+    [ -x /opt/homebrew/bin/brew ] && _ods_brew=/opt/homebrew/bin/brew
+    if [ -z "$_ods_brew" ] && [ "${brew_prefix:-}" = /usr/local ]; then
+      echo "ODS needs a Bash 4+ built for Apple Silicon, and the only Homebrew found is the" >&2
+      echo "Intel one in /usr/local. Its bash runs under Rosetta, where the installer would see" >&2
+      echo "an Intel Mac and stop." >&2
+      echo >&2
+      echo "Install Homebrew for Apple Silicon (it goes in /opt/homebrew; the Intel one can stay):" >&2
+      echo "  arch -arm64 /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"" >&2
+      echo "Then re-run this installer. It will install Bash with that Homebrew and proceed." >&2
+      echo "Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+      exit 1
+    fi
+  fi
+  if [ -z "$_ods_brew" ]; then
     echo "ODS requires Bash 4+ (you have ${BASH_VERSION})." >&2
     echo "macOS ships only Bash 3.2 — the last GPLv2 release Apple was willing to bundle." >&2
     echo >&2
@@ -76,14 +133,14 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     exit 1
   fi
   echo "Installing Bash 4+ via Homebrew (one-time setup)..."
-  brew install bash || { echo "brew install bash failed" >&2; exit 1; }
-  brew_prefix="$(brew --prefix 2>/dev/null)"
+  _ods_native "$_ods_brew" install bash || { echo "brew install bash failed" >&2; exit 1; }
+  brew_prefix="$(_ods_native "$_ods_brew" --prefix 2>/dev/null)"
   if [ -n "$brew_prefix" ] && _ods_bash_is_modern "$brew_prefix/bin/bash"; then
-    exec "$brew_prefix/bin/bash" "$0" "$@"
+    _ods_handoff "$brew_prefix/bin/bash" "$@"
   fi
   for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
     if _ods_bash_is_modern "$candidate"; then
-      exec "$candidate" "$0" "$@"
+      _ods_handoff "$candidate" "$@"
     fi
   done
   echo "Homebrew bash installed but not found in expected paths." >&2
