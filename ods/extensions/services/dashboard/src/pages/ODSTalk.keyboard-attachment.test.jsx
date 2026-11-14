@@ -46,4 +46,29 @@ describe('Talk keyboard attachment submission', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('button', { name: 'Remove attachment' })).toBeInTheDocument()
   })
+
+  test.each([
+    ['composition flag', { isComposing: true }],
+    ['Safari composition key', { keyCode: 229 }],
+  ])('IME confirmation with %s preserves the draft and attachment', async (_label, composition) => {
+    const fetchMock = vi.fn(async url => url === '/api/talk/status' ? ready : reply())
+    vi.stubGlobal('fetch', fetchMock)
+    const { container } = render(<ODSTalk />)
+    await screen.findByText('Ready')
+    fireEvent.change(container.querySelector('input[type="file"]'), {
+      target: { files: [new File(['notes'], 'notes.txt', { type: 'text/plain' })] },
+    })
+    const composer = screen.getByPlaceholderText('Message ODS')
+    fireEvent.change(composer, { target: { value: '日本語' } })
+    expect(fireEvent.keyDown(composer, { key: 'Enter', code: 'Enter', ...composition })).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(composer).toHaveValue('日本語')
+    expect(screen.getByRole('button', { name: 'Remove attachment' })).toBeInTheDocument()
+    fireEvent.keyDown(composer, { key: 'Enter', code: 'Enter' })
+    await screen.findByText('Attachment received')
+    const [url, options] = fetchMock.mock.calls.find(([request]) => request !== '/api/talk/status')
+    expect(url).toBe('/api/talk/attachment')
+    expect(options.body.get('text')).toBe('日本語')
+    expect(options.body.get('file').name).toBe('notes.txt')
+  })
 })

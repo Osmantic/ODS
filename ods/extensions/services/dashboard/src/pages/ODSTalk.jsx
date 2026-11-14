@@ -1016,6 +1016,9 @@ export default function ODSTalk() {
               value={input}
               onChange={event => setInput(event.target.value)}
               onKeyDown={event => {
+                // Enter confirms an IME candidate before it can mean Send.
+                // Safari may report composition as keyCode 229 instead.
+                if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault()
                   if (canSend) submit(event)
