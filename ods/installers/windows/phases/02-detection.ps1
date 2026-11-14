@@ -98,7 +98,7 @@ if ($cloudMode) {
 if (-not $env:MODEL_PROFILE) {
     $existingEnvPath = Join-Path $installDir ".env"
     if (Test-Path -LiteralPath $existingEnvPath -PathType Leaf) {
-        $existingProfile = Get-Content $existingEnvPath |
+        $existingProfile = Get-Content -LiteralPath $existingEnvPath -Encoding UTF8 |
             Where-Object { $_ -match '^MODEL_PROFILE=' } |
             Select-Object -First 1
         if ($existingProfile) {

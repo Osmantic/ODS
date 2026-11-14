@@ -338,6 +338,15 @@ jobs:
         shell: powershell
         run: ./tests/test-windows-owner-env-carry.ps1
 
+      - name: Windows .env Rerun Literal Path Contract
+        shell: pwsh
+        run: ./tests/test-windows-env-rerun-literal-path.ps1
+
+      - name: Windows .env Rerun Literal Path Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-env-rerun-literal-path.ps1
+
       - name: Windows llama.cpp Speculative Opt-out Contract
         shell: pwsh
         run: ./tests/test-windows-llama-spec-type.ps1
