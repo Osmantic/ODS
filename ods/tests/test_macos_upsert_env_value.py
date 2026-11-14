@@ -181,6 +181,74 @@ fi
                 assert "keep-private" not in result.stderr
 
 
+def extract_read_env_value_func(script_path: Path) -> str:
+    lines = script_path.read_text().splitlines()
+    start = -1
+    brace_count = 0
+    collected = []
+    for i, line in enumerate(lines):
+        if line.startswith("read_env_value() {"):
+            start = i
+            brace_count = 0
+        if start != -1:
+            collected.append(line)
+            brace_count += line.count("{") - line.count("}")
+            if brace_count == 0:
+                break
+    return "\n".join(collected)
+
+
+def test_read_env_value_selects_last_assignment():
+    repo_root = Path(__file__).resolve().parents[1]
+    env_gen = repo_root / "installers/macos/lib/env-generator.sh"
+    helper_code = extract_read_env_value_func(env_gen)
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        env_file = root / ".env"
+        content = (
+            "OPENAI_API_KEY=\r\n"
+            "# Owner appended key per FAQ:\r\n"
+            "OPENAI_API_KEY=sk-owner-secret-key\r\n"
+            "COMPLEX_VAL=foo=bar=baz\r\n"
+            "CRLF_KEY=crlf_value\r\n"
+        )
+        env_file.write_bytes(content.encode("utf-8"))
+
+        runner = root / "run_test.sh"
+        runner.write_text(f"""#!/usr/bin/env bash
+set -euo pipefail
+{helper_code}
+
+# Test 1: duplicate assignment selects last (owner key over empty placeholder)
+val1="$(read_env_value "{env_file.as_posix()}" "OPENAI_API_KEY")"
+[[ "$val1" == "sk-owner-secret-key" ]] || {{ echo "Expected sk-owner-secret-key, got: $val1"; exit 1; }}
+
+# Test 2: value containing = signs is preserved
+val2="$(read_env_value "{env_file.as_posix()}" "COMPLEX_VAL")"
+[[ "$val2" == "foo=bar=baz" ]] || {{ echo "Expected foo=bar=baz, got: $val2"; exit 2; }}
+
+# Test 3: CRLF line endings have \\r stripped
+val3="$(read_env_value "{env_file.as_posix()}" "CRLF_KEY")"
+[[ "$val3" == "crlf_value" ]] || {{ echo "Expected crlf_value, got: $val3"; exit 3; }}
+
+# Test 4: missing key returns empty string with exit 0
+val4="$(read_env_value "{env_file.as_posix()}" "NONEXISTENT_KEY")"
+[[ -z "$val4" ]] || {{ echo "Expected empty string for missing key, got: $val4"; exit 4; }}
+
+# Test 5: missing file returns empty string with exit 0
+val5="$(read_env_value "{root.as_posix()}/missing.env" "OPENAI_API_KEY")"
+[[ -z "$val5" ]] || {{ echo "Expected empty string for missing file, got: $val5"; exit 5; }}
+
+echo "ALL_TESTS_PASSED"
+""")
+        runner.chmod(0o755)
+
+        result = subprocess.run([BASH, runner.as_posix()], capture_output=True, text=True, check=False)
+        assert result.returncode == 0, f"stdout: {result.stdout}, stderr: {result.stderr}"
+        assert "ALL_TESTS_PASSED" in result.stdout
+
+
 if __name__ == "__main__":
     test_upsert_env_value_handles_delimiters_and_literal_keys()
     print("env-generator.sh: passed.")
@@ -188,3 +256,5 @@ if __name__ == "__main__":
     print("ods-macos.sh: passed.")
     test_upsert_env_value_preserves_recovery_after_failed_restore()
     print("Both helpers: write/backup/restore fault custody passed.")
+    test_read_env_value_selects_last_assignment()
+    print("read_env_value: passed.")
