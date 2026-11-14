@@ -338,6 +338,15 @@ jobs:
         shell: powershell
         run: ./tests/test-windows-owner-env-carry.ps1
 
+      - name: Windows Extension .env Settings Carry Contract
+        shell: pwsh
+        run: ./tests/test-windows-extension-env-carry.ps1
+
+      - name: Windows Extension .env Settings Carry Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-extension-env-carry.ps1
+
       - name: Windows llama.cpp Speculative Opt-out Contract
         shell: pwsh
         run: ./tests/test-windows-llama-spec-type.ps1

@@ -263,6 +263,62 @@ function Get-ODSCarriedEnvLines {
     return $carried
 }
 
+function Get-ODSExtensionEnvKeys {
+    <# Return the env_vars keys declared by installed extension manifests,
+       in manifest order, deduplicated exactly. Mirrors the awk reader in
+       installers/lib/extension-env-carry.sh: keys under any env_vars: block
+       at any indentation, only uppercase [A-Z][A-Z0-9_]* names. #>
+    param([string[]]$ManifestPaths)
+    $keys = New-Object 'System.Collections.Generic.List[string]'
+    $seen = @{}
+    foreach ($manifestPath in $ManifestPaths) {
+        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { continue }
+        $inEnv = $false
+        $envIndent = 0
+        foreach ($line in @(Get-Content -LiteralPath $manifestPath -Encoding UTF8)) {
+            if ($line -match '^\s*($|#)') { continue }
+            $indent = $line.Length - $line.TrimStart().Length
+            if ($inEnv -and $indent -le $envIndent) { $inEnv = $false }
+            if ($line -match '^\s*env_vars:\s*($|#)') {
+                $inEnv = $true
+                $envIndent = $indent
+                continue
+            }
+            if (-not $inEnv) { continue }
+            if ($line -match '^\s*-\s*key:\s*(.*)$') {
+                $key = $Matches[1] -replace '["''\s]', ''
+                if ($key -cmatch '^[A-Z][A-Z0-9_]*$' -and -not $seen.ContainsKey($key)) {
+                    $seen[$key] = $true
+                    [void]$keys.Add($key)
+                }
+            }
+        }
+    }
+    return $keys.ToArray()
+}
+
+function Get-ODSExtensionManifestPaths {
+    <# Return manifest.yaml paths for direct extension directories of
+       extensions/services and data/user-extensions, in that order.
+       Never recurses into extensions/library; no InstallDir/services root. #>
+    param([string]$InstallDir)
+    $paths = New-Object 'System.Collections.Generic.List[string]'
+    $roots = @(
+        (Join-Path (Join-Path $InstallDir 'extensions') 'services'),
+        (Join-Path (Join-Path $InstallDir 'data') 'user-extensions')
+    )
+    foreach ($rootDir in $roots) {
+        if (-not (Test-Path -LiteralPath $rootDir -PathType Container)) { continue }
+        foreach ($dir in @(Get-ChildItem -LiteralPath $rootDir -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+            $manifest = Join-Path $dir.FullName 'manifest.yaml'
+            if (Test-Path -LiteralPath $manifest -PathType Leaf) {
+                [void]$paths.Add($manifest)
+            }
+        }
+    }
+    return $paths.ToArray()
+}
+
 function New-ODSEnv {
     <#
     .SYNOPSIS
@@ -915,6 +971,18 @@ LANGFUSE_INIT_USER_PASSWORD=$langfuseInitUserPassword
     if ($ownerLines.Count -gt 0) {
         $nl = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
         $envContent += "$nl$nl#=== Owner settings (kept from the previous .env) ===$nl" + ($ownerLines -join $nl)
+    }
+
+    # Keep the settings installed extensions own (their manifest env_vars),
+    # as phase 06 does on Linux. New template values win, including empty.
+    $extensionKeys = @(Get-ODSExtensionEnvKeys -ManifestPaths @(Get-ODSExtensionManifestPaths -InstallDir $InstallDir))
+    if ($extensionKeys.Count -gt 0) {
+        $extensionLines = @(Get-ODSCarriedEnvLines -PreviousLines $previousEnvLines `
+            -NewContent $envContent -Keys $extensionKeys)
+        if ($extensionLines.Count -gt 0) {
+            $nl = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
+            $envContent += "$nl$nl#=== Installed extensions (kept from the previous .env) ===$nl" + ($extensionLines -join $nl)
+        }
     }
 
     $envPath = Join-Path $InstallDir ".env"
