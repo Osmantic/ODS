@@ -163,7 +163,7 @@ class TestUpstreamConnectTimeout:
         assert 0 < seen[1][1]["read"] < seen[0][1]["read"]
         assert seen[1][1]["read"] == seen[1][1]["write"] == seen[1][1]["pool"]
 
-    @pytest.mark.parametrize("failure,status", [(httpx.ConnectError, 502), (httpx.ConnectTimeout, 504)])
+    @pytest.mark.parametrize("failure,status", [(httpx.ConnectError, 502), (httpx.ConnectTimeout, 502), (httpx.ReadTimeout, 504)])
     def test_connect_failure_does_not_retry(self, router, monkeypatch, failure, status):
         mod, client, write_state, _calls = router
         write_state()
@@ -181,3 +181,26 @@ class TestUpstreamConnectTimeout:
         assert resp.status_code == status
         assert "connection failed" not in resp.text
         assert len(sent) == 1, "router must not retry the POST"
+
+    @pytest.mark.parametrize("failure,status", [(httpx.ConnectTimeout, 502), (httpx.ReadTimeout, 504)])
+    def test_repair_distinguishes_connect_and_read_timeout(self, router, failure, status):
+        mod, client, write_state, _calls = router
+        write_state()
+        sent = []
+
+        def handler(request):
+            sent.append(request)
+            if len(sent) > 1:
+                raise failure("private failure detail", request=request)
+            return httpx.Response(200, json={"model": "Concrete.gguf", "choices": [{
+                "index": 0, "message": {"role": "assistant", "content":
+                    '<tool_call>\n<function=missing_tool>\n<parameter=key>\nx\n</parameter>\n</function>\n</tool_call>'},
+                "finish_reason": "stop"}]})
+
+        _use_upstream(mod, handler)
+        response = client.post('/v1/chat/completions', json={
+            'model': 'ods/current', 'messages': [{'role': 'user', 'content': 'look up x'}],
+            'tools': [{'type': 'function', 'function': {'name': 'lookup', 'parameters': {'type': 'object'}}}]})
+        assert response.status_code == status
+        assert len(sent) == 2
+        assert 'private failure detail' not in response.text

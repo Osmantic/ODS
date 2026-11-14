@@ -2455,6 +2455,15 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     except asyncio.CancelledError:
         _finish_probe_attempt(attempt_handle, "cancelled")
         raise
+    except httpx.ConnectTimeout:
+        # Connection establishment failed before sending the request. Keep
+        # the same unavailable response as other connection failures.
+        _finish_probe_attempt(attempt_handle, "timeout")
+        return JSONResponse(
+            {"error": {"message": "Upstream model runtime unavailable",
+                       "type": "upstream_unavailable", "code": "502"}},
+            status_code=502, headers=ods_headers,
+        ), False
     except httpx.TimeoutException:
         _finish_probe_attempt(attempt_handle, "timeout")
         return JSONResponse(
@@ -2535,6 +2544,12 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     except asyncio.CancelledError:
                         _finish_probe_attempt(repair_handle, "cancelled")
                         raise
+                    except httpx.ConnectTimeout:
+                        _finish_probe_attempt(repair_handle, "timeout")
+                        return JSONResponse({"error": {
+                            "message": "Upstream model runtime unavailable during tool protocol repair",
+                            "type": "upstream_unavailable", "code": "502",
+                        }}, status_code=502, headers=ods_headers), False
                     except httpx.TimeoutException:
                         _finish_probe_attempt(repair_handle, "timeout")
                         return JSONResponse({"error": {
