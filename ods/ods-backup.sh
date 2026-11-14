@@ -193,9 +193,9 @@ EXAMPLES:
     $(basename "$0")                          # Backup (default: user-data)
     $(basename "$0") -t full -c               # Compressed full backup
     $(basename "$0") -l                       # List all backups
-    $(basename "$0") -d 20260212-071500       # Delete specific backup
-    $(basename "$0") verify 20260212-071500   # Verify checksum integrity
-    $(basename "$0") verify 20260212-071500.tar.gz
+    $(basename "$0") -d backup-12345-20260212-071500 # Delete specific backup
+    $(basename "$0") verify backup-12345-20260212-071500 # Verify checksum integrity
+    $(basename "$0") verify backup-12345-20260212-071500.tar.gz
     $(basename "$0") backup -t config         # Explicit backup subcommand
 
 EOF
@@ -593,7 +593,12 @@ do_backup() (
         echo "This archive is for inspection; automatic restore is unsupported. Retain the original state."
     else
         echo "To restore this backup, run:"
-        echo "  ods-restore.sh $backup_id"
+        if command -v ods >/dev/null 2>&1; then
+            echo "  ods restore $backup_id"
+        else
+            printf '  %q %q
+' "$SCRIPT_DIR/ods-restore.sh" "$backup_id"
+        fi
     fi
 )
 
