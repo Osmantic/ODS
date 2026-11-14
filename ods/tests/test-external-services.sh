@@ -456,7 +456,10 @@ run_phase06_env_cycle() (
     grep -qx 'EXTERNAL_LLM_PROVIDER=' "$install_dir/.env"
     grep -qx 'SKIP_MODEL_DOWNLOAD=false' "$install_dir/.env"
     grep -q 'api_base: http://llama-server:8080/v1' "$install_dir/config/litellm/local.yaml"
-    ! grep -q 'host.docker.internal:11434\|openai/qwen3.5:9b' "$install_dir/config/litellm/local.yaml"
+    # A negated command never trips set -e, so this check exits itself.
+    if grep -q 'host.docker.internal:11434\|openai/qwen3.5:9b' "$install_dir/config/litellm/local.yaml"; then
+        exit 1
+    fi
 
     # A Windows Portal reinstall (host-native llama-server) can inherit the
     # local route from an earlier CPU fallback. Recompute only that obsolete
@@ -491,7 +494,13 @@ run_phase06_env_cycle() (
     export ODS_REMOTE_ROUTE_PAUSED=false
 )
 
-if run_phase06_env_cycle; then
+# Bash ignores set -e in anything run as an if/&&/|| condition, so the
+# fixture's own checks would not stop it there. Run it as a plain command.
+set +e
+run_phase06_env_cycle
+phase06_env_cycle_status=$?
+set -e
+if [[ "$phase06_env_cycle_status" -eq 0 ]]; then
     pass "phase 06 preserves external routing, restores managed inference, and repairs stale host-native routes"
 else
     fail "phase 06 external routing/reset/host-native cycle"
@@ -582,7 +591,11 @@ run_phase06_amd_external() (
     grep -qx 'AMD_INFERENCE_MANAGED=' "$install_dir/.env"
 )
 
-if run_phase06_amd_external; then
+set +e
+run_phase06_amd_external
+phase06_amd_external_status=$?
+set -e
+if [[ "$phase06_amd_external_status" -eq 0 ]]; then
     pass "AMD external reuse writes one coherent external backend contract"
 else
     fail "AMD external reuse .env contract"
