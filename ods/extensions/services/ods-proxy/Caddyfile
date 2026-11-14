@@ -115,6 +115,13 @@ http://talk.{$ODS_DEVICE_NAME:ods}.local {
 # reaches chat.<device>.local, hermes.<device>.local, etc.
 # ---------------------------------------------------------------------
 http://auth.{$ODS_DEVICE_NAME:ods}.local {
+	# Magic-link redemption and the session checks served here are GETs
+	# with no body. Anyone on the LAN reaches this host before signing in,
+	# so cap bodies at 4 KB, the dashboard nginx's cap for its sign-in
+	# endpoints, instead of letting them make dashboard-api read any size.
+	request_body {
+		max_size 4KB
+	}
 	reverse_proxy dashboard-api:3002 {
 		header_up X-Forwarded-Proto {scheme}
 		header_up X-Forwarded-Host {host}
