@@ -339,7 +339,143 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
+})
+
+function mockDownloadObservation(readStatus, readModels = () => peerModelsPayload) {
+  globalThis.fetch.mockImplementation(async path => {
+    if (path === '/api/remote-provider/status') return response(peerReadyStatusPayload)
+    if (path === '/api/remote-provider/peer/models') return response(await readModels())
+    if (path === '/api/remote-provider/peer/models/download-status') return readStatus()
+    throw new Error(`Unexpected request: ${path}`)
+  })
+}
+const downloadObservationReads = () => globalThis.fetch.mock.calls.filter(([path]) => path.endsWith('/download-status')).length
+
+test.each(['complete', 'failed', 'cancelled'])('observes active peer download until %s and stops', async terminal => {
+  vi.useFakeTimers()
+  let reads = 0
+  mockDownloadObservation(() => response(++reads === 1 ? peerActiveDownloadStatusPayload : {
+    status: terminal, active: false, isDownloading: false, model: 'remote-available', percent: 100,
+  }))
+  const view = render(createElement(RemoteProvider))
+  await act(async () => {})
+  expect(downloadObservationReads()).toBe(1)
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+  expect(downloadObservationReads()).toBe(2)
+  expect(screen.getByText(new RegExp(`${terminal} - remote-available - 100%`, 'i'))).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /cancel download/i })).toBeDisabled()
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+  expect(downloadObservationReads()).toBe(2)
+  view.unmount()
+})
+
+test('keeps the active snapshot after an observation error and waits for each read', async () => {
+  vi.useFakeTimers()
+  let reads = 0
+  let finish
+  mockDownloadObservation(() => {
+    reads += 1
+    if (reads === 2) return new Promise(resolve => { finish = resolve })
+    return response(peerActiveDownloadStatusPayload)
+  })
+  const view = render(createElement(RemoteProvider))
+  await act(async () => {})
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+  expect(downloadObservationReads()).toBe(2)
+  await act(async () => { finish(response({ detail: 'Peer temporarily unavailable' }, 503)) })
+  expect(screen.getByText('Peer temporarily unavailable')).toBeInTheDocument()
+  expect(screen.getByText(/downloading - remote-available - 42%/i)).toBeInTheDocument()
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+  expect(downloadObservationReads()).toBe(3)
+  expect(screen.queryByText('Peer temporarily unavailable')).not.toBeInTheDocument()
+  view.unmount()
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+  expect(downloadObservationReads()).toBe(3)
+})
+
+test('does not observe an idle peer download', async () => {
+  vi.useFakeTimers()
+  mockDownloadObservation(() => response(peerDownloadStatusPayload))
+  const view = render(createElement(RemoteProvider))
+  await act(async () => {})
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+  expect(downloadObservationReads()).toBe(1)
+  view.unmount()
+})
+
+test('reads inventory after completion before making the delivered model loadable', async () => {
+  vi.useFakeTimers()
+  let statusReads = 0
+  let published = false
+  mockDownloadObservation(() => {
+    statusReads += 1
+    if (statusReads === 1) return response(peerActiveDownloadStatusPayload)
+    published = true
+    return response({ status: 'complete', active: false, isDownloading: false })
+  }, () => ({
+    models: [{ id: 'remote-available', name: 'Remote Available', status: published ? 'downloaded' : 'available' }],
+  }))
+  const view = render(createElement(RemoteProvider))
+  await act(async () => {})
+  expect(screen.getByRole('button', { name: 'Load', exact: true })).toBeDisabled()
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+  expect(screen.getByRole('button', { name: 'Load', exact: true })).toBeEnabled()
+  view.unmount()
+})
+
+test('a cancelled download cannot be overwritten by an older pending observation', async () => {
+  vi.useFakeTimers()
+  let reads = 0
+  let finishOld
+  let cancelled = false
+  globalThis.fetch.mockImplementation(async path => {
+    if (path === '/api/remote-provider/status') return response(peerReadyStatusPayload)
+    if (path === '/api/remote-provider/peer/models') return response(peerModelsPayload)
+    if (path.endsWith('/download/cancel')) {
+      cancelled = true
+      return response({ status: 'cancelled' })
+    }
+    if (path.endsWith('/download-status')) {
+      reads += 1
+      if (reads === 2) return new Promise(resolve => { finishOld = resolve })
+      return response(cancelled ? { status: 'cancelled', active: false, isDownloading: false } : peerActiveDownloadStatusPayload)
+    }
+    throw new Error(`Unexpected request: ${path}`)
+  })
+  const view = render(createElement(RemoteProvider))
+  await act(async () => {})
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: /cancel download/i })) })
+  expect(screen.getByRole('button', { name: /cancel download/i })).toBeDisabled()
+  await act(async () => { finishOld(response(peerActiveDownloadStatusPayload)) })
+  expect(screen.getByRole('button', { name: /cancel download/i })).toBeDisabled()
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+  expect(downloadObservationReads()).toBe(3)
+  view.unmount()
+})
+
+test('retries observation when the final inventory read fails without losing active progress', async () => {
+  vi.useFakeTimers()
+  let statusReads = 0
+  let inventoryReads = 0
+  mockDownloadObservation(() => response(++statusReads === 1 ? peerActiveDownloadStatusPayload : {
+    status: 'complete', active: false, isDownloading: false,
+  }), () => {
+    inventoryReads += 1
+    if (inventoryReads === 3) throw new Error('Final inventory unavailable')
+    return { models: [{ id: 'remote-available', name: 'Remote Available', status: inventoryReads >= 4 ? 'downloaded' : 'available' }] }
+  })
+  const view = render(createElement(RemoteProvider))
+  await act(async () => {})
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+  expect(screen.getByText('Final inventory unavailable')).toBeInTheDocument()
+  expect(screen.getByText(/downloading - remote-available - 42%/i)).toBeInTheDocument()
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+  expect(screen.queryByText('Final inventory unavailable')).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Load', exact: true })).toBeEnabled()
+  view.unmount()
 })
 
 test('renders remote provider status and proof receipt', async () => {

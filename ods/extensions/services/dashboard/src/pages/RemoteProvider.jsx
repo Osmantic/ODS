@@ -24,6 +24,7 @@ const REQUEST_TIMEOUT_MS = 12000
 const PROBE_TIMEOUT_MS = 1805000
 const LIFECYCLE_TIMEOUT_MS = 1805000
 const PEER_MODELS_TIMEOUT_MS = 30000
+const PEER_DOWNLOAD_POLL_MS = 2000
 const PEER_MODEL_LOAD_TIMEOUT_MS = 2705000
 // The default output limit: a quarter of the context window, at most 32768,
 // as in ods-cli and the lifecycle API. Portal writes each file in one reply.
@@ -419,6 +420,7 @@ export default function RemoteProvider({ compact = false }) {
   const [peerModelsLoading, setPeerModelsLoading] = useState(false)
   const [peerModelsError, setPeerModelsError] = useState(null)
   const [peerAction, setPeerAction] = useState(null)
+  const peerReadRevision = useRef(0)
   const [settling, setSettling] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [connectStep, setConnectStep] = useState('')
@@ -453,21 +455,28 @@ export default function RemoteProvider({ compact = false }) {
   }, [])
 
   const loadPeerModels = useCallback(async ({ quiet = false } = {}) => {
+    const revision = ++peerReadRevision.current
     if (!quiet) setPeerModelsLoading(true)
-    setPeerModelsError(null)
     try {
-      const [modelsPayload, downloadPayload] = await Promise.all([
+      let [modelsPayload, downloadPayload] = await Promise.all([
         fetchJson('/api/remote-provider/peer/models', {}, PEER_MODELS_TIMEOUT_MS),
         fetchJson('/api/remote-provider/peer/models/download-status', {}, PEER_MODELS_TIMEOUT_MS),
       ])
+      if (revision !== peerReadRevision.current) return null
+      // Inventory requested alongside status can precede final publication.
+      if (downloadPayload?.status === 'complete') {
+        modelsPayload = await fetchJson('/api/remote-provider/peer/models', {}, PEER_MODELS_TIMEOUT_MS)
+      }
+      if (revision !== peerReadRevision.current) return null
       setPeerModelsData(modelsPayload)
       setPeerDownloadStatus(downloadPayload)
+      setPeerModelsError(null)
       return modelsPayload
     } catch (err) {
-      setPeerModelsError(err?.message || 'Failed to load peer models')
+      if (revision === peerReadRevision.current) setPeerModelsError(err?.message || 'Failed to load peer models')
       return null
     } finally {
-      if (!quiet) setPeerModelsLoading(false)
+      if (revision === peerReadRevision.current) setPeerModelsLoading(false)
     }
   }, [])
 
@@ -478,6 +487,7 @@ export default function RemoteProvider({ compact = false }) {
   useEffect(() => {
     if (!statusData) return
     if (!statusData.capabilities?.odsPeerLifecycle) {
+      peerReadRevision.current += 1
       setPeerModelsData(null)
       setPeerDownloadStatus(null)
       setPeerModelsError(null)
@@ -486,6 +496,22 @@ export default function RemoteProvider({ compact = false }) {
     void loadPeerModels()
   }, [loadPeerModels, statusData?.capabilities?.odsPeerLifecycle, statusData])
 
+  const observingPeerDownload = Boolean(statusData?.capabilities?.odsPeerLifecycle) && peerDownloadActive(peerDownloadStatus)
+  useEffect(() => {
+    if (!observingPeerDownload) return undefined
+    let stopped = false
+    let timer
+    const observe = async () => {
+      await loadPeerModels({ quiet: true })
+      if (!stopped) timer = setTimeout(observe, PEER_DOWNLOAD_POLL_MS)
+    }
+    timer = setTimeout(observe, PEER_DOWNLOAD_POLL_MS)
+    return () => {
+      stopped = true
+      clearTimeout(timer)
+    }
+  }, [loadPeerModels, observingPeerDownload])
+  useEffect(() => () => { peerReadRevision.current += 1 }, [])
 
   const updateForm = (key, value) => {
     formEdit.current.dirty = true
