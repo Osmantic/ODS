@@ -727,6 +727,24 @@ while IFS=$'\t' read -r a b rank ltype; do
   LINK_TYPE["$b,$a"]=$ltype
 done < <(jq -r '.links[] | [.gpu_a, .gpu_b, .rank, .link_type] | @tsv' "$TOPOLOGY_FILE")
 
+# The llama.cpp model's whole need at its context (weights, KV cache and
+# buffers) in MiB, from the model catalog's estimate for the final model, so
+# assign_gpus.py keeps a model that fits the largest GPU on that GPU alone.
+# Prints nothing when the catalog is off or does not list the model (an
+# import): the assigner then splits by the weights, as before.
+_phase03_llm_fit_need_mb() {
+    local python
+    [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" ]] || return 0
+    [[ -f "$SCRIPT_DIR/scripts/select-model.py" && -f "$SCRIPT_DIR/config/model-library.json" ]] || return 0
+    if ! declare -F ods_llm_fit_need_mb >/dev/null 2>&1; then
+        # shellcheck source=/dev/null
+        . "$SCRIPT_DIR/installers/lib/model-selector.sh"
+    fi
+    python="$(ods_model_selector_python)"
+    [[ -n "$python" ]] || return 0
+    ods_llm_fit_need_mb "$python" "${GGUF_FILE:-${LLM_MODEL:-}}" "${MAX_CONTEXT:-0}" "${MODEL_RUNTIME_PROFILE:-}"
+}
+
 # Automatic assignment
 run_automatic() {
   echo ""
@@ -740,8 +758,18 @@ run_automatic() {
   # and the other services take the remaining GPUs.
   local -a pin_args=()
   [[ "${LLM_BACKEND:-}" != "vllm" ]] || pin_args=(--pin-llm-gpu "$VLLM_GPU_UUID")
+  # A llama.cpp model that fits the largest GPU with its KV cache is not
+  # split across GPUs (the catalog estimate decides; see above).
+  local fit_need_mb=""
+  local -a need_args=()
+  [[ "${LLM_BACKEND:-}" == "vllm" ]] || fit_need_mb="$(_phase03_llm_fit_need_mb)"
+  if [[ -n "$fit_need_mb" ]]; then
+    need_args=(--fit-need-mb "$fit_need_mb")
+    log "GPU assignment: the model needs about ${fit_need_mb} MiB at ${MAX_CONTEXT:-?} context"
+  fi
   result=$(python3 "$ASSIGN_GPUS_SCRIPT" \
-    --topology "$TOPOLOGY_FILE" --model-size "$LLM_MODEL_SIZE_MB" ${pin_args[@]+"${pin_args[@]}"} 2>&1) || {
+    --topology "$TOPOLOGY_FILE" --model-size "$LLM_MODEL_SIZE_MB" ${pin_args[@]+"${pin_args[@]}"} \
+    ${need_args[@]+"${need_args[@]}"} 2>&1) || {
     echo -e "  ${RED}Assignment failed:${NC}\n  $result"
     error "GPU assignment failed: $result"
   }
@@ -936,6 +964,19 @@ _load_existing_gpu_assignment_json() {
 
   decoded=$(printf '%s' "$encoded" | _decode_base64_portable 2>/dev/null) || return 1
   echo "$decoded" | jq -e '.gpu_assignment.services.llama_server.gpus | length > 0' >/dev/null || return 1
+
+  # A saved assignment can predate this run's model or context (a
+  # --reselect-model rerun, the Hermes floor raising the context): reuse it
+  # only while its LLM GPUs still hold what the model needs now.
+  local fit_need_mb
+  fit_need_mb="$(_phase03_llm_fit_need_mb)"
+  if [[ -n "$fit_need_mb" ]] && ! jq -e --argjson assignment "$decoded" --argjson need "$fit_need_mb" '
+      ($assignment.gpu_assignment.services.llama_server.gpus) as $llama
+      | ([.gpus[] | select(.uuid as $u | $llama | index($u)) | .memory_gb * 1024] | add // 0) >= $need
+    ' "$TOPOLOGY_FILE" >/dev/null; then
+    log "Saved GPU assignment gives the model less memory than its ${fit_need_mb} MiB need; assigning again"
+    return 1
+  fi
 
   # Reuse only when every saved service UUID still exists in the freshly
   # detected topology. If the user changed hardware, fall back to automatic

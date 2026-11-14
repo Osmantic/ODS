@@ -6752,6 +6752,28 @@ _gpu_reassign() {
         log "Counting $(awk '{ total += $2 } END { print total }' <<< "$reclaimed") MiB held by this installation's llama-server as available; reassignment recreates it."
     fi
 
+    # Before the RETURN trap below: sourcing a file inside this function fires
+    # it, which would delete the temporary topology before the assignment.
+    # As the installer does: a llama.cpp model that fits the largest GPU with
+    # its KV cache stays on that GPU (the model catalog estimates the need).
+    local fit_need_mb="" selector_python=""
+    local -a need_args=()
+    if [[ "${LLM_BACKEND:-}" != "vllm" && "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" \
+        && -f "$SCRIPT_DIR/installers/lib/model-selector.sh" && -f "$SCRIPT_DIR/scripts/select-model.py" \
+        && -f "$SCRIPT_DIR/config/model-library.json" ]]; then
+        # shellcheck source=/dev/null
+        . "$SCRIPT_DIR/installers/lib/model-selector.sh"
+        selector_python="$(ods_model_selector_python)"
+        if [[ -n "$selector_python" ]]; then
+            fit_need_mb="$(ods_llm_fit_need_mb "$selector_python" "${GGUF_FILE:-${LLM_MODEL:-}}" \
+                "${MAX_CONTEXT:-${CTX_SIZE:-0}}" "${MODEL_RUNTIME_PROFILE:-}")"
+        fi
+    fi
+    if [[ -n "$fit_need_mb" ]]; then
+        need_args=(--fit-need-mb "$fit_need_mb")
+        log "The model needs about ${fit_need_mb} MiB at ${MAX_CONTEXT:-${CTX_SIZE:-its}} context"
+    fi
+
     # Write topology to tmpfile and run assignment
     local tmpdir
     tmpdir=$(mktemp -d)
@@ -7160,7 +7182,8 @@ _gpu_reassign() {
     assignment_json=$(python3 "$assign_script" \
         --topology "$tmpdir/topo.json" \
         --model-size "$model_size_mb" \
-        --enabled-services "$enabled_services") || error "GPU assignment failed"
+        --enabled-services "$enabled_services" \
+        ${need_args[@]+"${need_args[@]}"}) || error "GPU assignment failed"
 
     if [[ "$dry_run" -eq 1 ]]; then
         echo ""
