@@ -579,7 +579,9 @@ else
     mkdir -p "$INSTALL_DIR"/data/extension-progress
     mkdir -p "$INSTALL_DIR"/data/hermes-proxy/{caddy-data,caddy-config}
     mkdir -p "$INSTALL_DIR"/data/langfuse/{postgres,clickhouse,redis,minio}
-    mkdir -p "$INSTALL_DIR"/data/remote-provider/secrets
+    # The remote-provider folders are prepared after ownership recovery below.
+    # shellcheck source=../lib/remote-provider-directories.sh
+    source "$SCRIPT_DIR/installers/lib/remote-provider-directories.sh"
     mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,searxng}
 
     _phase06_repair_host_path() {
@@ -683,6 +685,14 @@ else
             _phase06_repair_host_path "$_cfg_dir" "container-owned config directory" || return 1
         fi
     done
+
+    # Prepare remote-provider group traversal after existing ownership recovery
+    # (this also creates its folders). The remote provider is optional, so a
+    # problem here warns and the install continues; a later configure failure
+    # then names the egress's own reason.
+    if ! ods_prepare_remote_provider_directories "$INSTALL_DIR"; then
+        warn "The optional remote provider may be unable to read its route and key (see the message above); the rest of ODS installs normally. If that message names a file, move the file aside and re-run the installer. Otherwise run, as the folders' owner: chmod g+rx $INSTALL_DIR/data/remote-provider $INSTALL_DIR/data/remote-provider/secrets. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+    fi
 
     # Ensure we can write to config/data subtrees (rsync will fail otherwise)
     if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
