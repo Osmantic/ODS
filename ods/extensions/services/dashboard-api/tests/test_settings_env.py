@@ -216,6 +216,42 @@ def test_api_settings_env_masks_secret_values(test_client, settings_env_fixture)
     assert payload["agentAvailable"] is True
 
 
+@pytest.mark.parametrize(
+    ("gpu_backend_line", "expected"),
+    [
+        ("GPU_BACKEND=apple\n", "macos"),
+        ("GPU_BACKEND=nvidia\n", "other"),
+        ("GPU_BACKEND=cpu\n", "other"),
+        ("GPU_BACKEND=something-new\n", None),
+        ("", None),
+    ],
+)
+def test_api_settings_env_reports_managed_host_platform(
+    test_client, settings_env_fixture, gpu_backend_line, expected,
+):
+    env_path = settings_env_fixture["env_path"]
+    env_path.write_text(env_path.read_text() + gpu_backend_line, encoding="utf-8")
+
+    response = test_client.get("/api/settings/env", headers=test_client.auth_headers)
+
+    assert response.status_code == 200
+    assert response.json()["hostPlatform"] == expected
+
+
+def test_settings_env_marks_only_macos_installer_keys_as_macos_only():
+    from settings import _MACOS_ONLY_ENV_FIELDS, _build_env_fields
+
+    shipped = json.loads((Path(__file__).resolve().parents[4] / ".env.schema.json").read_text())
+    fields = _build_env_fields(shipped["properties"], set(), {})
+
+    macos_only = {key for key, field in fields.items() if field["platforms"] == ["macos"]}
+    assert macos_only == _MACOS_ONLY_ENV_FIELDS
+    # Shared keys whose descriptions mention macOS stay visible everywhere.
+    for key in ("LLAMA_ARG_CTX_CHECKPOINTS", "LLAMA_SPEC_TYPE", "ODS_AGENT_BIND", "ENABLE_OPENCODE", "N8N_RUN_USER"):
+        assert "macOS" in shipped["properties"][key]["description"]
+        assert fields[key]["platforms"] == []
+
+
 def test_api_settings_env_recognizes_library_ports_and_keeps_library_secrets_masked(
     test_client, settings_env_fixture,
 ):
