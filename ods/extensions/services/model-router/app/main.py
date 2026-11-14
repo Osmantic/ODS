@@ -131,6 +131,12 @@ _MAX_NATIVE_CALLS = 8
 _MAX_NATIVE_MARKUP_CHARS = 32_768
 
 
+def _upstream_timeout(remaining: float | None = None) -> httpx.Timeout:
+    """Fail dead connections promptly without shortening model generation."""
+    budget = UPSTREAM_TIMEOUT_SECONDS if remaining is None else remaining
+    return httpx.Timeout(budget, connect=min(5.0, budget))
+
+
 def _schema_has_references(value: Any) -> bool:
     """Keep normalization local; advertised schemas must not resolve URLs."""
     if isinstance(value, dict):
@@ -2216,13 +2222,13 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
         if thinking_tool_compat:
             upstream = await client.post(
                 url, content=forwarded_body, headers=headers,
-                timeout=UPSTREAM_TIMEOUT_SECONDS,
+                timeout=_upstream_timeout(),
             )
             _finish_probe_attempt(attempt_handle, "complete", upstream.status_code)
         elif completed_tool_stream:
             upstream_request = client.build_request(
                 "POST", url, content=forwarded_body,
-                headers=headers, timeout=UPSTREAM_TIMEOUT_SECONDS,
+                headers=headers, timeout=_upstream_timeout(),
             )
             streaming_upstream = await client.send(upstream_request, stream=True)
             try:
@@ -2347,7 +2353,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     if remaining <= 0:
                         raise httpx.ReadTimeout("tool stream fallback deadline expired")
                     upstream = await client.post(
-                        url, content=fallback_body, headers=headers, timeout=remaining,
+                        url, content=fallback_body, headers=headers, timeout=_upstream_timeout(remaining),
                     )
                     _finish_probe_attempt(attempt_handle, "complete",
                                           upstream.status_code)
@@ -2356,7 +2362,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
         elif is_stream:
             upstream_request = client.build_request(
                 "POST", url, content=forwarded_body,
-                headers=headers, timeout=UPSTREAM_TIMEOUT_SECONDS,
+                headers=headers, timeout=_upstream_timeout(),
             )
             upstream = await client.send(upstream_request, stream=True)
 
@@ -2443,7 +2449,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
         else:
             upstream = await client.post(
                 url, content=forwarded_body, headers=headers,
-                timeout=UPSTREAM_TIMEOUT_SECONDS,
+                timeout=_upstream_timeout(),
             )
             _finish_probe_attempt(attempt_handle, "complete", upstream.status_code)
     except asyncio.CancelledError:
@@ -2519,7 +2525,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                         next_attempt += 1
                         upstream = await client.post(
                             url, content=repair_body,
-                            headers=headers, timeout=remaining,
+                            headers=headers, timeout=_upstream_timeout(remaining),
                         )
                         _finish_probe_attempt(repair_handle, "complete", upstream.status_code)
                         # The common response parser must attribute the repaired
