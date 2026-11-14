@@ -15,17 +15,17 @@ PATH="$MOCK_BIN:$PATH"
 
 ODS_BACKUP_SOURCE_ONLY=true source "$SCRIPT_DIR/../ods-backup.sh"
 BACKUP_ROOT="$TEST_BACKUP_ROOT"
-mkdir -p "$BACKUP_ROOT/backup-fixture"
+mkdir -p "$BACKUP_ROOT/manual-20260101-000000"
 
 rm() {
     return 1
 }
 
-if printf 'y\n' | delete_backup backup-fixture >/dev/null 2>&1; then
+if printf 'y\n' | delete_backup manual-20260101-000000 >/dev/null 2>&1; then
     echo "FAIL: delete_backup reported success after rm failed"
     exit 1
 fi
-[[ -d "$BACKUP_ROOT/backup-fixture" ]] || {
+[[ -d "$BACKUP_ROOT/manual-20260101-000000" ]] || {
     echo "FAIL: failed deletion unexpectedly removed the backup"
     exit 1
 }

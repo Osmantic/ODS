@@ -142,6 +142,13 @@ ensure_backup_space() {
 # (dashboard/host-agent). Match that shape explicitly: retention deletes
 # whatever this collects, so an operator's unrelated files in the backup
 # directory must never qualify.
+#
+# is_backup_id sets BASH_REMATCH[2] to the embedded timestamp on success.
+BACKUP_ID_PATTERN='^([A-Za-z0-9_][A-Za-z0-9_-]*-)?([0-9]{8}-[0-9]{6})(\.tar\.gz)?$'
+is_backup_id() {
+    [[ "$1" =~ $BACKUP_ID_PATTERN ]]
+}
+
 COLLECTED_BACKUPS=()
 collect_backups() {
     COLLECTED_BACKUPS=()
@@ -152,7 +159,7 @@ collect_backups() {
         while IFS= read -r -d '' entry; do
             base=$(basename "$entry")
             # Keep the existing ID shapes, including multi-segment labels.
-            [[ "$base" =~ ^([A-Za-z0-9_][A-Za-z0-9_-]*-)?([0-9]{8}-[0-9]{6})(\.tar\.gz)?$ ]] || continue
+            is_backup_id "$base" || continue
             # Sort by the embedded creation timestamp before the optional
             # label. NUL records preserve whitespace in the backup root.
             printf '%s\t%s\0' "${BASH_REMATCH[2]}" "$entry"
@@ -253,8 +260,10 @@ list_backups() {
 delete_backup() {
     local backup_id="$1"
 
-    # Reject path traversal attempts
-    if [[ "$backup_id" == *..* || "$backup_id" == */* || "$backup_id" == *\\* ]]; then
+    # Accept only the backup ID shapes retention recognizes. A traversal-only
+    # check still let an operator's unrelated file or directory beside the
+    # backups reach rm -rf.
+    if ! is_backup_id "$backup_id"; then
         log_error "Invalid backup ID: $backup_id"
         return 1
     fi
