@@ -155,13 +155,22 @@ try {
     $script:probed = @()
     $profileLaunch = New-ODSNativeLlamaLegacyLaunch -EnvMap @{ CTX_SIZE = '8192'; LLAMA_REASONING = 'off' } -Selection $profileSelection -Port 8080 -Options $options -PinnedExecutable $pinnedExe
     $joined = ConvertTo-ODSNativeLlamaArgumentString $profileLaunch.Arguments
-    Check (-not $profileLaunch.Pinned -and $profileLaunch.ExecutablePath -eq $profileExe -and $script:probed.Count -eq 0) 'a profile runs its own qualified runtime and is not probed'
+    Check (-not $profileLaunch.Pinned -and $profileLaunch.ExecutablePath -eq $profileExe -and
+        $script:probed.Count -eq 1 -and $script:probed[0] -eq $profileExe) 'a profile qualifies reasoning against its own runtime, not the bundled binary'
     Check ($joined.Contains('"--alias" "model.gguf"') -and $joined.Contains('"--host" "127.0.0.1"') -and $joined.Contains('"--no-webui"') -and
         $joined.Contains('"--api-key-file"') -and $joined.Contains('"--device" "Vulkan1"') -and $joined.Contains('"--ctx-size" "8192"') -and
-        $joined.Contains('"--reasoning-format" "none"') -and $joined.EndsWith('"--spec-type" "draft-mtp"') -and
+        $joined.Contains('"--reasoning" "off"') -and -not $joined.Contains('"--reasoning-format"') -and $joined.EndsWith('"--spec-type" "draft-mtp"') -and
         $joined.Contains('"' + $profileSelection.modelPath + '"')) 'a profile keeps its arguments and gains loopback, alias, key file, device and reasoning off'
     $profileSelection.profile.backend = 'rocm'
     Check (-not ((New-ODSNativeLlamaLegacyLaunch -EnvMap @{ CTX_SIZE = '8192' } -Selection $profileSelection -Port 8080 -Options $options -PinnedExecutable $pinnedExe).Arguments -contains '--device')) 'a non-Vulkan profile is not given a Vulkan device name'
+    foreach ($mode in @('on', 'auto', 'OFF', '')) {
+        $expectedMode = if ($mode) { $mode.ToLowerInvariant() } else { 'off' }
+        $modeLaunch = New-ODSNativeLlamaLegacyLaunch -EnvMap @{ CTX_SIZE = '8192'; LLAMA_REASONING = $mode; LLAMA_ARG_SPEC_TYPE = 'stale-mtp' } `
+            -Selection $profileSelection -Port 8080 -Options $options -PinnedExecutable $pinnedExe
+        $modeArguments = '|' + (@($modeLaunch.Arguments) -join '|') + '|'
+        Check ($modeArguments.Contains("|--reasoning|$expectedMode|") -and
+            $modeArguments.Contains('|--spec-type|draft-mtp|') -and -not $modeArguments.Contains('stale-mtp')) "a registered profile keeps its own tuning with reasoning '$mode'"
+    }
 
     # --- Proof-gated start ---
     $script:listeners = @()
