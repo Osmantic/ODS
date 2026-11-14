@@ -122,6 +122,53 @@ test_diff_masks_secrets() {
     fi
 }
 
+test_diff_unterminated_env() {
+    local left="$ODS_DIR/presets/test-preset-eof-a"
+    local right="$ODS_DIR/presets/test-preset-eof-b"
+    local output
+    mkdir -p "$left" "$right"
+    printf 'LLM_MODEL=qwen\nN_GPU_LAYERS=99' > "$left/env"
+    printf 'LLM_MODEL=qwen\nN_GPU_LAYERS=20' > "$right/env"
+    output=$("$ODS_CLI" preset diff test-preset-eof-a test-preset-eof-b 2>&1)
+    if grep -qF 'N_GPU_LAYERS: 99 → 20' <<<"$output"; then
+        pass "Diff detects changed unterminated final settings"
+    else
+        fail "Diff dropped changed unterminated final settings"
+    fi
+
+    printf 'LLM_MODEL=qwen\nN_GPU_LAYERS=20\n' > "$left/env"
+    output=$("$ODS_CLI" preset diff test-preset-eof-a test-preset-eof-b 2>&1)
+    if grep -qF '(no differences)' <<<"$output" && ! grep -qF 'N_GPU_LAYERS' <<<"$output"; then
+        pass "Right-hand missing newline does not create a difference"
+    else
+        fail "Right-hand missing newline creates a false difference"
+    fi
+    output=$("$ODS_CLI" preset diff test-preset-eof-b test-preset-eof-a 2>&1)
+    if grep -qF '(no differences)' <<<"$output" && ! grep -qF 'N_GPU_LAYERS' <<<"$output"; then
+        pass "Left-hand missing newline does not create a difference"
+    else
+        fail "Left-hand missing newline creates a false difference"
+    fi
+
+    printf 'LLM_MODEL=qwen\n# left comment' > "$left/env"
+    printf 'LLM_MODEL=qwen\n\n# right comment' > "$right/env"
+    output=$("$ODS_CLI" preset diff test-preset-eof-a test-preset-eof-b 2>&1)
+    if grep -qF '(no differences)' <<<"$output" && ! grep -q 'comment' <<<"$output"; then
+        pass "Final comments and blank lines are ignored"
+    else
+        fail "Final comments or blank lines create spurious keys"
+    fi
+
+    printf 'LLM_MODEL=qwen\nAPI_KEY=eof-secret-left' > "$left/env"
+    printf 'LLM_MODEL=qwen\nAPI_KEY=eof-secret-right' > "$right/env"
+    output=$("$ODS_CLI" preset diff test-preset-eof-a test-preset-eof-b 2>&1)
+    if grep -qF 'API_KEY: ***' <<<"$output" && ! grep -qF 'eof-secret-' <<<"$output"; then
+        pass "Changed unterminated secrets are reported without their values"
+    else
+        fail "Changed unterminated secrets are missing or exposed"
+    fi
+}
+
 # Run tests
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Preset Diff Tests"
@@ -134,6 +181,7 @@ test_diff_identical
 test_diff_env_changes
 test_diff_service_changes
 test_diff_masks_secrets
+test_diff_unterminated_env
 cleanup
 
 # Summary
