@@ -2,11 +2,55 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
+import sys
 import pytest
 from test_source_update_preflight import guard, linux_identity as linux_identity, save_marker
 
 ROOT = Path(__file__).resolve().parents[1]
+DISCORD = 'https://discord.gg/4ntNp9MAwC'
+
+
+def test_native_rollback_refusal_names_steps_that_work(tmp_path, monkeypatch, capsys):
+    # #7969: the refusal ended in "use deployment-specific recovery", a step
+    # documented nowhere, so a native Pixel owner with a failed update had no
+    # way forward. `ods update` never touches native Pixel, and these steps do.
+    install, snapshot = tmp_path / 'install', tmp_path / 'snapshot'
+    install.mkdir()
+    snapshot.mkdir()
+    monkeypatch.setattr(guard, 'managed_pixel_identity', lambda path: 'linux')
+    monkeypatch.setattr(sys, 'argv', ['source-update-preflight.py', 'rollback',
+                                      '--install-dir', str(install), '--snapshot', str(snapshot)])
+    assert guard.main() == 1
+    refusal = capsys.readouterr().err
+    assert 'deployment-specific' not in refusal, refusal
+    for step in ("'ods status'", "'ods logs <service>'", "'ods start'", DISCORD):
+        assert step in refusal, refusal
+
+
+def shell_function(text, name):
+    match = re.search(rf'^{name}\(\) \{{\n(.*?)^\}}$', text, re.S | re.M)
+    assert match, f'{name} not found in ods-cli'
+    return match.group(1)
+
+
+def test_update_failure_guidance_works_on_portal_installs():
+    # `ods rollback` refuses every Portal (native Pixel) install, the Linux
+    # default, so `ods update` must not send owners there without saying so,
+    # and its failures must name the steps that work everywhere.
+    cli = (ROOT / 'ods-cli').read_text(encoding='utf-8')
+    update = shell_function(cli, 'cmd_update')
+    for name, body in (('cmd_update', update), ('_check_version_compat', shell_function(cli, '_check_version_compat'))):
+        for line in body.splitlines():
+            if re.match(r'\s*(log|log_error|error|warn|echo)\b', line) and 'ods rollback' in line:
+                assert 'without Portal (Pixel)' in line, f'{name}: {line.strip()}'
+    lines = update.splitlines()
+    for marker in ('Failed to recreate containers', 'services are not running'):
+        start = next(index for index, line in enumerate(lines) if marker in line)
+        following = '\n'.join(lines[start:start + 3])
+        assert "'ods start'" in following, following
+    assert DISCORD in update
 
 @pytest.mark.parametrize('state', ['ready', 'installing'])
 def test_current_managed_rollback_refused(linux_identity, tmp_path, state):
