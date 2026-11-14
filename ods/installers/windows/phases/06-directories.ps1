@@ -165,6 +165,9 @@ if ($sourceRoot -ne $installDir) {
     $robocopyArgs += @($devOnlyFiles | ForEach-Object {
         Join-Path $sourceRoot $_
     })
+    # The source copy holds only a CHANGEME template, which would replace the
+    # owner's file. New-SearxngConfig below writes it when it is missing.
+    $robocopyArgs += (Join-Path $sourceRoot "config\searxng\settings.yml")
     & robocopy @robocopyArgs | Out-Null
     if ($LASTEXITCODE -gt 7) {
         Write-AIError "File copy failed (robocopy exit code: $LASTEXITCODE)."
@@ -763,8 +766,15 @@ if ($enableHermes) {
 }
 
 # ── Generate SearXNG config ───────────────────────────────────────────────────
-$_searxngPath = New-SearxngConfig -InstallDir $installDir -SecretKey $envResult.SearxngSecret
-Write-AISuccess "Generated SearXNG config ($_searxngPath)"
+# Owners edit settings.yml directly (extensions/services/searxng/README.md);
+# keep it on reruns and upgrades unless --Force, as Linux and macOS do.
+$_searxngSettings = Join-Path $installDir "config\searxng\settings.yml"
+if (-not $force -and (Test-SearxngSettingsKept -Path $_searxngSettings)) {
+    Write-AISuccess "Kept existing SearXNG config ($_searxngSettings)"
+} else {
+    $_searxngPath = New-SearxngConfig -InstallDir $installDir -SecretKey $envResult.SearxngSecret
+    Write-AISuccess "Generated SearXNG config ($_searxngPath)"
+}
 
 # ── Create llama-server models.ini stub ──────────────────────────────────────
 $_modelsIni = Join-Path (Join-Path $installDir "config\llama-server") "models.ini"
