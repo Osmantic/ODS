@@ -2,6 +2,7 @@
 # Recommended Portal installation: Ubuntu/WSL2 with Pixel, never a native/Hermes fallback.
 
 param(
+    [ValidateSet('auto', 'cuda')][string]$WindowsLlmBackend = 'auto',
     [string]$Distro = "",  # empty: reuse the single existing Ubuntu, else Ubuntu-24.04
     [switch]$DryRun,
     [switch]$Force,
