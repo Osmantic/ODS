@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Shared ODS Pixel onboarding contract for native host installers."""
 
+import importlib.util
 import json
 import os
 import pathlib
@@ -9,9 +10,17 @@ import stat
 import sys
 import tempfile
 
+arguments = sys.argv[1:]
+if len(arguments) not in (18, 20):
+    raise SystemExit("usage: pixel-onboarding.py <18 contract arguments> [connections-record present|absent]")
 (out, openclaw_bin, home, model, context, max_tokens, reasoning,
  gateway_alias, gateway_label, model_gateway_port, pixel_gateway_port, gateway_key_path,
- search_port, plugin_path, plugin_digest, web_search_provider, parallel_path, parallel_digest) = sys.argv[1:]
+ search_port, plugin_path, plugin_digest, web_search_provider, parallel_path, parallel_digest) = arguments[:18]
+# The owner's connected-apps record (/etc/ods/portal-connections.json) and whether
+# the Source Broker holds the Google sign-in, which only root can see.
+connections_path, google_custody = arguments[18:] if len(arguments) == 20 else ("", "absent")
+if google_custody not in {"present", "absent"}:
+    raise SystemExit("invalid Source Broker custody state")
 if (not context.isdigit() or not 4096 <= int(context) <= 10_000_000
         or not max_tokens.isdigit() or not 1 <= int(max_tokens) <= int(context)
         or reasoning not in {"true", "false", "default", "bootstrap"}
@@ -174,6 +183,35 @@ if route_fingerprint is not None:
     payload["modelRouteFingerprint"] = route_fingerprint
 if thinking_control is not None:
     payload["modelThinkingControl"] = thinking_control
+
+
+def connection_overrides():
+    """Onboarding answers implied by the owner's connected apps; none when there are none.
+
+    An unusable record never fails an install: connected apps stay off and the
+    Connected apps status explains why.
+    """
+    if not connections_path:
+        return {}
+    spec = importlib.util.spec_from_file_location(
+        "ods_portal_connection_state",
+        pathlib.Path(__file__).resolve().parents[2] / "bin" / "pixel_connections" / "state.py")
+    state = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(state)
+    try:
+        record = state.read(pathlib.Path(connections_path), owners=(0, os.getuid()))
+    except state.StateError as error:
+        print(f"Portal connected apps stay off for now: the saved connections could not be used ({error}). "
+              "Reconnect them in Settings, Connected apps. Get help: https://discord.gg/4ntNp9MAwC",
+              file=sys.stderr)
+        return {}
+    if record and "google" in record["connectors"] and google_custody != "present":
+        print("Google is connected in Settings, but its sign-in is not stored on this machine "
+              "(for example after a restore). Reconnect Google in Settings, Connected apps.", file=sys.stderr)
+    return state.onboarding_overrides(record, google_custody=google_custody == "present")
+
+
+payload.update(connection_overrides())
 if web_search_provider == "parallel-free":
     payload["gatewayExtensions"].append({"id": "parallel", "path": parallel_path, "sha256": parallel_digest})
 path.parent.mkdir(parents=True, exist_ok=True)
