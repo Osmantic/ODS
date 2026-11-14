@@ -138,7 +138,8 @@ def _system_ram_gb() -> int:
 
             stat = MEMORYSTATUSEX()
             stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            windll = getattr(ctypes, "windll", None)
+            if windll is not None and windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
                 return int(round(stat.ullTotalPhys / (1024**3)))
         pages = os.sysconf("SC_PHYS_PAGES")
         page_size = os.sysconf("SC_PAGE_SIZE")
