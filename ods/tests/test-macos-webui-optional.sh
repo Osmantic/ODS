@@ -117,6 +117,10 @@ OPENCODE_PORT=4096
 ODS_LOG_FILE=/nonexistent/ods-install.log
 _health_llama_host=127.0.0.1
 _health_llama_port=8080
+# Inputs resolved before this extracted producer; the resolver itself is
+# exercised with real Compose in test_configured_port_readiness.py.
+_summary_dashboard_port=3101
+_summary_api_port=3102
 ods_readiness_summary() {
     cat > "$ROWS_FILE"
     return "${READINESS_RC:-0}"
@@ -130,8 +134,10 @@ ROWS_FILE="$scratch/core-rows" SENTINEL_FILE="$scratch/core-success" \
     || { echo 'fresh Core exited after healthy readiness summary' >&2; exit 1; }
 [[ -f "$scratch/core-success" ]] \
     || { echo 'fresh Core never reached its success card' >&2; exit 1; }
-grep -q '^Dashboard|' "$scratch/core-rows" \
-    || { echo 'Core summary omitted Dashboard' >&2; exit 1; }
+grep -q '^Dashboard|http://127.0.0.1:3101|' "$scratch/core-rows" \
+    || { echo 'Core summary omitted its configured Dashboard port' >&2; exit 1; }
+grep -q '^Dashboard API|http://127.0.0.1:3102/health|' "$scratch/core-rows" \
+    || { echo 'Core summary omitted its configured API port' >&2; exit 1; }
 ! grep -Eq 'Open WebUI|OpenCode|Perplexica|Whisper|n8n' "$scratch/core-rows" \
     || { echo 'Core summary included an optional service' >&2; exit 1; }
 if PRODUCER_FILE="$scratch/readiness-producer.sh" \

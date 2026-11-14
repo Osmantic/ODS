@@ -100,6 +100,10 @@ fi
 if [[ "${1:-}" == "compose" ]]; then
     shift
     joined=" $* "
+    if [[ "$joined" == *" config --format json "* ]]; then
+        printf '%s\n' '{"services":{"dashboard":{"ports":[{"target":3001,"published":"3001","host_ip":"127.0.0.1"}]}}}'
+        exit 0
+    fi
     [[ "$joined" == *" up "* ]] && exit 0
     [[ "$joined" == *" ps "* ]] && { printf 'ods-dashboard Up 10 seconds 127.0.0.1:3001->3001/tcp\n'; exit 0; }
 fi
