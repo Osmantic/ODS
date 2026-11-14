@@ -40,3 +40,25 @@ function Stop-ODSHostAgentProcess {
         if ($candidate) { $candidate.Dispose() }
     }
 }
+
+function ConvertTo-ODSHostAgentArgumentLine {
+    <#
+    .SYNOPSIS
+        Build the host agent's Start-Process argument line with each value quoted.
+        Windows PowerShell 5.1 joins an -ArgumentList array with spaces and no
+        quoting, so an install dir under a user profile with a space
+        (C:\Users\John Smith\ods) reached python as two arguments and the agent
+        exited at once. Quoting follows the Windows CRT argv rules.
+    #>
+    param(
+        [AllowEmptyCollection()][string[]]$PrefixArgs = @(),
+        [Parameter(Mandatory = $true)][string]$AgentScript,
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$PidFile,
+        [Parameter(Mandatory = $true)][string]$InstallDir
+    )
+    $values = @($PrefixArgs) + @($AgentScript, '--port', [string]$Port, '--pid-file', $PidFile, '--install-dir', $InstallDir)
+    return (@($values | ForEach-Object {
+        '"' + [regex]::Replace([regex]::Replace([string]$_, '(\*)"', '$1$1\"'), '(\+)$', '$1$1') + '"'
+    }) -join ' ')
+}

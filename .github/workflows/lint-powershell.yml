@@ -89,6 +89,11 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-env-utf8.ps1
 
+      - name: Windows host agent spaced install path (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-host-agent-spaced-path.ps1
+
       - name: Windows CLI chat sends UTF-8 (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell
