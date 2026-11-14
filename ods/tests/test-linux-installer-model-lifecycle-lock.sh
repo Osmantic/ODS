@@ -225,3 +225,28 @@ flock -u "$agent_probe_fd"
 exec {agent_probe_fd}>&-
 kill "$agent_pid" 2>/dev/null || true
 pass "session host agent does not inherit installer lifecycle lock"
+
+# The interrupted-upgrade reconcile runs at boot and from ods start, so it must
+# not queue behind another operation: "nowait" reports a held lock with 2
+# and takes a free one.
+nowait_dir="$tmp/nowait-install"
+mkdir -p "$nowait_dir"
+nowait_lock="$(ods_model_lifecycle_lock_file "$nowait_dir")"
+mkdir -p "$(dirname "$nowait_lock")"
+exec {nowait_holder_fd}>"$nowait_lock"
+flock -x "$nowait_holder_fd"
+nowait_rc=0
+ODS_TEST_NOWAIT_DIR="$nowait_dir" bash -c '
+    . "$ODS_TEST_LOCK_LIB"
+    ods_model_lifecycle_lock_acquire "$ODS_TEST_NOWAIT_DIR" "test reconcile" nowait
+' >/dev/null || nowait_rc=$?
+[[ "$nowait_rc" -eq 2 ]] || fail "nowait acquire must report a held lock with 2, got $nowait_rc"
+flock -u "$nowait_holder_fd"
+exec {nowait_holder_fd}>&-
+ODS_TEST_NOWAIT_DIR="$nowait_dir" bash -c '
+    set -euo pipefail
+    . "$ODS_TEST_LOCK_LIB"
+    ods_model_lifecycle_lock_acquire "$ODS_TEST_NOWAIT_DIR" "test reconcile" nowait
+    [[ -n "$ODS_MODEL_LIFECYCLE_LOCK_FD" ]]
+' >/dev/null || fail "nowait acquire must take a free lock"
+pass "a nowait caller is told the lock is held instead of waiting"

@@ -120,3 +120,10 @@ setup() {
     [[ "$BOOTSTRAP_MAX_CONTEXT" =~ ^[0-9]+$ ]]
     [[ "$BOOTSTRAP_MAX_CONTEXT" -ge 64000 ]]
 }
+
+@test "bootstrap_needed: returns 1 when the full GGUF is the bootstrap GGUF" {
+    TIER=3
+    GGUF_FILE="$BOOTSTRAP_GGUF_FILE"
+    run bootstrap_needed
+    assert_failure
+}
