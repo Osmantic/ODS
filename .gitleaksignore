@@ -166,3 +166,7 @@ a4b35b934c2f627d844dfa6a6b7dbd26ea2fbc9b:ods/extensions/services/dashboard/src/l
 7b4ca0992cefbed6d5aeefdf6c111629a75ae1c3:ods/recovery/bootstrap_current/compatibility.json:generic-api-key:12
 7b4ca0992cefbed6d5aeefdf6c111629a75ae1c3:ods/recovery/bootstrap_current/compatibility.json:generic-api-key:13
 7b4ca0992cefbed6d5aeefdf6c111629a75ae1c3:ods/recovery/bootstrap_current/compatibility.json:generic-api-key:14
+
+# Synthetic test key in Windows desktop installer phase contract test; not a credential.
+057ec3fd00e54c3ca32bfb54034ade6bf7d7fa0a:ods/tests/contracts/test-windows-desktop-installer-phases.ps1:generic-api-key:41
+057ec3fd00e54c3ca32bfb54034ade6bf7d7fa0a:ods/tests/contracts/test-windows-desktop-installer-phases.ps1:generic-api-key:75

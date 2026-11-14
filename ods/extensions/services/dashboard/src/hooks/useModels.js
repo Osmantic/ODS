@@ -196,7 +196,7 @@ function normalizeActiveRuntime(value) {
   // capabilities remain validated by the server, outside this display state.
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const { source, model, contextLength } = value
-  if (!['local-switchboard', 'external-host', 'remote-provider'].includes(source)
+  if (!['local-switchboard', 'external-host', 'remote-provider', 'windows-desktop'].includes(source)
     || typeof model !== 'string' || !model.trim() || model.length > 256) return null
   if (contextLength != null && (!Number.isInteger(contextLength) || contextLength < 1 || contextLength > 10000000)) return null
   if (source === 'remote-provider' && (!Number.isInteger(contextLength) || contextLength < 4096
