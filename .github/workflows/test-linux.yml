@@ -437,6 +437,7 @@ jobs:
       - name: Installer Cloud Provider and Source Mode Preservation Tests
         run: |
           python3 tests/test_cloud_config_permissions.py
+          python3 tests/test_phase06_orphaned_pixel_cleanup.py
           bash tests/test-phase06-cloud-config-preservation.sh
 
       - name: Installer Created Container Ownership Tests
