@@ -1011,10 +1011,13 @@ _LOCAL_64K = {"source": "local-switchboard", "model": "model.gguf", "contextLeng
 
 @pytest.mark.parametrize("profile, runtime, viable, reason", [
     # Any-model WP4.3: the measured profile names the advisory; the order is
-    # context, tools, not profiled, always thinking.
-    ({"state": "measured", "tools": False, "thinkingControl": "always"},
+    # context, direct tools, streamed tools, not profiled, always thinking.
+    ({"state": "measured", "tools": False, "toolsStreamed": False, "thinkingControl": "always"},
      {**_LOCAL_64K, "contextLength": 8192}, False, "context-too-small"),
-    ({"state": "measured", "tools": False, "thinkingControl": "always"}, _LOCAL_64K, False, "tools-unavailable"),
+    ({"state": "measured", "tools": False, "toolsStreamed": False, "thinkingControl": "always"},
+     _LOCAL_64K, False, "tools-unavailable"),
+    ({"state": "measured", "tools": True, "toolsStreamed": False, "thinkingControl": "always"},
+     _LOCAL_64K, True, "streaming-tools-unavailable"),
     ({"state": "not-profiled", "tools": None, "thinkingControl": None}, _LOCAL_64K, True, "not-profiled"),
     ({"state": "measured", "tools": True, "thinkingControl": "always"}, _LOCAL_64K, True, "thinking-always-on"),
 ])
@@ -1024,8 +1027,11 @@ def test_profile_advisory_names_its_reason(profile, runtime, viable, reason):
     assert support == {"tier": "adaptive", "detail": pixel._MODEL_SUPPORT_REASONS[reason], "reason": reason}
 
 
-def test_a_measured_capable_model_gets_no_advisory():
-    profile = {"state": "measured", "tools": True, "thinkingControl": "enable_thinking"}
+@pytest.mark.parametrize("streamed", [
+    {"toolsStreamed": True}, {"toolsStreamed": None}, {}, {"toolsStreamed": "false"}, {"toolsStreamed": 0},
+])
+def test_passed_or_unknown_streamed_check_does_not_invent_an_advisory(streamed):
+    profile = {"state": "measured", "tools": True, "thinkingControl": "enable_thinking", **streamed}
     status = {"activeModelProfile": profile, "activeRuntime": _LOCAL_64K, "activeAgentViable": True}
     assert pixel._model_support_from_status(status) is None
     # Without a profile (observe, off) the advisory is today's.
@@ -1041,10 +1047,15 @@ def test_context_advisory_needs_a_local_route():
 
 
 @pytest.mark.asyncio
-async def test_a_profile_advisory_never_blocks_a_send(monkeypatch):
+@pytest.mark.parametrize("tools, streamed, reason", [
+    (False, False, "tools-unavailable"),
+    (True, False, "streaming-tools-unavailable"),
+])
+async def test_a_profile_advisory_never_blocks_a_send(monkeypatch, tools, streamed, reason):
     async def measured(*_args, **_kwargs):
         return {"status": "idle", "activeAgentViable": False, "activeRuntime": _LOCAL_64K,
-                "activeModelProfile": {"state": "measured", "tools": False, "thinkingControl": "none"}}
+                "activeModelProfile": {"state": "measured", "tools": tools, "toolsStreamed": streamed,
+                                       "thinkingControl": "none"}}
 
     monkeypatch.setattr(pixel, "request_agent_json", measured)
     body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
@@ -1053,7 +1064,7 @@ async def test_a_profile_advisory_never_blocks_a_send(monkeypatch):
     assert result["available"] is True
     support = result["modelSupport"]
     assert isinstance(support, dict)
-    assert support["reason"] == "tools-unavailable"
+    assert support["reason"] == reason
     assert await pixel._model_readiness_issue() is None
 
 
