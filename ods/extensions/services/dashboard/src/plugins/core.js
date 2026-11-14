@@ -12,6 +12,11 @@ import {
   Code,
 } from 'lucide-react'
 import { isRemoteInference } from '../lib/inferenceMode'
+import { isWindowsDesktop } from '../lib/runtimeProfile'
+
+// Windows Desktop has no extension runtime, no model switching yet and no GPU
+// route; its entries would lead to pages that cannot work there.
+const notOnWindowsDesktop = ({ status }) => !isWindowsDesktop(status)
 
 const Dashboard = lazy(() => import('../pages/Dashboard'))
 const SettingsPage = lazy(() => import('../pages/Settings'))
@@ -48,7 +53,8 @@ export const coreRoutes = [
     getProps: ({ status, loading }) => ({ status, loading }),
     // Route is always registered; sidebar entry only appears on multi-GPU
     // local systems. Remote/cloud inference never shows the local GPU entry.
-    sidebar: ({ status, loading }) => !loading && !isRemoteInference(status) && (status?.gpu?.gpu_count || 1) > 1,
+    sidebar: ({ status, loading }) => !loading && !isRemoteInference(status) && !isWindowsDesktop(status)
+      && (status?.gpu?.gpu_count || 1) > 1,
     order: 1,
   },
   {
@@ -58,7 +64,7 @@ export const coreRoutes = [
     icon: Puzzle,
     component: Extensions,
     getProps: () => ({}),
-    sidebar: true,
+    sidebar: notOnWindowsDesktop,
     order: 2,
   },
   {
@@ -78,7 +84,7 @@ export const coreRoutes = [
     icon: Box,
     component: Models,
     getProps: () => ({}),
-    sidebar: true,
+    sidebar: notOnWindowsDesktop,
     order: 3,
   },
   {
