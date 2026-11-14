@@ -242,6 +242,10 @@ main() {
     if grep -qE '^docker (compose .* down|volume rm)' "$TMP_DIR/out6.log.commands"; then
         fail "rejected retirement must not mutate Docker resources"
     fi
+    grep -qF 'run the same command again' "$TMP_DIR/out6.log" \
+        || fail "rejected retirement must say how to continue"
+    grep -qF 'https://discord.gg/4ntNp9MAwC' "$TMP_DIR/out6.log" \
+        || fail "rejected retirement must name where to get help"
     pass "native retirement failure retains the install, agents and Docker resources"
 
     # An install that stopped before .env was written (#7377): native

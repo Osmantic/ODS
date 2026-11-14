@@ -120,6 +120,79 @@ def test_main_keeps_preflight_guidance(monkeypatch, capsys):
     assert '[native-apple-silicon-owner-required] Run as the signed-in owner' in capsys.readouterr().err
 
 
+@pytest.mark.parametrize('residue,code,recovery', [
+    # An earlier install in this folder: the newest uninstaller retires its Pixel first.
+    ('data/pixel-native', 'existing-native-pixel-requires-migration-or-recovery',
+     'curl -fsSL https://install.osmantic.com/ods.sh | bash -s -- --force --keep-models'),
+    # Only protected system files remain (#7091): retire them directly.
+    ('/private/etc/ods/pixel-access.json', 'existing-native-pixel-system-state', 'pixel-native-uninstall.py'),
+    ('/private/var/lib/ods-pixel-manager', 'existing-native-pixel-system-state', 'pixel-native-uninstall.py'),
+])
+def test_existing_native_state_refusal_names_its_recovery_command(
+        tmp_path, monkeypatch, capsys, residue, code, recovery):
+    install_dir = tmp_path / 'ods'
+    target = Path(residue if residue.startswith('/') else install_dir / residue)
+    monkeypatch.setattr(module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(module.platform, 'machine', lambda: 'arm64')
+    monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
+    monkeypatch.setattr(module.os.path, 'lexists', lambda path: Path(path) == target)
+    monkeypatch.setattr(module, 'retained_identity_only',
+        lambda **kwargs: pytest.fail('residue must be rejected before account proof'))
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-install.py',
+        '--install-dir', str(install_dir), '--preflight-only'])
+    assert module.main() == 1
+    err = capsys.readouterr().err
+    assert '[' + code + ']' in err
+    assert recovery in err
+    assert 'https://discord.gg/4ntNp9MAwC' in err
+    assert 'leave it intact' not in err
+    if code == 'existing-native-pixel-system-state':
+        assert err.rstrip().endswith(module.retirement_command(str(install_dir)))
+    assert not list(tmp_path.iterdir())
+
+
+def test_retained_identity_rejection_names_the_retirement_command(monkeypatch, capsys):
+    def fail(*args, **kwargs):
+        raise ValueError('retained-pixel-identity-rejected')
+    monkeypatch.setattr(module, 'preflight', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-install.py',
+        '--install-dir', '/Users/owner/ods', '--preflight-only'])
+    assert module.main() == 1
+    err = capsys.readouterr().err
+    command = module.retirement_command('/Users/owner/ods')
+    assert command.startswith('sudo /usr/bin/python3 -I ')
+    assert command.endswith(" --install-dir /Users/owner/ods --owner \"$(id -un)\"")
+    assert 'pixel-native-uninstall.py' in command
+    assert err.rstrip().endswith(command)
+    assert 'https://discord.gg/4ntNp9MAwC' in err
+
+
+def test_final_health_timeout_names_both_recoveries_after_the_service_states(monkeypatch, capsys):
+    compose = module.helper('compose')
+    states = {name: {'state': 'running', 'health': 'healthy'} for name in compose.SERVICES}
+    states['pixel-workspace-preview'] = {'state': 'restarting', 'health': 'unhealthy'}
+    def fail(**kwargs):
+        raise compose.NativeHealthTimeout(states)
+    monkeypatch.setattr(module, 'install', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-install.py',
+        '--install-dir', '/unused', '--ods-source', '/unused'])
+    assert module.main() == 1
+    err = capsys.readouterr().err
+    states_at = err.index('pixel-workspace-preview=restarting/unhealthy')
+    assert states_at < err.index('Retained initial installation stopped at final health')
+    assert states_at < err.index('bash -s -- --force --keep-models')
+    assert err.rstrip().endswith('https://discord.gg/4ntNp9MAwC')
+
+
+def test_failed_pixel_setup_line_names_the_start_over_command():
+    script = (ROOT / 'installers/macos/install-macos.sh').read_text()
+    line, = [line for line in script.splitlines() if 'Native Pixel setup stopped' in line]
+    assert line.lstrip().startswith('ai_err "')
+    assert 'curl -fsSL https://install.osmantic.com/ods.sh | bash -s -- --force --keep-models' in line
+    # The installer's exit trap prints the Discord line after any failed install.
+    assert 'Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL}' in script
+
+
 @pytest.mark.parametrize('fault', [None, 'root', 'intel', 'linux', 'existing', 'partial', 'relative'])
 def test_preflight_never_mutates_existing_installations(tmp_path, monkeypatch, fault):
     monkeypatch.setattr(module.sys, 'platform', 'linux' if fault == 'linux' else 'darwin')

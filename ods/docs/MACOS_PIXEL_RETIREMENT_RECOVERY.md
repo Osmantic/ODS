@@ -4,7 +4,9 @@ This is an explicit, maintainer-assisted removal procedure for
 `native-retirement-stopped-job-needs-witness`. It is not initial-install
 recovery, an upgrade, or a reason to edit receipts. It requires administrator
 authorization and a planned **Mac restart**. Do not start it during other Pixel
-maintenance or if stopping Pixel would interrupt important work.
+maintenance or if stopping Pixel would interrupt important work. A native Pixel
+setup that stopped before finishing is retired by the normal uninstaller instead;
+see [Removing a native Pixel setup that did not finish](PIXEL.md#removing-a-native-pixel-setup-that-did-not-finish).
 
 ## Why normal retirement refuses
 
