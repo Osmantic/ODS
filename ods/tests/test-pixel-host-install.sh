@@ -275,6 +275,10 @@ if (
         [[ "$5" != build ]] || printf '%s\n' '{}'
     }
     ods_sudo() {
+        # install-linux reads the built config from a pipe. Drain it as the real
+        # installer does: returning without reading lets printf hit EPIPE, and
+        # pipefail then fails the step at random (about 1 run in 400 on Linux).
+        [[ "$*" != *" install-linux "* ]] || cat >/dev/null
         [[ "$*" != *" health" ]] \
             || printf '%s\n' '{"schemaVersion":1,"kind":"ods-pixel-preview-inspection","status":"ready"}'
     }
