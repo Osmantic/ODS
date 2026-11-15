@@ -55,3 +55,40 @@ deadlines. The full planned denominator and completed receipts remain in the
 summary, with `admission_stopped=true`. Callback exceptions retain partial
 evidence and propagate. Freeze and record resource/elapsed-time stop rules in
 the external coordinator. This hook alone is not a full admission controller.
+
+
+## Fixed-arrival load pilot
+
+`open_loop.py` uses the same engine/gateway manifest and validators as `probe.py`,
+with a separate load configuration:
+
+```json
+{"rate_rps": 1.0, "max_schedule_lag_ms": 100}
+```
+
+```sh
+python3 tests/performance/open_loop.py --manifest pilot.json --load-config load.json --out new-run
+```
+
+Arrivals follow a fixed schedule regardless of request completion. There is no
+client waiting queue: at most the manifest concurrency (maximum 8) is in flight.
+An arrival when the client is full gets a `client_busy` refusal receipt. Late
+arrivals get `scheduler_late` rather than a catch-up burst. Both are client load
+generator limits, not evidence of a server rejection. Every planned arrival is
+accounted for, including those refused after an admission stop. Admission callback
+errors drain current requests, save evidence, then propagate. An interrupt also
+drains current requests and records the remaining unattempted arrivals.
+
+The generator permits up to 1,000 arrivals over at most 600 seconds. In-flight
+requests can extend the duration by their request deadlines; DNS remains outside
+the socket watchdog. A slow callback or busy client can invalidate the intended
+offered load; inspect schedule lag and refusal counts before interpreting results.
+
+Goodput is validated tasks divided by the whole observed duration, including the
+drain. Success fraction uses all planned arrivals. Arrival-to-completion latency
+includes scheduling and worker handoff time; refusal latency is unknown. The
+summary separates protocol completion, quality, identity, transport, and internal
+failures. p95 is suppressed below 100 successful observations. This is descriptive
+engine/gateway evidence, not a production capacity or agent-quality qualification.
+Use the same model, workload, host observability, and load settings in comparisons.
+The existing paired comparator supports closed-loop probe receipts only.

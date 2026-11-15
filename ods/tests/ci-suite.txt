@@ -358,3 +358,5 @@ tests/performance/test_probe.py
 tests/performance/test_compare.py
 tests/performance/test_telemetry.py
 tests/performance/test_engine_timings.py
+
+tests/performance/test_open_loop.py
