@@ -28,6 +28,9 @@ from typing import Any, Optional
 from urllib.parse import urlsplit
 
 
+with open(__file__, "rb") as _source:
+    RUNNER_SHA256 = hashlib.sha256(_source.read()).hexdigest()
+
 SCHEMA_VERSION = 1
 MAX_TOTAL_REQUESTS = 1000
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -633,7 +636,7 @@ def run_request(manifest: dict, task: dict, repetition: int, request_id: str) ->
             record["latency_ms"] = round((time.perf_counter() - t0) * 1000.0, 3)
             return record
 
-        upstream = resp.getheader("X-Dream-Fleet-Endpoint")
+        upstream = resp.getheader("X-ODS-Upstream")
         if upstream:
             record["response_upstream"] = upstream
 
@@ -738,6 +741,8 @@ def summarize(manifest: dict, records: list, elapsed_s: float, interrupted: bool
     return {
         "scope": "engine/gateway pilot; not agent or UI qualification",
         "clock": vars(time.get_clock_info("perf_counter")),
+        "runner_sha256": RUNNER_SHA256,
+        "python_version": sys.version.split()[0],
         "run_label": manifest["run_label"],
         "target": manifest["target"],
         "layer": manifest["layer"],

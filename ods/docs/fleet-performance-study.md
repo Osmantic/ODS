@@ -65,7 +65,7 @@ Contexts 2K/16K/48K within actual supported limit plus headroom; actual tokenize
 
 Report p50/p95/p99 with N, right-censoring, CI. p95 N>=100 and p99 N>=1000 are descriptive policy, not proof of precision. Sustainable capacity = highest offered load meeting predeclared quality+latency+stability over duration with headroom and held-out confirmation; not max simultaneous connections. Adaptive knee follow-ups.
 
-Abort faults/OOM persistent overload; do not clear hardware latch. Shared `/tmp/dream-fleet-heavy.lock` on Tower2 managed orchestration; all participating workloads take the lock; it does not guarantee external quiet. Stop engineering Tower2 inference during Tower2 serving measurement; record background jobs. Restore prior settings/hashes and confirm health after experiments. Trial timeout/cost budget; no automatic setting apply/promotion.
+Abort faults/OOM persistent overload; do not clear hardware latch. Shared the shared host lock selected by `ODS_FLEET_HOST_LOCK` (default `/tmp/ods-fleet-heavy.lock`) on Tower2 managed orchestration; all participating workloads take the lock; it does not guarantee external quiet. Stop engineering Tower2 inference during Tower2 serving measurement; record background jobs. Restore prior settings/hashes and confirm health after experiments. Trial timeout/cost budget; no automatic setting apply/promotion.
 
 ## 6. Quality no-loss mandate
 
@@ -119,7 +119,7 @@ We are not claiming MLPerf compliance.
 ## 10. Operator runbook
 
 1. Confirm commit and inventory hashes; record provenance.
-2. Acquire `/tmp/dream-fleet-heavy.lock` on Tower2 if participating.
+2. Acquire the shared host lock selected by `ODS_FLEET_HOST_LOCK` (default `/tmp/ods-fleet-heavy.lock`) on Tower2 if participating.
 3. Run pilot at concurrency 1; validate per-request token counts.
 4. Run paired A/B in randomized balanced blocks.
 5. Run concurrency staircase and open-loop separately.
