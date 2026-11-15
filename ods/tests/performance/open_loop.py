@@ -222,7 +222,7 @@ def summarize(manifest: dict, load_config: dict, records: list, elapsed_s: float
         "transport_complete": sum(r.get("transport_complete") is True for r in observed),
         "internal_failures": sum(r.get("error_kind") == "internal" for r in observed),
         "successful_tasks": len(quality_pass),
-        "transport_completions": len(observed) - len(transport_failures),
+        "transport_completions": sum(r.get("transport_complete") is True for r in observed),
         "success_fraction": round(success_fraction, 6) if success_fraction is not None else None,
         "goodput_valid_tasks_per_s": round(goodput, 6) if goodput is not None else None,
         "transport_failures": len(transport_failures),
