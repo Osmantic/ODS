@@ -47,6 +47,7 @@ const INITIAL_FORM = {
 
 const STATUS_META = {
   ready: { label: 'Connected', dot: 'bg-emerald-400', text: 'text-emerald-300' },
+  switching: { label: 'Switching', dot: 'bg-theme-text-secondary', text: 'text-theme-text-secondary' },
   disabled: { label: 'Off', dot: 'bg-zinc-500', text: 'text-zinc-400' },
   // An update (or a mode change) kept ODS on the model on this computer.
   paused: { label: 'Paused', dot: 'bg-zinc-500', text: 'text-zinc-400' },
@@ -500,11 +501,13 @@ export default function RemoteProvider({ compact = false }) {
   }
 
   // After a change, ODS and Portal switch over for a few seconds; re-check
-  // before calling that gap a problem.
+  // before calling that gap a problem. A consumer that is briefly unavailable
+  // while it restarts is the same kind of gap as drift.
   const settleAfterAction = useCallback(async () => {
+    const settlingReasons = new Set(['consumer_drift', 'consumer_status_unavailable'])
     for (let poll = 0; poll < SETTLE_POLLS; poll += 1) {
       const payload = await loadStatus({ quiet: true })
-      if (payload?.activation?.reason !== 'consumer_drift') break
+      if (!settlingReasons.has(payload?.activation?.reason)) break
       setSettling(true)
       await new Promise(resolve => setTimeout(resolve, SETTLE_POLL_MS))
     }
@@ -665,7 +668,8 @@ export default function RemoteProvider({ compact = false }) {
   const peer = statusData?.peer || {}
   const testEnabled = Boolean(statusData?.availableActions?.test)
   const enableAvailable = Boolean(statusData?.availableActions?.enable)
-  const statusMeta = STATUS_META[statusData?.status] || STATUS_META.unknown
+  const displayStatus = settling ? 'switching' : statusData?.status
+  const statusMeta = STATUS_META[displayStatus] || STATUS_META.unknown
   const lifecycleBusy = planning || Boolean(applyingAction) || connecting
   const contextLength = Number(form.contextLength)
   const maxTokens = Number(form.maxTokens)
@@ -721,7 +725,7 @@ export default function RemoteProvider({ compact = false }) {
           <p className="mt-1 text-sm text-theme-text-muted">{headline}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {statusData && <StatusPill status={statusData.status} />}
+          {statusData && <StatusPill status={displayStatus} />}
           <button
             type="button"
             onClick={() => loadStatus()}

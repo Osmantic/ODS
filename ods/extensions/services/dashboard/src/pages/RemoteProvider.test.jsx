@@ -573,6 +573,90 @@ test('offers one-click reconciliation when the active consumer drifted', async (
   expect(screen.getByText('Enable applied')).toBeInTheDocument()
 })
 
+test('enable retries a briefly unavailable consumer and settles to ready', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    const unavailableStatusPayload = {
+      ...driftedStatusPayload,
+      activation: {
+        ...driftedStatusPayload.activation,
+        reason: 'consumer_status_unavailable',
+      },
+    }
+    globalThis.fetch
+      .mockResolvedValueOnce(response(driftedStatusPayload))
+      .mockResolvedValueOnce(response(enableApplyPayload))
+      .mockResolvedValueOnce(response(unavailableStatusPayload))
+      .mockResolvedValueOnce(response(statusPayload))
+
+    render(createElement(RemoteProvider))
+    fireEvent.click(await screen.findByRole('button', { name: /^reconnect$/i }))
+
+    expect(await screen.findByText('Switching ODS and Portal over…')).toBeInTheDocument()
+    expect(screen.queryByText('Needs attention')).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(4))
+    await waitFor(() => expect(screen.queryByText('Switching ODS and Portal over…')).toBeNull())
+    expect(screen.queryByText('Needs attention')).toBeNull()
+    expect(screen.getByText('Enable applied')).toBeInTheDocument()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('a consumer that stays unavailable after the settle budget needs attention', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    const unavailableStatusPayload = {
+      ...driftedStatusPayload,
+      activation: {
+        ...driftedStatusPayload.activation,
+        reason: 'consumer_status_unavailable',
+      },
+    }
+    globalThis.fetch
+      .mockResolvedValueOnce(response(driftedStatusPayload))
+      .mockResolvedValueOnce(response(enableApplyPayload))
+    for (let poll = 0; poll < 5; poll += 1) {
+      globalThis.fetch.mockResolvedValueOnce(response(unavailableStatusPayload))
+    }
+
+    render(createElement(RemoteProvider))
+    fireEvent.click(await screen.findByRole('button', { name: /^reconnect$/i }))
+
+    expect(await screen.findByText('Switching ODS and Portal over…')).toBeInTheDocument()
+    for (let poll = 0; poll < 5; poll += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    }
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(7))
+    await waitFor(() => expect(screen.queryByText('Switching ODS and Portal over…')).toBeNull())
+    expect(screen.getAllByText('Needs attention').length).toBeGreaterThan(0)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('an invalid activation after enable is not retried', async () => {
+  const invalidStatusPayload = {
+    ...driftedStatusPayload,
+    activation: {
+      ...driftedStatusPayload.activation,
+      reason: 'invalid_activation_contract',
+    },
+  }
+  globalThis.fetch
+    .mockResolvedValueOnce(response(driftedStatusPayload))
+    .mockResolvedValueOnce(response(enableApplyPayload))
+    .mockResolvedValueOnce(response(invalidStatusPayload))
+
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: /^reconnect$/i }))
+
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(3))
+  expect(screen.queryByText('Switching ODS and Portal over…')).toBeNull()
+  expect(screen.getByText('Enable applied')).toBeInTheDocument()
+})
+
 test('a route an update paused reads Paused, not a fault, and offers Reconnect', async () => {
   // Fleet, laptop: after an installer rerun kept ODS local, Settings said
   // "Needs attention" for a route the update had paused on purpose.

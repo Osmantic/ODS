@@ -556,6 +556,8 @@ def test_enable_of_the_active_route_reads_pixel_now_and_changes_nothing(runtime,
     runtime.events.clear()
     result=enable()
     assert result['applied'] and result['unchanged'] and not result['mutated']
+    assert result['route']['enabled'] is True
+    assert result['route']['provider']['model']=='qwen/remote:latest'
     assert runtime.events==[] and files(runtime.root)==before and not runtime.held
 
 

@@ -4774,6 +4774,8 @@ class TestRemoteProviderLifecycle:
         assert body["applied"] is True
         assert body["staged"] is False
         assert body["probe"]["ok"] is True
+        assert body["route"]["enabled"] is True
+        assert body["route"]["provider"]["model"] == "qwen/remote:latest"
         assert state["enabled"] is True
         assert state["provider"]["model"] == "qwen/remote:latest"
         assert state["status"]["proven"] is True
@@ -4815,6 +4817,8 @@ class TestRemoteProviderLifecycle:
         assert body["applied"] is False
         assert body["staged"] is True
         assert body["proof"]["reason"] == "pending-ssh-tunnel-proof"
+        assert body["route"]["enabled"] is True
+        assert body["route"]["provider"]["model"] == "qwen/remote:latest"
         assert state["enabled"] is True
         assert state["provider"]["transport"] == "ssh"
         assert state["status"]["proven"] is False
