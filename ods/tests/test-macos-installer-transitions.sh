@@ -361,7 +361,7 @@ grep -A3 -F 'if [[ "$CLOUD_REQUIRED_HEALTHY" != "true" ]]; then' "$INSTALLER" | 
 grep -Fq '[DRY RUN] Would install, configure, and verify the authenticated dashboard host-agent path' "$INSTALLER" \
     || fail "dry-run does not bypass host-agent and bridge mutation"
 bootstrap_dry_line="$(grep -n '\[ "\$_ods_bootstrap_dry_run" = true \]' "$INSTALLER" | head -1 | cut -d: -f1)"
-brew_install_line="$(grep -n '^  brew install bash' "$INSTALLER" | head -1 | cut -d: -f1)"
+brew_install_line="$(grep -n '^  _ods_native "\$_ods_brew" install bash' "$INSTALLER" | head -1 | cut -d: -f1)"
 [[ -n "$bootstrap_dry_line" && -n "$brew_install_line" && "$bootstrap_dry_line" -lt "$brew_install_line" ]] \
     || fail "Bash bootstrap can mutate the host before honoring --dry-run"
 [[ "$(grep -Fc 'if _ods_bash_is_modern "$candidate"; then' "$INSTALLER")" -eq 2 ]] \
