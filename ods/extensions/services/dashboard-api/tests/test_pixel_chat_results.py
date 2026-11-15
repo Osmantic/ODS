@@ -62,7 +62,7 @@ def test_invalid_upstream_diagnostics_do_not_leak_or_change_receipts(
         async def not_stopped(*_args): return False
         monkeypatch.setattr(pixel, "_cancel_edge_run", not_stopped)
         with caplog.at_level("WARNING", logger=pixel.logger.name):
-            response = await pixel.pixel_chat_stream(ConnectedRequest(), body(text="prompt-canary"), OWNER)
+            response = await pixel.pixel_chat_stream(Request({"type": "http"}), body(text="prompt-canary"), OWNER)
             await asyncio.gather(*list(pixel._result_tasks.values()))
         data = await stream_body(response)
         assert f"Pixel upstream stream refused (status={status}, media={media})" in caplog.text
