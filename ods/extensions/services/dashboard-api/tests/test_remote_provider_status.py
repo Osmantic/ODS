@@ -1484,6 +1484,7 @@ def test_remote_provider_probe_posts_to_egress_and_sanitizes_receipt(
     assert resp.status_code == 200
     assert body == {
         "schema": "ods.remote-provider-egress-probe.v1",
+        "dashboardMode": rps._dashboard_mode(),
         "ok": True,
         "transport": "ssh",
         "probe": {

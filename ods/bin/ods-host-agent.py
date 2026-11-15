@@ -10801,6 +10801,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_update_status()
         elif path == "/v1/remote-provider/ssh-supervisor":
             self._handle_remote_provider_ssh_supervisor_status()
+        elif path == "/v1/remote-provider/dashboard-mode":
+            self._handle_dashboard_mode()
         elif path == "/v1/pixel/ops-status":
             self._handle_pixel_ops_status(parse_qs(parsed.query, keep_blank_values=True))
         elif path == "/v1/pixel/providers":
@@ -11471,6 +11473,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_remote_provider_plan()
         elif self.path == "/v1/remote-provider/apply":
             self._handle_remote_provider_apply()
+        elif self.path == "/v1/remote-provider/dashboard-mode":
+            self._handle_dashboard_mode(reconcile=True)
         elif self.path == "/v1/remote-provider/proof":
             self._handle_remote_provider_proof()
         elif self.path == "/v1/pixel/providers/save":
@@ -12040,6 +12044,38 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 500, {"error": f"Could not persist setup completion: {exc}"})
             return
         json_response(self, 200, {"success": True})
+
+    def _handle_dashboard_mode(self, *, reconcile=False):
+        if not check_auth(self):
+            return
+        acquired = False
+        try:
+            if reconcile:
+                acquired, _ = _begin_model_lifecycle('dashboard_mode_reconcile')
+                if not acquired:
+                    json_response(self, 409, {'error': 'A model or dashboard change is already in progress'})
+                    return
+                result = _reconcile_dashboard_mode()
+            else:
+                result = _dashboard_mode_status()
+        except _PixelModelTransactionUncertain:
+            json_response(self, 409, {'code': 'model_recovery_required',
+                          'error': 'Recover the model switch in Models before refreshing the dashboard.'})
+            return
+        except _PixelModelTransactionRejected:
+            json_response(self, 409, {'code': 'dashboard_refresh_busy',
+                          'error': 'ODS is busy with a model change or chat. Try Refresh dashboard when it is idle.'})
+            return
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            # Container output and environment values must not enter the reply.
+            logger.warning('Dashboard mode %s could not complete', 'reconciliation' if reconcile else 'inspection')
+            json_response(self, 500 if reconcile else 503,
+                          {'error': 'Dashboard refresh could not be proved. Check model recovery and retry when ODS is idle.'})
+            return
+        finally:
+            if acquired:
+                _end_model_lifecycle('dashboard_mode_reconcile')
+        json_response(self, 200, result)
 
     def _handle_remote_provider_plan(self):
         """Validate a remote-provider lifecycle request without side effects."""
@@ -19005,6 +19041,98 @@ def _capture_container_state(container: str) -> dict[str, bool]:
     if value not in {"true", "false"}:
         raise RuntimeError(f"Docker returned an invalid running state for {container}: {value!r}")
     return {"exists": True, "running": value == "true"}
+
+
+def _dashboard_container_mode() -> dict:
+    """Read only the fixed ODS API container; never publish its environment."""
+    container = 'ods-dashboard-api'
+    if not _container_exists(container):
+        return {'exists': False, 'running': False, 'mode': 'unknown', 'healthy': False}
+    result = subprocess.run(
+        ['docker', 'inspect', '--type', 'container', '--format',
+         '{"running":{{json .State.Running}},"env":{{json .Config.Env}},'
+         '"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}"none"{{end}}}',
+         container], capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode:
+        raise RuntimeError('Dashboard container inspection failed')
+    try:
+        value = json.loads(result.stdout)
+        env = value['env']
+        if not isinstance(env, list) or type(value['running']) is not bool:
+            raise ValueError()
+        modes = [entry.partition('=')[2] for entry in env
+                 if isinstance(entry, str) and entry.startswith('ODS_MODE=')]
+        mode = modes[0] if len(modes) == 1 else 'unknown'
+        mode = 'local' if mode == 'lemonade' else mode
+        if mode not in {'local', 'cloud', 'hybrid'}:
+            mode = 'unknown'
+        return {'exists': True, 'running': value['running'], 'mode': mode,
+                'healthy': value['health'] == 'healthy'}
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError('Dashboard container inspection was invalid') from exc
+
+
+def _dashboard_mode_status() -> dict:
+    config = load_env(INSTALL_DIR / '.env')
+    desired = config.get('ODS_MODE', 'unknown')
+    desired = 'local' if desired == 'lemonade' else desired
+    state = _dashboard_container_mode()
+    lifecycle = _model_lifecycle_status()
+    pending = _pixel_model_hold_pending()
+    matched = desired in {'local', 'cloud', 'hybrid'} and state['mode'] == desired
+    return {'configuredMode': desired if desired in {'local', 'cloud', 'hybrid'} else 'unknown',
+            'containerMode': state['mode'], 'running': state['running'], 'healthy': state['healthy'],
+            'matches': matched, 'pending': pending,
+            'reconciling': lifecycle.get('activeOperation') == 'dashboard_mode_reconcile',
+            'ready': bool(matched and state['running'] and state['healthy'] and not pending
+                          and not lifecycle.get('lifecycleActive'))}
+
+
+def _reconcile_dashboard_mode() -> dict:
+    """Recreate a stale API after the provider request has already completed.
+
+    The caller may disconnect when its API is replaced. Only subsequent reads
+    prove convergence; a retry compares the durable desired mode to Docker and
+    never resubmits the preceding provider mutation.
+    """
+    config = load_env(INSTALL_DIR / '.env')
+    desired = config.get('ODS_MODE')
+    desired = 'local' if desired == 'lemonade' else desired
+    if desired not in {'local', 'cloud', 'hybrid'}:
+        raise RuntimeError('Configured dashboard mode is unknown')
+    if _pixel_model_hold_pending():
+        raise _PixelModelTransactionUncertain('Recover the pending model transaction before refreshing the dashboard')
+    state = _dashboard_container_mode()
+    if not state['exists'] or not state['running']:
+        return {'recreated': False, 'reason': 'not_running'}
+    if state['mode'] == desired:
+        if not state['healthy']:
+            raise RuntimeError('Dashboard mode is current but its container is unhealthy')
+        return {'recreated': False, 'reason': 'already_current'}
+    transaction = _begin_pixel_model_transaction(config)
+    try:
+        if not _restart_existing_container('ods-dashboard-api', state, recreate=True):
+            raise RuntimeError('Dashboard container could not be recreated')
+        _wait_for_container_health('ods-dashboard-api')
+        current = _dashboard_container_mode()
+        if (not current['running'] or not current['healthy'] or current['mode'] != desired
+                or load_env(INSTALL_DIR / '.env').get('ODS_MODE') != config.get('ODS_MODE')):
+            raise RuntimeError('Dashboard mode convergence was not proved')
+    except Exception:
+        if transaction is not None:
+            transaction.verify_held()
+            if not _prove_pixel_model_contract(config, transaction.previous):
+                raise _PixelModelTransactionUncertain('Unchanged model could not be proved; model recovery is required')
+            transaction.finish('rollback')
+        raise
+    if transaction is not None:
+        # No model apply occurred. Release the same, proven model unchanged.
+        transaction.verify_held()
+        if not _prove_pixel_model_contract(config, transaction.previous):
+            raise _PixelModelTransactionUncertain('Unchanged model could not be proved; model recovery is required')
+        transaction.finish('rollback')
+    return {'recreated': True, 'reason': 'mode_refreshed'}
 
 
 class ContainerUnhealthyError(RuntimeError):

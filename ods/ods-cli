@@ -5023,6 +5023,9 @@ _remote_provider_print_status() {
     local response_file="$1"
     jq -r "$(_remote_provider_image_input_jq)"'
         "Remote provider: \(.status // "unknown")",
+        (if .dashboardMode.matches == false then
+            "Dashboard refresh required: open Settings > Remote model and choose Refresh dashboard."
+         else empty end),
         (if .status == "ready" then
             "Ready means set up and proven" +
             (if (.routeState.status.lastProbe.verifiedAt // "") != "" then " at \(.routeState.status.lastProbe.verifiedAt)" else "" end) +
@@ -5056,6 +5059,9 @@ _remote_provider_print_apply_result() {
         "Remote provider \(.action // "operation"): " +
             (if .applied == true then "applied" else "completed" end),
         "Mutated state: \(.mutated // false)",
+        (if .dashboardMode.matches == false then
+            "Dashboard refresh required: open Settings > Remote model and choose Refresh dashboard."
+         else empty end),
         (if .probe then
             "Probe: HTTP \(.probe.httpStatus // .probe.status // "unknown") at \(.probe.endpoint // "/v1/models")" +
             (if (.probe.modelCount // null) != null then " (\(.probe.modelCount) models)" else "" end)
@@ -5070,6 +5076,9 @@ _remote_provider_print_probe_result() {
     local response_file="$1"
     jq -r "$(_remote_provider_image_input_jq)"'
         "Remote provider probe: " + (if .ok == true then "ok" else "failed" end),
+        (if .dashboardMode.matches == false then
+            "Dashboard refresh required: open Settings > Remote model and choose Refresh dashboard."
+         else empty end),
         "Transport: \(.transport // "unknown")",
         (if .probe then
             "Probe: HTTP \(.probe.httpStatus // "unknown") at \(.probe.endpoint // "/v1/models")" +

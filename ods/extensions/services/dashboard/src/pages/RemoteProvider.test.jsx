@@ -338,6 +338,81 @@ beforeEach(() => {
   globalThis.fetch = vi.fn()
 })
 
+test('refreshes stale dashboard after successful disable without replaying the route', async () => {
+  const mismatch = { ...disabledStatusPayload, dashboardMode: { effectiveMode: 'cloud', configuredMode: 'local', matches: false } }
+  const converged = { ...disabledStatusPayload, dashboardMode: { effectiveMode: 'local', configuredMode: 'local', matches: true } }
+  globalThis.fetch
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockResolvedValueOnce(response(disableApplyPayload))
+    .mockResolvedValueOnce(response(mismatch))
+    .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    .mockResolvedValueOnce(response({ ready: true, matches: true }))
+    .mockResolvedValueOnce(response(converged))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: /switch back to the local model/i }))
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(6))
+  expect(globalThis.fetch.mock.calls.map(([url, options]) => [url, options?.method || 'GET'])).toEqual([
+    ['/api/remote-provider/status', 'GET'],
+    ['/api/remote-provider/apply', 'POST'],
+    ['/api/remote-provider/status', 'GET'],
+    ['/api/remote-provider/dashboard-mode', 'POST'],
+    ['/api/remote-provider/dashboard-mode', 'GET'],
+    ['/api/remote-provider/status', 'GET'],
+  ])
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh dashboard' })).toBeNull())
+  expect(screen.getByText('Disable applied')).toBeInTheDocument()
+})
+
+test('offers explicit repair after refresh and preserves an unresolved model hold', async () => {
+  const mismatch = { ...disabledStatusPayload, dashboardMode: { effectiveMode: 'cloud', configuredMode: 'local', matches: false } }
+  globalThis.fetch
+    .mockResolvedValueOnce(response(mismatch))
+    .mockRejectedValueOnce(new TypeError('Connection reset'))
+    .mockResolvedValueOnce(response({ ready: false, matches: true, pending: true, reconciling: false }))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh dashboard' }))
+  expect(await screen.findByText('Recover the model switch in Models before refreshing the dashboard.')).toBeInTheDocument()
+  expect(globalThis.fetch.mock.calls.filter(([url]) => url.endsWith('/apply'))).toHaveLength(0)
+  expect(screen.getByRole('button', { name: 'Refresh dashboard' })).toBeEnabled()
+})
+
+test('reports a definite busy refusal without waiting through the refresh deadline', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response({ ...disabledStatusPayload, dashboardMode: { matches: false } }))
+    .mockResolvedValueOnce(response({ error: 'Another chat is active. Try again when it finishes.' }, 409))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh dashboard' }))
+  expect(await screen.findByText('Another chat is active. Try again when it finishes.')).toBeInTheDocument()
+  expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole('button', { name: 'Refresh dashboard' })).toBeEnabled()
+})
+
+test('does not refresh the dashboard after an unconfirmed provider mutation', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockRejectedValueOnce(new TypeError('Connection lost'))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: /switch back to the local model/i }))
+  expect(await screen.findByText('Connection lost')).toBeInTheDocument()
+  expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+})
+
+test('waits for released maintenance after the API mode has already converged', async () => {
+  const mismatch = { ...disabledStatusPayload, dashboardMode: { matches: false } }
+  globalThis.fetch
+    .mockResolvedValueOnce(response(mismatch))
+    .mockRejectedValueOnce(new TypeError('Connection reset'))
+    .mockResolvedValueOnce(response({ ready: false, matches: true, pending: true, reconciling: true }))
+    .mockResolvedValueOnce(response({ ready: true, matches: true }))
+    .mockResolvedValueOnce(response({ ...disabledStatusPayload, dashboardMode: { matches: true } }))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh dashboard' }))
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(3))
+  expect(screen.getByRole('button', { name: 'Refresh dashboard' })).toBeDisabled()
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(5), { timeout: 4500 })
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh dashboard' })).toBeNull())
+})
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
