@@ -313,6 +313,7 @@ class StreamResult:
     usage: Optional[dict] = None
     saw_done: bool = False
     error: Optional[str] = None
+    engine_timings: Optional[dict] = None
 
 
 def _parse_usage(u: Any) -> Optional[dict]:
@@ -335,6 +336,33 @@ def _parse_usage(u: Any) -> Optional[dict]:
             if allowed:
                 out[k] = allowed
     return out
+
+
+_ENGINE_TIMING_INT_KEYS = ("prompt_n", "cache_n", "predicted_n")
+_ENGINE_TIMING_MS_KEYS = ("prompt_ms", "predicted_ms")
+
+
+def _parse_engine_timings(obj: Any) -> Optional[dict]:
+    """Extract allowlisted llama.cpp cumulative timings from a timings object.
+
+    Returns None if no valid allowlisted fields are present. Only provided
+    valid fields are included; no values are fabricated.
+    """
+    if not isinstance(obj, dict):
+        return None
+    out: dict = {}
+    for k in _ENGINE_TIMING_INT_KEYS:
+        if k in obj:
+            v = obj[k]
+            if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+                out[k] = v
+    for k in _ENGINE_TIMING_MS_KEYS:
+        if k in obj:
+            v = obj[k]
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                if v == v and v not in (float("inf"), float("-inf")) and v >= 0:
+                    out[k] = v
+    return out if out else None
 
 
 def _process_sse_event(event_lines: list, result: StreamResult, t0: float) -> None:
@@ -368,6 +396,10 @@ def _process_sse_event(event_lines: list, result: StreamResult, t0: float) -> No
         usage = _parse_usage(obj["usage"])
         if usage is not None:
             result.usage = usage  # Some engines report cumulative usage on each chunk.
+    if "timings" in obj:
+        timings = _parse_engine_timings(obj["timings"])
+        if timings is not None:
+            result.engine_timings = timings  # Cumulative; latest valid replaces.
     choices = obj.get("choices")
     if not isinstance(choices, list):
         return
@@ -507,6 +539,7 @@ def run_request(manifest: dict, task: dict, repetition: int, request_id: str) ->
         "content_chunk_count": 0,
         "content_chunk_gaps_ms": [],
         "usage": None,
+        "engine_timings": None,
         "response_model": None,
         "response_upstream": None,
         "finish_reason": None,
@@ -648,6 +681,7 @@ def run_request(manifest: dict, task: dict, repetition: int, request_id: str) ->
         record["content_chunk_count"] = stream.content_chunk_count
         record["content_chunk_gaps_ms"] = stream.content_chunk_gaps_ms
         record["usage"] = stream.usage
+        record["engine_timings"] = stream.engine_timings
         record["response_model"] = stream.response_model
         record["finish_reason"] = stream.finish_reason
 
@@ -845,6 +879,7 @@ def run(manifest: dict, out_dir: str, admission_allowed=None) -> dict:
                 "content_chunk_count": 0,
                 "content_chunk_gaps_ms": [],
                 "usage": None,
+                "engine_timings": None,
                 "response_model": None,
                 "response_upstream": None,
                 "finish_reason": None,
