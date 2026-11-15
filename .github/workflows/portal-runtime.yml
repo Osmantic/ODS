@@ -51,6 +51,8 @@ jobs:
         with:
           node-version: '24'
       - run: node --test ods/extensions/services/pixel-agent/tests/compaction_lock.test.mjs
+      - name: Verify opt-in ingress timing preserves delivery and cancellation
+        run: node --test --test-timeout=30000 ods/extensions/services/pixel-agent/tests/pixel_timing.test.mjs
       - name: Verify native process admission custody
         if: runner.os != 'Windows'
         run: node --test ods/extensions/services/pixel-agent/tests/access_runtime.test.mjs

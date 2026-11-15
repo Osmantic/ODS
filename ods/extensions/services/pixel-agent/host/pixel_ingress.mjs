@@ -1381,7 +1381,98 @@ async function maybeContinueUnfinishedExtensionDecision(completion, outgoing, to
   return recovered;
 }
 
+const PIXEL_TIMING_STAGES = new Set([
+  "preparation", "gatewayHeaders", "gatewayBody", "readOnlyContinuation",
+  "decisionContinuation", "subagentDelivery", "verification", "completionHook", "delivery",
+]);
+const PIXEL_TIMING_DISABLED = Object.freeze({
+  wrap: (_name, operation) => operation(), markRunId() {}, terminal() {},
+});
+
+// Optional diagnostic receipt only: never changes response bytes or trust decisions.
+// These are host wrapper durations, not engine token, queue or browser timings.
+export function createPixelTiming(deps = {}, stream = false) {
+  if ((deps.env ?? process.env).ODS_PIXEL_TIMING !== "1") return PIXEL_TIMING_DISABLED;
+  const now = deps.pixelTimingClock ?? (() => Number(process.hrtime.bigint()) / 1e6);
+  const sink = deps.pixelTimingSink ?? ((line) => {
+    // Do not accumulate unbounded diagnostic writes behind a blocked log consumer.
+    if (process.stderr.writableLength < 65536) process.stderr.write(line + "\n");
+  });
+  let clockValid = true;
+  const clock = () => {
+    try {
+      const value = now();
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+    } catch { /* Diagnostic failures must not change a request. */ }
+    clockValid = false;
+    return null;
+  };
+  const duration = (start, end) => {
+    if (start === null || end === null || end < start) {
+      clockValid = false;
+      return null;
+    }
+    const result = Math.round((end - start) * 1000) / 1000;
+    if (!Number.isFinite(result)) { clockValid = false; return null; }
+    return result;
+  };
+  const started = clock();
+  const stages = new Map();
+  let ended = false;
+  let runId = null;
+  // Generated locally, never derived from a session, user field or request body.
+  let requestCorrelation;
+  try { requestCorrelation = randomBytes(16).toString("hex"); }
+  catch { return PIXEL_TIMING_DISABLED; }
+  const record = (name, start) => {
+    const ms = duration(start, clock());
+    if (PIXEL_TIMING_STAGES.has(name) && ms !== null) {
+      const sum = (stages.get(name) ?? 0) + ms;
+      if (Number.isFinite(sum)) stages.set(name, sum);
+      else clockValid = false;
+    }
+  };
+  return {
+    wrap(name, operation) {
+      const start = clock();
+      let value;
+      try { value = operation(); } catch (error) { record(name, start); throw error; }
+      if (value && typeof value.then === "function") {
+        return value.then(
+          (result) => { record(name, start); return result; },
+          (error) => { record(name, start); throw error; },
+        );
+      }
+      record(name, start);
+      return value;
+    },
+    markRunId(value) {
+      // A replacement completion without a valid ID must not inherit an older
+      // completion's identity. Unknown attribution is safer than a false join.
+      runId = typeof value === "string" && OPENAI_RUN_ID.test(value) ? value : null;
+    },
+    terminal(outcome) {
+      if (ended) return;
+      ended = true;
+      const totalMs = duration(started, clock());
+      try {
+        const line = JSON.stringify({
+          schemaVersion: 1, kind: "ods-pixel-agent-timing", requestCorrelation, runId,
+          stream: stream === true,
+          outcome: ["delivered", "error", "aborted"].includes(outcome) ? outcome : "error",
+          clockValid, totalMs: clockValid ? totalMs : null,
+          stageDurationsMs: clockValid ? Object.fromEntries(stages) : {},
+        });
+        if (Buffer.byteLength(line, "utf8") <= 4096) sink(line);
+      } catch { /* Never replace a chat result with a diagnostic failure. */ }
+    },
+  };
+}
+
+
 async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps, hooks = {}, activeGatewayTransports = new Map()) {
+  const timing = createPixelTiming(deps, outgoing.stream === true);
+  let timingOutcome = "error";
   const controller = new AbortController();
   const unregisterGatewayTransport = registerActiveGatewayTransport(activeGatewayTransports, outgoing.user, controller);
   hooks.onController?.(controller);
@@ -1417,11 +1508,13 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     stopActivity = streamTaskActivity(res, outgoing.user, token, gatewayPort, controller.signal, deps);
   }
   try {
-    await hooks.beforeRequest?.(controller.signal);
-    if(controller.signal.aborted) throw new HistoryError('history-preparation-interrupted',503);
-    hooks.onSubmitted?.();
+    await timing.wrap("preparation", async () => {
+      await hooks.beforeRequest?.(controller.signal);
+      if(controller.signal.aborted) throw new HistoryError('history-preparation-interrupted',503);
+      hooks.onSubmitted?.();
+    });
     gatewayResponsePending = true;
-    const upstream = await deps.fetch(
+    const upstream = await timing.wrap("gatewayHeaders", () => deps.fetch(
       `http://127.0.0.1:${gatewayPort}/v1/chat/completions`,
       {
         method: "POST",
@@ -1430,7 +1523,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
         redirect: "error",
         signal: controller.signal,
       }
-    );
+    ));
     gatewayResponsePending = false;
     if (upstream.status < 200 || upstream.status >= 300) {
       await drain(upstream.body);
@@ -1463,35 +1556,41 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       let deliveryStage = "completion";
       let completionRunId;
       try {
-        const body = await readBounded(upstream.body, MAX_STREAM_RESPONSE);
+        const body = await timing.wrap("gatewayBody", () => readBounded(upstream.body, MAX_STREAM_RESPONSE));
         let completion = JSON.parse(body.toString("utf8"));
         if (typeof completion?.id === "string" && OPENAI_RUN_ID.test(completion.id)) {
           completionRunId = completion.id;
+          timing.markRunId(completion.id);
         }
         deliveryStage = "read-only-continuation";
-        completion = await maybeContinueReadOnlyExtensionTurn(completion, gatewayOutgoing, token,
-          gatewayPort, controller.signal, deps);
+        completion = await timing.wrap("readOnlyContinuation", () => maybeContinueReadOnlyExtensionTurn(completion, gatewayOutgoing, token,
+          gatewayPort, controller.signal, deps));
         deliveryStage = "unfinished-extension-decision";
-        completion = await maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
-          gatewayPort, controller.signal, deps);
+        completion = await timing.wrap("decisionContinuation", () => maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
+          gatewayPort, controller.signal, deps));
         completionRunId = completion?.id;
+        if (typeof completionRunId === "string" && OPENAI_RUN_ID.test(completionRunId)) timing.markRunId(completionRunId);
         deliveryStage = "subagent-delivery";
-        const delegated = await awaitSubagentDelivery(completion,outgoing.user,token,gatewayPort,controller.signal,deps);
+        const delegated = await timing.wrap("subagentDelivery", () => awaitSubagentDelivery(completion,outgoing.user,token,gatewayPort,controller.signal,deps));
         completion = delegated.completion;
+        timing.markRunId(completion?.id);
         deliveryStage = "verification";
-        const verification = deliveryVerification(completion, delegated.verification ?? await verificationForRun(
+        const verification = await timing.wrap("verification", async () => deliveryVerification(completion, delegated.verification ?? await verificationForRun(
           completion?.id,
           token,
           gatewayPort,
           controller.signal,
           deps
-        ));
-        await hooks.onComplete?.(completion,verification);
+        )));
+        await timing.wrap("completionHook", () => hooks.onComplete?.(completion,verification));
         deliveryStage = "delivery";
-        res.end(completionSse(
-          applyVerificationToCompletion(completion, verification),
-          verification
-        ));
+        timing.wrap("delivery", () => {
+          res.end(completionSse(
+            applyVerificationToCompletion(completion, verification),
+            verification
+          ));
+          timingOutcome = "delivered";
+        });
       } catch {
         // Log only the fixed stage and validated opaque run ID. Never include
         // completion content, tool results, request bodies, or credentials.
@@ -1503,7 +1602,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       }
       return;
     }
-    const body = await readBounded(upstream.body, MAX_NONSTREAM_RESPONSE);
+    const body = await timing.wrap("gatewayBody", () => readBounded(upstream.body, MAX_NONSTREAM_RESPONSE));
     let completion;
     try {
       completion = JSON.parse(body.toString("utf8"));
@@ -1511,30 +1610,36 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       sendError(res, 502, "invalid upstream response");
       return;
     }
+    if (typeof completion?.id === "string" && OPENAI_RUN_ID.test(completion.id)) timing.markRunId(completion.id);
     const originalCompletion = completion;
-    completion = await maybeContinueReadOnlyExtensionTurn(completion, gatewayOutgoing, token,
-      gatewayPort, controller.signal, deps);
-    completion = await maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
-      gatewayPort, controller.signal, deps);
-    const delegated = await awaitSubagentDelivery(completion,outgoing.user,token,gatewayPort,controller.signal,deps);
+    completion = await timing.wrap("readOnlyContinuation", () => maybeContinueReadOnlyExtensionTurn(completion, gatewayOutgoing, token,
+      gatewayPort, controller.signal, deps));
+    completion = await timing.wrap("decisionContinuation", () => maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
+      gatewayPort, controller.signal, deps));
+    if (typeof completion?.id === "string" && OPENAI_RUN_ID.test(completion.id)) timing.markRunId(completion.id);
+    const delegated = await timing.wrap("subagentDelivery", () => awaitSubagentDelivery(completion,outgoing.user,token,gatewayPort,controller.signal,deps));
     completion = delegated.completion;
-    const verification = deliveryVerification(completion, delegated.verification ?? await verificationForRun(
+    timing.markRunId(completion?.id);
+    const verification = await timing.wrap("verification", async () => deliveryVerification(completion, delegated.verification ?? await verificationForRun(
       completion?.id,
       token,
       gatewayPort,
       controller.signal,
       deps
-    ));
-    await hooks.onComplete?.(completion,verification);
+    )));
+    await timing.wrap("completionHook", () => hooks.onComplete?.(completion,verification));
     const verifiedCompletion = applyVerificationToCompletion(completion, verification);
     const responseBody = verifiedCompletion === completion && completion === originalCompletion
       ? body
       : Buffer.from(JSON.stringify(verifiedCompletion), "utf8");
-    res.writeHead(200, {
-      "Content-Type": "application/json",
-      "Cache-Control": "no-store",
+    timing.wrap("delivery", () => {
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      res.end(responseBody);
+      timingOutcome = "delivered";
     });
-    res.end(responseBody);
   } catch (error) {
     // Only an actual refusal to connect to this exact loopback gateway proves
     // that its chat POST never arrived. Timeouts, resets, missing run IDs and
@@ -1562,6 +1667,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     res.off("close", abortOnDownstreamClose);
     deps.clearTimeout(totalTimer);
     unregisterGatewayTransport();
+    timing.terminal(controller.signal.aborted ? "aborted" : timingOutcome);
   }
 }
 
