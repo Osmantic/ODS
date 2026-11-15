@@ -217,7 +217,7 @@ def test_implausible_input_helper_returns_false(perf_env):
     assert helpers.is_plausible_single_request_tps(-1) is False
     assert helpers.is_plausible_single_request_tps(float("nan")) is False
     assert helpers.is_plausible_single_request_tps(float("inf")) is False
-    assert helpers.record_model_performance("m", "gpu", "cuda", "not-a-number") is False
+    assert helpers.record_model_performance("m", "gpu", "cuda", "not-a-number") is False  # type: ignore[arg-type]
     assert helpers.is_plausible_single_request_tps(helpers.MAX_SINGLE_REQUEST_TOKENS_PER_SECOND + 1) is False
     assert helpers.is_plausible_single_request_tps(42.0) is True
     assert helpers.record_model_performance("m", "gpu", "cuda", 0) is False
