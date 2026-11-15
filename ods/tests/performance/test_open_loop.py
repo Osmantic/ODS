@@ -161,6 +161,26 @@ class TestSchedule(unittest.TestCase):
 
 
 class TestRun(unittest.TestCase):
+    def test_internal_worker_failure_is_not_transport_completion(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "run")
+            with patch.object(probe, "run_request", side_effect=RuntimeError("private-detail")):
+                summary = open_loop.run(
+                    _manifest("http://127.0.0.1:1/v1/chat/completions"), _load(), out)
+            self.assertEqual(summary["planned"], 1)
+            self.assertEqual(summary["dispatched"], 1)
+            self.assertEqual(summary["internal_failures"], 1)
+            self.assertEqual(summary["successful_tasks"], 0)
+            self.assertEqual(summary["success_fraction"], 0)
+            self.assertEqual(summary["transport_complete"], 0)
+            self.assertEqual(summary["transport_completions"], 0)
+            with open(os.path.join(out, "requests.jsonl"), encoding="utf-8") as f:
+                receipt = f.read()
+            self.assertNotIn("private-detail", receipt)
+            self.assertEqual(json.loads(receipt)["error"], "worker_unexpected")
+            with open(os.path.join(out, "summary.json"), encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["transport_completions"], 0)
+
     def test_all_pass_exit_zero(self):
         with _Server(_ok_handler) as srv, tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "out")
