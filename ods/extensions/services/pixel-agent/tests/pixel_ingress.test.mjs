@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import {createSubagentDelivery} from '../plugin/subagent-delivery.mjs';
 
 const {
+  applyVerificationToCompletion,
   gatewayRuntimeFromConfig,
   readGatewayConfiguration,
   readGatewayToken,
@@ -2304,5 +2305,104 @@ test("upstream error and wrong content type never reflect an upstream secret", a
       await new Promise((resolve) => ingress.close(resolve));
       await new Promise((resolve) => upstream.close(resolve));
     }
+  }
+});
+
+const completion = (input) => ({ choices: [{ message: { content: input } }] });
+const contentOf = (out) => out.choices[0].message.content;
+
+test('applyVerificationToCompletion strips only uppercase bare NO_REPLY tail lines', () => {
+  const v = { status: 'none' };
+  const cases = [
+    ['hello\nNO_REPLY', 'hello'],
+    ['hello\r\nNO_REPLY\r\n', 'hello'],
+    ['hello\nNO_REPLY\nNO_REPLY\nNO_REPLY', 'hello'],
+    ['NO_REPLY', 'NO_REPLY'],
+    ['NO_REPLY\nNO_REPLY', 'NO_REPLY\nNO_REPLY'],
+    ['hello NO_REPLY', 'hello NO_REPLY'],
+    ['hello\n> NO_REPLY', 'hello\n> NO_REPLY'],
+    ['hello\nno_reply', 'hello\nno_reply'],
+    ['hello\n  NO_REPLY', 'hello\n  NO_REPLY'],
+    ['hello\n- NO_REPLY', 'hello\n- NO_REPLY'],
+    ['hello\n```\nNO_REPLY\n```', 'hello\n```\nNO_REPLY\n```'],
+    ['hello\n```js\nNO_REPLY\n```', 'hello\n```js\nNO_REPLY\n```'],
+    ['hello\n~~~\nNO_REPLY\n~~~', 'hello\n~~~\nNO_REPLY\n~~~'],
+    ['hello\n```\nNO_REPLY', 'hello\n```\nNO_REPLY'],
+    ['hello\n```js\nNO_REPLY', 'hello\n```js\nNO_REPLY'],
+    ['hello\n```\nNO_REPLY\n```js', 'hello\n```\nNO_REPLY\n```js'],
+    ['hello\n```\n```js\nNO_REPLY', 'hello\n```\n```js\nNO_REPLY'],
+    ['hello\n````\n```\nNO_REPLY', 'hello\n````\n```\nNO_REPLY'],
+    ['hello\n~~~\n```\nNO_REPLY', 'hello\n~~~\n```\nNO_REPLY'],
+    ['hello\n~~~\nNO_REPLY\n~~~\nNO_REPLY', 'hello\n~~~\nNO_REPLY\n~~~'],
+    ['hello\n\nNO_REPLY\n\nNO_REPLY\n', 'hello'],
+    ['hello\n```\nNO_REPLY\n```\nNO_REPLY', 'hello\n```\nNO_REPLY\n```'],
+    ['hello\n~~~\nNO_REPLY', 'hello\n~~~\nNO_REPLY'],
+    ['hello\n"NO_REPLY"', 'hello\n"NO_REPLY"'],
+    ['line1\r\nline2\r\nNO_REPLY\r\n', 'line1\r\nline2'],
+  ];
+  for (const [input, expected] of cases) {
+    const out = applyVerificationToCompletion(completion(input), v);
+    assert.equal(contentOf(out), expected, JSON.stringify(input));
+  }
+});
+
+test('applyVerificationToCompletion is idempotent and non-mutating', () => {
+  const v = { status: 'none' };
+  const input = completion('hello\nNO_REPLY');
+  const snapshot = JSON.parse(JSON.stringify(input));
+  const a = applyVerificationToCompletion(input, v);
+  const b = applyVerificationToCompletion(a, v);
+  assert.deepEqual(a, b);
+  assert.deepEqual(input, snapshot);
+});
+
+test('applyVerificationToCompletion preserves whole-silent NO_REPLY and repeated-whole-silent', () => {
+  const v = { status: 'none' };
+  assert.equal(contentOf(applyVerificationToCompletion(completion('NO_REPLY'), v)), 'NO_REPLY');
+  assert.equal(contentOf(applyVerificationToCompletion(completion('NO_REPLY\nNO_REPLY'), v)), 'NO_REPLY\nNO_REPLY');
+});
+
+test('applyVerificationToCompletion appends trusted verification after stripping footer', () => {
+  const v = { status: 'complete', deliveryMode: 'append', text: 'trusted\nNO_REPLY', notice: 'notice\nNO_REPLY' };
+  const out = contentOf(applyVerificationToCompletion(completion('done\nNO_REPLY'), v));
+  assert.equal(out, 'done\n\ntrusted\nNO_REPLY\nReceipt scope: the Operations evidence above does not establish completion of other requested work.\n\nnotice\nNO_REPLY');
+});
+
+test('HTTP JSON path submits once and returns exact done content', async () => {
+  let submissions = 0;
+  const gw = await fakeGateway({ completionText: 'done\nNO_REPLY', onRequest: (req) => { if (req.url === '/v1/chat/completions') submissions++; } });
+  const srv = await startIngress({ gatewayPort: gw.port });
+  try {
+    const res = await request(srv, 'POST', '/v1/chat/completions', { body: JSON.stringify({ messages: [{ role: 'user', content: 'Do it' }] }), headers: { 'Content-Type': 'application/json' } });
+    assert.equal(res.status, 200);
+    assert.equal(submissions, 1);
+    const body = JSON.parse(res.body);
+    assert.equal(body.choices[0].message.content, 'done');
+  } finally {
+    await new Promise(r => srv.close(r));
+    await new Promise(r => gw.server.close(r));
+  }
+});
+
+test('HTTP SSE path submits once and returns exact done content', async () => {
+  let submissions = 0;
+  const gw = await fakeGateway({ completionText: 'done\nNO_REPLY', onRequest: (req) => { if (req.url === '/v1/chat/completions') submissions++; } });
+  const srv = await startIngress({ gatewayPort: gw.port });
+  try {
+    const res = await request(srv, 'POST', '/v1/chat/completions', { body: JSON.stringify({ messages: [{ role: 'user', content: 'Do it' }], stream: true }), headers: { 'Content-Type': 'application/json' } });
+    assert.equal(res.status, 200);
+    assert.equal(submissions, 1);
+    let content = '';
+    for (const line of res.body.split('\n')) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6).trim();
+      if (data === '[DONE]') continue;
+      const parsed = JSON.parse(data);
+      content += parsed.choices?.[0]?.delta?.content ?? '';
+    }
+    assert.equal(content, 'done');
+  } finally {
+    await new Promise(r => srv.close(r));
+    await new Promise(r => gw.server.close(r));
   }
 });
