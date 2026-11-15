@@ -8,9 +8,13 @@ bytes, model settings, continuation policy, verification, or cancellation.
 For a systemd installation, use a temporary service drop-in containing
 `[Service]` and `Environment=ODS_PIXEL_TIMING=1`, then reload systemd and restart
 only `pixel-ingress.service` after active requests finish. Remove that exact
-drop-in and restart the service to disable it. For the macOS container, apply
-the variable to `pixel-native-ingress` through an explicitly included Compose
-override; recreate only that service and remove the override to disable it.
+drop-in and restart the service to disable it. On macOS, the ingress runs in
+`pixel-native-ingress`, separately from the native Pixel gateway. Its container
+belongs to the protected saved stack: changing its environment must use the
+supported stack admission and lifecycle workflow, including rollback. A direct
+Compose recreation or a gateway launchd environment change is not sufficient.
+Leave timing disabled when that workflow cannot apply the diagnostic change;
+use separately labeled client and native engine timings instead.
 These are operator diagnostics, not a permanent product default. Preserve the
 baseline source hash and service configuration for rollback before deployment.
 
