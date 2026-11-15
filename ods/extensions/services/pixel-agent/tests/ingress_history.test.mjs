@@ -258,3 +258,26 @@ test('incomplete attribution is a delivered outcome, not an interrupted turn',as
   assert.equal(next.status,200,'the next owner message needs no interrupted-turn resolution');
   assert.equal(f.calls.filter(c=>c.path==='/v1/chat/completions').length,2);
 });
+
+test('NO_REPLY is stripped from delivery but retained raw for audit and corrected into native history',async t=>{
+  const f=await fixture(t);f.setAnswer('Bring water.\nNO_REPLY');
+  const messages=[u('Fetch the water report')];
+  const first=await f.chat('water',messages);
+  assert.equal(first.status,200);
+  assert.equal(first.value.choices[0].message.content,'Bring water.');
+  assert.equal(f.ledger.read(user).lastResult.completion.choices[0].message.content,'Bring water.\nNO_REPLY');
+  const cached=await f.chat('water',messages);
+  assert.deepEqual(cached,first);
+  const streamed=await f.stream('water',messages);
+  assert.equal(streamed.status,200);
+  assert.doesNotMatch(streamed.text,/NO_REPLY/);
+  assert.match(streamed.text,/Bring water\./);
+  assert.equal(f.calls.filter(c=>c.path==='/v1/chat/completions').length,1,'cached chat and stream must not rerun upstream');
+  const next=[u('Fetch the water report'),a('Bring water.'),u('Now fetch the cups report')];
+  assert.equal((await f.chat('cups',next)).status,200);
+  const imports=f.calls.filter(c=>c.path==='/pixel-ods/history');
+  assert.equal(imports.length,1);
+  assert.match(imports[0].body.messages[0].content,/Bring water\./);
+  assert.doesNotMatch(imports[0].body.messages[0].content,/NO_REPLY/);
+  assert.equal(f.calls.filter(c=>c.path==='/v1/chat/completions').length,2);
+});

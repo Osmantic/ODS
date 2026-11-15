@@ -1052,9 +1052,55 @@ function deliveryVerification(completion, verification) {
   };
 }
 
+// A model can append OpenClaw's reserved silent-turn marker to a useful answer.
+// Remove only bare trailing markers outside Markdown fences. Keep whole-silent
+// results for the existing incomplete-delivery handling, and preserve literals.
+function stripTrailingNoReply(content) {
+  if (typeof content !== 'string') return content;
+  const parts = content.split(/(\r?\n)/);
+  const lines = parts.filter((_, index) => index % 2 === 0);
+  const separators = parts.filter((_, index) => index % 2 === 1);
+  let fenceChar = '', fenceLength = 0;
+  const fenced = lines.map(line => {
+    const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (!fenceChar && marker) {
+      fenceChar = marker[1][0];
+      fenceLength = marker[1].length;
+      return true;
+    }
+    if (fenceChar && marker && marker[1][0] === fenceChar &&
+        marker[1].length >= fenceLength && /^ {0,3}(`{3,}|~{3,})[ \t]*$/.test(line)) {
+      fenceChar = '';
+      return true;
+    }
+    return Boolean(fenceChar);
+  });
+  const isToken = index => !fenced[index] && lines[index] === 'NO_REPLY';
+  const isBlank = index => /^\s*$/.test(lines[index]);
+  let end = lines.length;
+  while (end > 0 && isBlank(end - 1)) end--;
+  let removed = false;
+  while (end > 0 && isToken(end - 1)) {
+    end--;
+    removed = true;
+    while (end > 0 && isBlank(end - 1)) end--;
+  }
+  if (!removed || !lines.slice(0, end).some((_, index) => !isBlank(index) && !isToken(index))) return content;
+  return lines.slice(0, end).map((line, index) =>
+    line + (index < end - 1 ? separators[index] : '')).join('');
+}
+
 // Exported for tests of the exact delivery path.
 export function applyVerificationToCompletion(completion, verification) {
-  const result=withNotice(baseApplyVerificationToCompletion(completion,verification),verification.notice);
+  const choice = completion?.choices?.[0];
+  const content = choice?.message?.content;
+  const text = stripTrailingNoReply(content);
+  const normalized = text === content ? completion : {
+    ...completion,
+    choices: [{...choice, message:{...choice.message, content:text}}, ...completion.choices.slice(1)],
+  };
+  // Normalize model text before adding trusted receipts and owner notices.
+  const result=withNotice(baseApplyVerificationToCompletion(normalized,verification),verification.notice);
   const {pixel_artifacts: _untrustedArtifacts, ...clean}=result;
   return verification.artifacts?.length
     ? {...clean,pixel_artifacts:{schemaVersion:1,artifacts:verification.artifacts}} : clean;
