@@ -86,7 +86,8 @@ OVERHEAD_PER_WEIGHT_GIB = 0.015
 LLAMA_DEFAULT_CTX_CHECKPOINTS = 32
 # llama.cpp b9014 sizes a sliding-window cache at n_swa * n_seq + n_ubatch
 # cells, padded to 256 and capped at the context (llama-kv-cache-iswa.cpp);
-# the default --ubatch-size is 512 and ODS does not change it.
+# the default --ubatch-size is 512. The optional container tuning is bounded
+# to <=512, so this estimate remains conservative when an operator lowers it.
 SWA_UBATCH_CELLS = 512
 SWA_CELL_PADDING = 256
 # A discrete card also drives the display and the CUDA context of other
