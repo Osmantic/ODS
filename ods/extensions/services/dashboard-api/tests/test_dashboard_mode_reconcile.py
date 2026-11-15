@@ -116,6 +116,12 @@ def test_status_requires_mode_health_and_released_lifecycle(runtime, monkeypatch
         'lifecycleActive':True,'activeOperation':'dashboard_mode_reconcile'})
     status = _mod._dashboard_mode_status()
     assert status['reconciling'] is True and status['ready'] is False
+    assert status['lifecycleActive'] is True
+    monkeypatch.setattr(_mod, '_model_lifecycle_status', lambda: {
+        'lifecycleActive':True,'activeOperation':'model_activation'})
+    status = _mod._dashboard_mode_status()
+    assert status['lifecycleActive'] is True and status['reconciling'] is False
+    assert status['ready'] is False
 
 
 def test_handler_requires_auth_and_serializes_reconcile(runtime, monkeypatch):

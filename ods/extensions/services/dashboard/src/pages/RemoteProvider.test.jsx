@@ -397,12 +397,15 @@ test('does not refresh the dashboard after an unconfirmed provider mutation', as
   expect(globalThis.fetch).toHaveBeenCalledTimes(2)
 })
 
-test('waits for released maintenance after the API mode has already converged', async () => {
+test.each([
+  { pending: true, reconciling: true },
+  { pending: true, reconciling: false, lifecycleActive: true },
+])('waits for released maintenance after the API mode has already converged: %j', async held => {
   const mismatch = { ...disabledStatusPayload, dashboardMode: { matches: false } }
   globalThis.fetch
     .mockResolvedValueOnce(response(mismatch))
     .mockRejectedValueOnce(new TypeError('Connection reset'))
-    .mockResolvedValueOnce(response({ ready: false, matches: true, pending: true, reconciling: true }))
+    .mockResolvedValueOnce(response({ ready: false, matches: true, ...held }))
     .mockResolvedValueOnce(response({ ready: true, matches: true }))
     .mockResolvedValueOnce(response({ ...disabledStatusPayload, dashboardMode: { matches: true } }))
   render(createElement(RemoteProvider))

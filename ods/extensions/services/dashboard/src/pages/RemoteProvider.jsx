@@ -527,10 +527,10 @@ export default function RemoteProvider({ compact = false }) {
             await loadStatus({ quiet: true })
             return true
           }
-          if (state.pending && !state.reconciling) {
+          if (state.pending && !state.reconciling && !state.lifecycleActive) {
             throw new Error('Recover the model switch in Models before refreshing the dashboard.')
           }
-          if (!state.reconciling && (state.running === false || state.healthy === false)) {
+          if (!state.reconciling && !state.lifecycleActive && (state.running === false || state.healthy === false)) {
             throw new Error('Start or repair the dashboard service, then refresh its status.')
           }
         } catch (err) {

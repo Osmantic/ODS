@@ -19084,6 +19084,7 @@ def _dashboard_mode_status() -> dict:
     return {'configuredMode': desired if desired in {'local', 'cloud', 'hybrid'} else 'unknown',
             'containerMode': state['mode'], 'running': state['running'], 'healthy': state['healthy'],
             'matches': matched, 'pending': pending,
+            'lifecycleActive': bool(lifecycle.get('lifecycleActive')),
             'reconciling': lifecycle.get('activeOperation') == 'dashboard_mode_reconcile',
             'ready': bool(matched and state['running'] and state['healthy'] and not pending
                           and not lifecycle.get('lifecycleActive'))}
