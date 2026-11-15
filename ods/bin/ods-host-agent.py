@@ -6284,6 +6284,8 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
             profile_route = _remote_provider_profile_route(saved_state)
             plan = _remote_provider_plan_from_profile_route(profile_route)
             route = plan.get("route") if isinstance(plan.get("route"), dict) else {}
+            # The initial enable plan has no provider; report the resolved route.
+            result["route"] = json.loads(json.dumps(route))
             route_status = saved_state.get("status")
             # The saved state, not the bare profile route, carries the
             # route's vision receipt, as the active contract does.
@@ -6302,6 +6304,8 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
             resume = saved_state.get("resume")
             plan = _read_remote_provider_profile(resume)
             route = plan.get("route") if isinstance(plan.get("route"), dict) else {}
+            # The initial enable plan has no provider; report the resolved route.
+            result["route"] = json.loads(json.dumps(route))
     ssh_configure = action == "configure" and route.get("transport") == "ssh"
     ssh_enable = action == "enable" and route.get("transport") == "ssh"
     if action in {"configure", "test"} and not ssh_configure:
