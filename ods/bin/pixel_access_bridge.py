@@ -2355,8 +2355,8 @@ class LaunchdAccessBridge(SystemdAccessBridge):
         self.dropin = Path('/private/var/empty/ods-pixel-no-systemd-dropin')
 
     @contextlib.contextmanager
-    def locked(self):
-        with super().locked():
+    def locked(self, *, wait_seconds=0):
+        with super().locked(wait_seconds=wait_seconds):
             # Do not infer successful recovery from a journal phase alone.
             # The upgrader removes this marker only after live verification.
             if os.path.lexists(self.state / 'runtime-upgrade.json'):

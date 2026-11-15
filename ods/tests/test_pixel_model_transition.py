@@ -18,7 +18,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
 
 import pixel_access_protocol as protocol  # noqa: E402
-from pixel_access_bridge import AccessError, SystemdAccessBridge  # noqa: E402
+import pixel_model_coordinator as model_control  # noqa: E402
+from pixel_access_bridge import AccessError, LaunchdAccessBridge, SystemdAccessBridge  # noqa: E402
 from pixel_model_transition import execute, main  # noqa: E402
 
 
@@ -30,12 +31,12 @@ HEX_C = "c" * 64
 @unittest.skipUnless(sys.platform == 'linux', 'Linux coordinator flock contract')
 class SourceLockWaitTests(unittest.TestCase):
     @contextlib.contextmanager
-    def bridge(self):
+    def bridge(self, bridge_class=SystemdAccessBridge):
         # Only root ownership is modelled for unprivileged CI. Lock modes,
         # links, file types and flock contention use the real filesystem.
         with tempfile.TemporaryDirectory() as root:
             state = pathlib.Path(root)
-            bridge = object.__new__(SystemdAccessBridge)
+            bridge = object.__new__(bridge_class)
             bridge.state = state
             real_lstat, real_fstat = pathlib.Path.lstat, os.fstat
 
@@ -72,6 +73,83 @@ class SourceLockWaitTests(unittest.TestCase):
                     child.stdin.write('\n')
                     child.stdin.flush()
                 child.wait(timeout=5)
+
+    def test_controller_mutations_wait_before_entering_protected_body(self):
+        requests = {
+            'model-begin': {'revision': HEX_B, 'transactionId': HEX_A},
+            'model-apply': {'transactionId': HEX_A, 'target': {
+                'model': 'fixture', 'contextLength': 8192,
+                'maxTokens': 1024, 'reasoning': False}},
+            'model-finish': {'transactionId': HEX_A, 'outcome': 'rollback'},
+        }
+        for bridge_class in (SystemdAccessBridge, LaunchdAccessBridge):
+            for operation, request in requests.items():
+                with self.subTest(bridge=bridge_class.__name__, operation=operation), self.bridge(
+                        bridge_class) as bridge, self.holder(bridge.state) as child:
+                    real_sleep = time.sleep
+
+                    def release(_delay):
+                        child.stdin.write('\n')
+                        child.stdin.flush()
+                        with patch('pixel_access_bridge.time.sleep', real_sleep):
+                            child.wait(timeout=5)
+
+                    with patch('pixel_access_bridge.time.sleep', side_effect=release) as sleep, patch.object(
+                            bridge, 'discover', side_effect=AccessError('inspection-reached')) as discover:
+                        with self.assertRaisesRegex(AccessError, '^inspection-reached$'):
+                            model_control.control(bridge, operation, request)
+                        sleep.assert_called_once()
+                        discover.assert_called_once_with()
+                    self.assertFalse((bridge.state / 'transition.json').exists())
+
+    def test_controller_mutation_lock_wait_expires_without_entering_body(self):
+        for bridge_class in (SystemdAccessBridge, LaunchdAccessBridge):
+            with self.subTest(bridge=bridge_class.__name__), self.bridge(
+                    bridge_class) as bridge, self.holder(bridge.state):
+                clock = [0.0]
+
+                def advance(seconds):
+                    clock[0] += seconds
+
+                with patch('pixel_access_bridge.time.monotonic', side_effect=lambda: clock[0]), patch(
+                        'pixel_access_bridge.time.sleep', side_effect=advance), patch.object(
+                        bridge, 'discover') as discover:
+                    with self.assertRaisesRegex(AccessError, '^transition-busy$'):
+                        model_control.control(bridge, 'model-begin', {
+                            'revision': HEX_B, 'transactionId': HEX_A})
+                    discover.assert_not_called()
+                self.assertAlmostEqual(clock[0], 30.0)
+                self.assertFalse((bridge.state / 'transition.json').exists())
+
+    def test_controller_status_does_not_wait_for_contended_lock(self):
+        for bridge_class in (SystemdAccessBridge, LaunchdAccessBridge):
+            with self.subTest(bridge=bridge_class.__name__), self.bridge(
+                    bridge_class) as bridge, self.holder(bridge.state), patch(
+                    'pixel_access_bridge.time.sleep') as sleep, patch.object(bridge, 'discover') as discover:
+                with self.assertRaisesRegex(AccessError, '^transition-busy$'):
+                    model_control.control(bridge, 'model-status')
+                sleep.assert_not_called()
+                discover.assert_not_called()
+
+    def test_launchd_upgrade_marker_still_blocks_after_controller_lock_wait(self):
+        with self.bridge(LaunchdAccessBridge) as bridge, self.holder(bridge.state) as child:
+            (bridge.state / 'runtime-upgrade.json').write_text('{}')
+            real_sleep = time.sleep
+
+            def release(_delay):
+                child.stdin.write('\n')
+                child.stdin.flush()
+                with patch('pixel_access_bridge.time.sleep', real_sleep):
+                    child.wait(timeout=5)
+
+            with patch('pixel_access_bridge.time.sleep', side_effect=release) as sleep, patch.object(
+                    bridge, 'discover') as discover:
+                with self.assertRaisesRegex(AccessError, '^runtime-upgrade-recovery-required$'):
+                    model_control.control(bridge, 'model-begin', {
+                        'revision': HEX_B, 'transactionId': HEX_A})
+                sleep.assert_called_once()
+                discover.assert_not_called()
+            self.assertFalse((bridge.state / 'transition.json').exists())
 
     def test_source_begin_waits_for_real_competing_lock_before_inspection(self):
         with self.bridge() as bridge, self.holder(bridge.state) as child:
