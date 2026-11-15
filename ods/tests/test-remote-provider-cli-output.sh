@@ -26,6 +26,11 @@ for name in _remote_provider_image_input_jq _remote_provider_print_apply_result 
 done
 RED="" NC=""
 
+printf '%s' '{"action":"disable","applied":true,"dashboardMode":{"matches":false}}' > "$fixture/mode.json"
+output="$(_remote_provider_print_apply_result "$fixture/mode.json")"
+grep -qF 'Dashboard refresh required: open Settings > Remote model and choose Refresh dashboard.' <<<"$output" \
+    || fail "a completed provider route hid the pending dashboard refresh"
+
 printf '%s' '{"action":"configure","applied":true,"mutated":true,"probe":{"httpStatus":200,"endpoint":"/v1/models","modelCount":1}}' \
     > "$fixture/apply.json"
 output="$(_remote_provider_print_apply_result "$fixture/apply.json")"

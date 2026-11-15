@@ -17,7 +17,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
-from config import DATA_DIR, read_live_env_value
+from config import DATA_DIR, ODS_MODE_EFFECTIVE, normalize_ods_mode, read_live_env_value
 from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
@@ -1186,6 +1186,35 @@ def _overall_status(
     return "ready"
 
 
+def _dashboard_mode() -> dict[str, Any]:
+    configured = normalize_ods_mode(read_live_env_value('ODS_MODE'))
+    return {'effectiveMode': ODS_MODE_EFFECTIVE, 'configuredMode': configured,
+            'matches': configured != 'unknown' and configured == ODS_MODE_EFFECTIVE}
+
+
+@router.get("/api/remote-provider/dashboard-mode", dependencies=[Depends(verify_api_key)])
+async def dashboard_mode_status() -> dict[str, Any]:
+    try:
+        result = await async_request_agent_json('GET', '/v1/remote-provider/dashboard-mode', timeout=30)
+    except AgentHTTPError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except (AgentUnavailable, AgentProtocolError) as exc:
+        raise HTTPException(status_code=503, detail='Dashboard refresh status is unavailable') from exc
+    mode = _dashboard_mode()
+    return {**result, **mode, 'ready': result.get('ready') is True and mode['matches']}
+
+
+@router.post("/api/remote-provider/dashboard-mode", dependencies=[Depends(verify_api_key)])
+async def reconcile_dashboard_mode() -> dict[str, Any]:
+    """Separate from provider mutation: this connection may close on recreation."""
+    try:
+        return await async_request_agent_json('POST', '/v1/remote-provider/dashboard-mode', timeout=600)
+    except AgentHTTPError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except (AgentUnavailable, AgentProtocolError) as exc:
+        raise HTTPException(status_code=503, detail='Dashboard refresh outcome is unknown; read its status before retrying') from exc
+
+
 @router.get("/api/remote-provider/status", dependencies=[Depends(verify_api_key)])
 async def remote_provider_status() -> dict[str, Any]:
     """Return sanitized remote-provider status without mutating configuration."""
@@ -1205,6 +1234,7 @@ async def remote_provider_status() -> dict[str, Any]:
         "sshSupervisor": ssh_supervisor,
         "peer": peer,
         "egress": egress,
+        "dashboardMode": _dashboard_mode(),
         "capabilities": {
             "inference": overall == "ready",
             "odsPeerLifecycle": bool(peer.get("ready")),
@@ -1305,6 +1335,7 @@ async def remote_provider_probe() -> dict[str, Any]:
     """Probe the configured remote provider through the internal egress boundary."""
     result = await _post_egress_probe()
     result["routeProof"] = await _record_egress_probe_proof(result)
+    result['dashboardMode'] = _dashboard_mode()
     return result
 
 
@@ -1363,6 +1394,7 @@ async def remote_provider_enable() -> dict[str, Any]:
     staged["applied"] = True
     staged["probe"] = proof.get("probe")
     staged["routeProof"] = proof.get("routeProof")
+    staged['dashboardMode'] = _dashboard_mode()
     return staged
 
 
@@ -1370,12 +1402,13 @@ async def remote_provider_enable() -> dict[str, Any]:
 async def remote_provider_apply(payload: dict[str, Any]) -> dict[str, Any]:
     """Apply a remote-provider lifecycle request through the host agent."""
     try:
-        return await async_request_agent_json(
+        result = await async_request_agent_json(
             "POST",
             "/v1/remote-provider/apply",
             payload=payload,
             timeout=LIFECYCLE_APPLY_TIMEOUT_SECONDS,
         )
+        return {**result, 'dashboardMode': _dashboard_mode()}
     except AgentHTTPError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except AgentUnavailable as exc:
