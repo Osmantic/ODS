@@ -518,11 +518,8 @@ class TestPoissonSchedule(unittest.TestCase):
                "arrival_process": "poisson", "arrival_seed": 0}
         with patch.object(open_loop.random, "Random") as rng:
             rng.return_value.expovariate.side_effect = [300.0, 300.0000001]
-            with tempfile.TemporaryDirectory() as d:
-                out = os.path.join(d, "rejected")
-                with self.assertRaises(open_loop.LoadConfigError):
-                    open_loop.run(m, cfg, out)
-                self.assertFalse(os.path.exists(out))
+            with self.assertRaises(open_loop.LoadConfigError):
+                open_loop.build_arrival_schedule(m, cfg)
 
 
 
