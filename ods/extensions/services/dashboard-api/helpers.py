@@ -400,10 +400,21 @@ def _write_json_file(path: Path, data) -> bool:
     return False
 
 
+def _performance_flags_digest(flags: dict) -> str:
+    payload = json.dumps(
+        flags,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _performance_key(backend: str, gpu_name: str, model_name: str,
                      context_length: Optional[int] = None,
                      gguf: Optional[str] = None,
-                     vram_total_mb: Optional[int] = None) -> str:
+                     vram_total_mb: Optional[int] = None,
+                     flags: Optional[dict] = None) -> str:
     parts = [
         _normalize_perf_key(backend or "unknown"),
         _normalize_perf_key(gpu_name),
@@ -415,6 +426,8 @@ def _performance_key(backend: str, gpu_name: str, model_name: str,
         parts.append(f"ctx-{int(context_length)}")
     if vram_total_mb:
         parts.append(f"vram-{int(round(vram_total_mb / 1024))}gb")
+    if flags is not None:
+        parts.append(f"flags-{_performance_flags_digest(flags)}")
     return ":".join(parts)
 
 
@@ -438,7 +451,7 @@ def record_model_performance(
     flags: Optional[dict] = None,
     source: str = "local_metric",
 ) -> bool:
-    """Persist observed throughput for this exact machine/model pair."""
+    """Persist throughput for the machine/model and collected serving flags."""
     if not model_name or not gpu_name:
         return False
     try:
@@ -453,7 +466,12 @@ def record_model_performance(
     with _performance_write_lock:
         data = _read_json_file(_PERF_FILE, {"schema_version": "ods.model-performance.v1", "samples": {}})
         samples = data.setdefault("samples", {})
-        key = _performance_key(backend, gpu_name, model_name, context_length, gguf, vram_total_mb)
+        # Leave legacy averages intact: they may already mix configurations.
+        normalized_flags = dict(flags) if flags else {}
+        key = _performance_key(
+            backend, gpu_name, model_name, context_length, gguf, vram_total_mb,
+            flags=normalized_flags,
+        )
         previous = samples.get(key, {})
         previous_avg = float(previous.get("tokens_per_second", tps))
         previous_count = int(previous.get("sample_count", 0))
@@ -473,14 +491,13 @@ def record_model_performance(
             "decode_read_mb": decode_read_mb or previous.get("decode_read_mb"),
             "vram_total_mb": vram_total_mb or previous.get("vram_total_mb"),
             "os": os_name or previous.get("os"),
-            "flags": flags or previous.get("flags", {}),
+            "flags": normalized_flags,
             "source": source,
             "tokens_per_second": round(avg, 1),
             "last_tokens_per_second": round(tps, 1),
             "sample_count": previous_count + 1,
             "updated_at": int(time.time()),
         }
-        samples[_performance_key(backend, gpu_name, model_name)] = samples[key]
         return _write_json_file(_PERF_FILE, data)
 
 
@@ -492,17 +509,37 @@ def get_recorded_model_performance(
     context_length: Optional[int] = None,
     gguf: Optional[str] = None,
     vram_total_mb: Optional[int] = None,
+    flags: Optional[dict] = None,
 ) -> Optional[dict]:
     data = _read_json_file(_PERF_FILE, {"samples": {}})
-    keys = [
+    samples = data.get("samples", {})
+    if not isinstance(samples, dict):
+        return None
+
+    configured_key = _performance_key(
+        backend, gpu_name, model_name, context_length, gguf, vram_total_mb,
+        flags=dict(flags) if flags else {},
+    )
+    configured = samples.get(configured_key)
+    if isinstance(configured, dict):
+        return configured
+
+    # Compatibility fallback: only for unconfigured (absent/empty) lookups.
+    # Nonempty lookups must never trust legacy averages that may be mixed.
+    if flags:
+        return None
+
+    legacy_keys = [
         _performance_key(backend, gpu_name, model_name, context_length, gguf, vram_total_mb),
         _performance_key(backend, gpu_name, model_name, context_length, gguf),
         _performance_key(backend, gpu_name, model_name, context_length),
         _performance_key(backend, gpu_name, model_name),
     ]
-    samples = data.get("samples", {})
-    sample = next((samples.get(k) for k in keys if samples.get(k)), None)
-    return sample if isinstance(sample, dict) else None
+    for key in legacy_keys:
+        sample = samples.get(key)
+        if isinstance(sample, dict) and not sample.get("flags"):
+            return sample
+    return None
 
 
 def get_model_performance_samples() -> list[dict]:

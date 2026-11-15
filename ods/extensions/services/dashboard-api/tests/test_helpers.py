@@ -1936,7 +1936,12 @@ def test_valid_sample_repairs_a_polluted_existing_average(data_dir):
         240.5,
     )
 
-    repaired = json.loads(helpers._PERF_FILE.read_text())["samples"][key]
+    samples = json.loads(helpers._PERF_FILE.read_text())["samples"]
+    assert samples[key]["tokens_per_second"] == 527_885.7
+    configured_key = helpers._performance_key(
+        "lemonade", "AMD Radeon RX 9070 XT", "qwen3.5-2b", flags={},
+    )
+    repaired = samples[configured_key]
     assert repaired["tokens_per_second"] == 240.5
     assert repaired["last_tokens_per_second"] == 240.5
     assert repaired["sample_count"] == 1
