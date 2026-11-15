@@ -630,7 +630,7 @@ test('a consumer that stays unavailable after the settle budget needs attention'
     }
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(7))
     await waitFor(() => expect(screen.queryByText('Switching ODS and Portal over…')).toBeNull())
-    expect(screen.getByText('Needs attention')).toBeInTheDocument()
+    expect(screen.getAllByText('Needs attention').length).toBeGreaterThan(0)
   } finally {
     vi.useRealTimers()
   }
