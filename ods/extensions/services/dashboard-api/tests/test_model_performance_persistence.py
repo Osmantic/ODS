@@ -276,7 +276,7 @@ def test_concurrent_publication_serializes_writes(perf_env, monkeypatch):
     assert not errors, errors
     assert order == ["first-enter", "first-exit", "second-enter"]
     samples = _samples(perf_env)
-    assert len(samples) == 2
+    assert len(samples) == 1  # Configuration record; no duplicate short alias.
     assert all(s["sample_count"] == 2 for s in samples.values())
 
 

@@ -833,6 +833,8 @@ def collect_runtime_flags(install_dir: str | Path) -> dict[str, str]:
         "LLAMA_CHECKPOINT_EVERY_N_TOKENS": "checkpoint_every_n_tokens",
         "LLAMA_ARG_NO_CACHE_PROMPT": "no_cache_prompt",
         "LLAMA_NO_CACHE_PROMPT": "no_cache_prompt",
+        "LLAMA_ARG_UBATCH": "ubatch_size",
+        "LLAMA_ARG_FIT_TARGET": "fit_target_mib",
     }
     flags: dict[str, str] = {}
     for env_name, canonical in mapping.items():
@@ -1189,7 +1191,8 @@ def _sample_tps(sample: Optional[dict[str, Any]]) -> Optional[float]:
     return tps if is_plausible_single_request_tps(tps) else None
 
 
-def _exact_sample(model: dict[str, Any], gpu_info: Optional[GPUInfo], context_length: Optional[int]) -> Optional[dict[str, Any]]:
+def _exact_sample(model: dict[str, Any], gpu_info: Optional[GPUInfo], context_length: Optional[int],
+                  flags: Optional[dict[str, str]] = None) -> Optional[dict[str, Any]]:
     if not gpu_info:
         return None
     for alias in _model_aliases(model):
@@ -1200,6 +1203,7 @@ def _exact_sample(model: dict[str, Any], gpu_info: Optional[GPUInfo], context_le
             context_length=context_length,
             gguf=model.get("gguf"),
             vram_total_mb=gpu_info.memory_total_mb,
+            flags=flags,
         )
         if sample and _sample_tps(sample) is not None:
             return sample
@@ -1235,7 +1239,12 @@ def _published_exact(model: dict[str, Any], gpu_info: Optional[GPUInfo], context
         required_flags = entry.get("flags") or {}
         if any(normalize_key(flags.get(k)) != normalize_key(v) for k, v in required_flags.items()):
             continue
-        return entry
+        # New knobs must match in both directions, including absent vs set.
+        for knob in ("ubatch_size", "fit_target_mib"):
+            if normalize_key(flags.get(knob)) != normalize_key(required_flags.get(knob)):
+                break
+        else:
+            return entry
     return None
 
 
@@ -1317,7 +1326,7 @@ def evaluate_performance(model: dict[str, Any], gpu_info: Optional[GPUInfo], met
             sample_count=1,
         )
 
-    sample = _exact_sample(model, gpu_info, context_length)
+    sample = _exact_sample(model, gpu_info, context_length, flags=flags)
     tps = _sample_tps(sample)
     if tps is not None:
         return _tokens_performance(
