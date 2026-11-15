@@ -1598,6 +1598,13 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                         except (ValueError, UnicodeDecodeError):
                             pass
                     if upstream.status_code != 200 or not upstream.headers.get("content-type", "").lower().startswith("text/event-stream"):
+                        # Operators need to distinguish an upstream refusal from
+                        # a local ValueError. Never log an upstream body, URL or
+                        # raw header: even Content-Type can contain private data.
+                        media_type = upstream.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                        media_class = {"text/event-stream": "event-stream", "application/json": "json", "": "missing"}.get(media_type, "other")
+                        logger.warning("Pixel upstream stream refused (status=%s, media=%s)",
+                                       upstream.status_code, media_class)
                         raise ValueError("Invalid upstream stream")
                     buffered = bytearray()
                     async for chunk in upstream.aiter_bytes():

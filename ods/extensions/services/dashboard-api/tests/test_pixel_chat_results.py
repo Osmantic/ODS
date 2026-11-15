@@ -45,6 +45,35 @@ def body(request="attempt-one", text="Do work"):
     return pixel.ChatStreamRequest(chat_id="chat-test", request_id=request, messages=[{"role":"user", "content":text}])
 
 
+@pytest.mark.parametrize("status,content_type,media,state", [
+    (502, "text/event-stream; private=header-canary", "event-stream", "unresolved"),
+    (503, "application/json; private=header-canary", "json", "unresolved"),
+    (200, "text/html; private=header-canary", "other", "unresolved"),
+    (200, "", "missing", "unresolved"),
+    (409, "application/json", "json", "interrupted"),
+])
+def test_invalid_upstream_diagnostics_do_not_leak_or_change_receipts(
+    store, monkeypatch, caplog, status, content_type, media, state,
+):
+    async def run():
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: FakeClient(
+            FakeResponse(status=status, content_type=content_type,
+                         chunks=[b'{"error":"body-canary"}'])))
+        async def not_stopped(*_args): return False
+        monkeypatch.setattr(pixel, "_cancel_edge_run", not_stopped)
+        with caplog.at_level("WARNING", logger=pixel.logger.name):
+            response = await pixel.pixel_chat_stream(ConnectedRequest(), body(text="prompt-canary"), OWNER)
+            await asyncio.gather(*list(pixel._result_tasks.values()))
+        data = await stream_body(response)
+        assert f"Pixel upstream stream refused (status={status}, media={media})" in caplog.text
+        assert store.get(IDENTITY)["state"] == state
+        assert b'"code": "transition_in_progress"' not in data
+        for private in ("header-canary", "body-canary", "prompt-canary", OWNER, "e" * 64):
+            assert private not in caplog.text
+            assert private.encode() not in data
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("payload,expected", [
     ({"error": "pixel_transition_in_progress"}, "rejected"),
     ({"error": "different_conflict"}, "interrupted"),
