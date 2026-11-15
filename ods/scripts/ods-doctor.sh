@@ -673,7 +673,7 @@ fi
 # Only exclude an exact empty stub with explicitly unsupported hardware and
 # no potentially applicable overlay. Unknown configuration remains a fault.
 _doctor_unsupported_extension_stub() {
-    "${PYTHON_CMD:-python3}" - "$1" "$2" "$3" 2>/dev/null <<'PY'
+    "${PYTHON_CMD:-python3}" - "$1" "$2" "$3" 2>/dev/null <<'PY_EXTENSION_STUB'
 import sys
 from pathlib import Path
 
@@ -710,7 +710,7 @@ try:
                 sys.exit(1)
 except (OSError, ValueError, TypeError, yaml.YAMLError):
     sys.exit(1)
-PY
+PY_EXTENSION_STUB
 }
 
 # Collect extension diagnostics (wrapped in function to allow local variables)
