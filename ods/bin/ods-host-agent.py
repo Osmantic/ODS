@@ -7919,13 +7919,17 @@ def docker_compose_converge(service_ids: list[str]) -> tuple:
     return docker_compose_recreate(service_ids, force_recreate=False)
 
 
-def docker_compose_recreate(service_ids: list[str], *, force_recreate: bool = True) -> tuple:
+def docker_compose_recreate(service_ids: list[str], *, force_recreate: bool = True,
+                            _dashboard_mode_refresh: bool = False) -> tuple:
     """Force-recreate a set of allowed core services using the current compose stack.
 
     Pixel's model relay is no core service, but this agent recreates it on
     its own when a remote-provider route change rewrites ODS_MODE.
     """
-    if service_ids != [_PIXEL_MODEL_RELAY_CONTAINER.removeprefix("ods-")]:
+    # The public core-recreate endpoint still validates its narrower allowlist
+    # before calling here. Only the guarded mode reconciler may refresh its API.
+    dashboard_refresh = _dashboard_mode_refresh and service_ids == ['dashboard-api']
+    if not dashboard_refresh and service_ids != [_PIXEL_MODEL_RELAY_CONTAINER.removeprefix("ods-")]:
         ok, error = validate_core_recreate_ids(service_ids)
         if not ok:
             return False, error
@@ -12066,11 +12070,15 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 409, {'code': 'dashboard_refresh_busy',
                           'error': 'ODS is busy with a model change or chat. Try Refresh dashboard when it is idle.'})
             return
-        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
             # Container output and environment values must not enter the reply.
-            logger.warning('Dashboard mode %s could not complete', 'reconciliation' if reconcile else 'inspection')
+            stage = exc.stage if isinstance(exc, _DashboardModeRefreshError) else 'inspection-or-admission'
+            logger.warning('Dashboard mode %s could not complete (stage=%s, type=%s)',
+                           'reconciliation' if reconcile else 'inspection', stage,
+                           exc.failure_type if isinstance(exc, _DashboardModeRefreshError) else type(exc).__name__)
             json_response(self, 500 if reconcile else 503,
-                          {'error': 'Dashboard refresh could not be proved. Check model recovery and retry when ODS is idle.'})
+                          {'code': 'dashboard_refresh_failed', 'stage': stage,
+                           'error': 'Dashboard refresh could not be proved. Check model recovery and retry when ODS is idle.'})
             return
         finally:
             if acquired:
@@ -19090,6 +19098,13 @@ def _dashboard_mode_status() -> dict:
                           and not lifecycle.get('lifecycleActive'))}
 
 
+class _DashboardModeRefreshError(RuntimeError):
+    def __init__(self, stage, cause):
+        super().__init__('Dashboard refresh failed')
+        self.stage = stage
+        self.failure_type = type(cause).__name__
+
+
 def _reconcile_dashboard_mode() -> dict:
     """Recreate a stale API after the provider request has already completed.
 
@@ -19112,21 +19127,25 @@ def _reconcile_dashboard_mode() -> dict:
             raise RuntimeError('Dashboard mode is current but its container is unhealthy')
         return {'recreated': False, 'reason': 'already_current'}
     transaction = _begin_pixel_model_transaction(config)
+    stage = 'recreate'
     try:
-        if not _restart_existing_container('ods-dashboard-api', state, recreate=True):
+        if not _restart_existing_container('ods-dashboard-api', state, recreate=True,
+                                           dashboard_mode_refresh=True):
             raise RuntimeError('Dashboard container could not be recreated')
+        stage = 'health'
         _wait_for_container_health('ods-dashboard-api')
+        stage = 'verify'
         current = _dashboard_container_mode()
         if (not current['running'] or not current['healthy'] or current['mode'] != desired
                 or load_env(INSTALL_DIR / '.env').get('ODS_MODE') != config.get('ODS_MODE')):
             raise RuntimeError('Dashboard mode convergence was not proved')
-    except Exception:
+    except Exception as exc:
         if transaction is not None:
             transaction.verify_held()
             if not _prove_pixel_model_contract(config, transaction.previous):
                 raise _PixelModelTransactionUncertain('Unchanged model could not be proved; model recovery is required')
             transaction.finish('rollback')
-        raise
+        raise _DashboardModeRefreshError(stage, exc) from exc
     if transaction is not None:
         # No model apply occurred. Release the same, proven model unchanged.
         transaction.verify_held()
@@ -19186,6 +19205,7 @@ def _restart_existing_container(
     expected_state: dict[str, bool] | None = None,
     *,
     recreate: bool = False,
+    dashboard_mode_refresh: bool = False,
 ) -> bool:
     """Restart or recreate a dependent only when it was already running.
 
@@ -19204,7 +19224,12 @@ def _restart_existing_container(
     if not current["exists"] or not current["running"]:
         raise RuntimeError(f"{container} stopped during model activation")
     if recreate:
-        ok, error = docker_compose_recreate([container.removeprefix("ods-")])
+        if dashboard_mode_refresh:
+            if container != 'ods-dashboard-api':
+                raise RuntimeError('Dashboard mode refresh is scoped to its API')
+            ok, error = docker_compose_recreate(['dashboard-api'], _dashboard_mode_refresh=True)
+        else:
+            ok, error = docker_compose_recreate([container.removeprefix("ods-")])
         if not ok:
             raise RuntimeError(f"Could not recreate {container}: {error}")
     else:

@@ -6,6 +6,8 @@ import pytest
 
 from test_host_agent import _mod, _FakeHandler
 
+REAL_RESTART = _mod._restart_existing_container
+
 
 @pytest.fixture
 def runtime(monkeypatch):
@@ -34,8 +36,9 @@ def runtime(monkeypatch):
         state.pending = True
         return Hold()
 
-    def recreate(container, previous, *, recreate):
+    def recreate(container, previous, *, recreate, dashboard_mode_refresh=False):
         assert container == 'ods-dashboard-api' and recreate is True
+        assert dashboard_mode_refresh is True
         assert state.pending, 'API recreation must be inside admission hold'
         state.events.append('recreate')
         if state.failure == 'recreate':
@@ -208,3 +211,40 @@ def test_handler_distinguishes_busy_refusal_from_required_recovery(runtime, monk
     assert handler.parse_response()['code'] == code
     assert not _mod._model_lifecycle_status().get('lifecycleActive')
     assert runtime.pending is (failure == 'release')
+
+
+def test_internal_refresh_uses_real_compose_helper_without_widening_public_recreate(runtime, monkeypatch):
+    monkeypatch.setattr(_mod, 'CORE_SERVICE_IDS', set(_mod.CORE_SERVICE_IDS) | {'dashboard-api'})
+    monkeypatch.setattr(_mod, '_restart_existing_container', REAL_RESTART)
+    monkeypatch.setattr(_mod, '_capture_container_state', lambda _name: {'exists':True,'running':True})
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', lambda: ['-f','docker-compose.base.yml'])
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert runtime.pending
+        assert command[-5:] == ['up','-d','--no-deps','--force-recreate','dashboard-api']
+        assert 'ODS_MODE' not in kwargs['env']
+        runtime.mode = 'local'
+        return SimpleNamespace(returncode=0,stdout='',stderr='')
+
+    monkeypatch.setattr(_mod.subprocess, 'run', run)
+    public_allowed, error = _mod.validate_core_recreate_ids(['dashboard-api'])
+    assert public_allowed is False and 'not eligible' in error
+    assert _mod.docker_compose_recreate(['dashboard-api'])[0] is False
+    assert not calls
+    assert _mod._reconcile_dashboard_mode()['recreated'] is True
+    assert len(calls) == 1
+    assert not runtime.pending
+
+
+def test_definite_failure_has_sanitized_stage_and_releases_hold(runtime, monkeypatch, caplog):
+    monkeypatch.setattr(_mod, 'check_auth', lambda _handler: True)
+    runtime.failure = 'recreate'
+    handler = _FakeHandler(b'')
+    _mod.AgentHandler._handle_dashboard_mode(handler, reconcile=True)
+    assert handler.response_code == 500
+    assert handler.parse_response()['code'] == 'dashboard_refresh_failed'
+    assert handler.parse_response()['stage'] == 'recreate'
+    assert 'stage=recreate, type=RuntimeError' in caplog.text
+    assert not runtime.pending

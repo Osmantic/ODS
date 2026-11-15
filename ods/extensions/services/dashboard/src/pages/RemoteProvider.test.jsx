@@ -387,6 +387,16 @@ test('reports a definite busy refusal without waiting through the refresh deadli
   expect(screen.getByRole('button', { name: 'Refresh dashboard' })).toBeEnabled()
 })
 
+test('reports a definite host refresh failure without treating it as a disconnect', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response({ ...disabledStatusPayload, dashboardMode: { matches: false } }))
+    .mockResolvedValueOnce(response({ detail: { code: 'dashboard_refresh_failed', error: 'Refresh failed; retry when idle.' } }, 500))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh dashboard' }))
+  expect(await screen.findByText('Refresh failed; retry when idle.')).toBeInTheDocument()
+  expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+})
+
 test('does not refresh the dashboard after an unconfirmed provider mutation', async () => {
   globalThis.fetch
     .mockResolvedValueOnce(response(statusPayload))

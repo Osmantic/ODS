@@ -259,6 +259,7 @@ async function fetchJson(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
     if (!response.ok) {
       const error = new Error(errorMessage(payload, `Request failed (${response.status})`))
       error.httpStatus = response.status
+      error.code = payload?.detail?.code || payload?.code
       throw error
     }
     return payload
@@ -517,7 +518,7 @@ export default function RemoteProvider({ compact = false }) {
         await fetchJson('/api/remote-provider/dashboard-mode', { method: 'POST' })
       } catch (err) {
         requestError = err
-        if (err?.httpStatus === 409) throw err
+        if (err?.httpStatus === 409 || err?.code === 'dashboard_refresh_failed') throw err
       }
       const deadline = Date.now() + 180000
       while (Date.now() < deadline) {
