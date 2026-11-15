@@ -1,5 +1,7 @@
 # Fleet performance pilot
 
+Saved evidence redacts the authentication environment-variable selector as well as its value. Keep your private execution manifest to repeat authenticated requests; the public evidence manifest alone does not reconstruct authentication.
+
 This is the measurement foundation for the [fleet performance study](../../docs/fleet-performance-study.md). It probes one already-running OpenAI-compatible engine or gateway. It does not install or tune engines, execute tools, certify Pixel/UI behavior, or establish sustainable capacity.
 
 Python 3.10+ and the standard library are sufficient. Copy `pilot.example.json` outside the repository, set the verified endpoint/model and provenance, then run from `ods/`:
@@ -7,6 +9,8 @@ Python 3.10+ and the standard library are sufficient. Copy `pilot.example.json` 
 ```sh
 python3 tests/performance/probe.py --manifest /path/to/pilot.json --out /path/to/new-run
 python3 -m unittest discover -s tests/performance -p 'test_probe.py' -v
+python3 tests/performance/compare.py --baseline /path/to/baseline --candidate /path/to/candidate --out /path/to/new-comparison.json
+python3 -m unittest discover -s tests/performance -p 'test_compare.py' -v
 ```
 
 For authenticated endpoints, add `"api_key_env": "ODS_PERF_API_KEY"` and supply the key in that environment variable using your private credential mechanism. Do not put the value in the manifest or command line. Endpoint redirects, proxies discovered from the environment, and non-loopback plaintext HTTP are not supported. The example port 9 and model ID are deliberately placeholders.

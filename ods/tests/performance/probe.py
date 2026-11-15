@@ -805,9 +805,12 @@ def run(manifest: dict, out_dir: str) -> dict:
         raise ManifestError(f"output directory already exists: {out_dir}")
     os.makedirs(out_dir, exist_ok=False)
 
-    manifest_sha = sha256_text(canonical_json(manifest))
+    # Credential selectors are local execution settings, not benchmark identity.
+    # Do not publish or fingerprint even the environment-variable name.
+    recorded_manifest = {**manifest, "api_key_env": None}
+    manifest_sha = sha256_text(canonical_json(recorded_manifest))
     with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as f:
-        json.dump({"manifest": manifest, "manifest_sha256": manifest_sha}, f, indent=2, sort_keys=True)
+        json.dump({"manifest": recorded_manifest, "manifest_sha256": manifest_sha}, f, indent=2, sort_keys=True)
 
     schedule = _build_schedule(manifest)
     records = []
@@ -917,7 +920,7 @@ def main(argv: Optional[list] = None) -> int:
 
     if manifest.get("api_key_env"):
         if not os.environ.get(manifest["api_key_env"]):
-            print(f"error: environment variable {manifest['api_key_env']} is missing or empty", file=sys.stderr)
+            print("error: configured authentication environment variable is missing or empty", file=sys.stderr)
             return 2
 
     try:

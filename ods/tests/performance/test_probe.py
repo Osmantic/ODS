@@ -6,6 +6,7 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import probe  # noqa: E402
@@ -139,6 +140,25 @@ def _rec(manifest):
 
 
 class TestProbe(unittest.TestCase):
+    def test_auth_reference_and_value_stay_out_of_evidence(self):
+        selector = "ODS_PROBE_TEST_AUTH_SELECTOR"
+        credential = "fixture-credential-never-publish"
+        def h(s, body):
+            _start_chunked(s)
+            _chunk(s, _sse(_content("m1", "hello")))
+            _chunk(s, _sse(_finish("m1")))
+            _chunk(s, _done())
+            _end_chunks(s)
+        with _Server(h) as srv, patch.dict(os.environ, {selector: credential}):
+            summary, out = _run(_manifest(srv.endpoint, api_key_env=selector))
+            self.assertEqual(summary["quality_pass"], 1)
+            self.assertEqual(srv.requests[0]["headers"]["Authorization"], "Bearer " + credential)
+        for name in ("manifest.json", "requests.jsonl", "summary.json"):
+            with open(os.path.join(out, name), encoding="utf8") as stream:
+                saved = stream.read()
+            self.assertNotIn(selector, saved)
+            self.assertNotIn(credential, saved)
+
     def test_chunked_valid(self):
         def h(s, body):
             _start_chunked(s)
