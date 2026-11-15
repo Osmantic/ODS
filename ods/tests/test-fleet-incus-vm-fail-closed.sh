@@ -67,9 +67,9 @@ log() { :; }
 reboot_calls=0
 # These arrays are consumed by the function loaded from TARGET.
 # shellcheck disable=SC2034
-EXPECTED_PKG=(pkgA pkgB)
+declare -A EXPECTED_PKG=([0]=pkgA)
 # shellcheck disable=SC2034
-LABELS=(laneA laneB)
+declare -A LABELS=([0]=laneA)
 
 # load actual definition
 eval "$run_vm_check_src"
@@ -109,5 +109,55 @@ if run_vm_check vm1 0 0; then st=0; else st=$?; fi
 [[ "$reboot_calls" -eq 1 ]] || fail "case4: expected 1 reboot got $reboot_calls"
 
 pass "run_vm_check rc regression"
+
+# Globals below are consumed by the real functions loaded from TARGET.
+# shellcheck disable=SC2034
+test_reboot_payload_persistence() (
+    unset EXPECTED_PKG LABELS
+    declare -A IMAGES=([arch]=images:arch) EXPECTED_PKG=([arch]=pacman) LABELS=([arch]=Arch)
+    declare -A vm_files=()
+    local PREFIX=fake RUN_ID=test CPU=2 MEMORY=4GiB KEEP_VMS=true
+    local RUN_INSTALLER_DRY_RUN=true PAYLOAD=payload VM_CHECK=check
+    local check_calls=0 reboot_calls=0 guest_archive
+    local -a CREATED_VMS=()
+    # Read only the guest archive operand; never run guest setup on the host.
+    guest_archive="$(sed -n '/^extract_source() {/,/^}/p' "$TARGET" |
+        sed -n 's/^[[:space:]]*tar -xzf \([^ ]*\) .*/\1/p')"
+    [[ -n "$guest_archive" ]] || fail "guest archive operand missing"
+    eval "$run_lane_block"
+    incus() {
+        case "$1" in
+            init|config|start) return 0 ;;
+            file)
+                [[ "$2" == push ]] || fail "unexpected file operation"
+                vm_files["/${4#*/}"]=1
+                ;;
+            exec)
+                [[ "$3" == -- ]] || fail "unexpected exec shape"
+                if [[ "$4" == chmod ]]; then
+                    [[ ${vm_files[$6]:-} == 1 ]] || fail "chmod target was not staged"
+                    return 0
+                fi
+                [[ ${vm_files[$4]:-} == 1 ]] || fail "check script disappeared after reboot"
+                check_calls=$((check_calls + 1))
+                if ((check_calls == 1)); then return 75; fi
+                [[ ${vm_files[$guest_archive]:-} == 1 ]] || fail "guest source archive disappeared after reboot"
+                ;;
+            *) fail "unexpected Incus command" ;;
+        esac
+    }
+    wait_for_exec() { :; }
+    wait_for_reboot() {
+        local path
+        reboot_calls=$((reboot_calls + 1))
+        for path in "${!vm_files[@]}"; do
+            if [[ "$path" == /tmp/* ]]; then unset 'vm_files[$path]'; fi
+        done
+    }
+    run_lane arch
+    [[ "$check_calls" == 2 && "$reboot_calls" == 1 ]] || fail "reboot retry was not completed"
+    pass "staged check and guest source survive a tmpfs reboot"
+)
+test_reboot_payload_persistence
 
 echo "[OK] fleet-incus-vm.sh propagates command failures and provisions required kernel modules"
