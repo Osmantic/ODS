@@ -13,7 +13,8 @@ or request slots. Automatic fitting can change layer placement; verify the actua
 placement and per-slot context in native startup logs and `/props` or `/slots`.
 
 The physical batch upper bound is the current default of 512. ODS's existing
-sliding-window memory estimate therefore remains conservative for this setting.
+batch-dependent sliding-window memory estimate remains conservative for this
+setting; this is not a guarantee of total runtime memory headroom.
 These settings apply to Docker launches; this change does not add arguments to
 the native macOS or native Windows launchers.
 

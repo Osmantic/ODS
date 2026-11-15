@@ -393,6 +393,29 @@ def test_container_performance_tuning_survives_actual_installer_rerun() -> None:
     assert "LLAMA_ARG_FIT_TARGET" not in reselected
 
 
+def test_helper_omitted_container_tuning_drops_stale_caller_values() -> None:
+    # A successful helper returns the active model but intentionally omits
+    # disallowed knobs (e.g. after a backend change). The preservation
+    # branches must clear the caller's stale values before loading the helper
+    # output, so phase 06 cannot resurrect them from the caller environment.
+    def prepare(install: Path, source: Path) -> Path:
+        env, catalog, _, _ = write_model_fixture(install)
+        replace_env(env, "MODEL_RUNTIME_PROFILE=nvidia-8gb-64k", "MODEL_RUNTIME_PROFILE=")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("GPU_BACKEND=nvidia\nLLAMA_ARG_UBATCH=128\nLLAMA_ARG_FIT_TARGET=512\n")
+        return catalog
+
+    caller = {"LLAMA_ARG_UBATCH": "256", "LLAMA_ARG_FIT_TARGET": "1024"}
+    kept = installer_rerun(prepare, caller_env=caller)
+    assert kept["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+    assert kept["LLAMA_ARG_UBATCH"] == "128"
+    assert kept["LLAMA_ARG_FIT_TARGET"] == "512"
+    changed = installer_rerun(prepare, "amd", caller_env=caller)
+    assert changed["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+    assert "LLAMA_ARG_UBATCH" not in changed
+    assert "LLAMA_ARG_FIT_TARGET" not in changed
+
+
 def test_invalid_container_tuning_does_not_discard_active_model() -> None:
     for key, bad in (("LLAMA_ARG_UBATCH", "513"), ("LLAMA_ARG_FIT_TARGET", "511")):
         with tempfile.TemporaryDirectory() as tmp:
@@ -412,7 +435,7 @@ def test_container_tuning_numeric_boundaries() -> None:
     ):
         for value in good:
             assert valid(key, value), (key, value)
-        for value in (*bad, "", "-1", "+512", " 512", "0512", "5_12", "512,512", "１２８", "$(touch marker)"):
+        for value in (*bad, "", "-1", "+512", " 512", "0512", "5_12", "512,512", "ï¼‘ï¼’ï¼˜", "$(touch marker)"):
             assert not valid(key, value), (key, value)
 
 
@@ -1613,6 +1636,7 @@ def main() -> int:
         test_valid_curated_model_is_preserved,
         test_cpu_profile_host_ram_caps_are_preserved,
         test_container_performance_tuning_survives_actual_installer_rerun,
+        test_helper_omitted_container_tuning_drops_stale_caller_values,
         test_invalid_container_tuning_does_not_discard_active_model,
         test_container_tuning_numeric_boundaries,
         test_preserved_context_is_clamped_to_the_declared_native_context,

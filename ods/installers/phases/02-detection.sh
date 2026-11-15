@@ -844,6 +844,7 @@ if ods_native_llm_requested && [[ "${TIER:-}" != "CLOUD" ]]; then
     unset LLAMA_ARG_CHECKPOINT_EVERY_NT LLAMA_ARG_SPEC_TYPE
     unset LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_RAM
     unset LLAMA_ARG_SPEC_DRAFT_N_MAX LLAMA_ARG_SPLIT_MODE LLAMA_ARG_TENSOR_SPLIT
+    unset LLAMA_ARG_UBATCH LLAMA_ARG_FIT_TARGET
     unset MODEL_RECOMMENDED_ALTERNATIVES
     load_model_selector_env_from_output <<< "$_native_model_env"
     # A retired Lemonade id is now the GGUF file name llama-server serves.
@@ -976,6 +977,7 @@ elif [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "$
         if [[ -n "$_native_model_env" ]]; then
             unset MODEL_RUNTIME_PROFILE MODEL_RUNTIME_PROFILE_LABEL MODEL_RUNTIME_PROFILE_SOURCE
             unset LLAMA_SERVER_IMAGE
+            unset LLAMA_ARG_UBATCH LLAMA_ARG_FIT_TARGET
             load_model_selector_env_from_output <<< "$_native_model_env"
             [[ "$_native_status" -ne 0 ]] \
                 || log "Kept the saved host-native model across installer rerun: ${LLM_MODEL} (${GGUF_FILE}) at ${MAX_CONTEXT}, selected by ${MODEL_SELECTION_SOURCE}"
@@ -1020,6 +1022,7 @@ elif [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "$
                 unset LLAMA_ARG_CHECKPOINT_EVERY_NT LLAMA_ARG_SPEC_TYPE
                 unset LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_RAM
                 unset LLAMA_ARG_SPEC_DRAFT_N_MAX LLAMA_ARG_SPLIT_MODE LLAMA_ARG_TENSOR_SPLIT
+                unset LLAMA_ARG_UBATCH LLAMA_ARG_FIT_TARGET
                 load_model_selector_env_from_output <<< "$_preserved_model_env"
                 log "Preserved active model across installer rerun: ${LLM_MODEL} (${GGUF_FILE})${LLAMA_ARG_MMPROJ:+; kept its vision projector}${MODEL_CHAT_TEMPLATE_OVERRIDE:+; kept its fixed chat template}"
             fi
