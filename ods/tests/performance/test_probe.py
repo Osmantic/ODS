@@ -1,6 +1,5 @@
 import json
 import os
-import socket
 import sys
 import tempfile
 import threading
@@ -385,7 +384,7 @@ class TestProbe(unittest.TestCase):
         try:
             d = tempfile.mkdtemp()
             out = os.path.join(d, "out")
-            summary = probe.run(m, out)
+            probe.run(m, out)
         finally:
             probe.run_request = orig
         with open(os.path.join(out, "requests.jsonl")) as f:
