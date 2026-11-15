@@ -92,3 +92,38 @@ failures. p95 is suppressed below 100 successful observations. This is descripti
 engine/gateway evidence, not a production capacity or agent-quality qualification.
 Use the same model, workload, host observability, and load settings in comparisons.
 The existing paired comparator supports closed-loop probe receipts only.
+
+
+## Seeded Poisson arrival process (exploratory)
+
+The open-loop adapter supports an optional Poisson arrival process in addition to the default fixed schedule. The adapter measures offered load; it does not itself qualify capacity.
+
+### Load config examples
+
+Fixed (default, unchanged):
+
+```json
+{"rate_rps": 5.0, "max_schedule_lag_ms": 100}
+```
+
+Poisson with explicit seed:
+
+```json
+{"rate_rps": 5.0, "max_schedule_lag_ms": 100, "arrival_process": "poisson", "arrival_seed": 0}
+```
+
+`arrival_seed` must be an integer in `0..2**32-1`. It is required for `poisson` and rejected for `fixed`. Unknown `arrival_process` values are rejected.
+
+### Semantics
+
+- `rate_rps` is the nominal Poisson intensity, not the observed realized rate and not a capacity claim.
+- Offsets are cumulative exponential gaps drawn from an isolated `random.Random(seed).expovariate(rate_rps)`. The first arrival is also an exponential gap; there is no forced arrival at t=0.
+- Task/repetition ordering comes from the existing deterministic schedule builder. The manifest `schedule_seed` controls task order independently of `arrival_seed`, which controls arrival gaps. Request UUIDs are deliberately unique between runs.
+- The full plan of N draws is generated first. If the realized span exceeds 600 seconds, the whole config is rejected before any output directory is created. The schedule is never truncated, rescaled, resampled, or dropped to fit the bound.
+- The 600-second cap is checked on the unrounded span, so a value just over the boundary (e.g. 600.0000001 s) is rejected before rounding.
+- Client-side admission refusals (`client_busy`, `scheduler_late`, `admission_stop`, `admission_error`) are not server overload signals. They are recorded per planned arrival so all planned requests are accounted for.
+- The isolated RNG does not alter the module-level `random` state.
+
+### Scope
+
+Capacity confirmation additionally requires the study's balanced quality gates and at least three independent windows of one minute or longer at the tested load, with resource gates and no unaccounted arrivals. These conditions are necessary, not a substitute for the full protocol. A short Poisson run alone cannot establish production capacity.

@@ -414,5 +414,140 @@ class TestRun(unittest.TestCase):
                 self.assertNotIn(credential, saved)
 
 
+class TestPoissonLoadConfig(unittest.TestCase):
+    def test_fixed_normalizes_exactly_two_fields(self):
+        cfg = open_loop.validate_load_config({"rate_rps": 5, "max_schedule_lag_ms": 50, "arrival_process": "fixed"})
+        self.assertEqual(set(cfg.keys()), {"rate_rps", "max_schedule_lag_ms"})
+        self.assertEqual(cfg["rate_rps"], 5.0)
+        self.assertEqual(cfg["max_schedule_lag_ms"], 50)
+
+    def test_poisson_seed_zero_and_max_allowed(self):
+        for seed in (0, open_loop.MAX_SEED):
+            cfg = open_loop.validate_load_config({
+                "rate_rps": 5, "max_schedule_lag_ms": 50,
+                "arrival_process": "poisson", "arrival_seed": seed})
+            self.assertEqual(cfg["arrival_process"], "poisson")
+            self.assertEqual(cfg["arrival_seed"], seed)
+
+    def test_poisson_invalid_seed_and_process(self):
+        base = {"rate_rps": 5, "max_schedule_lag_ms": 50, "arrival_process": "poisson"}
+        for bad in ({"arrival_seed": True}, {"arrival_seed": 1.5}, {"arrival_seed": -1},
+                    {"arrival_seed": open_loop.MAX_SEED + 1}, {}):
+            with self.assertRaises(open_loop.LoadConfigError):
+                open_loop.validate_load_config({**base, **bad})
+        for extra in ({"arrival_seed": 1}, {"arrival_process": "unknown"},
+                      {"arrival_process": None}, {"arrival_process": []},
+                      {"unknown_field": 1}):
+            with self.subTest(extra=extra), self.assertRaises(open_loop.LoadConfigError):
+                open_loop.validate_load_config({"rate_rps": 5, "max_schedule_lag_ms": 50, **extra})
+        with self.assertRaises(open_loop.LoadConfigError):
+            open_loop.validate_load_config({"rate_rps": 5, "max_schedule_lag_ms": 50,
+                                            "arrival_process": "fixed", "arrival_seed": 1})
+
+
+class TestPoissonSchedule(unittest.TestCase):
+    def _manifest(self, reps=5):
+        return probe.validate_manifest(_manifest("http://127.0.0.1:1/v1/chat/completions", repetitions=reps))
+
+    def test_deterministic_ordering_and_offsets_ignore_uuid(self):
+        m = probe.validate_manifest(_manifest(
+            "http://127.0.0.1:1/v1/chat/completions", repetitions=3,
+            tasks=[{"id": tid, "messages": [{"role": "user", "content": tid}],
+                    "validator": {"kind": "exact", "expected": "hello"}}
+                   for tid in ("a", "b", "c")]))
+        cfg = {"rate_rps": 10.0, "max_schedule_lag_ms": 1000,
+               "arrival_process": "poisson", "arrival_seed": 7}
+        a = open_loop.build_arrival_schedule(m, cfg)
+        b = open_loop.build_arrival_schedule(m, cfg)
+        self.assertEqual([(e["task"]["id"], e["repetition"]) for e in a],
+                         [(e["task"]["id"], e["repetition"]) for e in b])
+        self.assertEqual([e["scheduled_offset_ms"] for e in a],
+                         [e["scheduled_offset_ms"] for e in b])
+        fixed = open_loop.build_arrival_schedule(m, _load(rate=10.0))
+        self.assertEqual([(e["task"]["id"], e["repetition"]) for e in a],
+                         [(e["task"]["id"], e["repetition"]) for e in fixed])
+
+    def test_different_seeds_offsets_differ(self):
+        m = self._manifest(5)
+        base = {"rate_rps": 10.0, "max_schedule_lag_ms": 1000, "arrival_process": "poisson"}
+        a = open_loop.build_arrival_schedule(m, {**base, "arrival_seed": 1})
+        b = open_loop.build_arrival_schedule(m, {**base, "arrival_seed": 2})
+        self.assertNotEqual([e["scheduled_offset_ms"] for e in a],
+                            [e["scheduled_offset_ms"] for e in b])
+
+    def test_reference_random_includes_first_gap(self):
+        import random
+        m = self._manifest(4)
+        cfg = {"rate_rps": 10.0, "max_schedule_lag_ms": 1000,
+               "arrival_process": "poisson", "arrival_seed": 3}
+        sched = open_loop.build_arrival_schedule(m, cfg)
+        rng = random.Random(3)
+        expected = []
+        cum = 0.0
+        for _ in range(4):
+            cum += rng.expovariate(10.0)
+            expected.append(round(cum * 1000.0, 3))
+        self.assertEqual([e["scheduled_offset_ms"] for e in sched], expected)
+        self.assertGreater(expected[0], 0.0)
+
+    def test_isolated_rng_does_not_alter_module_random_state(self):
+        import random
+        m = self._manifest(3)
+        cfg = {"rate_rps": 10.0, "max_schedule_lag_ms": 1000,
+               "arrival_process": "poisson", "arrival_seed": 5}
+        before = random.getstate()
+        open_loop.build_arrival_schedule(m, cfg)
+        after = random.getstate()
+        self.assertEqual(before, after)
+
+    def test_full_n_draws_then_rejects_over_600s(self):
+        # Complete all seven sampled gaps; do not truncate or redraw at 600s.
+        m = self._manifest(7)
+        cfg = {"rate_rps": 0.01, "max_schedule_lag_ms": 1000,
+               "arrival_process": "poisson", "arrival_seed": 0}
+        with patch.object(open_loop.random, "Random") as rng:
+            rng.return_value.expovariate.side_effect = [300.0] * 7
+            with self.assertRaises(open_loop.LoadConfigError):
+                open_loop.build_arrival_schedule(m, cfg)
+            self.assertEqual(rng.return_value.expovariate.call_count, 7)
+
+    def test_near_boundary_rejected_before_rounding(self):
+        # Force a span just over 600s before rounding; must reject.
+        m = self._manifest(2)
+        cfg = {"rate_rps": 1.0, "max_schedule_lag_ms": 1000,
+               "arrival_process": "poisson", "arrival_seed": 0}
+        with patch.object(open_loop.random, "Random") as rng:
+            rng.return_value.expovariate.side_effect = [300.0, 300.0000001]
+            with tempfile.TemporaryDirectory() as d:
+                out = os.path.join(d, "rejected")
+                with self.assertRaises(open_loop.LoadConfigError):
+                    open_loop.run(m, cfg, out)
+                self.assertFalse(os.path.exists(out))
+
+
+
+class TestPoissonRun(unittest.TestCase):
+    def test_local_http_seeded_bursts_all_accounted(self):
+        def slow(s, body):
+            time.sleep(0.25)
+            _ok_handler(s, body)
+        with _Server(slow) as srv, tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "out")
+            m = _manifest(srv.endpoint, repetitions=6, concurrency=1)
+            cfg = {"rate_rps": 50.0, "max_schedule_lag_ms": 1000,
+                   "arrival_process": "poisson", "arrival_seed": 11}
+            summary = open_loop.run(m, cfg, out)
+            self.assertEqual(summary["planned"], 6)
+            self.assertEqual(summary["total_records"], 6)
+            self.assertEqual(summary["successful_tasks"] + summary["refusals"], 6)
+            self.assertGreaterEqual(summary["refusals_by_reason"].get("client_busy", 0), 1)
+            self.assertEqual(summary["load_config"]["arrival_process"], "poisson")
+            self.assertEqual(summary["load_config"]["arrival_seed"], 11)
+            with open(os.path.join(out, "load_config.json")) as f:
+                saved = json.load(f)
+            self.assertEqual(saved["load_config"]["arrival_seed"], 11)
+            self.assertEqual(saved["load_config"]["arrival_process"], "poisson")
+
+
 if __name__ == "__main__":
     unittest.main()

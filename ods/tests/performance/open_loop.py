@@ -2,7 +2,7 @@
 
 Scope: bounded engine/gateway load study; no production capacity qualification.
 Stdlib only. Reuses probe.py validation, scheduling, request execution, and
-hashing helpers. Adds a fixed precomputed arrival schedule with explicit
+hashing helpers. Adds a precomputed fixed or seeded Poisson arrival schedule with explicit
 client-side admission refusals (client_busy / scheduler_late / admission_stop /
 admission_error). Never cancels running threads; drains in-flight work using
 the existing run_request timeout.
@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import sys
 import threading
 import time
@@ -31,8 +32,10 @@ with open(__file__, "rb") as _source:
     RUNNER_SHA256 = probe.sha256_hex(_source.read())
 
 LOAD_CONFIG_KEYS = {"rate_rps", "max_schedule_lag_ms"}
+OPTIONAL_LOAD_CONFIG_KEYS = {"arrival_process", "arrival_seed"}
 MAX_ARRIVAL_SPAN_S = 600.0
 MAX_PLANNED = probe.MAX_TOTAL_REQUESTS
+MAX_SEED = 2**32 - 1
 SCOPE = "bounded engine/gateway load study; no production capacity qualification"
 
 
@@ -51,38 +54,73 @@ def _is_number(v: Any) -> bool:
 
 def validate_load_config(cfg: Any) -> dict:
     _require(isinstance(cfg, dict), "load config must be object")
-    unknown = set(cfg.keys()) - LOAD_CONFIG_KEYS
+    unknown = set(cfg.keys()) - LOAD_CONFIG_KEYS - OPTIONAL_LOAD_CONFIG_KEYS
     _require(not unknown, f"unknown load config fields: {sorted(unknown)}")
-    _require(set(cfg.keys()) == LOAD_CONFIG_KEYS, "load config must have rate_rps and max_schedule_lag_ms")
+    _require(LOAD_CONFIG_KEYS <= set(cfg.keys()), "load config must have rate_rps and max_schedule_lag_ms")
     rate = cfg["rate_rps"]
     _require(_is_number(rate) and 0.01 <= rate <= 100.0, "rate_rps must be number 0.01..100")
     lag = cfg["max_schedule_lag_ms"]
     _require(isinstance(lag, int) and not isinstance(lag, bool) and 1 <= lag <= 1000,
              "max_schedule_lag_ms must be int 1..1000")
-    return {"rate_rps": float(rate), "max_schedule_lag_ms": int(lag)}
+    process = cfg.get("arrival_process", "fixed")
+    _require(process in ("fixed", "poisson"), "arrival_process must be 'fixed' or 'poisson'")
+    normalized = {"rate_rps": float(rate), "max_schedule_lag_ms": int(lag)}
+    if process == "fixed":
+        _require("arrival_seed" not in cfg, "arrival_seed is only valid with arrival_process='poisson'")
+        return normalized
+    _require("arrival_seed" in cfg, "arrival_process='poisson' requires arrival_seed")
+    seed = cfg["arrival_seed"]
+    _require(isinstance(seed, int) and not isinstance(seed, bool) and 0 <= seed <= MAX_SEED,
+             f"arrival_seed must be int 0..{MAX_SEED}")
+    normalized["arrival_process"] = "poisson"
+    normalized["arrival_seed"] = int(seed)
+    return normalized
+
+
+def _arrival_offsets_ms(planned: int, load_config: dict) -> list:
+    """Return planned arrival offsets (ms) for the configured arrival process.
+
+    Fixed: offsets are i * 1000/rate_rps for i in 0..planned-1.
+    Poisson: offsets are cumulative exponential gaps drawn from an isolated
+    random.Random(seed).expovariate(rate_rps). The first arrival is also an
+    exponential gap (no forced initial arrival at t=0). The schedule is never
+    truncated, rescaled, resampled, or dropped to fit the span bound; if the
+    realized span exceeds MAX_ARRIVAL_SPAN_S the whole config is rejected.
+    """
+    rate = load_config["rate_rps"]
+    if load_config.get("arrival_process", "fixed") == "poisson":
+        rng = random.Random(load_config["arrival_seed"])
+        offsets = []
+        cumulative_s = 0.0
+        for _ in range(planned):
+            cumulative_s += rng.expovariate(rate)
+            offsets.append(cumulative_s * 1000.0)
+        return offsets
+    interval_ms = 1000.0 / rate
+    return [i * interval_ms for i in range(planned)]
 
 
 def build_arrival_schedule(manifest: dict, load_config: dict) -> list:
-    """Precompute fixed arrival offsets (ms) for every planned request.
+    """Precompute arrival offsets (ms) for every planned request.
 
     Uses probe._build_schedule for deterministic task/repetition ordering, then
-    assigns offsets at 1000/rate_rps ms spacing. Returns list of dicts with
-    task, repetition, request_id, scheduled_offset_ms.
+    assigns offsets per the configured arrival process. Returns list of dicts
+    with task, repetition, request_id, scheduled_offset_ms.
     """
     jobs = probe._build_schedule(manifest)
     planned = len(jobs)
     _require(planned <= MAX_PLANNED, f"planned requests {planned} exceeds {MAX_PLANNED}")
-    interval_ms = 1000.0 / load_config["rate_rps"]
-    span_s = (planned - 1) * interval_ms / 1000.0 if planned > 1 else 0.0
+    offsets = _arrival_offsets_ms(planned, load_config)
+    span_s = (offsets[-1] / 1000.0) if offsets else 0.0
     _require(span_s <= MAX_ARRIVAL_SPAN_S, f"arrival span {span_s:.3f}s exceeds {MAX_ARRIVAL_SPAN_S}s")
     schedule = []
-    for i, (task, rep) in enumerate(jobs):
+    for (task, rep), offset_ms in zip(jobs, offsets):
         rid = f"{task['id']}-r{rep}-{uuid.uuid4().hex[:8]}"
         schedule.append({
             "task": task,
             "repetition": rep,
             "request_id": rid,
-            "scheduled_offset_ms": round(i * interval_ms, 3),
+            "scheduled_offset_ms": round(offset_ms, 3),
         })
     return schedule
 
@@ -199,6 +237,7 @@ def summarize(manifest: dict, load_config: dict, records: list, elapsed_s: float
         "admission_stopped": admission_stopped,
         "admission_error": admission_error,
         "metrics_semantics": {
+            "arrival_process": "fixed offsets or Poisson cumulative exponential gaps; rate_rps is nominal intensity, not observed realized rate or capacity",
             "goodput": "quality_pass / elapsed_s (includes drain); not divided by planned",
             "success_fraction": "quality_pass / planned (planned is denominator)",
             "arrival_to_completion": "scheduled arrival to observed worker completion; includes handoff and request time",
