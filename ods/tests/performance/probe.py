@@ -796,7 +796,7 @@ def _build_schedule(manifest: dict) -> list:
     return jobs
 
 
-def run(manifest: dict, out_dir: str) -> dict:
+def run(manifest: dict, out_dir: str, admission_allowed=None) -> dict:
     """Validate and run a pilot. Existing output directories are never reused."""
     manifest = validate_manifest(manifest)
     if manifest.get("api_key_env") and not os.environ.get(manifest["api_key_env"]):
@@ -816,10 +816,13 @@ def run(manifest: dict, out_dir: str) -> dict:
     records = []
     records_lock = threading.Lock()
     requests_path = os.path.join(out_dir, "requests.jsonl")
+    with open(requests_path, "x", encoding="utf-8"):
+        pass
     interrupted = False
     t_start = None
     t_end = None
     dispatched = 0
+    admission_stopped = False
 
     def _append_record(rec: dict) -> None:
         with records_lock:
@@ -864,6 +867,10 @@ def run(manifest: dict, out_dir: str) -> dict:
             idx = 0
             while idx < len(schedule) or pending:
                 while idx < len(schedule) and len(pending) < manifest["concurrency"]:
+                    if admission_allowed is not None and admission_allowed() is not True:
+                        admission_stopped = True
+                        idx = len(schedule)
+                        break
                     task, rep = schedule[idx]
                     rid = f"{task['id']}-r{rep}-{uuid.uuid4().hex[:8]}"
                     if t_start is None:
@@ -889,6 +896,7 @@ def run(manifest: dict, out_dir: str) -> dict:
             t_end = time.perf_counter()
         elapsed = t_end - t_start
         summary = summarize(manifest, records, elapsed, interrupted, dispatched)
+        summary["admission_stopped"] = admission_stopped
         with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2, sort_keys=True)
 

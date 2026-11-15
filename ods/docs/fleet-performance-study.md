@@ -1,20 +1,20 @@
 # ODS Fleet Performance Study (Design)
 
-Status: study protocol plus an implemented engine/gateway pilot; full agent/UI, telemetry and capacity adapters remain to be implemented. The small laptop instrumentation pilot does not qualify an optimization. Baseline commit: `0cb226fdb78cda56397b46211e6f6f93ebbe6983`.
+Status: study protocol plus an implemented engine/gateway pilot; a read-only resource sampler and descriptive pilot comparator are implemented; full agent/UI and capacity adapters remain to be implemented. The small laptop instrumentation pilot does not qualify an optimization. Baseline commit: `0cb226fdb78cda56397b46211e6f6f93ebbe6983`.
 
 This study measures serving performance of the ODS fleet without weakening model quality, verification, or safety. It is not an MLPerf submission and makes no MLPerf compliance claim.
 
 ## 1. Scope and non-goals
 
-In scope: validated task completion latency, useful goodput, sustainable capacity, and quality-preserving serving changes across four product targets.
+In scope: validated task completion latency, useful goodput, sustainable capacity, and quality-preserving serving changes on the active product test targets.
 
-Out of scope: GPU caps/fan/hardware campaigns, Tower1 workloads, silent model/quantization/context-loss changes, bypassing Pixel terminal verification, and automatic setting application or promotion. Tower3 is a product target only, never an engineering inference worker. Tower2 supplies engineering inference and is also the existing remote-serving route to measure when selected by ODS; quiesce engineering requests during those measured windows.
+Out of scope: GPU caps/fan/hardware campaigns, Tower1 workloads, silent model/quantization/context-loss changes, bypassing Pixel terminal verification, and automatic setting application or promotion. The owner retirement override excludes Tower3 from new benchmarks and engineering workloads. Preserve its earlier installation/regression evidence separately; no new performance workload is assigned to it. Tower2 supplies engineering inference and is also the existing remote-serving route to measure when selected by ODS; quiesce engineering requests during those measured windows.
 
 ## 2. Fleet targets and current facts
 
 | Target | Hardware | OS | Role |
 |---|---|---|---|
-| Tower3 | RTX 5090 | Ubuntu | Product study |
+| Tower3 | RTX 5090 | Ubuntu | Retired from new performance workloads; historical installation evidence only |
 | MacMini | Apple Silicon 16GB | macOS | Product study |
 | Strixy | AMD 8060S | Windows/WSL | Product study |
 | Laptop | RTX 5070 Laptop 8GB | Windows/WSL | Product study; optional remote Tower2 |
@@ -85,7 +85,7 @@ Abort faults/OOM persistent overload; do not clear hardware latch. Shared the sh
 
 Implemented (starter): stdlib Python `tests/performance/probe.py` engine/gateway OpenAI stream pilot only; manifest provenance; balanced closed loop; strict validators; per-request JSONL + sums; bounded connected-transport deadlines; failure counting. DNS resolution may depend on OS resolver timeouts; loopback/IP endpoints avoid this limitation. The client creates a new HTTP connection per request, which is part of its measured transport cost and is not representative of a pooled production client.
 
-Not yet implemented: full agent/UI, host collector, open-loop scheduler, comparator.
+Implemented: read-only host resource sampler and a descriptive paired pilot comparator. Not yet implemented: full agent/UI workload adapters, continuous resource admission integration, open-loop scheduler, and qualification-grade statistics. The pilot comparator always leaves production qualification inconclusive.
 
 The checked-in `pilot.example.json` uses loopback port 9 and a placeholder model. Set a verified endpoint/model and provenance before running. The client only records evidence; it does not acquire host locks, collect hardware telemetry, change engine settings, or qualify an optimization.
 
@@ -159,7 +159,7 @@ Performance qualification is separate from install-fleet-green.
 
 ## 13. Next phase
 
-Deliver the protocol and engine/gateway pilot first. Next implement the host collector, trace-linked real Pixel/browser workload adapters, open-loop scheduler, and paired comparator. Refresh each remote inventory before its first measurement window. Complete a low-load baseline on all four targets before selecting the first one-factor optimization. Proceed through reviewed experiment manifests and recovery plans before broader loads and serving changes; the prototype is only the first stage of the active optimization goal.
+Deliver the protocol and engine/gateway pilot first. Next implement the host collector, trace-linked real Pixel/browser workload adapters, open-loop scheduler, and paired comparator. Refresh each remote inventory before its first measurement window. Complete a low-load baseline on each active target before selecting the first one-factor optimization. Proceed through reviewed experiment manifests and recovery plans before broader loads and serving changes; the prototype is only the first stage of the active optimization goal.
 
 
 ## 14. Concrete first campaign and decision contract

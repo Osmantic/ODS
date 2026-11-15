@@ -356,6 +356,33 @@ class TestProbe(unittest.TestCase):
         with self.assertRaises(probe.ManifestError):
             probe.run(m, out)
 
+    def test_closed_admission_preserves_planned_denominator(self):
+        m = _manifest("http://127.0.0.1:1/v1/chat/completions", repetitions=3)
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "out")
+            summary = probe.run(m, out, admission_allowed=lambda: False)
+            self.assertEqual(summary["scheduled"], 3)
+            self.assertEqual(summary["dispatched"], 0)
+            self.assertEqual(summary["quality_pass_fraction"], 0)
+            self.assertTrue(summary["admission_stopped"])
+            self.assertEqual(os.path.getsize(os.path.join(out, "requests.jsonl")), 0)
+
+    def test_admission_stop_keeps_completed_receipt(self):
+        def h(s, body):
+            _start_chunked(s)
+            _chunk(s, _sse(_content("m1", "hello")))
+            _chunk(s, _sse(_finish("m1")))
+            _chunk(s, _done())
+            _end_chunks(s)
+        calls = iter([True, False])
+        with _Server(h) as srv, tempfile.TemporaryDirectory() as d:
+            m = _manifest(srv.endpoint, repetitions=3)
+            summary = probe.run(m, os.path.join(d, "out"), admission_allowed=lambda: next(calls))
+        self.assertEqual(summary["scheduled"], 3)
+        self.assertEqual(summary["dispatched"], 1)
+        self.assertEqual(summary["quality_pass"], 1)
+        self.assertTrue(summary["admission_stopped"])
+
     def test_summary_mixed(self):
         def h(s, body):
             _start_chunked(s)
