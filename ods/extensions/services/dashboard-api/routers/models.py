@@ -1,6 +1,7 @@
 """Model Library router — browse, benchmark, and manage GGUF models."""
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -137,7 +138,6 @@ _HF_AVATAR_CACHE_MAX_ENTRIES = 512
 _HF_AVATAR_CACHE: dict[tuple[str, str], tuple[float, str | None]] = {}
 _HF_AVATAR_CACHE_LOCK = threading.Lock()
 _IMPORTED_MODELS_LOCK = threading.Lock()
-_last_recorded_throughput_sample = None
 _MODEL_DISCOVERY_TIMEOUT_SECONDS = float(os.environ.get("DASHBOARD_MODEL_DISCOVERY_TIMEOUT", "15.0"))
 _MIN_MODEL_CONTEXT = 1024
 _MAX_MODEL_CONTEXT = 9007199254740991
@@ -1905,6 +1905,60 @@ async def import_huggingface_model(
     }
 
 
+# Bounded latest-pending policy for the catalog poll's measured sample.
+# At most one captured observation is retained while publication fails; a
+# newer distinct sample replaces it. This is in-process only (no cross-process
+# or restart durability) and is not used by the explicit benchmark path.
+_pending_sample_lock = threading.Lock()
+_pending_sample: dict | None = None
+_last_committed_sample_key: tuple | None = None
+
+
+def _flush_pending_sample_locked() -> None:
+    global _pending_sample, _last_committed_sample_key
+    pending = _pending_sample
+    if pending is None:
+        return
+    try:
+        ok = record_model_performance(
+            pending["model_name"],
+            pending["gpu_name"],
+            pending["backend"],
+            pending["tokens_per_second"],
+            **pending["kwargs"],
+        )
+    except OSError:
+        logger.debug("Pending performance sample publication failed")
+        return
+    if ok is True:
+        _pending_sample = None
+        _last_committed_sample_key = pending["sample_key"]
+
+
+def _publish_measured_sample(captured: dict | None) -> None:
+    """Retry pending evidence and publish a newly captured observation.
+
+    Runs synchronously via asyncio.to_thread on every catalog poll. The
+    pending sample is flushed first; only a literal True return advances the
+    last-committed key. A distinct new sample replaces any still-pending one
+    (bounded latest policy). The same pending sample is never retried twice in
+    one poll, and a successful retry is not re-counted by the current
+    observation in that same poll.
+    """
+    global _pending_sample
+    with _pending_sample_lock:
+        _flush_pending_sample_locked()
+        if captured is None:
+            return
+        sample_key = captured["sample_key"]
+        if sample_key == _last_committed_sample_key:
+            return
+        if _pending_sample is not None and _pending_sample["sample_key"] == sample_key:
+            return
+        _pending_sample = copy.deepcopy(captured)
+        _flush_pending_sample_locked()
+
+
 def _newly_measured_tps(metrics: dict, loaded_model: str | None) -> float:
     # Sticky Dashboard values are historical evidence, not a fresh performance
     # sample for the model catalogue/current context on every polling request.
@@ -2094,7 +2148,6 @@ async def _discover_loaded_model() -> str | None:
 @router.get("/api/models", response_model=ModelLibraryResponse)
 async def list_models(api_key: str = Depends(verify_api_key)):
     """List model catalog entries with source-labelled performance metadata."""
-    global _last_recorded_throughput_sample
     host_runtime = _windows_hosted_runtime()
     # With no proof to reuse, the slow ownership proof runs alongside these reads.
     management_prefetch = (_model_management_in_flight()
@@ -2142,10 +2195,10 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     payload["modelRecoveryPending"] = isinstance(agent_status, dict) and agent_status.get("modelTransactionPending") is True
     loaded_entry = next((m for m in payload["models"] if m["status"] == "loaded"), None) or {}
     sample_key = (loaded_model, metrics.get("throughput_sampled_at"))
-    if (gpu_info and loaded_model and live_tps > 0
-            and sample_key[1] is not None and sample_key != _last_recorded_throughput_sample
+    captured = None
+    if (gpu_info and loaded_model and is_plausible_single_request_tps(live_tps)
+            and sample_key[1] is not None
             and loaded_entry.get("metadata", {}).get("source") != "runtime"):
-        _last_recorded_throughput_sample = sample_key
         signature = build_sample_signature(
             loaded_entry or {"id": loaded_model, "gguf": _read_active_model()},
             gpu_info,
@@ -2153,22 +2206,25 @@ async def list_models(api_key: str = Depends(verify_api_key)):
             INSTALL_DIR,
             _installed_model_path(loaded_entry["gguf"]) if loaded_entry.get("gguf") else None,
         )
-        await asyncio.to_thread(
-            record_model_performance,
-            loaded_model,
-            gpu_info.name,
-            gpu_info.gpu_backend,
-            live_tps,
-            model_id=signature.get("model_id"),
-            gguf=signature.get("gguf"),
-            quantization=signature.get("quantization"),
-            architecture=signature.get("architecture"),
-            context_length=signature.get("context_length"),
-            decode_read_mb=signature.get("decode_read_mb"),
-            vram_total_mb=signature.get("vram_total_mb"),
-            os_name=signature.get("os"),
-            flags=signature.get("flags"),
-        )
+        captured = {
+            "sample_key": sample_key,
+            "model_name": loaded_model,
+            "gpu_name": gpu_info.name,
+            "backend": gpu_info.gpu_backend,
+            "tokens_per_second": live_tps,
+            "kwargs": {
+                "model_id": signature.get("model_id"),
+                "gguf": signature.get("gguf"),
+                "quantization": signature.get("quantization"),
+                "architecture": signature.get("architecture"),
+                "context_length": signature.get("context_length"),
+                "decode_read_mb": signature.get("decode_read_mb"),
+                "vram_total_mb": signature.get("vram_total_mb"),
+                "os_name": signature.get("os"),
+                "flags": signature.get("flags"),
+            },
+        }
+    await asyncio.to_thread(_publish_measured_sample, captured)
     payload["odsMode"] = ODS_MODE_EFFECTIVE
     payload["configuredMode"] = await asyncio.to_thread(_configured_ods_mode)
     payload["llmBackend"] = LLM_BACKEND or "unknown"
