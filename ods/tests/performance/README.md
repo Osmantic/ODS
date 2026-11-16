@@ -81,6 +81,15 @@ remains a bound failure. Unsupported native continuations, ambiguous identities,
 stale or malformed transcripts, unsafe paths and changing files remain unproven.
 The initial witness supports a fresh chat with one submitted user message.
 
+A model-level text stop can precede an internal assistant continuation when ODS
+repairs a missing tool call. Such a stop is recorded in `interim_stops` with its
+hash, length, and model-call index. It is accepted only when it has nonempty text,
+no calls or pending results, and the next message is an assistant. A second user
+message remains unsupported. The last assistant stop must still match the exact
+retained API answer, and every model call remains in usage accounting. Load
+summaries separately count successful tasks with interim stops. This proves the
+terminal result; whether interim text was visible in the browser needs UI testing.
+
 These are operator-observed host records, not protection against a compromised
 host. Only declared tool names and hashes/counts are public; transcript text,
 arguments, outputs and paths are omitted. Model-call count is populated only

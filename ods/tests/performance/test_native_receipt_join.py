@@ -164,6 +164,55 @@ class NativeJoinTests(unittest.TestCase):
         self.assertFalse(out["tool_execution_proven"])
         self.assertFalse(out["success"])
 
+    def test_interim_model_stop_preserves_all_calls_and_final_binding(self):
+        f = self.fixture()
+        data = rows()
+        interim = copy.deepcopy(data[-1])
+        interim['message']['content'][0]['text'] = '155'
+        data.insert(1, interim)
+        f.publish(data)
+        out = f.witness.finish(f.record())
+        self.assertTrue(out['success'], out)
+        self.assertTrue(out['tool_execution_proven'])
+        self.assertEqual(out['model_calls_observed'], 3)
+        self.assertEqual(out['model_calls_completed'], 3)
+        self.assertEqual(out['usage']['totalTokens'], 105)
+        self.assertEqual(out['interim_stop_count'], 1)
+        self.assertEqual(out['interim_stops'], [
+            {'model_call_index':1, 'answer_sha256':sha('155'), 'answer_chars':3}])
+
+    def test_interim_stop_does_not_relax_other_boundaries(self):
+        for case in ('empty','call-bearing-stop','pending-before-stop','new-user','api-interim-hash','missing-usage'):
+            with self.subTest(case=case):
+                f = self.fixture()
+                data = rows()
+                interim = copy.deepcopy(data[-1])
+                interim['message']['content'][0]['text'] = '155'
+                data.insert(1, interim)
+                record = f.record()
+                if case == 'empty':
+                    interim['message']['content'] = []
+                elif case == 'call-bearing-stop':
+                    interim['message']['content'].append(copy.deepcopy(data[2]['message']['content'][0]))
+                elif case == 'pending-before-stop':
+                    data[1],data[2] = data[2],data[1]
+                elif case == 'new-user':
+                    data.insert(2,copy.deepcopy(data[0]))
+                elif case == 'api-interim-hash':
+                    record = f.record('155')
+                elif case == 'missing-usage':
+                    interim['message'].pop('usage')
+                f.publish(data)
+                out = f.witness.finish(record)
+                if case == 'missing-usage':
+                    self.assertTrue(out['success'])  # Correctness proof can survive unknown cost.
+                    self.assertIsNone(out['usage'])
+                    self.assertEqual(out['model_calls_observed'],3)
+                    self.assertEqual(out['model_calls_completed'],2)
+                else:
+                    self.assertFalse(out['binding_proven'],out)
+                    self.assertFalse(out['success'])
+
     def test_bad_call_order_and_identity_fail_closed(self):
         for case in (
             "result-before-call",

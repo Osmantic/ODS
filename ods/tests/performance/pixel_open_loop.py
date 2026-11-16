@@ -90,6 +90,9 @@ def _summary(config, plan, records, elapsed, stop, interrupted, sources):
             "submission_attempted": sum(r["submission_attempted"] is True for r in records),
             "submission_unknown": sum(r["submission_attempted"] is None for r in records),
             "successful_tasks": len(successful), "answer_quality_pass": sum(r.get("answer_quality_pass") is True for r in receipts),
+            "successful_tasks_with_interim_stops": sum(
+                (r["receipt"].get("native_receipt") or {}).get("interim_stop_count", 0) > 0 for r in successful
+                if (r["receipt"].get("native_receipt") or {}).get("interim_stop_count") is not None),
             "quality_failures": sum(r.get("result_state") == "complete" and r.get("quality_pass") is False for r in receipts),
             "unresolved_tasks": sum(r.get("admission_safe") is not True for r in receipts),
             "censored": sum(r.get("censored") is True for r in receipts), "refusals_by_reason": refusals,
