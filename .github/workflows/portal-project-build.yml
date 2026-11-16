@@ -42,6 +42,16 @@ jobs:
           trap stop_sampler EXIT
           python -m pytest -q extensions/services/pixel-agent/tests/test_project_*.py \
             tests/test_pixel_project_install.py tests/test_pixel_runtime_budget.py
+      - name: Record Docker-info process snapshots
+        if: always()
+        run: |
+          if test -s "$RUNNER_TEMP/docker-info-stall.jsonl"; then
+            cat "$RUNNER_TEMP/docker-info-stall.jsonl"
+          elif test -f "$RUNNER_TEMP/docker-info-stall.jsonl"; then
+            echo 'No slow docker-info process observed by sampler'
+          else
+            echo 'Sampler output unavailable; no process-state conclusion'
+          fi
       - name: Portal registration and transport
         run: node --test extensions/services/pixel-agent/tests/project_*.test.mjs
       - name: Diagnose failed Docker execution
@@ -80,8 +90,4 @@ jobs:
           print(json.dumps(result, indent=2))
           PY
           timeout 10s sudo journalctl -u docker.service -u containerd.service --since '-10 min' --no-pager -n 120 || true
-          if test -s "$RUNNER_TEMP/docker-info-stall.jsonl"; then
-            cat "$RUNNER_TEMP/docker-info-stall.jsonl"
-          else
-            echo 'No slow docker-info process observed by sampler'
-          fi
+

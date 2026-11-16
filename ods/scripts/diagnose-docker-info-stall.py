@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-import os, sys, json, time, signal
+import os
+import sys
+import json
+import time
+import signal
 
 STOP = False
 
@@ -24,7 +28,7 @@ def _read_text(path, limit=65536):
         return None
 
 def _parse_status(text):
-    out = {}
+    out: dict[str, str] = {}
     if not text:
         return out
     for line in text.splitlines():
@@ -123,7 +127,7 @@ def _fd_kinds(procroot, pid):
     return counts
 
 def _threads(procroot, pid, cap=24):
-    out = []
+    out: list[dict[str, object]] = []
     td = os.path.join(procroot, str(pid), "task")
     try:
         tids = os.listdir(td)
@@ -189,7 +193,7 @@ def scan(procroot="/proc"):
     return out
 
 def _descendants(procroot, root_pid, max_n=8):
-    children = {}
+    children: dict[int, list[int]] = {}
     for pid in _list_pids(procroot):
         st = _read_text(os.path.join(procroot, str(pid), "stat"))
         if not st:
@@ -198,7 +202,7 @@ def _descendants(procroot, root_pid, max_n=8):
         if not p:
             continue
         children.setdefault(p["ppid"], []).append(pid)
-    out = []
+    out: list[int] = []
     stack = list(children.get(root_pid, []))
     while stack and len(out) < max_n:
         p = stack.pop(0)
