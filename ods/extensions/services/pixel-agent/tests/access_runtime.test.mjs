@@ -18,6 +18,15 @@ function fixture() {
 const token = 'a'.repeat(64), other = 'b'.repeat(64);
 const runtimeUrl = new URL('../plugin/access-runtime.mjs', import.meta.url).href;
 const linux = {skip: process.platform !== 'linux'};
+test('discovery never creates or claims an access-state directory',t=>{
+  const options=fixture();t.after(()=>fs.rmSync(path.dirname(options.directory),{recursive:true,force:true}));
+  const runtime=createAccessRuntime({...options,discovery:true});
+  assert.equal(runtime.status().available,false);
+  assert(!fs.existsSync(options.directory));
+  assert.deepEqual(runtime.admit(),{outcome:'pass'});
+  assert.throws(()=>runtime.acquire(token,other),/unavailable/);
+  assert(!fs.existsSync(options.directory));
+});
 test('startup diagnostics distinguish qualification from private state failures', t => {
   const cases = [
     {change: o => {o.hooksAllowed = false;}, stage: null, qualification: 'conversation-hooks'},

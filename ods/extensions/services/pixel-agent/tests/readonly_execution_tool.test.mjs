@@ -38,6 +38,17 @@ test('normalizeReadonlyExec accepts minimal and full requests', () => {
   );
 });
 
+test('command size ceiling is enforced before execution with the grammar-compatible schema',async()=>{
+  const admission=createReadonlyExecAdmission();let executions=0;
+  const tool=createReadonlyExecTool(factory,{admission,scopeForContext:active=>active,
+    execute:async()=>{executions++;return {details:{status:'completed',exitCode:0}};}});
+  const valid={command:'x'.repeat(16384)};
+  admitDirect(admission,baseContext(),valid);
+  assert.equal((await tool.execute('call-1',valid)).details.status,'completed');
+  const result=await tool.execute('call-2',{command:'x'.repeat(16385)});
+  assert.equal(result.isError,true);assert.equal(result.details.code,'invalid-command');assert.equal(executions,1);
+});
+
 test('normalizeReadonlyExec rejects unknown keys, traversal, absolute, backslash, control, bad timeout', () => {
   assert.throws(() => normalizeReadonlyExec({command: 'ls', extra: 1}), /unknown-readonly-exec-field/);
   assert.throws(() => normalizeReadonlyExec({command: 'ls', workdir: '../x'}), /invalid-workdir/);

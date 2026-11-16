@@ -106,7 +106,7 @@ function entry(root) {
     withPixelCronDeliveryDefault, withCronCommandPayloadBlock, withPixelSubagentWorkspace,
     getSessionEntry: () => undefined, resolveStorePath: () => undefined, resolveUserPath: value => value,
     resolveAgentWorkspaceDir: config => config?.agents?.list?.find(agent => agent.id === 'pixel')?.workspace,
-    bundleAdmission: createWorkspaceBundleAdmission(), artifactAdmission: createWorkspaceArtifactAdmission(),
+    bundleAdmission: createWorkspaceBundleAdmission(), artifactAdmission: createWorkspaceArtifactAdmission(), readonlyAdmission: {before(){},after(){}},
     projectRunControl: createProjectRunControl(), projectSnapshots: {before() {}, end() {}}, compactToolResultEnvelope,
   });
   return {callbacks, delivery: links.delegationDelivery, guard: links.toolLoopGuard};

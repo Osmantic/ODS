@@ -119,8 +119,8 @@ const workspaceProjects = createWorkspaceProjects();
 // deletion removes the chat's card with its transcripts.
 const pendingClarifications = createPendingClarifications();
 const taskActivity = createTaskActivity({agentId:AGENT_ID, goalForRun:id=>goalProgress.projection(id),projectsForSession:key=>workspaceProjects.forSession(key)});
-let execCancellationControl;
-let accessRuntime;
+let registeredExecCancellationControl;
+let registeredAccessRuntime;
 let projectSnapshots;
 let contextCompaction;
 let conversationImageLifecycle;
@@ -302,14 +302,23 @@ export default definePluginEntry({
       } catch { /* preserve explicit unknown observations */ }
       runtimeIdentity = createRuntimeIdentity({pluginRoot, modulePath, openclawVersion:OPENCLAW_VERSION});
     }
-    execCancellationControl ??= createExecCancellationControl({
+    const discoveryRegistration = api.registrationMode === 'discovery';
+    const stateDirectory = !discoveryRegistration ? api.runtime?.state?.resolveStateDir?.() : undefined;
+    const makeExecControl = () => createExecCancellationControl({
+      ...(stateDirectory ? {root: `${stateDirectory}/.ods-exec-control`} : {}),
       executionHost: executionHostForAgent(api.config, AGENT_ID),
     });
-    accessRuntime ??= createAccessRuntime({config: () => api.config,
+    const execCancellationControl = discoveryRegistration ? makeExecControl()
+      : registeredExecCancellationControl ??= makeExecControl();
+    const makeAccessRuntime = () => createAccessRuntime({config: () => api.config,
+      discovery: discoveryRegistration,
+      ...(stateDirectory ? {directory: `${stateDirectory}/.ods-access-runtime`} : {}),
       settingsConfig: typeof api.runtime?.config?.current === 'function' ? () => api.runtime.config.current() : undefined,
       createTools: createOpenClawCodingTools, resolveSandbox: resolveSandboxContext,
       execControl: () => execCancellationControl, runtimeVersion: OPENCLAW_VERSION,
       hooksAllowed: api.config?.plugins?.entries?.["pixel-ods"]?.hooks?.allowConversationAccess === true});
+    const accessRuntime = discoveryRegistration ? makeAccessRuntime()
+      : registeredAccessRuntime ??= makeAccessRuntime();
     registerBootstrapCapabilities(api);
     const managedRuntime = managedRuntimeRegistry.register(api, accessRuntime);
     if (managedRuntime) currentManagedRuntime = managedRuntime;

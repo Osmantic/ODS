@@ -242,11 +242,12 @@ export function executionHostForAgent(config, id = 'pixel') {
 }
 
 export function createAccessRuntime({directory = path.join(os.homedir(), '.openclaw', '.ods-access-runtime'),
+  discovery = false,
   config, settingsConfig, createTools, resolveSandbox, execControl, runtimeVersion = 'unknown', hooksAllowed = false,
   readProcessSessions, now = () => performance.now(),
   probeDirectory = path.join(process.platform === 'darwin' ? '/private/var/lib/ods-pixel-access-probes' :
     '/var/lib/ods-pixel-access-probes', String(process.getuid?.() ?? 'unsupported'))} = {}) {
-  if (typeof process.getuid !== 'function') {
+  if (discovery || typeof process.getuid !== 'function') {
     const unavailable = () => { throw new Error('POSIX admission unavailable'); };
     return {status: () => ({available: false, phase: 'unavailable', revision: null, active: 0, proof: null}),
       admit: () => ({outcome: 'pass'}), finish() {}, beforeTool() {}, afterTool() {},

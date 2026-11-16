@@ -193,7 +193,9 @@ const PARAMETERS = {
   additionalProperties: false,
   required: ['command'],
   properties: {
-    command: {type: 'string', minLength: 1, maxLength: MAX_COMMAND},
+    // Large bounded string repetitions exceed llama.cpp's grammar limit.
+    // Enforce the exact ceiling in normalizeReadonlyExec before admission.
+    command: {type: 'string', minLength: 1, description: 'Shell command; maximum 16384 characters, enforced before execution.'},
     workdir: {type: 'string', description: 'Relative POSIX path within the owner workspace; defaults to ".".'},
     timeoutSeconds: {type: 'integer', minimum: 1, maximum: MAX_TIMEOUT, description: 'Defaults to 10.'},
   },

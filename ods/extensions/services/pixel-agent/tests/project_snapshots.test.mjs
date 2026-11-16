@@ -556,7 +556,7 @@ test('the plugin entry waits for the copy in before_tool_call, after the final d
     api: {config: {}, on: (name, callback) => { callbacks[name] = callback; }},
     AGENT_ID: 'pixel', toolLoopGuard: {beforeToolCall: () => guardDecision},
     accessRuntime: {isProbe: context => context.runId === 'private-proof', beforeTool: () => undefined},
-    goalProgress: {before() {}}, bundleAdmission: {before() {}}, artifactAdmission: {before() {}}, taskActivity: {before() {}},
+    goalProgress: {before() {}}, bundleAdmission: {before() {}}, artifactAdmission: {before() {}}, readonlyAdmission: {before() {}}, taskActivity: {before() {}},
     projectRunControl: {before() {}}, delegationDelivery: {blocked() {}, before() {}, hasPendingChildren() { return false; }},
     withPixelCronDeliveryDefault: decision => decision, withPixelSubagentWorkspace: decision => decision,
     withCronCommandPayloadBlock: decision => decision, getSessionEntry: () => undefined, resolveStorePath: () => undefined,

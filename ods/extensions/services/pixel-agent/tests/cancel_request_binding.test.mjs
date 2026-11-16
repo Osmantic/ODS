@@ -13,6 +13,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {CLIENT_CANCELLED_REASON, OWNER_CANCELLED_REQUEST_CONTEXT, createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
+import {OWNER_FILE_MUTATION_FORBIDDEN_REASON} from '../plugin/owner-readonly-tools.mjs';
 import {UNREAD_SOURCES_REVISION_INSTRUCTION, createCompletionAssurance} from '../plugin/completion-assurance.mjs';
 import {createHostCitationVerifier} from '../plugin/citation-verification.mjs';
 import {RUN_PROGRESS_LIMITS} from '../plugin/run-progress-budget.mjs';
@@ -97,7 +98,7 @@ test('round 067 replay: after the cancel, the literal reply is delivered unrevis
   const {guard, drains, finalize, research} = fleetGuard();
   // 12:51:32.3 A starts; 12:51:34.0 the owner cancels before any output.
   guard.observeRun(context(RUN_A), 'pixel', {prompt: RESEARCH + PORTAL, messages: []});
-  assert.equal(guard.promptContextForRun(RUN_A), undefined);
+  assert.equal(guard.promptContextForRun(RUN_A), OWNER_FILE_MUTATION_FORBIDDEN_REASON);
   assert.equal(await guard.abortUserRun(USER), true);
   assert.deepEqual(drains, [[SESSION_ID, SESSION_KEY]]);
 
@@ -204,12 +205,15 @@ for (const phase of ['before', 'during', 'after']) {
 }
 
 test('a resend of the cancelled request, or a new research request, still gets the attribution revision', async () => {
-  for (const [name, prompt] of [['resend', RESEARCH], ['new research', 'Search the web for Philadelphia events this weekend and cite sources.']]) {
+  for (const [name, prompt, expectedContext] of [
+    ['resend', RESEARCH, `${OWNER_CANCELLED_REQUEST_CONTEXT}\n\n${OWNER_FILE_MUTATION_FORBIDDEN_REASON}`],
+    ['new research', 'Search the web for Philadelphia events this weekend and cite sources.', OWNER_CANCELLED_REQUEST_CONTEXT],
+  ]) {
     const {guard, finalize, research} = fleetGuard();
     guard.observeRun(context(RUN_A), 'pixel', {prompt: RESEARCH + PORTAL, messages: []});
     assert.equal(await guard.abortUserRun(USER), true);
     guard.observeRun(context(RUN_B), 'pixel', {prompt: prompt + PORTAL, messages: [userMessage(RESEARCH + PORTAL)]});
-    assert.equal(guard.promptContextForRun(RUN_B), OWNER_CANCELLED_REQUEST_CONTEXT, name);
+    assert.equal(guard.promptContextForRun(RUN_B), expectedContext, name);
     research(RUN_B);
     const decision = await finalize(RUN_B, 'Porchfest and Boyz II Men headline this weekend in Philadelphia.');
     assert.equal(decision?.action, 'revise', name);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createToolLoopGuard, OWNER_NO_TOOLS_REASON} from '../plugin/tool-loop-guard.mjs';
-import {OWNER_FILE_MUTATION_FORBIDDEN_REASON} from '../plugin/owner-readonly-tools.mjs';
+import {OWNER_FILE_MUTATION_FORBIDDEN_REASON, ownerReadonlyToolAllowed} from '../plugin/owner-readonly-tools.mjs';
 import {createReadonlyExecutionAuthority} from '../plugin/readonly-execution-authority.mjs';
 import {RUN_PROGRESS_LIMITS} from '../plugin/run-progress-budget.mjs';
 
@@ -66,6 +66,53 @@ test('read tools and isolated computation stay available, directly and deferred'
   ]) {
     const result = fixture().call(name,params);
     assert.notEqual(result?.block,true,result?.blockReason);
+  }
+});
+
+test('owner file ban preserves authorized browser observation but denies mutation actions', () => {
+  const allowed = [
+    ['browser',{action:'open',url:'http://127.0.0.1:3001/pixel-preview/site-test/'}],
+    ['browser',{action:'navigate',targetUrl:'http://127.0.0.1:3001/'}],
+    ['browser',{action:'snapshot',targetId:'tab-1'}],
+    ['browser',{action:'screenshot',targetId:'tab-1'}],
+    ['browser',{action:'console',targetId:'tab-1'}],
+    ['browser',{action:'tabs'}],
+    ['browser',{action:'status'}],
+    ['browser',{action:'focus',targetId:'tab-1'}],
+    ['browser',{action:'close',targetId:'tab-1'}],
+    ['tool_call',{id:'browser',args:{action:'open',url:'http://127.0.0.1:3001/'}}],
+    ['tool_call',{id:'openclaw:browser:browser',args:{action:'snapshot',targetId:'tab-1'}}],
+    ['tool_call',{id:'openclaw:core:browser',args:{action:'navigate',targetUrl:'http://127.0.0.1:3001/'}}],
+  ];
+  for (const [name,params] of allowed) {
+    assert.equal(ownerReadonlyToolAllowed(name,params),true,`${name} ${JSON.stringify(params)}`);
+  }
+  const denied = [
+    ['browser',{action:'act',targetId:'tab-1'}],
+    ['browser',{action:'evaluate',expression:'1+1'}],
+    ['browser',{action:'upload',targetId:'tab-1'}],
+    ['browser',{action:'pdf',targetId:'tab-1'}],
+    ['browser',{action:'download',targetId:'tab-1'}],
+    ['browser',{action:'unknown'}],
+    ['browser',{}],
+    ['browser',{action:'open',url:'http://127.0.0.1:3001/',path:'/tmp/x'}],
+    ['browser',{action:'screenshot',targetId:'tab-1',filePath:'/tmp/x.png'}],
+    ['browser',{action:'screenshot',targetId:'tab-1',paths:['/tmp/x.png']}],
+    ['browser',{action:'screenshot',targetId:'tab-1',filename:'x.png'}],
+    ['browser',{action:'screenshot',targetId:'tab-1',outputPath:'/tmp/x.png'}],
+    ['browser',{action:'screenshot',targetId:'tab-1',outputFile:'/tmp/x.png'}],
+    ['browser',{action:'download',targetId:'tab-1',downloadPath:'/tmp/x'}],
+    ['tool_call',{id:'browser',args:{action:'evaluate',expression:'1+1'}}],
+    ['tool_call',{id:'openclaw:browser:browser',args:{action:'download',targetId:'tab-1'}}],
+    ['tool_call',{id:'openclaw:core:browser',args:{action:'screenshot',targetId:'tab-1',outputPath:'/tmp/x.png'}}],
+    ['tool_call',{id:'browser'}],
+    ['tool_call',{id:'browser',args:'not-an-object'}],
+    ['tool_call',{id:'browser',args:[]}],
+    ['tool_call',{id:'openclaw:untrusted:browser',args:{action:'open',url:'http://127.0.0.1:3001/'}}],
+    ['tool_call',{id:'openclaw:core:browser',args:{action:'open',url:'http://127.0.0.1:3001/',path:'/tmp/x'}}],
+  ];
+  for (const [name,params] of denied) {
+    assert.equal(ownerReadonlyToolAllowed(name,params),false,`${name} ${JSON.stringify(params)}`);
   }
 });
 

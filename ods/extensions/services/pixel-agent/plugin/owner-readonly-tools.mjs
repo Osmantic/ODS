@@ -10,6 +10,27 @@ const ODS_READ_TOOLS = new Set([
   'pixel_ods_history', 'pixel_ods_status', 'pixel_ods_apps_list', 'pixel_ods_extensions',
   'pixel_ods_host_observe', 'pixel_ods_web_extract', 'pixel_ods_extension_request_status',
 ]);
+// Browser observation is read-only with respect to the owner workspace. Only
+// known read/navigation actions are permitted; mutation-capable actions and
+// caller-supplied file-output fields are denied. Later browser configuration
+// and private-address gates remain authoritative for these calls.
+const BROWSER_READ_ACTIONS = new Set([
+  'open', 'navigate', 'snapshot', 'screenshot', 'console', 'tabs', 'status', 'focus', 'close',
+]);
+const BROWSER_FILE_OUTPUT_FIELDS = [
+  'path', 'filePath', 'paths', 'filename', 'outputPath', 'outputFile', 'downloadPath',
+];
+const BROWSER_TOOL_IDS = new Set([
+  'browser', 'openclaw:browser:browser', 'openclaw:core:browser',
+]);
+function browserObservationAllowed(params) {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return false;
+  if (typeof params.action !== 'string' || !BROWSER_READ_ACTIONS.has(params.action)) return false;
+  for (const field of BROWSER_FILE_OUTPUT_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(params, field)) return false;
+  }
+  return true;
+}
 
 export const OWNER_FILE_MUTATION_FORBIDDEN_REASON =
   'The owner requested no file changes in this turn. Read existing files normally. For calculations or shell-based analysis, discover and use pixel_ods_readonly_exec; it protects the owner workspace from writes. Do not use ordinary exec, file-writing tools, or delegation to bypass this restriction.';
@@ -30,9 +51,15 @@ export function ownerReadonlyToolAllowed(toolName, params, internalExecution = f
     const id = params?.id;
     if (typeof id !== 'string') return false;
     if (id === 'tool_search') return true;
+    if (BROWSER_TOOL_IDS.has(id)) {
+      const args = params?.args;
+      if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+      return browserObservationAllowed(args);
+    }
     if (id.startsWith('openclaw:core:')) return CORE_READ_TOOLS.has(id.slice('openclaw:core:'.length));
     if (id.startsWith('openclaw:pixel-ods:')) return allowedOds(id.slice('openclaw:pixel-ods:'.length));
     return CORE_READ_TOOLS.has(id) || allowedOds(id);
   }
+  if (BROWSER_TOOL_IDS.has(toolName)) return browserObservationAllowed(params);
   return CORE_READ_TOOLS.has(toolName) || allowedOds(toolName);
 }
