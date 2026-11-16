@@ -166,7 +166,14 @@ public class MockCurlApp {
     }
 }
 '@
-    Add-Type -TypeDefinition $mockCurlSrc -OutputAssembly $mockCurlExe -OutputType ConsoleApplication
+    $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+    if (-not (Test-Path -LiteralPath $compiler)) {
+        $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework/v4.0.30319/csc.exe'
+    }
+    $mockCurlCs = Join-Path $mockCurlBin 'mockcurl.cs'
+    [IO.File]::WriteAllText($mockCurlCs, $mockCurlSrc)
+    & $compiler /nologo /target:exe ("/out:$mockCurlExe") $mockCurlCs
+    if ($LASTEXITCODE -ne 0) { throw 'Could not compile mock curl fixture' }
 
     $spacedModelsDir = Join-Path $tempRoot 'models with spaces'
     $spacedGgufFile = 'model with spaces.gguf'
