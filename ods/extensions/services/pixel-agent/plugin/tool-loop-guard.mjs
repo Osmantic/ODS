@@ -5350,8 +5350,17 @@ function ownerRequestsPythonCompute(text) {
   if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\s+(?:(?:actually|really)\s+)?(?:execute|executing|run|running|interpret|interpreting|use|using|call|calling|invoke|invoking|calculate|compute|evaluate|check|verify)\b/i.test(lane)) return false;
   return lane.split(/[!?;\n]+|\.(?=\s|$)/).some(raw => {
     const clause = raw.trim().replace(/^(?:please|can\s+you|could\s+you|would\s+you)\s+/i, '');
-    return /^use\s+(?:(?:the|your)\s+)?python(?:\s+(?:tool|interpreter|execution\s+tool|exec\s+tool))?\s+to\s+(?:calculate|compute|evaluate|check|verify)\b/i.test(clause) ||
-      /^(?:calculate|compute|evaluate|check|verify)\b[^.!?;\n]{0,200}\b(?:using|with)\s+(?:(?:the|your)\s+)?python\b/i.test(clause);
+    // "Read the CSV and use Python to calculate ..." is two owner actions.
+    // Split only after an imperative file-read head, so explanations and
+    // reported instructions do not acquire an execution obligation.
+    const actions = /^(?:read|open|load|inspect)\b/i.test(clause)
+      ? clause.split(/\s+(?:and(?:\s+then)?|then)\s+(?=(?:please\s+)?(?:use|calculate|compute|evaluate|check|verify)\b)/i)
+      : [clause];
+    return actions.some(action => {
+      const directive = action.replace(/^please\s+/i, '');
+      return /^use\s+(?:(?:the|your)\s+)?python(?:\s+(?:tool|interpreter|execution\s+tool|exec\s+tool))?\s+to\s+(?:calculate|compute|evaluate|check|verify)\b/i.test(directive) ||
+        /^(?:calculate|compute|evaluate|check|verify)\b[^.!?;\n]{0,200}\b(?:using|with)\s+(?:(?:the|your)\s+)?python\b/i.test(directive);
+    });
   });
 }
 
@@ -14711,8 +14720,11 @@ export function createToolLoopGuard({
           !workspaceArtifactUnavailableReason({...context, runId})) {
         state.executionRequestRetried = true;
         return {action:'revise', reason:'The requested code run has no execution receipt.', retry:{
-          instruction:'The owner requested actual code execution. Use the exec tool to run the requested code, ' +
-            'then report the command and its observed output. Do not substitute an estimated or inferred answer.',
+          instruction:'The owner requested actual code execution. ' +
+            (state.ownerFileMutationForbidden
+              ? 'Discover and use pixel_ods_readonly_exec to run the requested calculation without changing owner files. Use relative workspace input paths and omit workdir for the workspace root. Do not use ordinary exec or delegation to bypass the file restriction. '
+              : 'Use the exec tool to run the requested code. ') +
+            'Report its observed output in the owner-requested format. Do not substitute an estimated or inferred answer.',
           idempotencyKey:'pixel-ods-explicit-code-execution', maxAttempts:1}};
       }
       const decision = state?.extensionCompletionGate?.active && !extensionStopped

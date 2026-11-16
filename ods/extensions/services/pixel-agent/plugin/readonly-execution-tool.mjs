@@ -185,8 +185,9 @@ export function createReadonlyExecAdmission() {
 }
 
 const DESCRIPTION = 'Run a read-only calculation or file analysis in the owner workspace. ' +
-  'The shell starts in the owner workspace. No network access. Output is returned in the response. ' +
-  'Cannot install packages. Owner files are not modified.';
+  'The shell starts at /agent, the read-only owner workspace mount. Use relative input paths or /agent paths, not host workspace paths. ' +
+  'Omit workdir for the workspace root; a workdir must be a relative subdirectory, never an absolute path. ' +
+  'No network access or package installation. Output is returned in the response. Owner files are not modified.';
 
 const PARAMETERS = {
   type: 'object',
@@ -195,8 +196,8 @@ const PARAMETERS = {
   properties: {
     // Large bounded string repetitions exceed llama.cpp's grammar limit.
     // Enforce the exact ceiling in normalizeReadonlyExec before admission.
-    command: {type: 'string', minLength: 1, description: 'Shell command; maximum 16384 characters, enforced before execution.'},
-    workdir: {type: 'string', description: 'Relative POSIX path within the owner workspace; defaults to ".".'},
+    command: {type: 'string', minLength: 1, description: 'Shell command; use relative input paths or /agent paths for owner files. Maximum 16384 characters, enforced before execution.'},
+    workdir: {type: 'string', description: 'Omit for the owner workspace root, or use a relative POSIX subdirectory such as "data". Absolute paths and parent traversal are rejected. Defaults to ".".'},
     timeoutSeconds: {type: 'integer', minimum: 1, maximum: MAX_TIMEOUT, description: 'Defaults to 10.'},
   },
 };
@@ -221,10 +222,15 @@ export function createReadonlyExecTool(context, {admission, execute, scopeForCon
       try {
         request = normalizeReadonlyExec(args);
       } catch (error) {
+        const code = sanitizeError(error);
+        const guidance = code === 'invalid-workdir'
+          ? ' Omit workdir to use the owner workspace root, or provide a relative subdirectory such as "data". ' +
+            'Absolute paths and parent traversal are rejected. The owner workspace is mounted at /agent; use relative input paths in command.'
+          : '';
         return {
           isError: true,
-          details: {status: 'failed', code: sanitizeError(error)},
-          content: [{type: 'text', text: 'Read-only execution rejected: ' + sanitizeError(error) + '.'}],
+          details: {status: 'failed', code},
+          content: [{type: 'text', text: 'Read-only execution rejected: ' + code + '.' + guidance}],
         };
       }
       try {

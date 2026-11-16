@@ -38,6 +38,30 @@ test('normalizeReadonlyExec accepts minimal and full requests', () => {
   );
 });
 
+test('invalid working directories explain the correction without executing or echoing input', async () => {
+  const admission = createReadonlyExecAdmission();
+  const executed = [];
+  const tool = createReadonlyExecTool(factory, {admission, scopeForContext: active => active,
+    execute: async (_scope, request) => { executed.push(request); return {details:{status:'completed',exitCode:0}}; }});
+  assert.match(tool.description, /starts at \/agent/);
+  assert.match(tool.description, /Omit workdir/);
+  for (const workdir of ['/workspace', '/private-owner-path', '../outside']) {
+    const result = await tool.execute('invalid', {command:'cat orders.csv', workdir});
+    assert.equal(result.isError, true);
+    assert.equal(result.details.code, 'invalid-workdir');
+    assert.equal(executed.length, 0);
+    assert.match(result.content[0].text, /Omit workdir.*relative subdirectory/);
+    assert.match(result.content[0].text, /mounted at \/agent/);
+    assert.equal(result.content[0].text.includes(workdir), false);
+  }
+  const corrected = {command:'cat data/orders.csv'};
+  admitDirect(admission, baseContext(), corrected);
+  assert.equal((await tool.execute('call-1', corrected)).details.exitCode, 0);
+  assert.deepEqual(executed, [{...corrected,workdir:'.',timeoutSeconds:10}]);
+  const unknown = await tool.execute('other', {command:'cat orders.csv',extra:true});
+  assert.equal(unknown.content[0].text, 'Read-only execution rejected: unknown-readonly-exec-field.');
+});
+
 test('command size ceiling is enforced before execution with the grammar-compatible schema',async()=>{
   const admission=createReadonlyExecAdmission();let executions=0;
   const tool=createReadonlyExecTool(factory,{admission,scopeForContext:active=>active,
