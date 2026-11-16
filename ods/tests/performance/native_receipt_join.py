@@ -332,6 +332,8 @@ class NativeReceiptWitness:
             "tool_execution_proven": None,
             "model_calls_observed": None,
             "model_calls_completed": None,
+            "interim_stop_count": None,
+            "interim_stops": None,
             "usage": None,
             "quality_pass": False,
             "success": False,
@@ -417,6 +419,7 @@ class NativeReceiptWitness:
         last_ts = None
         native_prompt_sha = None
         pending_calls = []
+        interim_stops = []
         for row in rows:
             if "message" not in row:
                 continue
@@ -443,7 +446,17 @@ class NativeReceiptWitness:
             if role != "user" and user_seen != 1:
                 return self._unproven(["user_not_first"])
             if last_message is not None and last_message.get("role") == "assistant" and last_message.get("stopReason") == "stop":
-                return self._unproven(["message_after_final"])
+                # A model stop is not necessarily the owner request's terminal
+                # result: ODS may continue an assistant that omitted a required
+                # tool. Only an assistant can continue a complete textual stop;
+                # final binding still uses the last row and retained API hash.
+                if role != "assistant" or pending_calls or _extract_calls(last_message.get("content")):
+                    return self._unproven(["message_after_final"])
+                interim_text = _extract_text(last_message.get("content"))
+                if not interim_text:
+                    return self._unproven(["empty_interim_stop"])
+                interim_stops.append({"model_call_index": model_observed,
+                                      "answer_sha256": _sha(interim_text), "answer_chars": len(interim_text)})
             if role == "user":
                 user_seen += 1
                 if user_seen > 1:
@@ -595,6 +608,8 @@ class NativeReceiptWitness:
             "tool_execution_proven": tool_proven,
             "model_calls_observed": model_observed,
             "model_calls_completed": model_completed,
+            "interim_stop_count": len(interim_stops),
+            "interim_stops": interim_stops,
             "usage": None if usage_unknown else usage_sum,
             "quality_pass": quality,
             "success": success,

@@ -81,6 +81,15 @@ remains a bound failure. Unsupported native continuations, ambiguous identities,
 stale or malformed transcripts, unsafe paths and changing files remain unproven.
 The initial witness supports a fresh chat with one submitted user message.
 
+A model-level text stop can precede an internal assistant continuation when ODS
+repairs a missing tool call. Such a stop is recorded in `interim_stops` with its
+hash, length, and model-call index. It is accepted only when it has nonempty text,
+no calls or pending results, and the next message is an assistant. A second user
+message remains unsupported. The last assistant stop must still match the exact
+retained API answer, and every model call remains in usage accounting. Load
+summaries separately count successful tasks with interim stops. This proves the
+terminal result; whether interim text was visible in the browser needs UI testing.
+
 These are operator-observed host records, not protection against a compromised
 host. Only declared tool names and hashes/counts are public; transcript text,
 arguments, outputs and paths are omitted. Model-call count is populated only
@@ -170,6 +179,56 @@ The existing paired comparator supports closed-loop probe receipts only.
 
 
 ## Seeded Poisson arrival process (exploratory)
+
+### Real-agent fixed/Poisson arrivals
+
+`pixel_open_loop.py` applies the same bounded arrival schedules to
+`pixel_adapter.run`, including retained results, exact-request recovery, and the
+optional native tool witness. Its manifest has `schema_version`, `base_url`,
+`api_key_env`, `timeout_s`, `recovery_timeout_s`, `tasks`, `concurrency`,
+`repetitions`, and `schedule_seed`. Each task uses the single-task adapter's
+`id`, `messages`, `validator`, and optional `required_tools`; each must contain
+exactly one fresh user message. Task IDs must be unique. Bounds are 100 tasks,
+100 repetitions, 1,000 planned arrivals, concurrency 1–8, and a 600-second arrival
+span. `--load-config` accepts the fixed/Poisson configurations below.
+
+```bash
+python3 pixel_open_loop.py --manifest agent-load.json --load-config load.json \
+  --out new-agent-run --native-sessions-dir /private/native/sessions
+```
+
+The credential environment variable must already be populated; never put its
+value in a manifest. A new output directory is required. `plan.json` persists
+every fresh chat/request identity before dispatch; `dispatches.jsonl` records
+dispatch intent before a worker can invoke the adapter. `requests.jsonl` has
+one terminal record per planned arrival, with the adapter receipt nested inside.
+Intent alone does not prove HTTP submission. On observer termination, use these
+exact identities for recovery; never automatically resubmit uncertain work.
+
+The generator has no client request queue. Busy or late arrivals are explicit
+refusals, including a second lag check after worker admission and receipt-file
+sync. `client_busy` is a load-generator limit, not server rejection. Unsafe or
+unknown results latch admission closed; a wrong answer with proven idle state
+remains a quality failure and does not stop the next scheduled request. A Python
+`admission_allowed` callback can stop new work for resource limits. The callback
+must be quick and thread-safe. Already-authorized workers drain; an external
+resource coordinator must cancel in-flight work using exact persisted identities.
+Interrupts drain workers and preserve their outcomes before raising. Receipt-write
+failures mark evidence incomplete and fail the run.
+
+`planned` includes the entire schedule; `offered` excludes future arrivals after
+the stop latch. Both denominators remain visible. Goodput counts correct,
+uncensored, successfully submitted tasks over the entire elapsed time, including
+drain and native observation. Arrival-to-completion includes observer work; the
+nested adapter latency measures its API boundary separately. p95 remains null
+below 100 successful observations. The clock is `perf_counter`, avoiding the
+coarse Windows clock used by some Python versions for `monotonic`.
+
+CLI exit 0 means all planned tasks succeeded, 1 means a complete study with
+failures/refusals, 2 means invalid input or incomplete evidence, and 130 means an
+interrupt. Python-only `request_runner` injection is for synthetic fixtures and
+is unavailable in manifests or the CLI. Neither fixture success nor a short live
+pilot qualifies serving capacity, model quality, browser latency, or process cleanup.
 
 The open-loop adapter supports an optional Poisson arrival process in addition to the default fixed schedule. The adapter measures offered load; it does not itself qualify capacity.
 
