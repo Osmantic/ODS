@@ -14564,7 +14564,20 @@ export function createToolLoopGuard({
     const outputLimit = state?.priorOutputLimit ? outputLimitContext(state.priorOutputLimit) : undefined;
     const readonly = state?.ownerFileMutationForbidden && !state.ownerNoTools
       ? OWNER_FILE_MUTATION_FORBIDDEN_REASON : undefined;
-    return [withdrawn, outputLimit, readonly].filter(Boolean).join('\n\n') || undefined;
+    // Ask for execution on the first attempt, before a prose-only answer can
+    // require the existing finalize retry. This model-only cue grants no tool
+    // authority and stops once work has been attempted or the owner run ends.
+    const readonlyExecCue = state?.executionRequested && state.ownerFileMutationForbidden &&
+      !state.ownerNoTools && !state.odsAborted && !state.recursiveDeleteDenied &&
+      !state.executionReceiptObserved && !state.executionRequestRetried &&
+      !state.toolExecutionAttempted && !state.extensionCompletionGate?.active &&
+      !state.codingExhausted && !state.runDeadlineReached &&
+      !state.progressBudget.exhaustedLanes.length &&
+      !state.pendingExecSessions.size && !state.execCallsInFlight.size && !state.backgroundExecStarted &&
+      !workspaceArtifactUnavailableReason(state.artifactOwnerContext)
+      ? 'Run the requested code with pixel_ods_readonly_exec before answering. Wait for its actual result and follow the owner-requested output format. Do not estimate or infer the result.'
+      : undefined;
+    return [withdrawn, outputLimit, readonly, readonlyExecCue].filter(Boolean).join('\n\n') || undefined;
   }
 
   // The owner stopped a clarification answer and sent the same answer again.
