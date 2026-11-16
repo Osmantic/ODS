@@ -22,6 +22,7 @@ OPTIONS = (
     ("--cache-ram", 0, 65536),
     ("--sleep-idle-seconds", -1, 86400),
     ("--checkpoint-min-step", 0, 262144),
+    ("--ubatch-size", 1, 512),
 )
 
 # Draft settings keep one .env name but llama.cpp has spelled the flag two ways.
@@ -187,6 +188,7 @@ def main():
     parser.add_argument("--cache-mib", default="")
     parser.add_argument("--idle-seconds", default="")
     parser.add_argument("--min-spacing", default="")
+    parser.add_argument("--ubatch", default="")
     # LLAMA_ARG_SPEC_TYPE is passed to llama-server by the caller; it is read
     # here only so that an explicit choice suppresses the default.
     parser.add_argument("--explicit-spec-type", default="")
@@ -204,7 +206,7 @@ def main():
     try:
         arguments = qualify(
             args.binary,
-            (args.interval, args.checkpoints, args.cache_mib, args.idle_seconds, args.min_spacing),
+            (args.interval, args.checkpoints, args.cache_mib, args.idle_seconds, args.min_spacing, args.ubatch),
             (args.draft_n_max, args.draft_type_k, args.draft_type_v),
             spec_type=args.explicit_spec_type,
             spec_default=args.spec_default,

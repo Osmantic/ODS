@@ -15926,6 +15926,16 @@ class AgentHandler(BaseHTTPRequestHandler):
                     "LLAMA_ARG_SPEC_TYPE",
                     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
                 }
+                # The opt-in native Mac microbatch was tested for this exact
+                # model/context/store. A new selection must qualify its own.
+                if gpu_backend == "apple" and (
+                    local_runtime_profile
+                    or env_pre.get("GGUF_FILE") != gguf_file
+                    or env_pre.get("ODS_ACTIVE_MODEL_STORE", "default") != updates["ODS_ACTIVE_MODEL_STORE"]
+                    or env_pre.get("CTX_SIZE") != str(context_length)
+                    or env_pre.get("GGUF_SHA256", "") != updates["GGUF_SHA256"]
+                ):
+                    remove_keys.add("LLAMA_ARG_UBATCH")
                 if gpu_assignment_plan:
                     remove_keys.update(gpu_assignment_plan.get("env_removals") or [])
                 remove_keys.difference_update(updates)
@@ -21522,8 +21532,13 @@ def _native_llama_tuning_arguments(
         ("LLAMA_ARG_CACHE_RAM", "--cache-mib"),
         ("LLAMA_ARG_SLEEP_IDLE_SECONDS", "--idle-seconds"),
         ("LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT", "--min-spacing"),
+        ("LLAMA_ARG_UBATCH", "--ubatch"),
     ) + _MACOS_QUALIFIED_DRAFT_KEYS
     explicit = any(env.get(key, "").strip() for key, _ in tuning_keys)
+    if not defaults and env.get("LLAMA_ARG_UBATCH", "").strip():
+        raise RuntimeError(
+            "LLAMA_ARG_UBATCH is not supported with a registered native runtime profile"
+        )
     fallback = ["--reasoning-format", reasoning_format] if defaults and reasoning_format else []
     if not explicit and not defaults:
         return []
@@ -21586,6 +21601,12 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
     if reasoning.strip().lower() in {"off", "on", "auto"}:
         reasoning = reasoning.strip().lower()
     reasoning_fmt = {"off": "none", "on": "deepseek"}.get(reasoning, reasoning)
+    # Validate explicit tuning before touching a working bridge or listener.
+    helper_reasoning = platform.system() == "Darwin" and profile is None
+    tuning_args = _native_llama_tuning_arguments(
+        env, llama_bin, defaults=profile is None,
+        reasoning_format=reasoning_fmt if helper_reasoning else "",
+    )
     # UI LAN access must not publish an unauthenticated inference endpoint.
     bind_addr = "127.0.0.1"
     _disable_conflicting_macos_bridge(env, bind_addr, _MACOS_LLM_BRIDGE_LABEL)
@@ -21626,7 +21647,6 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
     # On macOS the default runtime gets its reasoning flags from the tuning
     # helper below (--reasoning on b9014, where --reasoning-format none put an
     # empty think block into every reply). Everything else passes the format.
-    helper_reasoning = platform.system() == "Darwin" and profile is None
     if not helper_reasoning:
         args.extend(["--reasoning-format", reasoning_fmt])
     args.append("--metrics")
@@ -21648,12 +21668,7 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         value = env.get(env_key, "").strip()
         if value:
             args.extend([flag, value])
-    args.extend(_native_llama_tuning_arguments(
-        env,
-        llama_bin,
-        defaults=profile is None,
-        reasoning_format=reasoning_fmt if helper_reasoning else "",
-    ))
+    args.extend(tuning_args)
     if _normalize_key(env.get("LLAMA_ARG_NO_CACHE_PROMPT")) not in {"", "0", "false", "off", "no"}:
         args.append("--no-cache-prompt")
     llama_log.parent.mkdir(parents=True, exist_ok=True)

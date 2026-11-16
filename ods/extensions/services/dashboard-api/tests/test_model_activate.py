@@ -4745,6 +4745,50 @@ class TestModelActivateRollback:
         assert persisted["CTX_SIZE"] == "524288"
         assert persisted["MAX_CONTEXT"] == "524288"
 
+    def test_apple_native_activation_clears_ubatch_on_model_change(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path, gpu_backend="apple")
+        )
+        env_path.write_text(
+            env_path.read_text(encoding="utf-8") + "LLAMA_ARG_UBATCH=128\n",
+            encoding="utf-8",
+        )
+        llama_bin = install_dir / "bin" / "llama-server"
+        llama_bin.parent.mkdir(parents=True)
+        llama_bin.write_text("", encoding="utf-8")
+        lib_dir = install_dir / "lib"
+        lib_dir.mkdir(parents=True)
+        (lib_dir / "constants.sh").write_text("# test fixture\n", encoding="utf-8")
+        (lib_dir / "bridge-manager.sh").write_text("# test fixture\n", encoding="utf-8")
+        launched_envs = []
+
+        def fake_launch(runtime_env_path, *_args):
+            launched_envs.append(_mod.load_env(runtime_env_path))
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_mod, "_configure_macos_llm_bridge", lambda _env_path: None)
+        monkeypatch.setattr(_mod, "_launch_native_llama_server", fake_launch)
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "run",
+            lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0, stdout=_llama_identity_response("new-model.gguf") if cmd and cmd[0] == "curl" else "", stderr=""),
+        )
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        assert len(launched_envs) == 1
+        assert "LLAMA_ARG_UBATCH" not in launched_envs[0]
+        assert "LLAMA_ARG_UBATCH" not in _mod.load_env(env_path)
+
     def test_apple_missing_native_binary_fails_before_config_mutation(
         self,
         tmp_path,
