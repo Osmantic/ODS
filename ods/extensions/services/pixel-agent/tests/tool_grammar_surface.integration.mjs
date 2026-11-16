@@ -46,9 +46,9 @@ const {tools: offered} = applyCatalog({tools: allTools, config, agentId: 'pixel'
   runId: randomUUID(), catalogRef: createCatalogRef()});
 const names = tools => tools.map(tool => tool.name).sort();
 const directNames = ['apply_patch', 'edit', 'exec', 'pixel_ods_ask_user', 'pixel_ods_extension_request_status',
-  'pixel_ods_extensions', 'pixel_ods_skill', 'pixel_ods_web_extract', 'pixel_ods_workspace_preview', 'pixel_ods_workspace_preview_inspect', 'process', 'read', 'tool_call', 'tool_describe',
+  'pixel_ods_extensions', 'pixel_ods_readonly_exec', 'pixel_ods_skill', 'pixel_ods_web_extract', 'pixel_ods_workspace_preview', 'pixel_ods_workspace_preview_inspect', 'process', 'read', 'tool_call', 'tool_describe',
   'tool_search', 'web_fetch', 'web_search', 'write'];
-const historicalNames = [...directNames.filter(name => !['pixel_ods_workspace_preview', 'pixel_ods_web_extract', 'pixel_ods_workspace_preview_inspect'].includes(name)), 'pixel_ods_extension_request_advance',
+const historicalNames = [...directNames.filter(name => !['pixel_ods_readonly_exec', 'pixel_ods_workspace_preview', 'pixel_ods_web_extract', 'pixel_ods_workspace_preview_inspect'].includes(name)), 'pixel_ods_extension_request_advance',
   'pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_retry',
   'pixel_ods_python_library_proposal', 'pixel_ods_source_proposal'];
 const select = selected => selected.map(name => {

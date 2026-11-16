@@ -121,10 +121,21 @@ test('prepare preserves original ids and model, uses bootstrap workdir', async (
   assert.equal(state.created.sessionKey, 'key-1');
   assert.equal(state.created.workspaceDir, WS);
   assert.equal(handle.params.workdir, BOOT);
+  assert.deepEqual(handle.publicWorkdir, {cwd:'/agent',workdir:'.'});
   assert.equal(handle.params.background, false);
   assert.equal(handle.params.yieldMs, 120000);
   await handle.cleanup();
   assert.equal(state.cleanupCount, 1);
+});
+
+test('public workdir describes the command directory without exposing the bootstrap path', async () => {
+  const {provider} = harness();
+  const handle = await provider.prepare(provider.scopeForContext(active(), factory()),
+    {...request(),workdir:'data/orders'});
+  assert.equal(handle.params.workdir, BOOT);
+  assert.deepEqual(handle.publicWorkdir, {cwd:'/agent/data/orders',workdir:'data/orders'});
+  assert.equal(Object.isFrozen(handle.publicWorkdir), true);
+  await handle.cleanup();
 });
 
 test('prepare uses scoped config for sandbox and preserves allow/deny/ask/security', async () => {

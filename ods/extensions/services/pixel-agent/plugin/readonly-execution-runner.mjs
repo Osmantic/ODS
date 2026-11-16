@@ -123,6 +123,12 @@ export function createReadonlyExecutionRunner({prepare, authority, afterToolCall
       job.resolveDone();
     }
     if (failure) throw failure;
+    // Preserve the original SDK receipt for the internal completion hook.
+    // Only its known bootstrap cwd needs a public coordinate projection;
+    // command output and unrelated SDK metadata remain untouched.
+    if (job.handle.publicWorkdir && result.details.cwd === job.handle.params.workdir) {
+      return {...result, details:{...result.details, ...job.handle.publicWorkdir}};
+    }
     return result;
   }
   async function cancel(scope) {

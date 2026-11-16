@@ -101,6 +101,37 @@ const makeRunner = (opts = {}) => {
 
 const REQUEST = {timeoutSeconds: 5};
 
+test('public cwd projection preserves command output and the original internal SDK receipt', async () => {
+  for (const status of ['completed','failed']) {
+    const host='/private/bootstrap';
+    const receipt=Object.freeze({content:[{type:'text',text:host}],details:Object.freeze({
+      status,exitCode:status==='failed'?2:0,cwd:host,durationMs:108,sessionId:'opaque-handle',aggregated:host
+    }),isError:status==='failed',structuredContent:{evidence:'untouched'}});
+    const {handle,state}=makeHandle({params:{command:'fixture',workdir:host},
+      publicWorkdir:Object.freeze({cwd:'/agent/data',workdir:'data'})});
+    state.execImpl=async()=>receipt;
+    const {runner,afterCalls}=makeRunner({prepare:async()=>handle});
+    const result=await runner.execute(SCOPE,REQUEST);
+    assert.deepEqual(result,{...receipt,details:{...receipt.details,cwd:'/agent/data',workdir:'data'}});
+    assert.equal(result.content,receipt.content);
+    assert.equal(result.structuredContent,receipt.structuredContent);
+    assert.equal(afterCalls[0].result,receipt);
+    assert.equal(receipt.details.cwd,host);
+    assert.equal(state.cleanupCalls,1);
+  }
+});
+
+test('cwd projection does not replace unknown SDK paths or add missing cwd evidence', async () => {
+  for (const cwd of [undefined,'/agent','/unrecognized/private/path']) {
+    const receipt={details:{status:'completed',exitCode:0,...(cwd===undefined?{}:{cwd})}};
+    const {handle,state}=makeHandle({params:{command:'fixture',workdir:'/private/bootstrap'},
+      publicWorkdir:{cwd:'/agent/data',workdir:'data'}});
+    state.execImpl=async()=>receipt;
+    const {runner}=makeRunner({prepare:async()=>handle});
+    assert.equal(await runner.execute(SCOPE,REQUEST),receipt);
+  }
+});
+
 test('unconfirmed preparation failure latches new work and cannot confirm cancellation', async () => {
   const {runner}=makeRunner({prepare:async()=>{throw new Error('provisioning failed after allocation');}});
   await assert.rejects(runner.execute(SCOPE,REQUEST),/readonly-cleanup-unconfirmed/);

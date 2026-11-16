@@ -105,7 +105,11 @@ export function createReadonlyExecutionProvider({readConfig,createTools,resolveS
         await allocation.cleanup();
         cleaned = true;
       };
-      return {exec, params, stillCurrent:current, cleanup};
+      // SDK exec uses the private bootstrap directory, but the command starts
+      // inside the owner mount. Keep these two coordinate systems explicit.
+      const publicWorkdir = Object.freeze({cwd:normalized.workdir === '.'
+        ? '/agent' : '/agent/' + normalized.workdir, workdir:normalized.workdir});
+      return {exec, params, publicWorkdir, stillCurrent:current, cleanup};
     } catch (error) {
       if (!allocation) throw error;
       const err = safeError(error, 'readonly-prepare-failed');
