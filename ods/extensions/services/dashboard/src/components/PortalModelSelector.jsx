@@ -94,14 +94,17 @@ function LoadedModelSelector({activeModel='',runtimeSource,observeCatalog,unavai
   const [recoveryPending,setRecoveryPending]=useState(false),[recoveryBusy,setRecoveryBusy]=useState(false)
   const root=useRef(null),trigger=useRef(null),list=useRef(null),mounted=useRef(true),submitLock=useRef(false)
   const managementUnavailable=hostRuntime===true && modelManagement?.managed==null
-  const id=useId(),remote=runtimeSource==='remote-provider',external=runtimeSource==='external-host' && !managementUnavailable && modelManagement?.managed!==true,local=['local-switchboard','windows-desktop'].includes(runtimeSource) || (runtimeSource==='external-host' && modelManagement?.managed===true)
+  const effectiveSource=runtimeSource || catalog.activeRuntime?.source || (hostRuntime==='windows-desktop'?'windows-desktop':null)
+  const id=useId(),remote=effectiveSource==='remote-provider',external=effectiveSource==='external-host' && !managementUnavailable && modelManagement?.managed!==true,local=['local-switchboard','windows-desktop'].includes(effectiveSource) || (effectiveSource==='external-host' && modelManagement?.managed===true)
   // A confirmed cloud route is independent of the local catalog's lifecycle,
   // which may remain stale after a catalog failure. Keep mutations initiated
   // here blocking until their own completion, even if the route changes.
   const switching=pending || recoveryBusy || Boolean(runtimeActionLoading)
     || (!remote && (Boolean(activationLoading) || Boolean(modelLifecycle?.active && modelLifecycle.operation==='model_activation')))
-  const current=local?models.find(model=>model.id===currentModel):null
-  const selectedId=local && activationReadyModel===currentModel?currentModel:null
+  const current=local
+    ? (models.find(model=>model.id===currentModel) || (activeModel?models.find(model=>model.id===activeModel || model.llm_model_name===activeModel || model.name?.toLowerCase()===String(activeModel).toLowerCase()):null))
+    : null
+  const selectedId=local && activationReadyModel && current && (current.id===activationReadyModel || currentModel===activationReadyModel)?current.id:null
   const activeName=current || activeModel
   const confirmation=installed.find(model=>model.id===confirmId)
   const switchingCallback=useRef(onSwitchingChange)

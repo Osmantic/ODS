@@ -746,7 +746,31 @@ async def _fetch_llama_metrics(model_hint: Optional[str] = None, counter_id: Opt
     try:
         slots_url = None
         params: dict = {}
-        if _host_native_llm():
+        if WINDOWS_DESKTOP_PROFILE:
+            try:
+                from native_llm import get_native_llm_status
+                st = await get_native_llm_status()
+                if not st.get("available"):
+                    return {
+                        "tokens_per_second": None,
+                        "lifetime_tokens": _saved_lifetime_tokens(),
+                        "token_count_mode": "cumulative",
+                    }
+                host = "127.0.0.1"
+                port = int(os.environ.get("LLAMA_PORT", "8085"))
+                url = f"http://{host}:{port}/metrics"
+                client = await _get_httpx_client()
+                resp = await client.get(url, timeout=1.5)
+                resp.raise_for_status()
+                metrics = _parse_llama_prometheus(resp.text)
+            except Exception:
+                return {
+                    "tokens_per_second": None,
+                    "lifetime_tokens": _saved_lifetime_tokens(),
+                    "token_count_mode": "cumulative",
+                }
+            client = None
+        elif _host_native_llm():
             # The host agent already parsed llama.cpp's Prometheus counters.
             reported = (await _host_llm_status()).get("metrics")
             if not isinstance(reported, dict):
@@ -843,6 +867,13 @@ async def _fetch_llama_metrics(model_hint: Optional[str] = None, counter_id: Opt
 
 async def get_loaded_model() -> Optional[str]:
     """Query llama-server for actually loaded model name."""
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            from native_llm import get_native_llm_status
+            st = await get_native_llm_status()
+            return str(st["model"]) if st.get("available") and st.get("model") else None
+        except Exception:
+            return None
     if _host_native_llm():
         try:
             health = (await _host_llm_status())["health"]
@@ -891,6 +922,7 @@ async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[i
                 return st["contextLength"]
         except Exception:
             pass
+        return None
     if _host_native_llm():
         try:
             context = (await _host_llm_status())["health"].get("context_length")
@@ -947,6 +979,8 @@ async def get_llama_vision_support() -> Optional[bool]:
     cannot be read: the owner's own server, an unreachable runtime, a build
     without the field, or the vLLM engine, which reports no modalities.
     """
+    if WINDOWS_DESKTOP_PROFILE:
+        return None
     if _host_native_llm():
         try:
             vision = (await _host_llm_status())["health"].get("vision")

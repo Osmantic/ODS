@@ -734,8 +734,8 @@ def _apply_windows_desktop_services_filter(
 ) -> None:
     """Keep only loopback-reachable services and route llama-server to loopback in windows-desktop mode."""
     env = environment if environment is not None else os.environ
-    llama_port = str(env.get("LLAMA_PORT") or read_live_env_value("LLAMA_PORT") or "8080").strip()
-    default_llm_url = f"http://127.0.0.1:{llama_port}" if llama_port.isdigit() else "http://127.0.0.1:8080"
+    llama_port = str(env.get("LLAMA_PORT") or read_live_env_value("LLAMA_PORT") or "8085").strip()
+    default_llm_url = f"http://127.0.0.1:{llama_port}" if llama_port.isdigit() else "http://127.0.0.1:8085"
     native_llm_url = (
         env.get("ODS_NATIVE_LLM_URL")
         or env.get("ODS_LLAMA_ENDPOINT")
@@ -749,7 +749,7 @@ def _apply_windows_desktop_services_filter(
     llm_host = (parsed.hostname or "127.0.0.1").strip().lower()
     if llm_host == "localhost":
         llm_host = "127.0.0.1"
-    llm_port = parsed.port or (int(llama_port) if llama_port.isdigit() else 8080)
+    llm_port = parsed.port or (int(llama_port) if llama_port.isdigit() else 8085)
 
     llama_cfg = services.get("llama-server")
     if isinstance(llama_cfg, dict) and llm_host in _LOOPBACK_SERVICE_HOSTS:

@@ -228,7 +228,7 @@ async def _send_json_response(
 _SITE_ID_RE = re.compile(r"^site-[a-f0-9]{24}$")
 
 
-async def _handle_pixel_preview(scope: dict[str, Any], send: Callable, path: str) -> bool:
+async def _handle_pixel_preview(scope: Scope, send: Send, path: str) -> bool:
     """Serve sandboxed workspace preview files and manifests on Windows Desktop.
 
     Returns True if the request was handled, False if it was not a /pixel-preview path.

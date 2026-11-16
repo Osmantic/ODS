@@ -226,6 +226,91 @@ def test_restart_native_llama_server_logic(monkeypatch, tmp_path):
     assert "99" in cmd
 
 
+def test_restart_native_llama_server_fallback_on_crash(monkeypatch, tmp_path):
+    """Verify that if llama-server crashes at high context, it automatically retries with safe context 4096."""
+    fake_bin = tmp_path / "llama-server.exe"
+    fake_bin.write_text("binary", encoding="utf-8")
+    fake_model = tmp_path / "model.gguf"
+    fake_model.write_text("weights", encoding="utf-8")
+
+    monkeypatch.setattr(native_llm, "find_llama_server_binary", lambda: fake_bin)
+    monkeypatch.setattr(native_llm, "read_windows_user_gpu_preference", lambda: "discrete")
+
+    attempts = []
+
+    def fake_popen(cmd, **kwargs):
+        attempts.append(cmd)
+        mock_proc = MagicMock()
+        # First attempt (at 16384) simulates a crash with returncode 1
+        if len(attempts) == 1:
+            mock_proc.poll.return_value = 1
+        else:
+            mock_proc.poll.return_value = None
+        return mock_proc
+
+    class FakeHealthClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def get(self, url, **kwargs):
+            return MagicMock(status_code=200)
+
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: MagicMock(returncode=0))
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr("httpx.Client", FakeHealthClient)
+
+    ok = native_llm.restart_native_llama_server(fake_model, context_length=16384, alias="test-alias", timeout_seconds=1.0)
+    assert ok is True
+    assert len(attempts) == 2
+    # First attempt used 16384
+    assert "-c" in attempts[0]
+    assert "16384" in attempts[0]
+    # Second fallback attempt used safe 4096
+    assert "-c" in attempts[1]
+    assert "4096" in attempts[1]
+
+
+@pytest.mark.asyncio
+async def test_windows_desktop_offline_llm_never_queries_docker_host(monkeypatch):
+    """Verify that when native LLM is offline/restarting in Windows Desktop profile, helper calls return None immediately and never attempt network calls to 'llama-server'."""
+    monkeypatch.setattr(config, "WINDOWS_DESKTOP_PROFILE", True)
+    from routers import models
+    import helpers
+
+    # Mock native_llm status returning unavailable
+    monkeypatch.setattr("native_llm.get_native_llm_status", AsyncMock(return_value={"available": False, "model": None}))
+
+    # If any httpx call is made to "llama-server", fail the test
+    async def forbidden_get(*args, **kwargs):
+        url = str(args[0]) if args else str(kwargs.get("url", ""))
+        if "llama-server" in url:
+            pytest.fail(f"Attempted network call to unresolvable Docker host: {url}")
+        return MagicMock(status_code=503)
+
+    mock_client = MagicMock()
+    mock_client.get = forbidden_get
+    monkeypatch.setattr(helpers, "_get_httpx_client", AsyncMock(return_value=mock_client))
+
+    # All these must return None/empty immediately without calling Docker hostname
+    loaded = await models._discover_loaded_model()
+    assert loaded is None
+
+    loaded_helper = await helpers.get_loaded_model()
+    assert loaded_helper is None
+
+    ctx = await helpers.get_llama_context_size()
+    assert ctx is None
+
+    vision = await helpers.get_llama_vision_support()
+    assert vision is None
+
+    metrics = await helpers.get_llama_metrics()
+    assert metrics["throughput_state"] == "unavailable"
+
+
 @pytest.mark.asyncio
 async def test_pixel_example_projects_on_windows_desktop(monkeypatch, tmp_path):
     """Verify /example-projects scans local workspace root on Windows Desktop."""
@@ -454,5 +539,38 @@ async def test_windows_desktop_model_benchmark(monkeypatch):
         assert res["model"] == "qwen3.5-2b-q4"
         assert res["tokensPerSecond"] > 0
         assert res["source"] == "local_benchmark"
+
+
+def test_active_runtime_projection_accepts_windows_desktop():
+    """Verify that active_runtime_projection accepts windows-desktop as valid local runtime source."""
+    from runtime_projection import active_runtime_projection
+    runtime = {
+        "source": "windows-desktop",
+        "model": "qwen 3.5 4b",
+        "contextLength": 4096,
+    }
+    projected = active_runtime_projection({"activeRuntime": runtime})
+    assert projected == runtime
+
+
+@pytest.mark.asyncio
+async def test_pixel_status_includes_windows_desktop_runtime(monkeypatch):
+    """Verify that /api/pixel/status includes windows-desktop runtime projection."""
+    monkeypatch.setattr(config, "WINDOWS_DESKTOP_PROFILE", True)
+    monkeypatch.setattr(pixel, "WINDOWS_DESKTOP_PROFILE", True)
+    monkeypatch.setattr(pixel, "_pixel_config", lambda: None)
+    monkeypatch.setattr("native_llm.get_native_llm_status", AsyncMock(return_value={
+        "available": True,
+        "model": "qwen 3.5 4b",
+        "contextLength": 4096,
+        "vision": False,
+    }))
+
+    status = await pixel.pixel_status()
+    assert status["available"] is True
+    assert status.get("runtime") is not None
+    assert status["runtime"]["source"] == "windows-desktop"
+    assert status["runtime"]["model"] == "qwen 3.5 4b"
+    assert status["runtime"]["contextLength"] == 4096
 
 

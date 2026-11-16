@@ -114,7 +114,7 @@ def resolve_native_llm_endpoint() -> str:
     if host not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError(f"ODS_NATIVE_LLM_URL must target loopback, got {raw!r}")
     norm_host = "127.0.0.1" if host == "localhost" else host
-    port = parsed.port or 8080
+    port = parsed.port or 8085
     if norm_host == "::1":
         return f"http://[::1]:{port}"
     return f"http://{norm_host}:{port}"
@@ -362,7 +362,7 @@ def restart_native_llama_server(
     model_path: str | Path,
     context_length: int = 4096,
     alias: str = "",
-    timeout_seconds: float = 30.0,
+    timeout_seconds: float = 60.0,
 ) -> bool:
     """Terminate any existing llama-server process and launch it with the specified model."""
     bin_path = find_llama_server_binary()
@@ -418,6 +418,10 @@ def restart_native_llama_server(
         str(port_num),
         "-c",
         str(ctx),
+        "--parallel",
+        "1",
+        "--fit",
+        "off",
     ] + gpu_args
 
     if alias:
@@ -436,7 +440,7 @@ def restart_native_llama_server(
     creationflags = 0x08000000 if sys.platform == "win32" else 0
     logger.info("Starting native llama-server: %s", " ".join(cmd))
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             creationflags=creationflags,
             stdout=subprocess.DEVNULL,
@@ -452,6 +456,38 @@ def restart_native_llama_server(
     headers = _native_llm_headers()
 
     while time.monotonic() < deadline:
+        poll_res = proc.poll()
+        if isinstance(poll_res, int):
+            logger.warning(
+                "Native llama-server process exited prematurely with code %s (ctx=%d)",
+                poll_res,
+                ctx,
+            )
+            if ctx > 4096:
+                logger.info("Retrying native llama-server with safe baseline context 4096...")
+                # Sync .env CTX_SIZE to 4096 so restarts agree
+                try:
+                    for base_dir in (config.INSTALL_DIR, config.DATA_DIR):
+                        if base_dir:
+                            env_f = Path(base_dir) / ".env"
+                            if env_f.is_file():
+                                lines = []
+                                for line in env_f.read_text(encoding="utf-8").splitlines():
+                                    if line.strip().startswith("CTX_SIZE="):
+                                        lines.append("CTX_SIZE=4096")
+                                    else:
+                                        lines.append(line)
+                                env_f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                except Exception as env_exc:
+                    logger.debug("Failed updating CTX_SIZE in .env: %s", env_exc)
+                return restart_native_llama_server(
+                    model_path=target_model,
+                    context_length=4096,
+                    alias=alias,
+                    timeout_seconds=timeout_seconds,
+                )
+            return False
+
         try:
             with httpx.Client(timeout=1.0) as client:
                 res = client.get(health_url, headers=headers)

@@ -508,6 +508,19 @@ def _catalog_model_tokens(model: dict) -> set[str]:
 
 
 def _fetch_loaded_model_sync() -> str | None:
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        try:
+            import httpx
+            with httpx.Client(timeout=1.0) as client:
+                res = client.get("http://127.0.0.1:8085/v1/models")
+                if res.status_code == 200:
+                    data = res.json().get("data", [])
+                    if data and isinstance(data, list):
+                        return data[0].get("id")
+        except Exception:
+            return None
+        return None
     service = SERVICES.get("llama-server", {})
     host = service.get("host", "llama-server")
     port = int(service.get("port", 8080))
@@ -2165,6 +2178,7 @@ async def _discover_loaded_model() -> str | None:
                 return str(st["model"])
         except Exception:
             pass
+        return None
     loaded_model = await get_loaded_model()
     if loaded_model:
         return loaded_model
@@ -3305,16 +3319,29 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
         from native_llm import list_local_gguf_models, restart_native_llama_server
         installed = list_local_gguf_models()
         matched = None
-        for m in installed:
-            fn = m["filename"].lower()
-            if fn == model_id.lower() or model_id.lower() in fn or fn.startswith(model_id.lower()):
-                matched = m
-                break
-        if matched is None and model.get("gguf"):
-            gguf_target = str(model["gguf"]).lower()
-            matched = next((m for m in installed if m["filename"].lower() == gguf_target), None)
-        if matched is None and installed:
-            matched = installed[0]
+
+        # 1. Exact catalog gguf_file match
+        target_gguf = str(model.get("gguf_file") or model.get("gguf") or "").strip().lower()
+        if target_gguf:
+            matched = next((m for m in installed if m["filename"].lower() == target_gguf), None)
+
+        # 2. Match model_id substring in filename or vice versa
+        if matched is None:
+            m_id_lower = model_id.lower()
+            for m in installed:
+                fn = m["filename"].lower()
+                if fn == m_id_lower or m_id_lower in fn or fn.startswith(m_id_lower):
+                    matched = m
+                    break
+
+        # 3. Match llm_model_name alias
+        if matched is None and model.get("llm_model_name"):
+            llm_alias = str(model["llm_model_name"]).lower()
+            for m in installed:
+                if llm_alias in m["filename"].lower():
+                    matched = m
+                    break
+
         if matched is None:
             raise HTTPException(status_code=404, detail=f"Model '{model_id}' is not installed in the local model store")
 
@@ -3322,16 +3349,26 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
         target_context = requested_context or _recommended_model_context(model) or 4096
         alias_str = model_id
 
-        restart_ok = restart_native_llama_server(
-            model_path=matched["path"],
-            context_length=target_context,
-            alias=alias_str,
-        )
-        if not restart_ok:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to start native llama-server with model '{matched['filename']}'",
-            )
+        # Clamp context on memory-constrained GPUs (<= 6GB VRAM) to avoid Vulkan OOM crash
+        gpu_info = get_gpu_info()
+        vram_mb = gpu_info.memory_total_mb if gpu_info else 0
+        model_size_gb = (Path(matched["path"]).stat().st_size / (1024**3)) if Path(matched["path"]).is_file() else 2.0
+        if vram_mb and vram_mb <= 4096:
+            max_safe_ctx = 4096 if model_size_gb >= 2.4 else (8192 if model_size_gb >= 1.8 else 16384)
+            if target_context > max_safe_ctx:
+                logger.warning(
+                    "Clamping target context %d to safe maximum %d for %.1fGB model on %d MB GPU",
+                    target_context, max_safe_ctx, model_size_gb, vram_mb
+                )
+                target_context = max_safe_ctx
+        elif vram_mb and vram_mb <= 6144:
+            max_safe_ctx = 16384 if model_size_gb >= 2.0 else 32768
+            if target_context > max_safe_ctx:
+                logger.warning(
+                    "Clamping target context %d to safe maximum %d for %.1fGB model on %d MB GPU",
+                    target_context, max_safe_ctx, model_size_gb, vram_mb
+                )
+                target_context = max_safe_ctx
 
         env_updates = {
             "GGUF_FILE": matched["filename"],
@@ -3343,6 +3380,33 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
                 env_file = Path(base_dir) / ".env"
                 if env_file.exists():
                     _apply_env_updates(env_file, env_updates)
+
+        restart_ok = restart_native_llama_server(
+            model_path=matched["path"],
+            context_length=target_context,
+            alias=alias_str,
+            timeout_seconds=60.0,
+        )
+        if not restart_ok:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to start native llama-server with model '{matched['filename']}'",
+            )
+
+        actual_context = target_context
+        try:
+            with httpx.Client(timeout=1.0) as client:
+                port_num = int(os.environ.get("LLAMA_PORT", "8085"))
+                resp = client.get(f"http://127.0.0.1:{port_num}/props")
+                if resp.status_code == 200:
+                    props = resp.json()
+                    default_gen = props.get("default_generation_settings")
+                    if isinstance(default_gen, dict) and isinstance(default_gen.get("n_ctx"), int):
+                        actual_context = int(default_gen["n_ctx"])
+                    elif isinstance(props.get("n_ctx"), int):
+                        actual_context = int(props["n_ctx"])
+        except Exception:
+            pass
 
         selection_path = Path(DATA_DIR) / "selected-model.json" if DATA_DIR else (Path(INSTALL_DIR) / "data" / "selected-model.json")
         selection_record = {
@@ -3361,7 +3425,7 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
                 "requestedModelId": model_id,
                 "ggufFile": matched["filename"],
                 "activatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "contextLength": target_context,
+                "contextLength": actual_context,
                 "status": "success",
             }
             receipt_path.write_text(json.dumps(receipt_record, indent=2), encoding="utf-8")
@@ -3373,6 +3437,7 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
         return {
             "status": "reloaded",
             "model": matched["filename"],
+            "contextLength": actual_context,
             "schemaVersion": 1,
         }
 

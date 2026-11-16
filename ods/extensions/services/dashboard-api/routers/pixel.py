@@ -531,6 +531,25 @@ async def pixel_access_change(change: PixelAccessChange):
 
 
 async def _host_model_status() -> dict[str, object] | None:
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        from native_llm import get_native_llm_status
+        st = await get_native_llm_status()
+        if not st.get("available") or not st.get("model"):
+            return None
+        ctx = int(st.get("contextLength") or 4096)
+        model_name = str(st["model"])
+        return {
+            "status": "idle",
+            "activeRuntime": {
+                "source": "windows-desktop",
+                "model": model_name,
+                "contextLength": ctx,
+            },
+            "model": model_name,
+            "models": [{"id": model_name, "name": model_name, "status": "loaded", "contextLength": ctx}],
+            "modelTransactionPending": False,
+        }
     try:
         status = await request_agent_json("GET", "/v1/model/status", timeout=2.0)
     except AgentClientError:
@@ -539,6 +558,13 @@ async def _host_model_status() -> dict[str, object] | None:
 
 
 async def _local_inference_issue(host_status: object) -> str | None:
+    from config import WINDOWS_DESKTOP_PROFILE
+    if WINDOWS_DESKTOP_PROFILE:
+        if isinstance(host_status, dict) and host_status.get("activeRuntime"):
+            return None
+        from native_llm import get_native_llm_status
+        st = await get_native_llm_status()
+        return None if st.get("available") else _RUNTIME_STOPPED_DETAIL
     # Gateway discovery proves the agent exists, not that its model server is
     # reachable. Probe the configured host runtime without spending tokens.
     runtime = _active_runtime_projection(host_status)
@@ -938,6 +964,8 @@ async def _status_projection() -> tuple[dict[str, object], bool]:
         runtime = _active_runtime_projection(host_status)
         if available and runtime is None:
             runtime = await _verified_external_host_runtime(host_status)
+        if available and runtime is None and WINDOWS_DESKTOP_PROFILE and isinstance(host_status, dict):
+            runtime = host_status.get("activeRuntime")
         if available and runtime is not None:
             result["runtime"] = runtime
         model_support = _model_support_from_status(host_status)
