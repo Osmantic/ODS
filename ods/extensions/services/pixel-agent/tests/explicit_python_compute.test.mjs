@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {RUN_PROGRESS_LIMITS} from '../plugin/run-progress-budget.mjs';
+import {OWNER_FILE_MUTATION_FORBIDDEN_REASON} from '../plugin/owner-readonly-tools.mjs';
 
 const prompt='Use Python to calculate sum(i*i for i in range(1, 21)). Show the exact command and its result.';
 const retryKey='pixel-ods-explicit-code-execution';
@@ -52,6 +53,80 @@ test('execution recovery honors a no-file-change request and keeps ordinary exec
   assert.equal(f.guard.beforeToolCall({toolName:'exec',params:{command:'printf 4'}},context)?.block,true);
   assert.equal(f.guard.deliveryVerificationForRun('compute').status,'failed');
   assert.notEqual(f.finalize()?.retry?.idempotencyKey,retryKey);
+});
+
+const readonlyPrompt=prompt+' Do not create or modify files.';
+const firstPassCue=/Run the requested code with pixel_ods_readonly_exec before answering/;
+const contextText=f=>f.guard.promptContextForRun('compute')??'';
+
+test('explicit readonly execution gets first-pass guidance without granting ordinary exec',()=>{
+  const f=turn({prompt:readonlyPrompt});
+  assert.match(contextText(f),firstPassCue);
+  assert.ok(contextText(f).includes(OWNER_FILE_MUTATION_FORBIDDEN_REASON));
+  assert.match(contextText(f),/Wait for its actual result/);
+  assert.match(contextText(f),/owner-requested output format/);
+  assert.match(contextText(f),/Do not estimate or infer/);
+  assert.doesNotMatch(contextText(turn()),firstPassCue,'writable execution is outside this cue');
+  const context={...f.context,toolName:'exec',toolCallId:'still-forbidden'};
+  assert.equal(f.guard.beforeToolCall({toolName:'exec',params:{command:'printf 4'}},context)?.block,true);
+  assert.equal(f.guard.deliveryVerificationForRun('compute').status,'failed');
+  assert.equal(f.finalize()?.retry?.idempotencyKey,retryKey,'cue does not replace the fallback');
+  assert.doesNotMatch(contextText(f),firstPassCue);
+  assert.notEqual(f.finalize()?.retry?.idempotencyKey,retryKey,'fallback remains bounded');
+});
+
+test('explanations, code-only, quotes and no-tools requests get no execution cue',()=>{
+  for(const text of ['Explain how to use Python to calculate a sum.',
+    'Write Python code to calculate a sum.',
+    'The documentation says "Use Python to calculate the sum." Explain it.',
+    '```\nUse Python to calculate 2+2.\n```\nExplain the sample.',
+    'Do not use tools. Use Python to calculate 2+2.']) {
+    const f=turn({prompt:text+' Do not create or modify files.'});
+    assert.doesNotMatch(contextText(f),firstPassCue,text);
+    assert.notEqual(f.finalize()?.retry?.idempotencyKey,retryKey,text);
+  }
+});
+
+test('first-pass guidance belongs only to the bound interactive owner run',()=>{
+  for(const options of [{context:{trigger:'cron'}},{context:{sessionKey:'agent:pixel:main'}},
+    {prompt:"You are the Builder in the owner's Portal team. "+readonlyPrompt}]) {
+    const f=turn({prompt:readonlyPrompt,...options});
+    assert.doesNotMatch(contextText(f),firstPassCue,JSON.stringify(options));
+  }
+  const f=turn({prompt:readonlyPrompt});
+  f.guard.observeRun({...f.context,sessionId:'foreign'},'pixel',{prompt:readonlyPrompt});
+  assert.doesNotMatch(contextText(f),firstPassCue,'conflicting trusted identity');
+});
+
+test('simulated readonly tool attempts remove the cue even when pending or unsuccessful',()=>{
+  for(const [exitCode,status] of [[0,'completed'],[1,'completed'],[undefined,'running']]) {
+    const f=turn({prompt:readonlyPrompt});
+    assert.match(contextText(f),firstPassCue);
+    const context={...f.context,toolCallId:'readonly-exec',toolName:'pixel_ods_readonly_exec'};
+    const params={command:'python3 -c "print(2870)"'};
+    const prepared=f.guard.beforeToolCall({toolName:context.toolName,params},context);
+    assert.notEqual(prepared?.block,true,prepared?.blockReason);
+    assert.doesNotMatch(contextText(f),firstPassCue,'no duplicate instruction while tool is active');
+    f.guard.afterToolCall({toolName:context.toolName,params:prepared?.params??params,
+      result:{details:{status,exitCode,aggregated:exitCode===0?'2870':'Python failed'}}},context);
+    assert.doesNotMatch(contextText(f),firstPassCue);
+  }
+});
+
+test('ended, superseded, cancelled and exhausted runs get no new execution cue',async()=>{
+  const ended=turn({prompt:readonlyPrompt});
+  ended.guard.observeAgentEnd({success:true},ended.context);
+  assert.doesNotMatch(contextText(ended),firstPassCue);
+  const superseded=turn({prompt:readonlyPrompt});
+  superseded.guard.observeRun({...superseded.context,runId:'next'},'pixel',{prompt:'Hello'});
+  assert.doesNotMatch(contextText(superseded),firstPassCue);
+  const cancelled=turn({prompt:readonlyPrompt});
+  assert.equal(await cancelled.guard.abortUserRun(user),true);
+  assert.doesNotMatch(contextText(cancelled),firstPassCue);
+  const exhausted=turn({prompt:readonlyPrompt});
+  for(let i=0;i<RUN_PROGRESS_LIMITS.consecutiveFailures;i++) exhausted.guard.toolResultPersist({toolCallId:'failed-'+i,
+    message:{role:'toolResult',toolName:'read',isError:true,content:[]}}, {...exhausted.context,toolName:'read',toolCallId:'failed-'+i});
+  assert.doesNotMatch(contextText(exhausted),firstPassCue);
 });
 
 test('revision followed by a bound successful execution satisfies the request',()=>{
