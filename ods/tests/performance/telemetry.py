@@ -40,7 +40,17 @@ ERROR_CODES = frozenset({
     "nvidia_smi_nonzero_exit",
     "sample_overrun",
     "unsupported_platform",
+    "process_missing",
+    "permission_denied",
+    "request_failed",
+    "api_unavailable",
+    "process_identity_changed",
+    "process_exited",
 })
+
+PROCESS_MEMORY_SEMANTICS = (
+    "overlapping accounting; not host available RAM, not Metal allocated bytes"
+)
 
 
 def _utc_now_iso():
@@ -389,7 +399,182 @@ def collect_sample(scope, nvidia):
     return metrics, errors
 
 
+# ---------- macOS per-PID memory (opt-in, read-only) ----------
+
+_LABEL_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+_MAX_PROCESSES = 8
+_RUSAGE_INFO_V0_FLAVOR = 0
+
+
+class _RusageInfoV0(ctypes.Structure):
+    # Public ABI: apple-oss-distributions/xnu, bsd/sys/resource.h.
+    _fields_ = [
+        ("ri_uuid", ctypes.c_uint8 * 16),
+        ("ri_user_time", ctypes.c_uint64),
+        ("ri_system_time", ctypes.c_uint64),
+        ("ri_pkg_idle_wkups", ctypes.c_uint64),
+        ("ri_interrupt_wkups", ctypes.c_uint64),
+        ("ri_pageins", ctypes.c_uint64),
+        ("ri_wired_size", ctypes.c_uint64),
+        ("ri_resident_size", ctypes.c_uint64),
+        ("ri_phys_footprint", ctypes.c_uint64),
+        ("ri_proc_start_abstime", ctypes.c_uint64),
+        ("ri_proc_exit_abstime", ctypes.c_uint64),
+    ]
+
+
+def _load_libproc():
+    """Load libproc and bind proc_pid_rusage. Raises OSError on failure."""
+    lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    fn = lib.proc_pid_rusage
+    fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+    fn.restype = ctypes.c_int
+    return fn
+
+
+def _validate_process_specs(specs):
+    if not isinstance(specs, dict):
+        raise ValueError("process specs must be a dict")
+    if len(specs) > _MAX_PROCESSES:
+        raise ValueError("too many processes")
+    out = {}
+    for label, pid in specs.items():
+        if not isinstance(label, str) or not _LABEL_RE.fullmatch(label):
+            raise ValueError("invalid process label")
+        if isinstance(pid, bool) or not isinstance(pid, int):
+            raise ValueError("invalid pid")
+        if pid < 1 or pid > 2147483647:
+            raise ValueError("invalid pid")
+        out[label] = pid
+    return out
+
+
+def _errno_code(err):
+    if err == 3:  # ESRCH
+        return "process_missing"
+    if err in (1, 13):  # EPERM, EACCES
+        return "permission_denied"
+    return "request_failed"
+
+
+class MacProcessSampler:
+    """Opt-in macOS per-PID memory sampler via libproc proc_pid_rusage.
+
+    Read-only. Never signals, restarts, or changes settings. Pins each
+    process identity (start_abstime + uuid) at construction; if identity
+    changes or the process exits, the sampler latches permanently and
+    never reports stats for a reused PID.
+    """
+
+    def __init__(self, specs, _loader=None):
+        self._specs = _validate_process_specs(specs)
+        self._fn = None
+        self._unavailable = {}
+        self._identity = {}
+        self._latched = {}
+        if not self._specs:
+            return
+        if platform.system() != "Darwin":
+            for label in self._specs:
+                self._unavailable[label] = "unsupported_platform"
+            return
+        loader = _loader if _loader is not None else _load_libproc
+        try:
+            self._fn = loader()
+        except (OSError, AttributeError):
+            for label in self._specs:
+                self._unavailable[label] = "api_unavailable"
+            return
+        for label, pid in self._specs.items():
+            info, err = self._read(pid)
+            if info is None:
+                self._unavailable[label] = err
+                continue
+            if info["exit_abstime"] > 0:
+                self._unavailable[label] = "process_exited"
+                continue
+            if info["start_abstime"] == 0:
+                self._unavailable[label] = "request_failed"
+                continue
+            self._identity[label] = (info["start_abstime"], info["uuid"])
+
+    def _read(self, pid):
+        buf = _RusageInfoV0()
+        ctypes.set_errno(0)
+        rc = self._fn(pid, _RUSAGE_INFO_V0_FLAVOR, ctypes.byref(buf))
+        if rc != 0:
+            return None, _errno_code(ctypes.get_errno())
+        return {
+            "uuid": bytes(buf.ri_uuid),
+            "start_abstime": int(buf.ri_proc_start_abstime),
+            "exit_abstime": int(buf.ri_proc_exit_abstime),
+            "resident_bytes": int(buf.ri_resident_size),
+            "physical_footprint_bytes": int(buf.ri_phys_footprint),
+            "wired_bytes": int(buf.ri_wired_size),
+        }, None
+
+    def sample(self):
+        out = {}
+        for label, pid in self._specs.items():
+            entry = {
+                "pid": pid,
+                "start_abstime": None,
+                "resident_bytes": None,
+                "physical_footprint_bytes": None,
+                "wired_bytes": None,
+                "error": None,
+            }
+            if label in self._unavailable:
+                entry["error"] = self._unavailable[label]
+                out[label] = entry
+                continue
+            if label in self._latched:
+                entry["error"] = self._latched[label]
+                out[label] = entry
+                continue
+            info, err = self._read(pid)
+            if info is None:
+                self._latched[label] = err
+                entry["error"] = err
+                out[label] = entry
+                continue
+            if info["exit_abstime"] > 0:
+                self._latched[label] = "process_exited"
+                entry["error"] = "process_exited"
+                out[label] = entry
+                continue
+            pinned_start, pinned_uuid = self._identity[label]
+            if info["start_abstime"] != pinned_start or info["uuid"] != pinned_uuid:
+                self._latched[label] = "process_identity_changed"
+                entry["error"] = "process_identity_changed"
+                out[label] = entry
+                continue
+            entry["start_abstime"] = pinned_start
+            entry["resident_bytes"] = info["resident_bytes"]
+            entry["physical_footprint_bytes"] = info["physical_footprint_bytes"]
+            entry["wired_bytes"] = info["wired_bytes"]
+            out[label] = entry
+        return out
+
+
 # ---------- CLI ----------
+
+
+def _parse_process_arg(value):
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("expected LABEL=PID")
+    label, _, pid_s = value.partition("=")
+    if not _LABEL_RE.fullmatch(label):
+        raise argparse.ArgumentTypeError("invalid label")
+    if not re.fullmatch(r"[0-9]+", pid_s):
+        raise argparse.ArgumentTypeError("invalid pid")
+    try:
+        pid = int(pid_s)
+    except ValueError:
+        raise argparse.ArgumentTypeError("invalid pid")
+    if pid < 1 or pid > 2147483647:
+        raise argparse.ArgumentTypeError("invalid pid")
+    return label, pid
 
 
 def _build_parser():
@@ -402,6 +587,14 @@ def _build_parser():
     p.add_argument("--interval", type=int, required=True, help="Sample interval seconds (1..10).")
     p.add_argument("--scope", required=True, choices=["host", "wsl", "container"], help="Sampling scope.")
     p.add_argument("--nvidia", action="store_true", help="Include NVIDIA GPU metrics via nvidia-smi.")
+    p.add_argument(
+        "--process",
+        action="append",
+        default=None,
+        type=_parse_process_arg,
+        metavar="LABEL=PID",
+        help="macOS host scope only: sample per-PID memory (repeatable, max 8).",
+    )
     return p
 
 
@@ -413,13 +606,31 @@ def main(argv=None):
     if not (1 <= args.interval <= 10):
         print("error: --interval must be 1..10", file=sys.stderr)
         return 2
+    sysname = platform.system()
+    process_specs = None
+    if args.process:
+        if args.scope != "host":
+            print("error: --process requires --scope host", file=sys.stderr)
+            return 2
+        if sysname != "Darwin":
+            print("error: --process requires macOS", file=sys.stderr)
+            return 2
+        if len(args.process) > _MAX_PROCESSES:
+            print("error: at most 8 --process entries", file=sys.stderr)
+            return 2
+        process_specs = {}
+        for label, pid in args.process:
+            if label in process_specs:
+                print("error: duplicate process label", file=sys.stderr)
+                return 2
+            process_specs[label] = pid
     try:
         fh = open(args.output, "x", encoding="utf-8")
     except FileExistsError:
         print(f"error: refusing to overwrite existing file: {args.output}", file=sys.stderr)
         return 3
 
-    sysname = platform.system()
+    sampler = MacProcessSampler(process_specs) if process_specs else None
     seq = 0
     start = time.perf_counter()
     deadline = start + args.duration
@@ -437,6 +648,7 @@ def main(argv=None):
             t0 = time.perf_counter_ns()
             c0 = time.process_time_ns()
             metrics, errors = collect_sample(args.scope, args.nvidia)
+            processes = sampler.sample() if sampler is not None else None
             t1 = time.perf_counter_ns()
             c1 = time.process_time_ns()
             sample_duration_ms = (t1 - t0) / 1e6
@@ -460,6 +672,9 @@ def main(argv=None):
                 "errors": [e for e in errors if e in ERROR_CODES],
                 "metrics": metrics,
             }
+            if sampler is not None:
+                record["processes"] = processes
+                record["process_memory_semantics"] = PROCESS_MEMORY_SEMANTICS
             fh.write(json.dumps(record, separators=(",", ":")) + "\n")
             fh.flush()
             next_due += args.interval
