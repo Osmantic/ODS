@@ -2089,7 +2089,7 @@ if WINDOWS_DESKTOP_PROFILE:
     _dashboard_dist_dir = resolve_dashboard_dist()
     if _dashboard_dist_dir is not None:
         app.add_middleware(DashboardGate)
-        app.mount("/", DashboardFiles(_dashboard_dist_dir), name="dashboard-static")  # type: ignore[arg-type]
+        app.mount("/", DashboardFiles(_dashboard_dist_dir), name="dashboard-static")
 
 
 if __name__ == "__main__":

@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import unquote, urlparse
 
+from starlette.types import Message, Receive, Scope, Send
+
 import security
 from routers import dashboard_session
 
@@ -96,7 +98,7 @@ def _expected_host_headers(listener_port: int | None) -> set[str]:
     return {f"{h}:{listener_port}" for h in _LOOPBACK_HOSTNAMES}
 
 
-def is_trusted_local_request(scope: dict[str, Any]) -> bool:
+def is_trusted_local_request(scope: Scope) -> bool:
     """Return True only when the request arrived directly from a local loopback browser/client."""
     client = scope.get("client")
     if not client or not isinstance(client, (tuple, list)) or len(client) < 1:
@@ -152,7 +154,7 @@ def is_trusted_local_request(scope: dict[str, Any]) -> bool:
     return True
 
 
-def _has_valid_dashboard_session(scope: dict[str, Any]) -> bool:
+def _has_valid_dashboard_session(scope: Scope) -> bool:
     """Check whether the request carries a valid signed ``ods-dashboard-session`` cookie."""
     headers = _decode_headers(list(scope.get("headers") or []))
     # Even with a valid session cookie, reject cross-site Sec-Fetch-Site or mismatched Origin
@@ -205,7 +207,7 @@ def _is_protected_api_path(path: str) -> bool:
 
 
 async def _send_json_response(
-    send: Callable,
+    send: Send,
     status: int,
     payload: dict[str, Any],
     extra_headers: list[tuple[bytes, bytes]] | None = None,
@@ -228,7 +230,7 @@ class DashboardGate:
     def __init__(self, app: Any) -> None:
         self.app = app
 
-    async def __call__(self, scope: dict[str, Any], receive: Callable, send: Callable) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
@@ -243,7 +245,7 @@ class DashboardGate:
         ]
 
         # 2. Wrap send so every response carries nginx's security headers
-        async def _send_with_security_headers(message: dict[str, Any]) -> None:
+        async def _send_with_security_headers(message: Message) -> None:
             if message.get("type") == "http.response.start":
                 existing = list(message.get("headers") or [])
                 existing_names = {k.decode("latin-1").lower() for k, _ in existing}
@@ -312,7 +314,7 @@ class DashboardFiles:
             return candidate
         return None
 
-    async def __call__(self, scope: dict[str, Any], receive: Callable, send: Callable) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
             return
 
