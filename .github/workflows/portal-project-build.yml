@@ -29,9 +29,19 @@ jobs:
           ODS_TEST_PROJECT_NODE: '1'
           ODS_TEST_PROJECT_PYTHON: '1'
           ODS_TEST_PROJECT_DIAGNOSTIC: '1'
-        run: >-
-          python -m pytest -q extensions/services/pixel-agent/tests/test_project_*.py
-          tests/test_pixel_project_install.py tests/test_pixel_runtime_budget.py
+        run: |
+          # Observe a slow CLI without ptrace or changes to pytest's deadlines.
+          python scripts/diagnose-docker-info-stall.py "$RUNNER_TEMP/docker-info-stall.jsonl" --seconds 180 &
+          sampler_pid=$!
+          stop_sampler() {
+            for running_pid in $(jobs -pr); do
+              if test "$running_pid" = "$sampler_pid"; then kill "$running_pid" 2>/dev/null || true; fi
+            done
+            wait "$sampler_pid" 2>/dev/null || true
+          }
+          trap stop_sampler EXIT
+          python -m pytest -q extensions/services/pixel-agent/tests/test_project_*.py \
+            tests/test_pixel_project_install.py tests/test_pixel_runtime_budget.py
       - name: Portal registration and transport
         run: node --test extensions/services/pixel-agent/tests/project_*.test.mjs
       - name: Diagnose failed Docker execution
@@ -70,3 +80,8 @@ jobs:
           print(json.dumps(result, indent=2))
           PY
           timeout 10s sudo journalctl -u docker.service -u containerd.service --since '-10 min' --no-pager -n 120 || true
+          if test -s "$RUNNER_TEMP/docker-info-stall.jsonl"; then
+            cat "$RUNNER_TEMP/docker-info-stall.jsonl"
+          else
+            echo 'No slow docker-info process observed by sampler'
+          fi
