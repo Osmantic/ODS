@@ -601,12 +601,26 @@ namespace OdsNativeDesktop
                 if (!string.IsNullOrEmpty(modelPath) && File.Exists(modelPath))
                 {
                     string ngl = (gpuPref == 1) ? "0 --device none" : "99";
+                    int ctxSize = 4096;
+                    if (env.ContainsKey("CTX_SIZE"))
+                    {
+                        int parsed;
+                        if (int.TryParse(env["CTX_SIZE"], out parsed) && parsed > 0)
+                        {
+                            ctxSize = Math.Min(parsed, 16384);
+                        }
+                    }
+                    string aliasArg = "";
+                    if (env.ContainsKey("LLM_MODEL") && !string.IsNullOrEmpty(env["LLM_MODEL"]))
+                    {
+                        aliasArg = string.Format(" --alias \"{0}\"", env["LLM_MODEL"]);
+                    }
                     try
                     {
                         ProcessStartInfo lpsi = new ProcessStartInfo
                         {
                             FileName = llamaExe,
-                            Arguments = string.Format("-m \"{0}\" --host 127.0.0.1 --port 8085 -c 4096 -ngl {1}", modelPath, ngl),
+                            Arguments = string.Format("-m \"{0}\" --host 127.0.0.1 --port 8085 -c {1} -ngl {2} -np 1 --fit off{3}", modelPath, ctxSize, ngl, aliasArg),
                             WorkingDirectory = Path.GetDirectoryName(llamaExe),
                             UseShellExecute = false,
                             CreateNoWindow = true
@@ -770,7 +784,9 @@ namespace OdsNativeDesktop
             bool apiUp = Program.IsTcpPortOpen("127.0.0.1", 3101, 150);
             bool llamaUp = Program.IsTcpPortOpen("127.0.0.1", 8085, 150);
 
-            if ((!apiUp || !llamaUp) && (DateTime.UtcNow - _lastStartAttemptUtc).TotalSeconds >= 6.0)
+            // Only auto-restart services if dashboard-api is down. When dashboard-api is online,
+            // it manages llama-server model switches and reloads to avoid process duplication.
+            if (!apiUp && (DateTime.UtcNow - _lastStartAttemptUtc).TotalSeconds >= 6.0)
             {
                 _lastStartAttemptUtc = DateTime.UtcNow;
                 ThreadPool.QueueUserWorkItem(_ => EnsureNativeServicesStarted());
