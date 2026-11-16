@@ -291,6 +291,11 @@ export default definePluginEntry({
       createTools: createOpenClawCodingTools, resolveSandbox: resolveSandboxContext,
       acquireLease: acquireSessionWriteLock, afterToolCall: runAgentHarnessAfterToolCallHook,
       authority: readonlyAuthority,
+      onSettled: scope => {
+        if (!scope.deferredParentCallId) return;
+        if (!registeredAccessRuntime) throw new Error('readonly admission runtime unavailable');
+        registeredAccessRuntime.settleReadonlyParent(scope);
+      },
     });
     // Discovery tools and build-time schema captures must never read host state.
     // Failure to collect diagnostics must also never prevent agent registration.
@@ -474,6 +479,7 @@ export default definePluginEntry({
     })), {names: ['pixel_ods_workspace_bundle']});
     api.registerTool(onlyPixel(context => createReadonlyExecTool(context, {
       admission: readonlyAdmission, execute: readonlyRuntime.execute, scopeForContext: readonlyRuntime.scopeForContext,
+      onNotStarted: active => accessRuntime.settleReadonlyParent(active),
     })), {names: [READONLY_EXEC_TOOL]});
 
     // OpenClaw does not replay arbitrary plugin tools after an empty model

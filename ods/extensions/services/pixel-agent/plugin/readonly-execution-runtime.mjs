@@ -12,7 +12,7 @@ const absolute=p=>typeof p==='string'&&p!=='/'&&path.posix.isAbsolute(p)&&path.p
 // No host state is touched during plugin discovery. Host argv comes only from
 // the allocator; all model-supplied commands still use the public SDK exec tool.
 export function createReadonlyExecutionRuntime({readConfig,resolveStateDir,resolveCliPath,createTools,
-  resolveSandbox,acquireLease,afterToolCall,authority,runFile=promisify(execFile)}={}){
+  resolveSandbox,acquireLease,afterToolCall,authority,onSettled,runFile=promisify(execFile)}={}){
   if([resolveStateDir,resolveCliPath,runFile].some(fn=>typeof fn!=='function'))
     throw new TypeError('readonly runtime dependencies required');
   let allocator;
@@ -47,7 +47,7 @@ export function createReadonlyExecutionRuntime({readConfig,resolveStateDir,resol
   const provider=createReadonlyExecutionProvider({readConfig,createTools,resolveSandbox,allocator:{
     allocate:(...args)=>allocatedRuntime().allocate(...args),recover:()=>allocatedRuntime().recover(),
   }});
-  const runner=createReadonlyExecutionRunner({prepare:provider.prepare,authority,afterToolCall});
+  const runner=createReadonlyExecutionRunner({prepare:provider.prepare,authority,afterToolCall,onSettled});
   return Object.freeze({scopeForContext:provider.scopeForContext,execute:runner.execute,
     cancel:runner.cancel,recover:provider.recover});
 }

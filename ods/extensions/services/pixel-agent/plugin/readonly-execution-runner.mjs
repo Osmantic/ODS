@@ -13,10 +13,20 @@ const matches = (job, scope) => validScope(scope) && required.every(key => job.s
 // rollback, or readonlyRecovery:{cleanup} for a partial allocation. Unqualified
 // preparation failures retain the recovery latch rather than imply absence.
 export function createReadonlyExecutionRunner({prepare, authority, afterToolCall, clock = Date.now,
-  setTimer = setTimeout, clearTimer = clearTimeout}) {
-  if (typeof prepare !== 'function' || typeof authority?.run !== 'function' || typeof afterToolCall !== 'function')
+  setTimer = setTimeout, clearTimer = clearTimeout, onSettled = () => {}}) {
+  if (typeof prepare !== 'function' || typeof authority?.run !== 'function' || typeof afterToolCall !== 'function' ||
+      typeof onSettled !== 'function')
     throw new TypeError('readonly runner dependencies required');
   const jobs = new Set();
+  async function settle(job) {
+    if (!job.finished || !job.cleaned || job.settled) return;
+    // A cleanup retry must also retry a failed admission settlement. Do not
+    // advertise idle merely because execution returned or the jobs set is empty.
+    if (!job.settling) job.settling = Promise.resolve().then(() => onSettled(job.scope))
+      .then(() => { job.settled = true; });
+    try { await job.settling; }
+    finally { job.settling = undefined; }
+  }
   function cleanup(job, retry = false) {
     if (job.cleaned) return Promise.resolve();
     if (!job.handle) return Promise.reject(fail('readonly-cleanup-unconfirmed'));
@@ -38,11 +48,10 @@ export function createReadonlyExecutionRunner({prepare, authority, afterToolCall
       throw fail('readonly-scope-invalid');
     if (!Number.isInteger(request?.timeoutSeconds) || request.timeoutSeconds < 1 || request.timeoutSeconds > 60)
       throw fail('readonly-request-invalid');
-    if ([...jobs].some(job => job.finished && !job.cleaned)) throw fail('readonly-recovery-required');
+    if ([...jobs].some(job => job.finished && (!job.cleaned || !job.settled))) throw fail('readonly-recovery-required');
     const scope = Object.freeze({...suppliedScope});
     if ([...jobs].some(job => matches(job,scope) && job.scope.toolCallId === scope.toolCallId))
       throw fail('readonly-execution-duplicate');
-    if (signal?.aborted) throw fail('readonly-execution-cancelled');
     const controller = new AbortController();
     const job = {scope, controller, handle:null, finished:false, cleaned:false};
     job.done = new Promise(resolve => { job.resolveDone = resolve; });
@@ -106,7 +115,11 @@ export function createReadonlyExecutionRunner({prepare, authority, afterToolCall
       signal?.removeEventListener('abort',forwardAbort);
       controller.signal.removeEventListener('abort',onAbort);
       job.finished = true;
-      if (job.cleaned) jobs.delete(job);
+      if (job.cleaned) {
+        try { await settle(job); }
+        catch (error) { failure = fail('readonly-settlement-unconfirmed', error); }
+      }
+      if (job.cleaned && job.settled) jobs.delete(job);
       job.resolveDone();
     }
     if (failure) throw failure;
@@ -121,9 +134,12 @@ export function createReadonlyExecutionRunner({prepare, authority, afterToolCall
       if (!job.cleaned && job.handle) {
         try { await cleanup(job,true); } catch { /* Preserve the failed job and recovery latch. */ }
       }
-      if (job.cleaned) jobs.delete(job);
+      if (job.cleaned) {
+        try { await settle(job); } catch { /* Retain unconfirmed admission settlement. */ }
+      }
+      if (job.cleaned && job.settled) jobs.delete(job);
     }
-    return selected.every(job => job.finished && job.cleaned);
+    return selected.every(job => job.finished && job.cleaned && job.settled);
   }
   return {execute,cancel,pendingFor:scope => [...jobs].filter(job => matches(job,scope)).length};
 }

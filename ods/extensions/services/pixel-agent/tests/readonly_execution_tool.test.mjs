@@ -325,3 +325,64 @@ test('bounded admission retains 128 calls and evicts the oldest on overflow', ()
       assert.equal(admission.take('id-'+i,normalizeReadonlyExec({command:'printf 4'}),factory).runId,'run-1');
   }
 });
+
+test('direct child and deferred parent take consumes both admissions', () => {
+  const admission = createReadonlyExecAdmission();
+  const parentCtx = baseContext({toolCallId: 'parent-both'});
+  admitDeferred(admission, parentCtx, {command: 'printf 4'});
+  const childId = `tool_search_code:parent-both:${READONLY_EXEC_TOOL}:1`;
+  admitDirect(admission, baseContext({toolCallId: childId}), {command: 'printf 4'});
+  const active = admission.take(childId, normalizeReadonlyExec({command: 'printf 4'}), factory);
+  assert.equal(active.toolCallId, childId);
+  assert.equal(active.deferredParentCallId, 'parent-both');
+  assert.throws(() => admission.take(childId, normalizeReadonlyExec({command: 'printf 4'}), factory), /readonly-exec-call-unbound/);
+  assert.throws(() => admission.take('parent-both', normalizeReadonlyExec({command: 'printf 4'}), factory), /readonly-exec-call-unbound/);
+});
+
+test('prefix collisions with a direct child still refuse ambiguous parent binding', () => {
+  const admission = createReadonlyExecAdmission();
+  for (const id of ['parent?', 'parent!']) admitDeferred(admission, baseContext({toolCallId: id}), {command: 'printf 4'});
+  const childId = `tool_search_code:parent_:${READONLY_EXEC_TOOL}:1`;
+  admitDirect(admission, baseContext({toolCallId: childId}), {command: 'printf 4'});
+  assert.throws(() => admission.take(childId, normalizeReadonlyExec({command: 'printf 4'}), factory), /readonly-exec-call-unbound/);
+});
+
+test('deferred child with mismatched scope or request is rejected', () => {
+  const admission = createReadonlyExecAdmission();
+  const parentCtx = baseContext({toolCallId: 'parent-scope'});
+  admitDeferred(admission, parentCtx, {command: 'printf 4'});
+  const childId = `tool_search_code:parent-scope:${READONLY_EXEC_TOOL}:1`;
+  admitDirect(admission, baseContext({toolCallId: childId, runId: 'run-other'}), {command: 'printf 4'});
+  assert.throws(() => admission.take(childId, normalizeReadonlyExec({command: 'printf 4'}), factory), /readonly-exec-call-unbound/);
+  const admission2 = createReadonlyExecAdmission();
+  admitDeferred(admission2, baseContext({toolCallId: 'parent-req'}), {command: 'printf 4'});
+  const child2 = `tool_search_code:parent-req:${READONLY_EXEC_TOOL}:1`;
+  admitDirect(admission2, baseContext({toolCallId: child2}), {command: 'printf 5'});
+  assert.throws(() => admission2.take(child2, normalizeReadonlyExec({command: 'printf 5'}), factory), /readonly-exec-call-unbound/);
+});
+
+test('direct admission without a deferred parent has no deferredParentCallId', () => {
+  const admission = createReadonlyExecAdmission();
+  admitDirect(admission, baseContext({toolCallId: 'direct-only'}), {command: 'printf 4'});
+  const active = admission.take('direct-only', normalizeReadonlyExec({command: 'printf 4'}), factory);
+  assert.equal(active.toolCallId, 'direct-only');
+  assert.equal(Object.hasOwn(active, 'deferredParentCallId'), false);
+});
+
+test('scope-construction refusal settles only an already bound unstarted call', async () => {
+  const admission = createReadonlyExecAdmission(), settled = [];
+  let executions = 0;
+  const tool = createReadonlyExecTool(factory, {admission,
+    scopeForContext: () => { throw Object.assign(new Error('scope changed'), {code:'readonly-scope-mismatch'}); },
+    onNotStarted: active => settled.push(active), execute: () => { executions++; }});
+  const params = {command:'printf 4'}, child = `tool_search_code:parent-unstarted:${READONLY_EXEC_TOOL}:1`;
+  admitDeferred(admission, baseContext({toolCallId:'parent-unstarted'}), params);
+  admitDirect(admission, baseContext({toolCallId:child}), params);
+  assert.equal((await tool.execute(child, params)).details.code, 'readonly-scope-mismatch');
+  assert.equal(executions, 0);
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].toolCallId, child);
+  assert.equal(settled[0].deferredParentCallId, 'parent-unstarted');
+  assert.equal((await tool.execute('unbound', params)).details.code, 'readonly-exec-call-unbound');
+  assert.equal(settled.length, 1, 'an unbound request cannot settle an admission');
+});

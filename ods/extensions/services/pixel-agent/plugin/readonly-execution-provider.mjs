@@ -44,6 +44,7 @@ export function createReadonlyExecutionProvider({readConfig,createTools,resolveS
       activeModel:model == null ? undefined : Object.freeze({provider:model.provider,modelId:model.modelId})});
     return Object.freeze({agentId:active.agentId, runId:active.runId, sessionId:active.sessionId,
       sessionKey:active.sessionKey, toolCallId:active.toolCallId, workspaceRoot,
+      ...(nonempty(active.deferredParentCallId) ? {deferredParentCallId:active.deferredParentCallId} : {}),
       configDigest:digest(config), factory:frozenFactory});
   }
 

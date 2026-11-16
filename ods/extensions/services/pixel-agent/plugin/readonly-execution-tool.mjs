@@ -151,22 +151,28 @@ export function createReadonlyExecAdmission() {
       if (typeof callId !== 'string' || callId.length === 0) throw fail('readonly-exec-call-unbound');
       let entry = pending.get(callId);
       let parentId = callId;
-      if (!entry) {
-        const matches = [];
-        for (const [parent, item] of pending) {
-          if (item.deferred && isDeferredChild(callId, parent)) matches.push([parent, item]);
-        }
-        if (matches.length === 1) {
-          parentId = matches[0][0];
-          entry = matches[0][1];
-        }
+      const parents = [...pending].filter(([parent, item]) =>
+        item.deferred && isDeferredChild(callId, parent));
+      // Current SDK versions admit both the deferred wrapper and its child.
+      // Bind their exact identities before either completion hook revokes them.
+      if (parents.length > 1) throw fail('readonly-exec-call-unbound');
+      const parent = parents[0];
+      if (!entry && parent) {
+        parentId = parent[0];
+        entry = parent[1];
       }
       if (!entry || entry.used) throw fail('readonly-exec-call-unbound');
       if (!isDeepStrictEqual(entry.request, request)) throw fail('readonly-exec-call-unbound');
       if (!factoryMatches(entry, factory)) throw fail('readonly-exec-call-unbound');
+      if (parent && (parent[1].used || !isDeepStrictEqual(parent[1].request, request) ||
+          ['agentId', 'runId', 'sessionId', 'sessionKey'].some(key =>
+            parent[1].context[key] !== entry.context[key]))) throw fail('readonly-exec-call-unbound');
+      const deferredParentCallId = parent?.[0] ?? (entry.deferred ? parentId : undefined);
       entry.used = true;
       pending.delete(parentId);
-      return Object.freeze({...entry.context});
+      if (deferredParentCallId) pending.delete(deferredParentCallId);
+      return Object.freeze({...entry.context,
+        ...(deferredParentCallId ? {deferredParentCallId} : {})});
     },
 
     after(event, context) {
@@ -207,11 +213,12 @@ function sanitizeError(error) {
   return code;
 }
 
-export function createReadonlyExecTool(context, {admission, execute, scopeForContext}) {
+export function createReadonlyExecTool(context, {admission, execute, scopeForContext, onNotStarted = () => {}}) {
   if (context?.agentId !== 'pixel') return null;
   if (!admission || typeof admission.take !== 'function') throw fail('readonly-exec-admission-required');
   if (typeof execute !== 'function') throw fail('readonly-exec-runner-required');
   if (typeof scopeForContext !== 'function') throw fail('readonly-exec-scope-required');
+  if (typeof onNotStarted !== 'function') throw fail('readonly-exec-settlement-required');
   return {
     name: READONLY_EXEC_TOOL,
     label: 'Read-only execution',
@@ -235,7 +242,14 @@ export function createReadonlyExecTool(context, {admission, execute, scopeForCon
       }
       try {
         const active = admission.take(id, request, context);
-        const scope = scopeForContext(active, context);
+        let scope;
+        try { scope = scopeForContext(active, context); }
+        catch (error) {
+          // Scope construction has no execution side effects. The runner was
+          // never entered, so there is no owned runtime requiring cleanup.
+          await onNotStarted(active);
+          throw error;
+        }
         // Preserve the runner's SDK result, including nonzero exits and errors.
         return await execute(scope, request, signal);
       } catch (error) {

@@ -418,3 +418,103 @@ test('concurrent cancel calls do not trigger more than one cleanup', async () =>
   await Promise.all([c1, c2]);
   assert.equal(state.cleanupCalls, 1, 'cleanup must be invoked exactly once');
 });
+
+const makeRunnerWithSettled = (opts = {}) => {
+  const scheduler = opts.scheduler ?? makeScheduler();
+  const authority = opts.authority ?? makeAuthority();
+  const afterCalls = [];
+  const settledCalls = [];
+  const prepareImpl = opts.prepare ?? (async () => makeHandle().handle);
+  const runner = createReadonlyExecutionRunner({
+    prepare: async (scope, request) => prepareImpl(scope, request),
+    authority,
+    afterToolCall: async (payload) => { afterCalls.push(payload); },
+    onSettled: async (scope) => { settledCalls.push(scope); if (opts.onSettled) return opts.onSettled(scope); },
+    clock: () => 1000,
+    setTimer: scheduler.setTimer,
+    clearTimer: scheduler.clearTimer
+  });
+  return {runner, scheduler, authority, afterCalls, settledCalls};
+};
+
+test('onSettled waits for execution and cleanup before resolving', async () => {
+  const {handle, state} = makeHandle();
+  state.execDeferred = deferred();
+  state.cleanupDeferred = deferred();
+  const {runner, settledCalls} = makeRunnerWithSettled({prepare: async () => handle});
+  const p = runner.execute(SCOPE, REQUEST);
+  await state.started.promise;
+  state.execDeferred.resolve({details: {status: 'completed', exitCode: 0}});
+  await state.cleaning.promise;
+  assert.equal(settledCalls.length, 0, 'settlement must wait for cleanup');
+  state.cleanupDeferred.resolve();
+  await p;
+  assert.equal(settledCalls.length, 1);
+  assert.equal(settledCalls[0].runId, SCOPE.runId);
+  assert.equal(settledCalls[0].toolCallId, SCOPE.toolCallId);
+});
+
+test('onSettled fires exactly once per successful execution', async () => {
+  const {handle} = makeHandle();
+  const {runner, settledCalls} = makeRunnerWithSettled({prepare: async () => handle});
+  await runner.execute(SCOPE, REQUEST);
+  assert.equal(settledCalls.length, 1);
+  await runner.cancel(SCOPE);
+  assert.equal(settledCalls.length, 1, 'cancel after settlement must not re-settle');
+});
+
+test('Stop cannot settle an admission while SDK execution is still pending', async () => {
+  const {handle, state} = makeHandle();
+  state.execDeferred = deferred();
+  const {runner, settledCalls} = makeRunnerWithSettled({prepare: async () => handle});
+  const pending = runner.execute(SCOPE, REQUEST);
+  const rejected = assert.rejects(pending, /readonly-execution-cancelled/);
+  await state.started.promise;
+  const cancelling = runner.cancel(SCOPE);
+  await state.cleaning.promise;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settledCalls.length, 0, 'cleanup alone cannot prove SDK execution settled');
+  assert.equal(runner.pendingFor(SCOPE), 1);
+  state.execDeferred.resolve({details:{status:'completed',exitCode:0}});
+  await rejected;
+  assert.equal(await cancelling, true);
+  assert.equal(settledCalls.length, 1);
+});
+
+test('cleanup retry calls settlement after the retry succeeds', async () => {
+  const {handle, state} = makeHandle();
+  let attempts = 0;
+  state.cleanupImpl = () => { attempts++; return attempts === 1 ? Promise.reject(new Error('cleanup-boom')) : Promise.resolve(); };
+  const {runner, settledCalls} = makeRunnerWithSettled({prepare: async () => handle});
+  await assert.rejects(runner.execute(SCOPE, REQUEST), /readonly-cleanup-unconfirmed/);
+  assert.equal(settledCalls.length, 0, 'no settlement before cleanup is proven');
+  assert.equal(await runner.cancel(SCOPE), true);
+  assert.equal(attempts, 2);
+  assert.equal(settledCalls.length, 1);
+});
+
+test('onSettled failure latches recovery and cancel retries settlement', async () => {
+  const {handle} = makeHandle();
+  let settleAttempts = 0;
+  const {runner, settledCalls} = makeRunnerWithSettled({prepare: async () => handle,
+    onSettled: async () => { if (++settleAttempts === 1) throw new Error('settle-boom'); }});
+  await assert.rejects(runner.execute(SCOPE, REQUEST), /readonly-settlement-unconfirmed/);
+  assert.equal(settledCalls.length, 1);
+  await assert.rejects(runner.execute({...SCOPE, toolCallId: 'call-2'}, REQUEST), /readonly-recovery-required/);
+  assert.equal(await runner.cancel(SCOPE), true);
+  assert.equal(settleAttempts, 2);
+  assert.equal(runner.pendingFor(SCOPE), 0);
+  await runner.execute({...SCOPE, toolCallId: 'call-3'}, REQUEST);
+  assert.equal(settleAttempts, 3);
+});
+
+test('pre-aborted signal performs no execution and settles safely', async () => {
+  const {runner, authority, afterCalls, settledCalls} = makeRunnerWithSettled();
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(runner.execute(SCOPE, REQUEST, controller.signal), /readonly-execution-cancelled/);
+  assert.equal(authority.calls.length, 0);
+  assert.equal(afterCalls.length, 0);
+  assert.equal(settledCalls.length, 1, 'preparation never started, so absence is authoritative');
+  assert.equal(runner.pendingFor(SCOPE), 0);
+});
