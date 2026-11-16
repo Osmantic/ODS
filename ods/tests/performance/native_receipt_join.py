@@ -601,4 +601,3 @@ class NativeReceiptWitness:
             "owned_cleanup_proven": None,
             "errors": sorted(set(errors)),
         }
-
