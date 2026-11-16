@@ -1790,6 +1790,10 @@ acquire_model_lifecycle_lock || fail "Could not serialize background full-model 
 
 _windows_native_llama_swap_applies=false
 _docker_llama_swap_applies=false
+_macos_ubatch_swap_applies=false
+if [[ -f "$INSTALL_DIR/data/.llama-server.pid" && -n "$(read_env_value LLAMA_ARG_UBATCH)" ]]; then
+    _macos_ubatch_swap_applies=true
+fi
 if is_windows_bash; then
     # Windows AMD runs ggml-org llama-server.exe natively (Round F); the
     # installer migrates older runtimes before this script runs.
@@ -1821,7 +1825,7 @@ if [[ "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_ap
     fi
 fi
 
-if [[ "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_applies" == "true" ]]; then
+if [[ "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_applies" == "true" || "$_macos_ubatch_swap_applies" == "true" ]]; then
     log "Snapshotting active model config before full-model swap..."
     if ! snapshot_active_model_config; then
         discard_active_model_config_snapshot
@@ -2290,6 +2294,8 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             # model is stopped. A rejected setting must not strand the swap.
             _llama_tuning_args=(--reasoning-format "$_reasoning_fmt")
             _tuning_helper="$INSTALL_DIR/installers/macos/lib/native-checkpoint-args.py"
+            _explicit_ubatch="$(read_env_value LLAMA_ARG_UBATCH)"
+            _tuning_qualified=false
             if [[ -f "$_tuning_helper" ]] && _tuning_file="$(mktemp)"; then
                 if "${ODS_PYTHON_CMD:-python3}" "$_tuning_helper" --binary "$LLAMA_SERVER_BIN" \
                     --interval="$(read_env_value LLAMA_ARG_CHECKPOINT_EVERY_NT)" \
@@ -2297,6 +2303,7 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
                     --cache-mib="$(read_env_value LLAMA_ARG_CACHE_RAM)" \
                     --idle-seconds="$(read_env_value LLAMA_ARG_SLEEP_IDLE_SECONDS)" \
                     --min-spacing="$(read_env_value LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT)" \
+                    --ubatch="$_explicit_ubatch" \
                     --explicit-spec-type="$(read_env_value LLAMA_ARG_SPEC_TYPE)" \
                     --spec-default="$(read_env_value LLAMA_SPEC_TYPE)" \
                     --draft-n-max="$(read_env_value LLAMA_ARG_SPEC_DRAFT_N_MAX)" \
@@ -2304,14 +2311,29 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
                     --draft-type-v="$(read_env_value LLAMA_ARG_SPEC_DRAFT_TYPE_V)" \
                     --reasoning-mode="$_reasoning" --reasoning-format-fallback="$_reasoning_fmt" \
                     --apply-defaults > "$_tuning_file"; then
+                    _tuning_qualified=true
                     _llama_tuning_args=()
                     while IFS= read -r -d '' _tuning_field; do
                         _llama_tuning_args+=("$_tuning_field")
                     done < "$_tuning_file"
                 else
-                    log "WARNING: native llama-server tuning was rejected for this runtime; starting the full model without it. Fix .env, then run './ods-macos.sh restart'."
+                    if [[ -z "$_explicit_ubatch" ]]; then
+                        log "WARNING: native llama-server tuning was rejected for this runtime; starting the full model without it. Fix .env, then run './ods-macos.sh restart'."
+                    fi
                 fi
                 rm -f "$_tuning_file"
+            fi
+
+            # Explicit microbatch tuning must never silently disappear. The
+            # snapshot also covers legacy native installs without Docker.
+            if [[ -n "$_explicit_ubatch" && "$_tuning_qualified" != true ]]; then
+                _restore_detail="Previous active model config restored."
+                if ! restore_active_model_config; then
+                    _restore_detail="Active model config restoration failed; repair .env before retrying."
+                fi
+                write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
+                    "Native microbatch tuning could not be qualified. The running model was not stopped. $_restore_detail"
+                exit 1
             fi
 
             # Capture old model path for rollback before we kill the process
