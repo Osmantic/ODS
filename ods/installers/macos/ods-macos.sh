@@ -750,15 +750,29 @@ ensure_llama_cpu_budget() {
 
 # ── Native llama-server management ──
 
+# Whether a PID runs this install's llama-server, by the rule that
+# native-llama-service.sh applies before it stops anything. A failed bootstrap
+# leaves the previous PID in the PID file, and macOS can later give that PID to
+# another program.
+native_llama_pid_is_owned() {
+    local command executable
+    command="$(ps -p "$1" -o command= 2>/dev/null)" || return 1
+    command="${command#"${command%%[![:space:]]*}"}"
+    executable="${command%%[[:space:]]*}"
+    [[ "$command" == "$LLAMA_SERVER_BIN" || "$command" == "$LLAMA_SERVER_BIN "* ]] && return 0
+    [[ "${executable##*/}" == llama-server && "$command" == *" --model $INSTALL_DIR/data/models/"* ]]
+}
+
 get_native_llama_status() {
     NATIVE_LLAMA_RUNNING=false
     NATIVE_LLAMA_PID=0
     NATIVE_LLAMA_HEALTHY=false
 
-    local managed_pid
+    local managed_pid managed=false
     managed_pid="$(launchctl print "gui/$(id -u)/com.ods.llama-server" 2>/dev/null | awk '$1 == "pid" && $2 == "=" {print $3; exit}' || true)"
     if [[ "$managed_pid" =~ ^[0-9]+$ ]] && kill -0 "$managed_pid" 2>/dev/null; then
         printf '%s\n' "$managed_pid" > "$LLAMA_SERVER_PID_FILE"
+        managed=true
     fi
 
     if [[ ! -f "$LLAMA_SERVER_PID_FILE" ]]; then
@@ -769,7 +783,9 @@ get_native_llama_status() {
     saved_pid=$(cat "$LLAMA_SERVER_PID_FILE" 2>/dev/null | tr -d '[:space:]')
     [[ -z "$saved_pid" ]] && return
 
-    if kill -0 "$saved_pid" 2>/dev/null; then
+    # launchd vouches for its own job's PID; any other PID must still be ours.
+    if kill -0 "$saved_pid" 2>/dev/null \
+        && { $managed || native_llama_pid_is_owned "$saved_pid"; }; then
         NATIVE_LLAMA_RUNNING=true
         NATIVE_LLAMA_PID="$saved_pid"
 
@@ -914,13 +930,9 @@ stop_native_llama() {
         return
     fi
 
-    kill "$NATIVE_LLAMA_PID" 2>/dev/null || true
-    sleep 2
-    # Force kill if still running
-    if kill -0 "$NATIVE_LLAMA_PID" 2>/dev/null; then
-        kill -9 "$NATIVE_LLAMA_PID" 2>/dev/null || true
-    fi
-    rm -f "$LLAMA_SERVER_PID_FILE" 2>/dev/null
+    # native-llama-service.sh stopped every install-owned llama-server and
+    # removed the PID file. Signalling the saved PID again could reach a
+    # program that macOS gave the same PID after llama-server exited.
     ai_ok "Native llama-server stopped (PID ${NATIVE_LLAMA_PID})"
 }
 
