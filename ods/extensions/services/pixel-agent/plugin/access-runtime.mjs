@@ -485,16 +485,19 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
       runId:context?.runId, sessionId:context?.sessionId, sessionKey:context?.sessionKey}});
     state.phase = 'busy'; changed();
   }
-  // The SDK can omit the outer tool_call completion when Stop interrupts a
-  // deferred tool. Only the protected runner's verified settlement may release
-  // that wrapper, using its original admission and exact run/session binding.
+  // Stop can omit the model-visible completion: the deferred tool_call wrapper
+  // or the directly offered protected tool. Only the runner's verified
+  // settlement may release that exact admission and run/session binding.
   function settleReadonlyParent(scope) {
-    const id = scope?.deferredParentCallId;
-    if (typeof id !== 'string' || !id) return;
     if (failed) throw new Error('readonly admission runtime unavailable');
+    const deferred = scope?.deferredParentCallId !== undefined;
+    const id = deferred ? scope.deferredParentCallId : scope?.toolCallId;
+    if (typeof id !== 'string' || !id)
+      throw new Error('readonly admission settlement scope mismatch');
     const admitted = tools.get(id);
     if (!admitted) return; // The SDK may already have delivered normal completion.
-    if (admitted.toolName !== 'tool_call' || scope.agentId !== 'pixel' ||
+    const expectedKind = deferred ? 'tool_call' : 'pixel_ods_readonly_exec';
+    if (admitted.toolName !== expectedKind || scope.agentId !== 'pixel' ||
         ['agentId','runId','sessionId','sessionKey'].some(key =>
           typeof scope[key] !== 'string' || !scope[key] || admitted.context[key] !== scope[key]))
       throw new Error('readonly admission settlement scope mismatch');

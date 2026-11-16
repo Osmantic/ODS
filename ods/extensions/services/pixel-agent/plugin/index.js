@@ -292,7 +292,6 @@ export default definePluginEntry({
       acquireLease: acquireSessionWriteLock, afterToolCall: runAgentHarnessAfterToolCallHook,
       authority: readonlyAuthority,
       onSettled: scope => {
-        if (!scope.deferredParentCallId) return;
         if (!registeredAccessRuntime) throw new Error('readonly admission runtime unavailable');
         registeredAccessRuntime.settleReadonlyParent(scope);
       },

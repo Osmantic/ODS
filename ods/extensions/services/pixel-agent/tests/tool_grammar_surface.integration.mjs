@@ -80,7 +80,7 @@ test('actual catalog offers the reviewed general-purpose surface', () => {
 });
 test('actual directly offered tools compile together as JSON and Qwen3.5 template grammar', () => compile(offered));
 test('workspace preview is present exactly once in the compiled ordinary surface', () => {
-  assert.equal(offered.length, 18);
+  assert.equal(offered.length, 19);
   assert.equal(offered.filter(tool => tool.name === 'pixel_ods_workspace_preview').length, 1);
 });
 

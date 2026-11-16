@@ -29,20 +29,9 @@ jobs:
           ODS_TEST_PROJECT_NODE: '1'
           ODS_TEST_PROJECT_PYTHON: '1'
           ODS_TEST_PROJECT_DIAGNOSTIC: '1'
-        run: |
-          tests=(python -m pytest -q extensions/services/pixel-agent/tests/test_project_*.py
-            tests/test_pixel_project_install.py tests/test_pixel_runtime_budget.py)
-          if command -v strace >/dev/null 2>&1; then
-            # Diagnostic only: retain the original test result and deadlines.
-            # No read/write/send/recv payloads or environment values are traced.
-            # A pass under tracing does not establish that the stall is fixed.
-            strace -f -tt -T -s 128 \
-              -e trace=execve,clone,clone3,fork,vfork,connect,getsockopt,poll,ppoll,epoll_pwait,wait4,kill,tgkill \
-              -o "$RUNNER_TEMP/ods-project-syscalls.log" "${tests[@]}"
-          else
-            echo 'strace unavailable; preserving the original test command'
-            "${tests[@]}"
-          fi
+        run: >-
+          python -m pytest -q extensions/services/pixel-agent/tests/test_project_*.py
+          tests/test_pixel_project_install.py tests/test_pixel_runtime_budget.py
       - name: Portal registration and transport
         run: node --test extensions/services/pixel-agent/tests/project_*.test.mjs
       - name: Diagnose failed Docker execution
@@ -81,47 +70,3 @@ jobs:
           print(json.dumps(result, indent=2))
           PY
           timeout 10s sudo journalctl -u docker.service -u containerd.service --since '-10 min' --no-pager -n 120 || true
-          python - <<'PY'
-          import collections, json, os, re
-          from pathlib import Path
-          trace = Path(os.environ['RUNNER_TEMP']) / 'ods-project-syscalls.log'
-          if not trace.is_file():
-              print('No syscall trace available')
-              raise SystemExit(0)
-          children, info = collections.defaultdict(set), []
-          def parsed(line):
-              match = re.match(r'^\s*(\d+)\s+(.*)', line)
-              return (int(match[1]), match[2]) if match else (None, '')
-          with trace.open(errors='replace') as source:
-              for line in source:
-                  pid, body = parsed(line)
-                  if pid is None:
-                      continue
-                  if 'execve(' in body and '["docker", "info", "--format", "{{.MemTotal}}"]' in body:
-                      if pid not in info:
-                          info.append(pid)
-                  if re.search(r'\b(?:clone3?|fork|vfork)\b', body):
-                      child = re.search(r'= (\d+)\s*(?:<[^>]+>)?\s*$', body)
-                      if child:
-                          children[pid].add(int(child[1]))
-          for parent in info[:3]:
-              family, pending = {parent}, [parent]
-              while pending:
-                  for child in children[pending.pop()]:
-                      if child not in family:
-                          family.add(child)
-                          pending.append(child)
-              rows = collections.deque(maxlen=120)
-              with trace.open(errors='replace') as source:
-                  for line in source:
-                      pid, body = parsed(line)
-                      if pid not in family:
-                          continue
-                      # Retain only the known query's arguments. Other exec
-                      # arguments may contain test data and are not published.
-                      if 'execve(' in body and pid != parent:
-                          body = body.split('execve(', 1)[0] + 'execve(<arguments omitted>)'
-                      rows.append(f'{pid} {body.rstrip()}')
-              print(json.dumps({'docker_info_pid':parent,'related_processes':len(family),
-                                'last_syscalls':list(rows)}))
-          PY
