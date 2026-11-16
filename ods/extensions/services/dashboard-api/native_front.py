@@ -16,7 +16,7 @@ import mimetypes
 import os
 from http.cookies import SimpleCookie
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import unquote, urlparse
 
 from starlette.types import Message, Receive, Scope, Send

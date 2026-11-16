@@ -511,6 +511,44 @@ def parse_directx_gpu_preference_string(raw: str) -> Optional[int]:
     return None
 
 
+def _is_registry_path_for_ods(
+    reg_path: str,
+    explicit_candidates: Optional[list[str]],
+    install_dir: Optional[str] = None,
+) -> bool:
+    """Return True if reg_path belongs to this ODS installation."""
+    norm_reg = reg_path.replace("/", "\\").casefold()
+
+    if explicit_candidates:
+        candidate_roots: set[str] = set()
+        for cand in explicit_candidates:
+            if not cand:
+                continue
+            norm_cand = cand.replace("/", "\\").casefold()
+            if norm_reg == norm_cand:
+                return True
+            parts = [p for p in norm_cand.split("\\") if p]
+            for i in range(1, len(parts)):
+                root = "\\".join(parts[:i])
+                if not root.endswith(":") and len(root) > 2:
+                    candidate_roots.add(root)
+
+        for root in candidate_roots:
+            if norm_reg == root or norm_reg.startswith(root + "\\"):
+                return True
+
+        return False
+
+    # When no explicit candidates are provided:
+    if install_dir:
+        norm_install = install_dir.replace("/", "\\").casefold()
+        if norm_reg == norm_install or norm_reg.startswith(norm_install.rstrip("\\") + "\\"):
+            return True
+
+    segments = [s.casefold() for s in re.split(r"[\\/]", reg_path) if s]
+    return any(s in ("ods", "ods-setup", "osmantic") or s.startswith("ods-") for s in segments)
+
+
 def read_windows_user_gpu_preference(
     exe_candidates: Optional[list[str]] = None,
     registry_entries: Optional[dict[str, str]] = None,
@@ -552,17 +590,21 @@ def read_windows_user_gpu_preference(
             pass
 
     candidates = list(exe_candidates or [])
-    for env_key in ("ODS_DESKTOP_EXE", "ODS_NATIVE_LLM_EXE"):
-        val = os.environ.get(env_key, "").strip()
-        if val:
-            candidates.append(val)
-    target_basenames = {"ods.exe", "ods-setup.exe", "llama-server.exe"}
-    for cand in candidates:
-        base = os.path.basename(cand.replace("\\", "/")).lower()
-        if base:
-            target_basenames.add(base)
+    if not candidates:
+        for env_key in ("ODS_DESKTOP_EXE", "ODS_NATIVE_LLM_EXE"):
+            val = os.environ.get(env_key, "").strip()
+            if val:
+                candidates.append(val)
 
-    # First check exact path matches, then basename matches
+    install_dir = os.environ.get("ODS_INSTALL_DIR", "").strip()
+
+    target_basenames = (
+        {os.path.basename(cand.replace("\\", "/")).lower() for cand in candidates if cand}
+        if candidates
+        else {"ods.exe", "ods-setup.exe", "llama-server.exe"}
+    )
+
+    # First check exact path matches
     norm_candidates = {c.replace("/", "\\").casefold() for c in candidates if c}
     for reg_path, raw_val in entries.items():
         if reg_path.replace("/", "\\").casefold() in norm_candidates:
@@ -577,9 +619,10 @@ def read_windows_user_gpu_preference(
                     "matchedExecutable": reg_path,
                 }
 
+    # Fallback to basename match constrained to this ODS installation
     for reg_path, raw_val in entries.items():
         base = os.path.basename(reg_path.replace("\\", "/")).lower()
-        if base in target_basenames:
+        if base in target_basenames and _is_registry_path_for_ods(reg_path, exe_candidates, install_dir):
             code = parse_directx_gpu_preference_string(raw_val)
             if code is not None:
                 mode = _PREF_CODE_TO_MODE[code]

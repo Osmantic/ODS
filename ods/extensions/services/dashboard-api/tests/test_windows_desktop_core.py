@@ -131,6 +131,25 @@ def test_directx_user_gpu_preferences_parsing_and_matching(monkeypatch):
     assert pref_high["preferDiscreteGpu"] is True
     assert pref_high["preferenceCode"] == 2
 
+    # An unrelated application's llama-server.exe must not affect ODS preference
+    pref_unrelated = gpu.read_windows_user_gpu_preference(
+        exe_candidates=[r"C:\ODS\ODS.exe"],
+        registry_entries={r"C:\unrelated-app\llama-server.exe": "GpuPreference=1;"},
+    )
+    assert pref_unrelated["mode"] == "high_performance"
+    assert pref_unrelated["preferDiscreteGpu"] is True
+    assert pref_unrelated["preferenceCode"] == 2
+    assert pref_unrelated["source"] == "default_gpu_first"
+    assert pref_unrelated["matchedExecutable"] is None
+
+    # Even without explicit candidates, an unrelated third-party binary must not match
+    pref_unrelated_no_cand = gpu.read_windows_user_gpu_preference(
+        registry_entries={r"C:\unrelated-app\llama-server.exe": "GpuPreference=1;"},
+    )
+    assert pref_unrelated_no_cand["mode"] == "high_performance"
+    assert pref_unrelated_no_cand["source"] == "default_gpu_first"
+    assert pref_unrelated_no_cand["matchedExecutable"] is None
+
 
 def test_windows_native_gpu_selection_honors_user_gpu_preference(monkeypatch):
     monkeypatch.setattr(gpu.platform, "system", lambda: "Windows")
