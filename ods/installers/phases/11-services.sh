@@ -377,12 +377,23 @@ _phase11_prefetch_embeddings_model() {
     return 1
 }
 
+_phase11_model_sha256() {
+    local path="$1" python_cmd="${ODS_PYTHON_CMD:-python3}" actual_hash
+    local helper="$SCRIPT_DIR/lib/model-file-sha256.py"
+    [[ -f "$helper" ]] || return 1
+    if ! actual_hash="$("$python_cmd" "$helper" "$path")"; then
+        return 1
+    fi
+    # A failed or malformed helper response must never authorize removal.
+    [[ "$actual_hash" =~ ^[a-f0-9]{64}$ ]] || return 1
+    printf '%s\n' "$actual_hash"
+}
+
 _phase11_model_file_valid() {
     local path="$1" expected_sha="${2:-}" actual_hash
     [[ -s "$path" ]] || return 1
     if [[ -n "$expected_sha" ]]; then
-        command -v sha256sum >/dev/null 2>&1 || return 1
-        actual_hash="$(sha256sum "$path" 2>/dev/null | awk '{print $1}')"
+        actual_hash="$(_phase11_model_sha256 "$path")" || return 1
         [[ -n "$actual_hash" && "$actual_hash" == "$expected_sha" ]] || return 1
     fi
     return 0
@@ -1050,14 +1061,10 @@ else
         # Check if model exists and verify integrity
         if [[ -f "$GGUF_DIR/$GGUF_FILE" ]]; then
             if [[ -n "$GGUF_SHA256" ]]; then
-                if command -v sha256sum &>/dev/null; then
-                    ai "Verifying model integrity (SHA256)..."
-                    ACTUAL_HASH=$(sha256sum "$GGUF_DIR/$GGUF_FILE" 2>/dev/null | awk '{print $1}')
-                    if [[ -n "$ACTUAL_HASH" && "$ACTUAL_HASH" == "$GGUF_SHA256" ]]; then
+                ai "Verifying model integrity (SHA256)..."
+                if ACTUAL_HASH="$(_phase11_model_sha256 "$GGUF_DIR/$GGUF_FILE")"; then
+                    if [[ "$ACTUAL_HASH" == "$GGUF_SHA256" ]]; then
                         ai_ok "Model verified: $GGUF_FILE"
-                    elif [[ -z "$ACTUAL_HASH" ]]; then
-                        ai_warn "Could not compute checksum for existing model file"
-                        ai_ok "GGUF model already present: $GGUF_FILE (verification skipped)"
                     else
                         ai_warn "Model file is corrupt (SHA256 mismatch)."
                         ai "  Expected: $GGUF_SHA256"
@@ -1066,8 +1073,8 @@ else
                         rm -f "$GGUF_DIR/$GGUF_FILE"
                     fi
                 else
-                    ai_warn "sha256sum not available, skipping integrity check"
-                    ai_ok "GGUF model already present: $GGUF_FILE (verification skipped)"
+                    ai_bad "Could not verify existing model file. File preserved; stopping installation."
+                    exit 1
                 fi
             else
                 ai_ok "GGUF model already present: $GGUF_FILE"
@@ -1157,14 +1164,10 @@ else
             else
                 # Verify freshly downloaded file
                 if [[ -n "$GGUF_SHA256" ]]; then
-                    if command -v sha256sum &>/dev/null; then
-                        ai "Verifying download integrity (SHA256)..."
-                        ACTUAL_HASH=$(sha256sum "$GGUF_DIR/$GGUF_FILE" 2>/dev/null | awk '{print $1}')
-                        if [[ -n "$ACTUAL_HASH" && "$ACTUAL_HASH" == "$GGUF_SHA256" ]]; then
+                    ai "Verifying download integrity (SHA256)..."
+                    if ACTUAL_HASH="$(_phase11_model_sha256 "$GGUF_DIR/$GGUF_FILE")"; then
+                        if [[ "$ACTUAL_HASH" == "$GGUF_SHA256" ]]; then
                             ai_ok "Download verified OK"
-                        elif [[ -z "$ACTUAL_HASH" ]]; then
-                            ai_warn "Could not compute checksum for downloaded file"
-                            ai_warn "Proceeding without verification (file may be corrupt)"
                         else
                             ui_status_line error "Downloaded file is corrupt (SHA256 mismatch)"
                             ai "  Expected: $GGUF_SHA256"
@@ -1174,8 +1177,8 @@ else
                             _dl_success=false
                         fi
                     else
-                        ai_warn "sha256sum not available, skipping integrity check"
-                        ai_warn "Proceeding without verification (file may be corrupt)"
+                        ai_bad "Could not verify downloaded model file. File preserved; stopping installation."
+                        exit 1
                     fi
                 fi
             fi
