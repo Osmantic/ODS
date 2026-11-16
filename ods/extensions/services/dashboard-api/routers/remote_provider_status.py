@@ -11,6 +11,7 @@ import os
 import re
 import stat
 from pathlib import Path
+from time import monotonic
 from typing import Any, Mapping
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -192,12 +193,23 @@ async def _reconcile_activation_with_host(
         return activation
     async def read_host_status() -> Any:
         # A cold host cache answers without activeRuntime while it proves the
-        # runtime in the background; re-poll that gap as the dashboard does.
-        for attempt in range(4):
-            status = await async_request_agent_json("GET", "/v1/model/status", timeout=2.0)
-            if not awaiting_runtime_readback(status) or attempt == 3:
+        # runtime in the background. Four quick polls used only ~0.75s of the
+        # budget, shorter than a healthy native Mac readback. Use the existing
+        # three-second window without extending the proof's lifetime.
+        deadline = monotonic() + 3.0
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            status = await async_request_agent_json(
+                "GET", "/v1/model/status", timeout=min(2.0, remaining),
+            )
+            if not awaiting_runtime_readback(status):
                 return status
-            await asyncio.sleep(0.25)
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            await asyncio.sleep(min(0.25, remaining))
 
     try:
         host_status = await asyncio.wait_for(read_host_status(), timeout=3.0)

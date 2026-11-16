@@ -308,19 +308,64 @@ def test_activation_reconciliation_waits_out_a_cold_host_readback(monkeypatch):
 def test_activation_reconciliation_reports_a_still_cold_readback_as_unverified(monkeypatch):
     from routers import remote_provider_status as rps
 
-    async def cold_runtime(*_args, **_kwargs):
+    clock = [0.0]
+    calls = []
+
+    async def cold_runtime(*_args, **kwargs):
+        calls.append(clock[0])
+        assert 0 < kwargs["timeout"] <= min(2.0, 3.0 - clock[0])
         return {"status": "idle", "modelTransactionPending": False}
 
-    async def no_sleep(_delay):
-        return None
+    async def advance(delay):
+        assert 0 < delay <= 0.25
+        clock[0] += delay
 
+    monkeypatch.setattr(rps, "monotonic", lambda: clock[0], raising=False)
     monkeypatch.setattr(rps, "async_request_agent_json", cold_runtime)
-    monkeypatch.setattr(rps.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(rps.asyncio, "sleep", advance)
     result = asyncio.run(rps._reconcile_activation_with_host(_reconciled_activation()))
 
+    assert clock[0] == 3.0
+    assert len(calls) == 12
+    assert max(calls) < 3.0
     assert result["valid"] is False
+    assert result["proven"] is False
     assert result["reason"] == "consumer_status_unavailable"
     assert result["pixel"] == "unverified"
+
+
+@pytest.mark.parametrize("ready_after", [1.5, 2.5])
+def test_activation_reconciliation_uses_full_cold_readback_window(monkeypatch, ready_after):
+    from routers import remote_provider_status as rps
+
+    clock = [0.0]
+    calls = []
+    activation = _reconciled_activation()
+
+    async def warming_runtime(*_args, **kwargs):
+        calls.append(clock[0])
+        assert 0 < kwargs["timeout"] <= min(2.0, 3.0 - clock[0])
+        status = {"status": "idle", "modelTransactionPending": False}
+        if clock[0] >= ready_after:
+            status.update(activeAgentViable=True, activeRuntime={
+                "source": "remote-provider",
+                **{key: activation[key] for key in
+                   ("model", "contextLength", "maxTokens", "reasoning")},
+            })
+        return status
+
+    async def advance(delay):
+        assert 0 < delay <= 0.25
+        clock[0] += delay
+
+    monkeypatch.setattr(rps, "monotonic", lambda: clock[0], raising=False)
+    monkeypatch.setattr(rps, "async_request_agent_json", warming_runtime)
+    monkeypatch.setattr(rps.asyncio, "sleep", advance)
+    result = asyncio.run(rps._reconcile_activation_with_host(activation))
+
+    assert result == activation
+    assert clock[0] == ready_after
+    assert calls[-1] == ready_after
 
 
 @pytest.mark.parametrize("malformed_status", [[], {}])
