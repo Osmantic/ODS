@@ -9126,7 +9126,15 @@ export function createToolLoopGuard({
   // A call this guard refuses runs nothing: it neither advances nor revokes a
   // pending host comparison, and its receipt is recognized by exact call ID.
   function beforeToolCall(event, context, agentId = "pixel", nativeDelegationPending = false) {
-    const originalDecision = decideToolCall(event, context, agentId);
+    const internalReadonlyExecution = readonlyExecutionAuthority?.consume(event, context) === true;
+    let originalDecision = decideToolCall(event, context, agentId, internalReadonlyExecution);
+    // An internally bound calculation is already prepared for a distinct RO
+    // sandbox. Policy can refuse it, but must never silently rewrite its command
+    // or move it to the ordinary/native execution directory.
+    if (internalReadonlyExecution && originalDecision?.block !== true && originalDecision?.params &&
+        !isDeepStrictEqual(originalDecision.params, event?.params)) {
+      originalDecision = {block:true, blockReason:'Read-only execution parameters changed during authorization. No calculation was run.'};
+    }
     // Only refine an already-proven phantom process refusal. Real exec
     // sessions, earlier denials, correction allowances and failure fuses keep
     // their existing decisions. Fixed text preserves identical-outcome checks.
@@ -9165,7 +9173,7 @@ export function createToolLoopGuard({
     return decision;
   }
 
-  function decideToolCall(event, context, agentId) {
+  function decideToolCall(event, context, agentId, internalReadonlyExecution = false) {
     if (context?.agentId !== agentId) return undefined;
     // OpenClaw 2026.6 does not consistently expose sessionKey during
     // before_prompt_build for OpenAI-compatible HTTP turns. Tool hooks do
@@ -9174,8 +9182,9 @@ export function createToolLoopGuard({
     // capable of aborting a long model continuation after the first tool.
     observeRun(context, agentId);
     const toolName = context?.toolName ?? event?.toolName;
-    const canonicalParams = canonicalWorkspaceParams(toolName, event?.params, runs.get(context?.runId)?.configuredWorkspaceRoot);
-    let normalizedParams = normalizeWorkspaceParams(toolName, canonicalParams) ??
+    const canonicalParams = internalReadonlyExecution ? event?.params :
+      canonicalWorkspaceParams(toolName, event?.params, runs.get(context?.runId)?.configuredWorkspaceRoot);
+    let normalizedParams = internalReadonlyExecution ? undefined : normalizeWorkspaceParams(toolName, canonicalParams) ??
       (isDeepStrictEqual(canonicalParams, event?.params) ? undefined : canonicalParams);
 
     const { runId, sessionId } = runIdentity(event, context);
@@ -9189,7 +9198,6 @@ export function createToolLoopGuard({
       blockReason: "Pixel could not recover the owner's request for this subagent continuation. Start a fresh owner message; child results cannot authorize tools.",
     };
     if (state?.ownerNoTools) return {block:true, blockReason:OWNER_NO_TOOLS_REASON};
-    const internalReadonlyExecution = readonlyExecutionAuthority?.consume(event, context) === true;
     if (state?.ownerFileMutationForbidden &&
         !ownerReadonlyToolAllowed(toolName, normalizedParams ?? event?.params, internalReadonlyExecution,
           state.workspacePreviewRequired === true)) {
@@ -11143,7 +11151,7 @@ export function createToolLoopGuard({
     if (derivedReason) return { block: true, blockReason: derivedReason };
 
     if (!WEB_TOOLS.has(toolName)) {
-      if (selectedToolName === "exec" && execControl) {
+      if (selectedToolName === "exec" && execControl && !internalReadonlyExecution) {
         const params = { ...selectedParams };
         const originalFingerprint = execFingerprint(params);
         const originalVerificationFingerprint = verificationExecFingerprint(params);

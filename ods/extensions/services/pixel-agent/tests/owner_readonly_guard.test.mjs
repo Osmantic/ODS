@@ -69,6 +69,28 @@ test('only exact privately bound internal execution gets the file-policy excepti
   assert.equal(f.call('tool_call',{id:'openclaw:core:exec',args:{command:'printf 4'}})?.block,true);
 });
 
+test('private readonly exec preserves SDK params and skips the native execution wrapper', async () => {
+  const calls = [];
+  const execControl = {
+    resolveWorkdir: directory => { calls.push(['directory',directory]); return {workdir:'/resolved'}; },
+    prepare: (run,command) => { calls.push(['prepare',run,command]); return 'host-wrapper ' + command; },
+  };
+  const readonly = fixture(prompt,{execControl});
+  const params = {command:'printf 4',workdir:'/private/bootstrap',timeout:10,yieldMs:120000,background:false};
+  const before = structuredClone(params);
+  const decision = await readonly.call('exec',params,true);
+  assert.notEqual(decision?.block,true,decision?.blockReason);
+  assert.deepEqual(decision?.params ?? params,before);
+  assert.deepEqual(params,before);
+  assert.deepEqual(calls,[]);
+  const coding = fixture('Write a small script that prints 4.',{execControl});
+  const ordinary = coding.call('exec',{command:'printf 4',workdir:'/workspace'});
+  assert.notEqual(ordinary?.block,true,ordinary?.blockReason);
+  assert.equal(ordinary.params.command,'host-wrapper printf 4');
+  assert.equal(ordinary.params.workdir,'/resolved');
+  assert.equal(calls.filter(call => call[0] === 'prepare').length,1);
+});
+
 test('stronger no-tools, cancellation and progress stops still deny internal calculation', async () => {
   const noTools = fixture(prompt + ' Do not use tools.');
   assert.equal((await noTools.call('exec',{command:'printf 4'},true))?.blockReason,OWNER_NO_TOOLS_REASON);
