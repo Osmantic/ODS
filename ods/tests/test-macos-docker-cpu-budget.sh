@@ -125,8 +125,10 @@ else
 fi
 
 run_steps 4 true "" colima
-if [[ "$RC" -ne 0 ]] && has "$OUT" "--cpu 6 --memory 12 --disk 60" && has "$OUT" "ODS_MIN_DOCKER_CPUS=4"; then
-    pass "Colima at 4 CPUs: the refusal gives the colima command and the override"
+if [[ "$RC" -ne 0 ]] && has "$OUT" "colima stop && colima start --cpu 6" \
+    && ! has "$OUT" "--memory" && ! has "$OUT" "--disk" \
+    && has "$OUT" "ODS_MIN_DOCKER_CPUS=4"; then
+    pass "Colima at 4 CPUs: CPU-only recovery preserves memory/disk and names the override"
 else
     fail "Colima at 4 CPUs: the refusal must give the colima command and the override (exit $RC): $OUT"
 fi
