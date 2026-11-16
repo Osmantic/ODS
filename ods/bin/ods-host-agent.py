@@ -5977,6 +5977,17 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
     pixel_before = transaction.previous if transaction is not None else _managed_pixel_runtime_contract()
     container_state = _capture_container_state("ods-litellm")
     relay_state = _capture_container_state(_PIXEL_MODEL_RELAY_CONTAINER)
+    # Cloud-mode service maintenance can stop the native Mac producer. Inspect
+    # before changing files; an already loaded job (even while loading) belongs
+    # to the owner and must not be replaced or stopped by this transaction.
+    native_env = load_env(env_path)
+    restore_native = (platform.system() == "Darwin"
+                      and native_env.get("GPU_BACKEND", "").lower() == "apple"
+                      and previous["odsMode"] == "local"
+                      and not _vllm_engine(native_env))
+    native_present = _macos_native_llama_present() if restore_native else False
+    native_start_attempted = False
+    native_bridge_attempted = False
     owns_transaction = transaction is None
     if owns_transaction:
         transaction = _begin_pixel_model_transaction(load_env(env_path))
@@ -5995,6 +6006,22 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
         if not isinstance(cloud_config, dict):
             raise RuntimeError("Remote-provider rollback is missing the prior cloud config")
         _restore_text_file(cloud_path, cloud_config)
+        if restore_native:
+            # Start the producer before probing consumers. The shared manager
+            # restores container access disabled by cloud-mode native stops.
+            _require_macos_bridge_manager(env_path)
+            native_bridge_attempted = True
+            _configure_macos_llm_bridge(env_path)
+            # Recheck after bridge setup: do not replace a runtime that an
+            # owner started while container access was being restored.
+            if not native_present and not _macos_native_llama_present():
+                native_start_attempted = True
+                _launch_native_llama_server(
+                    env_path, INSTALL_DIR / "bin" / "llama-server",
+                    INSTALL_DIR / "data" / "llama-server.log",
+                    INSTALL_DIR / "data" / ".llama-server.pid",
+                )
+            _wait_for_macos_native_llama_health(load_env(env_path))
         litellm_attempted = True
         litellm_recreated = _restart_existing_container(
             "ods-litellm", container_state, recreate=True,
@@ -6038,13 +6065,25 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
         if transaction is not None:
             transaction.verify_held()
         rollback_errors: list[str] = []
+        if native_start_attempted:
+            try:
+                _stop_macos_native_llama_server(INSTALL_DIR / "data" / ".llama-server.pid")
+            except Exception as rollback_exc:
+                rollback_errors.append(f"native runtime: {rollback_exc}")
+        env_restored = False
         try:
             _restore_bound_env_file(env_path, env_snapshot)
+            env_restored = True
             _restore_text_file(cloud_path, cloud_snapshot)
             _restore_text_file(activation_path, activation_snapshot)
             _restore_text_file(activation_public_path, activation_public_snapshot)
         except Exception as rollback_exc:
             rollback_errors.append(f"configuration: {rollback_exc}")
+        if native_bridge_attempted and env_restored:
+            try:
+                _configure_macos_llm_bridge(env_path)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"native bridge: {rollback_exc}")
         if relay_attempted:
             _restore_pixel_model_relay(relay_state)
         if litellm_attempted:
@@ -21428,6 +21467,61 @@ def _select_runtime_profile(model: dict, env: dict) -> dict | None:
             f"({ram_gb:g}GB){requirement}; refusing an unprofiled model activation"
         )
     return None
+
+
+def _macos_native_llama_present() -> bool:
+    """Inspect launchd and install-owned processes without trusting a saved PID.
+
+    An inspection failure is not evidence that a runtime is absent. Refuse
+    before mutation rather than replacing an engine we could not inspect.
+    """
+    job = subprocess.run(
+        ["launchctl", "print", f"gui/{os.getuid()}/com.ods.llama-server"],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    if job.returncode == 0:
+        return True
+    # launchctl's ESRCH response means the named service is not loaded.
+    if job.returncode != 113:
+        raise RuntimeError("Could not inspect the native llama LaunchAgent")
+    processes = subprocess.run(
+        ["ps", "-axo", "pid=,command="],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    if processes.returncode:
+        raise RuntimeError("Could not inspect native llama processes")
+    binary = str(INSTALL_DIR / "bin" / "llama-server")
+    for line in processes.stdout.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2 or not parts[0].isdigit():
+            continue
+        command = parts[1]
+        executable = command.split(None, 1)[0]
+        if (command == binary or command.startswith(binary + " ")
+                or (Path(executable).name == "llama-server"
+                    and f" --model {INSTALL_DIR / 'data' / 'models'}/" in command)):
+            return True
+    return False
+
+
+def _wait_for_macos_native_llama_health(env: dict) -> None:
+    """Allow a cold native load before the existing exact contract proof.
+
+    Health alone never authorizes Pixel's rebind: deactivation still proves
+    the local model, context and completion before applying its contract.
+    """
+    deadline = time.monotonic() + 300
+    while True:
+        try:
+            if _runtime_health(env) == "ok":
+                return
+        except (OSError, subprocess.TimeoutExpired):
+            # A new process may not have bound its listener yet.
+            pass
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("Native llama-server did not become healthy during remote deactivation")
+        time.sleep(min(2, remaining))
 
 
 def _stop_macos_native_llama_server(pid_file: Path) -> None:
