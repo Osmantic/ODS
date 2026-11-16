@@ -51,6 +51,8 @@ RUNTIME_KEYS = (
     "LLAMA_ARG_CHECKPOINT_EVERY_NT",
     "LLAMA_ARG_CTX_CHECKPOINTS",
     "LLAMA_ARG_CACHE_RAM",
+    "LLAMA_ARG_UBATCH",
+    "LLAMA_ARG_FIT_TARGET",
     "LLAMA_ARG_SPEC_TYPE",
     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
     "LLAMA_ARG_SPEC_DRAFT_TYPE_K",
@@ -380,6 +382,10 @@ def valid_runtime_value(key: str, value: str) -> bool:
         return value.isdigit() and int(value) <= 64
     if key == "LLAMA_ARG_CACHE_RAM":
         return value == "-1" or (value.isdigit() and int(value) <= 1048576)
+    if key == "LLAMA_ARG_UBATCH":
+        return bool(re.fullmatch(r"[1-9][0-9]{0,2}", value)) and int(value) <= 512
+    if key == "LLAMA_ARG_FIT_TARGET":
+        return bool(re.fullmatch(r"[1-9][0-9]{0,4}", value)) and 512 <= int(value) <= 65536
     if key == "LLAMA_ARG_SPEC_TYPE":
         return bool(re.fullmatch(r"[A-Za-z0-9_,.-]{1,64}", value))
     if key == "LLAMA_ARG_SPEC_DRAFT_N_MAX":
@@ -949,6 +955,15 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
             value = str(profile_env[key])
         else:
             value = ""
+        if key in {"LLAMA_ARG_UBATCH", "LLAMA_ARG_FIT_TARGET"}:
+            # These operator settings belong to this container backend. A
+            # stale/invalid tuning value must not discard the active model.
+            backend = normalize_key(args.backend)
+            if (host_native or env.get("NATIVE_LLM_BASE_URL")
+                    or backend not in {"nvidia", "amd", "cpu", "intel", "sycl", "jetson"}
+                    or normalize_key(env.get("GPU_BACKEND")) != backend
+                    or not valid_runtime_value(key, value)):
+                value = ""
         if value and not valid_runtime_value(key, value):
             return None
         runtime_values[key] = value

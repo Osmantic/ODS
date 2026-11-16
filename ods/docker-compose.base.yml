@@ -86,6 +86,12 @@ services:
       # 8192). CPU runtime profiles cap both; unset keeps llama.cpp defaults.
       - LLAMA_ARG_CTX_CHECKPOINTS
       - LLAMA_ARG_CACHE_RAM
+      # Optional operator-level container tuning. Passed through only when set
+      # (no empty-string default): llama.cpp parses both as integers and exits
+      # on a blank value. These apply to container launches only and must be
+      # revalidated after a model switch.
+      - LLAMA_ARG_UBATCH
+      - LLAMA_ARG_FIT_TARGET
       # Vision projector of an imported model (/models/<mmproj file>). Set by
       # model activation for models that bring one and removed otherwise;
       # passed through only when set, so text models load without it.

@@ -911,6 +911,19 @@ _active_colima_hint_args() {
     fi
 }
 
+# Starting a stopped VM must keep its existing resource budget. Colima stop
+# can remove its Docker context, so an unresolved profile needs owner selection.
+_show_colima_start_hint() {
+    local profile_args
+    COLIMA_PROFILE=""
+    if ! _resolve_active_colima_profile; then
+        ai "Run \`colima list\` and start your existing Colima profile, then re-run this installer."
+        return 0
+    fi
+    profile_args="$(_active_colima_hint_args)"
+    ai "Run \`colima start${profile_args}\` then re-run this installer."
+}
+
 _detect_colima_private_network() {
     local status_json interface_name colima_config preferred_route
     COLIMA_VM_IP=""
@@ -1028,8 +1041,8 @@ _require_docker_cpu_budget() {
             colima)
                 local profile_args
                 profile_args="$(_active_colima_hint_args)"
-                ai "Stop and re-create the Colima VM with more CPUs:"
-                ai "    colima stop${profile_args} && colima start${profile_args} --cpu ${min_cpus} --memory 12 --disk 60"
+                ai "Restart the existing Colima VM with more CPUs:"
+                ai "    colima stop${profile_args} && colima start${profile_args} --cpu ${min_cpus}"
                 ai "Then re-run this installer."
                 ;;
             desktop)
@@ -1274,7 +1287,7 @@ if ! $DOCKER_RUNNING; then
     ai_err "Docker daemon is not responding."
     case "${DOCKER_BACKEND:-unknown}" in
         desktop)  ai "Start Docker Desktop from /Applications or the menu bar, then re-run this installer." ;;
-        colima)   ai "Run \`colima start\` (e.g. \`colima start --cpu 6 --memory 12 --disk 60\`) then re-run this installer." ;;
+        colima)   _show_colima_start_hint ;;
         rancher)  ai "Open Rancher Desktop and wait for the daemon to come up, then re-run this installer." ;;
         orbstack) ai "Open OrbStack and wait for the daemon to come up, then re-run this installer." ;;
         *)        ai "Start your docker daemon (Docker Desktop, Colima, Rancher Desktop, OrbStack, ...) and re-run this installer." ;;

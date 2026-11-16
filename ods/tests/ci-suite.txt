@@ -356,3 +356,9 @@ tests/test-cli-update-model-lifecycle.sh
 tests/test-summary-quick-commands.sh
 tests/test_dashboard_env_custody.py
 tests/test_cli_preset_name_validation.py
+tests/performance/test_probe.py
+tests/performance/test_compare.py
+tests/performance/test_telemetry.py
+tests/performance/test_engine_timings.py
+
+tests/performance/test_open_loop.py

@@ -374,7 +374,7 @@ def _read_json_file(path: Path, default):
     return default
 
 
-def _write_json_file(path: Path, data) -> None:
+def _write_json_file(path: Path, data) -> bool:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -385,7 +385,7 @@ def _write_json_file(path: Path, data) -> None:
         for attempt in range(4):
             try:
                 os.replace(temporary, path)
-                break
+                return True
             except PermissionError:
                 if attempt == 3:
                     raise
@@ -397,12 +397,24 @@ def _write_json_file(path: Path, data) -> None:
             temporary.unlink(missing_ok=True)
         except OSError:
             pass
+    return False
+
+
+def _performance_flags_digest(flags: dict) -> str:
+    payload = json.dumps(
+        flags,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _performance_key(backend: str, gpu_name: str, model_name: str,
                      context_length: Optional[int] = None,
                      gguf: Optional[str] = None,
-                     vram_total_mb: Optional[int] = None) -> str:
+                     vram_total_mb: Optional[int] = None,
+                     flags: Optional[dict] = None) -> str:
     parts = [
         _normalize_perf_key(backend or "unknown"),
         _normalize_perf_key(gpu_name),
@@ -414,7 +426,12 @@ def _performance_key(backend: str, gpu_name: str, model_name: str,
         parts.append(f"ctx-{int(context_length)}")
     if vram_total_mb:
         parts.append(f"vram-{int(round(vram_total_mb / 1024))}gb")
+    if flags is not None:
+        parts.append(f"flags-{_performance_flags_digest(flags)}")
     return ":".join(parts)
+
+
+_performance_write_lock = threading.Lock()
 
 
 def record_model_performance(
@@ -433,49 +450,55 @@ def record_model_performance(
     os_name: Optional[str] = None,
     flags: Optional[dict] = None,
     source: str = "local_metric",
-) -> None:
-    """Persist observed throughput for this exact machine/model pair."""
+) -> bool:
+    """Persist throughput for the machine/model and collected serving flags."""
     if not model_name or not gpu_name:
-        return
+        return False
     try:
         tps = float(tokens_per_second)
     except (TypeError, ValueError):
-        return
+        return False
     if not is_plausible_single_request_tps(tps):
         logger.warning("Ignoring implausible single-request throughput sample: %s tok/s", tps)
-        return
+        return False
 
-    data = _read_json_file(_PERF_FILE, {"schema_version": "ods.model-performance.v1", "samples": {}})
-    samples = data.setdefault("samples", {})
-    key = _performance_key(backend, gpu_name, model_name, context_length, gguf, vram_total_mb)
-    previous = samples.get(key, {})
-    previous_avg = float(previous.get("tokens_per_second", tps))
-    previous_count = int(previous.get("sample_count", 0))
-    if not is_plausible_single_request_tps(previous_avg):
-        previous_avg = tps
-        previous_count = 0
-    avg = (previous_avg * 0.8) + (tps * 0.2) if previous_count else tps
-    samples[key] = {
-        "model": model_name,
-        "model_id": model_id or previous.get("model_id"),
-        "gguf": gguf or previous.get("gguf"),
-        "quantization": quantization or previous.get("quantization"),
-        "architecture": architecture or previous.get("architecture"),
-        "gpu": gpu_name,
-        "backend": backend or "unknown",
-        "context_length": context_length or previous.get("context_length"),
-        "decode_read_mb": decode_read_mb or previous.get("decode_read_mb"),
-        "vram_total_mb": vram_total_mb or previous.get("vram_total_mb"),
-        "os": os_name or previous.get("os"),
-        "flags": flags or previous.get("flags", {}),
-        "source": source,
-        "tokens_per_second": round(avg, 1),
-        "last_tokens_per_second": round(tps, 1),
-        "sample_count": previous_count + 1,
-        "updated_at": int(time.time()),
-    }
-    samples[_performance_key(backend, gpu_name, model_name)] = samples[key]
-    _write_json_file(_PERF_FILE, data)
+    # Lock order is router pending-sample lock, then this write lock.
+    with _performance_write_lock:
+        data = _read_json_file(_PERF_FILE, {"schema_version": "ods.model-performance.v1", "samples": {}})
+        samples = data.setdefault("samples", {})
+        # Leave legacy averages intact: they may already mix configurations.
+        normalized_flags = dict(flags) if flags else {}
+        key = _performance_key(
+            backend, gpu_name, model_name, context_length, gguf, vram_total_mb,
+            flags=normalized_flags,
+        )
+        previous = samples.get(key, {})
+        previous_avg = float(previous.get("tokens_per_second", tps))
+        previous_count = int(previous.get("sample_count", 0))
+        if not is_plausible_single_request_tps(previous_avg):
+            previous_avg = tps
+            previous_count = 0
+        avg = (previous_avg * 0.8) + (tps * 0.2) if previous_count else tps
+        samples[key] = {
+            "model": model_name,
+            "model_id": model_id or previous.get("model_id"),
+            "gguf": gguf or previous.get("gguf"),
+            "quantization": quantization or previous.get("quantization"),
+            "architecture": architecture or previous.get("architecture"),
+            "gpu": gpu_name,
+            "backend": backend or "unknown",
+            "context_length": context_length or previous.get("context_length"),
+            "decode_read_mb": decode_read_mb or previous.get("decode_read_mb"),
+            "vram_total_mb": vram_total_mb or previous.get("vram_total_mb"),
+            "os": os_name or previous.get("os"),
+            "flags": normalized_flags,
+            "source": source,
+            "tokens_per_second": round(avg, 1),
+            "last_tokens_per_second": round(tps, 1),
+            "sample_count": previous_count + 1,
+            "updated_at": int(time.time()),
+        }
+        return _write_json_file(_PERF_FILE, data)
 
 
 def get_recorded_model_performance(
@@ -486,17 +509,37 @@ def get_recorded_model_performance(
     context_length: Optional[int] = None,
     gguf: Optional[str] = None,
     vram_total_mb: Optional[int] = None,
+    flags: Optional[dict] = None,
 ) -> Optional[dict]:
     data = _read_json_file(_PERF_FILE, {"samples": {}})
-    keys = [
+    samples = data.get("samples", {})
+    if not isinstance(samples, dict):
+        return None
+
+    configured_key = _performance_key(
+        backend, gpu_name, model_name, context_length, gguf, vram_total_mb,
+        flags=dict(flags) if flags else {},
+    )
+    configured = samples.get(configured_key)
+    if isinstance(configured, dict):
+        return configured
+
+    # Compatibility fallback: only for unconfigured (absent/empty) lookups.
+    # Nonempty lookups must never trust legacy averages that may be mixed.
+    if flags:
+        return None
+
+    legacy_keys = [
         _performance_key(backend, gpu_name, model_name, context_length, gguf, vram_total_mb),
         _performance_key(backend, gpu_name, model_name, context_length, gguf),
         _performance_key(backend, gpu_name, model_name, context_length),
         _performance_key(backend, gpu_name, model_name),
     ]
-    samples = data.get("samples", {})
-    sample = next((samples.get(k) for k in keys if samples.get(k)), None)
-    return sample if isinstance(sample, dict) else None
+    for key in legacy_keys:
+        sample = samples.get(key)
+        if isinstance(sample, dict) and not sample.get("flags"):
+            return sample
+    return None
 
 
 def get_model_performance_samples() -> list[dict]:

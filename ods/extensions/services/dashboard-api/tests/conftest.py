@@ -85,6 +85,8 @@ def _no_remembered_model_management(monkeypatch):
     monkeypatch.setattr(models, "_model_management_remembered", None)
     monkeypatch.setattr(models, "_model_management_proof_future", None)
     monkeypatch.setattr(models, "_model_management_missed", False)
+    monkeypatch.setattr(models, "_pending_sample", None)
+    monkeypatch.setattr(models, "_last_committed_sample_key", None)
 
 
 @pytest.fixture(autouse=True)

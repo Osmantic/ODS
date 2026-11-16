@@ -36,7 +36,7 @@ qualifier = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(qualifier)
 
 HELP = {path.stem: path.read_text(encoding="utf-8") for path in sorted(FIXTURES.glob("b*.txt"))}
-EMPTY = ("", "", "", "", "")
+EMPTY = ("", "", "", "", "", "")
 
 
 def pinned_release():
@@ -186,7 +186,7 @@ class QualifiedArgumentTests(unittest.TestCase):
                 self.assertEqual(result, expected)
         for checkpoints in ("8", "0"):
             with self.subTest(checkpoints=checkpoints):
-                result, _ = run_with_help(HELP["b9014"], ("", checkpoints, "", "", ""), defaults=True, spec_default="none")
+                result, _ = run_with_help(HELP["b9014"], ("", checkpoints, "", "", "", ""), defaults=True, spec_default="none")
                 self.assertEqual(result, ["--ctx-checkpoints", checkpoints])
 
     def test_invalid_settings_fail_before_running_the_runtime(self):
@@ -329,6 +329,57 @@ for arg in ${MACOS_NATIVE_CHECKPOINT_ARGS[@]+"${MACOS_NATIVE_CHECKPOINT_ARGS[@]}
         (self.install / ".env").write_text("LLAMA_REASONING=off\n")
         self.assertEqual(self.run_bash(script), ["--reasoning-format", "none"])
 
+    def test_native_model_helper_ubatch_quoted_and_bounded(self):
+        script = r'''
+set -euo pipefail
+read_env_value() { sed -n "s/^$2=//p" "$1" | head -1; }
+source "$ROOT/installers/macos/lib/native-model.sh"
+macos_resolve_checkpoint_args "$INSTALL" "$RUNTIME" none
+for arg in ${MACOS_NATIVE_CHECKPOINT_ARGS[@]+"${MACOS_NATIVE_CHECKPOINT_ARGS[@]}"}; do printf '%s\0' "$arg"; done
+'''
+        self.use_runtime("b9014")
+        (self.install / ".env").write_text("LLAMA_ARG_UBATCH=\"128\"\n")
+        argv = self.run_bash(script)
+        self.assertEqual(argv[argv.index("--ubatch-size") + 1], "128")
+        for bad in ("0", "513", "1.5", "$(touch x)"):
+            with self.subTest(value=bad):
+                (self.install / ".env").write_text(f"LLAMA_ARG_UBATCH={bad}\n")
+                result = subprocess.run(["bash", "-c", script], capture_output=True, timeout=60,
+                                        env=dict(os.environ, INSTALL=str(self.install), RUNTIME=str(self.runtime),
+                                                 ROOT=str(ROOT), ODS_PYTHON_CMD=sys.executable))
+                self.assertNotEqual(result.returncode, 0, bad)
+                self.assertNotIn(b"--ubatch-size", result.stdout)
+
+    def test_native_model_helper_ubatch_unsupported_runtime(self):
+        script = r'''
+set -euo pipefail
+read_env_value() { sed -n "s/^$2=//p" "$1" | head -1; }
+source "$ROOT/installers/macos/lib/native-model.sh"
+macos_resolve_checkpoint_args "$INSTALL" "$RUNTIME" none
+'''
+        self.runtime.write_text("#!/bin/sh\n[ \"$1\" = --help ] && { printf '%s\\n' '--model N'; exit 0; }\nexit 9\n")
+        self.runtime.chmod(0o755)
+        (self.install / ".env").write_text("LLAMA_ARG_UBATCH=128\n")
+        result = subprocess.run(["bash", "-c", script], capture_output=True, timeout=60,
+                                env=dict(os.environ, INSTALL=str(self.install), RUNTIME=str(self.runtime),
+                                         ROOT=str(ROOT), ODS_PYTHON_CMD=sys.executable))
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_native_model_helper_ubatch_missing_helper(self):
+        script = r'''
+set -euo pipefail
+read_env_value() { sed -n "s/^$2=//p" "$1" | head -1; }
+source "$ROOT/installers/macos/lib/native-model.sh"
+macos_resolve_checkpoint_args "$INSTALL" "$RUNTIME" none
+'''
+        (self.install / "installers/macos/lib" / SOURCE.name).unlink()
+        (self.install / ".env").write_text("LLAMA_ARG_UBATCH=128\n")
+        result = subprocess.run(["bash", "-c", script], capture_output=True, timeout=60,
+                                env=dict(os.environ, INSTALL=str(self.install), RUNTIME=str(self.runtime),
+                                         ROOT=str(ROOT), ODS_PYTHON_CMD=sys.executable))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"validator is missing", result.stderr)
+
     def test_ods_macos_start(self):
         script = (
             "set -euo pipefail\n"
@@ -381,6 +432,29 @@ for arg in ${MACOS_NATIVE_CHECKPOINT_ARGS[@]+"${MACOS_NATIVE_CHECKPOINT_ARGS[@]}
             with self.subTest(release=release, reasoning="Off"):
                 self.use_runtime(release)
                 self.assert_argv(self.run_bash(script), release)
+        # Explicit UBATCH reaches the installer launch argv on a supporting runtime.
+        self.use_runtime("b9014")
+        (self.install / ".env").write_text(self.ENV + "LLAMA_ARG_UBATCH=128\n")
+        argv = self.run_bash(script)
+        self.assertEqual(argv[argv.index("--ubatch-size") + 1], "128")
+
+    def test_ods_macos_start_ubatch(self):
+        script = (
+            "set -euo pipefail\n"
+            'INSTALL_DIR="$INSTALL"; LLAMA_SERVER_BIN="$RUNTIME"; LLAMA_SERVER_PID_FILE="$INSTALL/data/llama.pid"\n'
+            'source "$ROOT/installers/macos/lib/native-model.sh"\n'
+            + self.STUBS +
+            'eval "$(awk \'/^start_native_llama\\(\\)/ {p=1} /^stop_native_llama\\(\\)/ {p=0} p\' "$ROOT/installers/macos/ods-macos.sh")"\n'
+            'read_ods_env() { ENV_ODS_MODE=local; ENV_CTX_SIZE=8192; ENV_LLAMA_REASONING="$(read_env_value "$INSTALL/.env" LLAMA_REASONING)"; }\n'
+            "macos_configure_llm_bridge_from_env() { :; }\n"
+            "get_native_llama_status() { NATIVE_LLAMA_RUNNING=false; NATIVE_LLAMA_HEALTHY=false; NATIVE_LLAMA_PID=0; }\n"
+            "stop_native_llama() { :; }\n"
+            "start_native_llama true\n"
+        )
+        self.use_runtime("b9014")
+        (self.install / ".env").write_text(self.ENV + "LLAMA_ARG_UBATCH=256\n")
+        argv = self.run_bash(script)
+        self.assertEqual(argv[argv.index("--ubatch-size") + 1], "256")
 
     def test_bootstrap_full_model_swap(self):
         source = (ROOT / "scripts/bootstrap-upgrade.sh").read_text(encoding="utf-8")
@@ -400,6 +474,155 @@ for arg in ${MACOS_NATIVE_CHECKPOINT_ARGS[@]+"${MACOS_NATIVE_CHECKPOINT_ARGS[@]}
         # A rejected setting keeps the swap going with only the reasoning format.
         (self.install / ".env").write_text("LLAMA_ARG_SPEC_DRAFT_N_MAX=0\n")
         self.assertEqual(self.run_bash(script), ["--reasoning-format", "none"])
+
+    def _bootstrap_ubatch_script(self, block, extra=""):
+        return (
+            "set -uo pipefail\n"
+            'ENV_FILE="$INSTALL/.env"; INSTALL_DIR="$INSTALL"; LLAMA_SERVER_BIN="$RUNTIME"\n'
+            'TOTAL_BYTES=100\n'
+            "log() { echo \"$*\" >&2; }\n"
+            'read_env_value() { grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2-; }\n'
+            "restore_active_model_config() { echo RESTORE >> \"$INSTALL/events\"; return ${RESTORE_RC:-0}; }\n"
+            "write_status() { echo \"STATUS:$1:$6\" >> \"$INSTALL/events\"; }\n"
+            + extra + block + '\necho launch >> "$INSTALL/events"\n'
+        )
+
+    def test_bootstrap_ubatch_qualified_reaches_argv(self):
+        source = (ROOT / "scripts/bootstrap-upgrade.sh").read_text(encoding="utf-8")
+        block = section(source, "            # Read reasoning mode from .env", "            # Capture old model path")
+        self.use_runtime("b9014")
+        (self.install / ".env").write_text("LLAMA_ARG_UBATCH=128\n")
+        script = self._bootstrap_ubatch_script(block) + (
+            '\nfor arg in ${_llama_tuning_args[@]+"${_llama_tuning_args[@]}"}; do printf "%s\\0" "$arg"; done\n'
+        )
+        argv = self.run_bash(script)
+        self.assertEqual(argv[argv.index("--ubatch-size") + 1], "128")
+        self.assertEqual((self.install / "events").read_text(), "launch\n")
+
+    def test_bootstrap_ubatch_rejected_restores_and_fails_without_launch(self):
+        source = (ROOT / "scripts/bootstrap-upgrade.sh").read_text(encoding="utf-8")
+        block = section(source, "            # Read reasoning mode from .env", "            # Capture old model path")
+        self.runtime.write_text("#!/bin/sh\n[ \"$1\" = --help ] && { printf '%s\\n' '--model N'; exit 0; }\nexit 9\n")
+        self.runtime.chmod(0o755)
+        (self.install / ".env").write_text("LLAMA_ARG_UBATCH=128\n")
+        script = self._bootstrap_ubatch_script(block)
+        result = subprocess.run(["bash", "-c", script], capture_output=True, timeout=60,
+                                env=dict(os.environ, INSTALL=str(self.install), RUNTIME=str(self.runtime),
+                                         ROOT=str(ROOT), ODS_PYTHON_CMD=sys.executable))
+        self.assertNotEqual(result.returncode, 0)
+        events = (self.install / "events").read_text()
+        self.assertIn("RESTORE", events)
+        self.assertIn("STATUS:failed", events)
+        self.assertNotIn("launch", events)
+
+    def test_bootstrap_ubatch_rejected_restore_failure_reports(self):
+        source = (ROOT / "scripts/bootstrap-upgrade.sh").read_text(encoding="utf-8")
+        block = section(source, "            # Read reasoning mode from .env", "            # Capture old model path")
+        self.runtime.write_text("#!/bin/sh\n[ \"$1\" = --help ] && { printf '%s\\n' '--model N'; exit 0; }\nexit 9\n")
+        self.runtime.chmod(0o755)
+        (self.install / ".env").write_text("LLAMA_ARG_UBATCH=128\n")
+        script = self._bootstrap_ubatch_script(block, extra="RESTORE_RC=1\n")
+        result = subprocess.run(["bash", "-c", script], capture_output=True, timeout=60,
+                                env=dict(os.environ, INSTALL=str(self.install), RUNTIME=str(self.runtime),
+                                         ROOT=str(ROOT), ODS_PYTHON_CMD=sys.executable))
+        self.assertNotEqual(result.returncode, 0)
+        events = (self.install / "events").read_text()
+        self.assertIn("RESTORE", events)
+        self.assertIn("STATUS:failed", events)
+        self.assertIn("restoration failed", events)
+
+    def test_bootstrap_ubatch_mktemp_failure_restores_and_fails(self):
+        source = (ROOT / "scripts/bootstrap-upgrade.sh").read_text(encoding="utf-8")
+        block = section(source, "            # Read reasoning mode from .env", "            # Capture old model path")
+        self.use_runtime("b9014")
+        (self.install / ".env").write_text("LLAMA_ARG_UBATCH=128\n")
+        script = self._bootstrap_ubatch_script(block, extra="mktemp() { return 1; }\n")
+        result = subprocess.run(["bash", "-c", script], capture_output=True, timeout=60,
+                                env=dict(os.environ, INSTALL=str(self.install), RUNTIME=str(self.runtime),
+                                         ROOT=str(ROOT), ODS_PYTHON_CMD=sys.executable))
+        self.assertNotEqual(result.returncode, 0)
+        events = (self.install / "events").read_text()
+        self.assertIn("RESTORE", events)
+        self.assertIn("STATUS:failed", events)
+
+    def test_bootstrap_ubatch_unset_fallback_unchanged(self):
+        source = (ROOT / "scripts/bootstrap-upgrade.sh").read_text(encoding="utf-8")
+        block = section(source, "            # Read reasoning mode from .env", "            # Capture old model path")
+        self.use_runtime("b9014")
+        (self.install / ".env").write_text("LLAMA_ARG_SPEC_DRAFT_N_MAX=0\n")
+        script = self._bootstrap_ubatch_script(block) + (
+            '\nfor arg in ${_llama_tuning_args[@]+"${_llama_tuning_args[@]}"}; do printf "%s\\0" "$arg"; done\n'
+        )
+        argv = self.run_bash(script)
+        self.assertEqual(argv, ["--reasoning-format", "none"])
+        self.assertEqual((self.install / "events").read_text(), "launch\n")
+
+    def test_bootstrap_ubatch_rejection_restores_real_native_snapshot(self):
+        source = (ROOT / "scripts/bootstrap-upgrade.sh").read_text(encoding="utf-8")
+        helpers = section(source, "snapshot_active_model_config() {", "restore_docker_llama_server_after_swap_failure() {")
+        admission = section(source, "_windows_native_llama_swap_applies=false", "# Retain the legacy native model")
+        tuning = section(source, "            # Read reasoning mode from .env", "            # Capture old model path")
+        (self.install / "data/.llama-server.pid").write_text("12345\n")
+        before = "GGUF_FILE=old.gguf\nLLAMA_ARG_UBATCH=513\n"
+        (self.install / ".env").write_text(before)
+        ini = self.install / "models.ini"
+        ini.write_text("old model config\n")
+        self.use_runtime("b9014")
+        script = (
+            'set -uo pipefail\nINSTALL_DIR="$INSTALL"; ENV_FILE="$INSTALL/.env"\n'
+            'MODELS_INI="$INSTALL/models.ini"; DOCKER_CMD=""; TOTAL_BYTES=100\n'
+            'LLAMA_SERVER_BIN="$RUNTIME"\n'
+            'is_windows_bash() { return 1; }\n'
+            'read_env_value() { sed -n "s/^$1=//p" "$ENV_FILE" | head -1; }\n'
+            'log() { :; }\nwrite_status() { echo "$1:$6" > "$INSTALL/status"; }\n'
+            + helpers + admission +
+            '\nprintf "GGUF_FILE=new.gguf\\nLLAMA_ARG_UBATCH=513\\n" > "$ENV_FILE"\n'
+            'printf "new model config\\n" > "$MODELS_INI"\n'
+            + tuning + '\ntouch "$INSTALL/launched"\n'
+        )
+        for missing_helper in (False, True):
+            with self.subTest(missing_helper=missing_helper):
+                if missing_helper:
+                    (self.install / "installers/macos/lib" / SOURCE.name).unlink()
+                result = subprocess.run(["bash", "-c", script], capture_output=True, timeout=60,
+                                        env=dict(os.environ, INSTALL=str(self.install), RUNTIME=str(self.runtime),
+                                                 ROOT=str(ROOT), ODS_PYTHON_CMD=sys.executable))
+                self.assertEqual(result.returncode, 1, result.stderr.decode())
+                self.assertEqual((self.install / ".env").read_text(), before)
+                self.assertEqual(ini.read_text(), "old model config\n")
+                self.assertIn("failed:", (self.install / "status").read_text())
+                self.assertFalse((self.install / "launched").exists())
+                self.assertFalse(list((self.install / "data").glob("bootstrap-upgrade-active-config.*")))
+
+    def test_registered_profile_rejects_ubatch_before_launch(self):
+        import json
+        # A typed native profile can be resolved, but its binary is never run.
+        self.runtime.write_bytes(bytes.fromhex("cffaedfe") + b"test-only")
+        self.runtime.chmod(0o755)
+        selection = {
+            "schemaVersion": 1, "available": True,
+            "modelPath": str(self.install / "data/models/Qwen3.5-9B-Q4_K_M.gguf"),
+            "profile": {"backend": "metal", "executable": str(self.runtime),
+                        "contextLength": 8192, "args": ["--parallel", "1"]},
+        }
+        (self.install / "scripts").mkdir()
+        (self.install / "scripts/resolve-model-store.py").write_text("print(" + repr(json.dumps(selection)) + ")\n")
+        script = (
+            'set -euo pipefail\n'
+            'read_env_value() { sed -n "s/^$2=//p" "$1" | head -1; }\n'
+            'source "$ROOT/installers/macos/lib/native-model.sh"\n'
+            'macos_resolve_native_model "$INSTALL" "$RUNTIME" 8192\n'
+            'printf "%s\\0" "$MACOS_NATIVE_PROFILE"\n'
+        )
+        (self.install / ".env").write_text("")
+        self.assertEqual(self.run_bash(script), ["true"])
+        (self.install / ".env").write_text("LLAMA_ARG_UBATCH=128\n")
+        result = subprocess.run(["bash", "-c", script], capture_output=True, timeout=60,
+                                env=dict(os.environ, INSTALL=str(self.install), RUNTIME=str(self.runtime),
+                                         ROOT=str(ROOT), ODS_PYTHON_CMD=sys.executable))
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, b"")
+        self.assertIn(b"registered native runtime profile", result.stderr)
 
     def test_bootstrap_reasoning_case_survives_fallback_and_rollback(self):
         source = (ROOT / "scripts/bootstrap-upgrade.sh").read_text(encoding="utf-8")
