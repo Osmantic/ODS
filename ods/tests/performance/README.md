@@ -127,3 +127,34 @@ Poisson with explicit seed:
 ### Scope
 
 Capacity confirmation additionally requires the study's balanced quality gates and at least three independent windows of one minute or longer at the tested load, with resource gates and no unaccounted arrivals. These conditions are necessary, not a substitute for the full protocol. A short Poisson run alone cannot establish production capacity.
+
+## macOS process memory attribution
+
+The host sampler can optionally record memory for up to eight explicitly
+selected PIDs. Discover the engine and VM PIDs separately, then run:
+
+```bash
+python3 telemetry.py --output resources.jsonl --duration 60 --interval 1 --scope host \
+  --process engine=12345 --process docker_vm=23456
+```
+
+Each sample adds a `processes` object, keyed by the supplied labels. It reports
+`resident_bytes`, `physical_footprint_bytes`, and `wired_bytes` using macOS's
+read-only `proc_pid_rusage` API. These are overlapping accounting views: do
+not add them together or sum them across processes to estimate available host
+RAM. They do not measure Metal allocations. Align `utc_iso` with request events
+and retain host pressure and swap measurements alongside these observations.
+The sampler overhead includes the process queries.
+
+The library interface is `MacProcessSampler({"engine": pid}).sample()`. It pins
+process identity at construction, using the kernel start counter and executable
+UUID internally. `start_abstime` is an identity counter, not a wall-clock date.
+Missing, exited, inaccessible, or replaced processes produce null memory fields
+and a fixed error code; the sampler never rebinds a PID. Start a new sampler for
+an intentionally restarted engine. Permission errors are missing evidence, not
+a reason to elevate privileges. UUIDs, command lines, environment variables,
+and process names are not emitted. Without `--process`, output is unchanged;
+the option is restricted to macOS host scope.
+
+ABI references: Apple's [resource.h](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/resource.h)
+and [libproc implementation](https://github.com/apple-oss-distributions/xnu/blob/main/libsyscall/wrappers/libproc/libproc.c).
