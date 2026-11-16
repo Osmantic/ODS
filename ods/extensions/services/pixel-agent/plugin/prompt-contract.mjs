@@ -137,8 +137,11 @@ const CURRENT_OPERATING_COMPATIBILITY = [
   "Ask before irreversible or high-consequence external effects. If input or capability is missing, explain or ask. Finish concisely when verified or blocked.",
   PREVIEW_RUNTIME_CONTRACT,
 ];
+export const ODS_OUTPUT_FORMAT_CONTRACT =
+  "JSON-only: no fences.";
+
 export const ODS_CONVERSATION_CONTRACT =
-  [ODS_SEPTEMBER16_CONVERSATION_CONTRACT, ...CURRENT_OPERATING_COMPATIBILITY, RESPONSE_LANGUAGE_CONTRACT].join(" ");
+  [ODS_SEPTEMBER16_CONVERSATION_CONTRACT, ...CURRENT_OPERATING_COMPATIBILITY, RESPONSE_LANGUAGE_CONTRACT, ODS_OUTPUT_FORMAT_CONTRACT].join(" ");
 
 // Preserve the current compact fallback, with the same preview runtime supplement.
 // The historical full core above is restored without undoing current task routes.
@@ -159,6 +162,7 @@ export const ODS_COMPACT_CONVERSATION_CONTRACT = [
   "Ask before irreversible or high-consequence external effects. If input or capability is missing, explain or ask. Finish concisely when verified or blocked.",
   RESPONSE_LANGUAGE_CONTRACT,
   PREVIEW_RUNTIME_CONTRACT,
+  ODS_OUTPUT_FORMAT_CONTRACT,
 ].join(" ");
 
 // Keep the same operational requirements with room for tool discovery and replies on
@@ -179,6 +183,7 @@ export const ODS_TINY_CONVERSATION_CONTRACT = [
   "Ask before irreversible/high-consequence external effects. Explain or ask about missing input/capability; finish concisely once verified or blocked.",
   RESPONSE_LANGUAGE_CONTRACT,
   "Previews have opaque origins; tabs may differ. Guard every localStorage/sessionStorage access (getters, reads, writes) with try/catch and an in-memory fallback; failure must not block startup, controls or work. Verify persistence at the exact URL; never add allow-same-origin. HTTP readback proves publication, not startup/interactions. Use inline DOM controls/date inputs, not alert/confirm/prompt. Bundle relative assets: remote scripts/styles/fonts/images/API requests are blocked. Never weaken sandbox/CSP.",
+  ODS_OUTPUT_FORMAT_CONTRACT,
 ].join(" ");
 
 // The historical full core assumed a sandbox. Adapt only those environment
