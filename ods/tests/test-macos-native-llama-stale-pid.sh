@@ -80,8 +80,8 @@ kill -0 "$bystander" 2>/dev/null \
 pass "stop leaves an unrelated reused PID alone and clears the stale file"
 
 # An install-owned llama-server still counts as running and is still stopped.
-cp "$(command -v sleep)" "$install/bin/llama-server"
-"$install/bin/llama-server" 300 &
+# Present the install path as argv[0] without relocating a signed macOS binary.
+"$BASH" -c 'exec -a "$0" sleep 300' "$install/bin/llama-server" &
 owned=$!
 printf '%s\n' "$owned" > "$install/data/.llama-server.pid"
 status="$(run_cli report_status)"
