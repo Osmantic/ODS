@@ -17599,3 +17599,129 @@ test("multi-failure syntax repair hint stays within the persisted output bound",
   assert.match(text, /Command exited with code 1/);
   assert.equal(persisted.message.details.exitCode, 1);
 });
+
+// Interpreter flags before -m must retain completed verification evidence.
+// flags before -m unittest must be recognized consistently by receipt
+// classification, canonicalization, and runner-summary detection, while the
+// exact command fingerprint (including flags) is preserved.
+for (const wrapped of [false, true]) {
+  for (const flags of ["-B", "-u", "-B -u", "-u -B", "-B -B", "-u -u", "-B -u -B -u"]) {
+    for (const python of ["python3", "python3.12", "python"]) {
+      const command = `${python} ${flags} -m unittest test_public -v`;
+      test(`repeated -B/-u before -m unittest is recognized (wrapped=${wrapped}, ${command})`, () => {
+        const guard = createToolLoopGuard();
+        guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"},"pixel",
+          {prompt:"Run the unit tests and report their actual result in chat."});
+        const args = {command, workdir:"/workspace/project"};
+        const toolName = wrapped ? "tool_call" : "exec";
+        const params = wrapped ? {id:"openclaw:core:exec",args} : args;
+        const before = call(guard, toolName, {event:{toolCallId:"flag-test",params},context:{toolCallId:"flag-test"}});
+        assert.notEqual(before?.block,true,before?.blockReason);
+        const executed = wrapped ? before?.params ?? params : {...params,...before?.params};
+        // The exact command fingerprint, including flags, is preserved.
+        assert.equal(wrapped ? executed.args.command : executed.command, command);
+        const output = "test_public (test_public.TestPublic.test_ok) ... ok\n\nRan 1 test in 0.000s\n\nOK";
+        const result = {content:[{type:"text",text:output}],details:{status:"completed",exitCode:0,aggregated:output}};
+        afterCall(guard, toolName, {event:{toolCallId:"flag-test",params:executed,
+          result:wrapped ? wrappedCoreResult("exec",result) : result},context:{toolCallId:"flag-test"}});
+        assert.equal(guard.verificationForRun("run-1").status,"passed");
+        assert.equal(reply(guard),undefined);
+      });
+    }
+  }
+}
+
+for (const wrapped of [false, true]) {
+  test(`repeated -B/-u before -m unittest rejects zero-test and masked receipts (wrapped=${wrapped})`, () => {
+    for (const [details, expected] of [
+      [{status:"completed",exitCode:0,aggregated:"Ran 0 tests in 0.000s\n\nOK"},"failed"],
+      [{status:"completed",exitCode:1,aggregated:"Ran 1 test\nFAILED (failures=1)"},"failed"],
+      [{status:"running",sessionId:"flag-pending"},"pending"],
+    ]) {
+      const guard = createToolLoopGuard();
+      const args = {command:"python3 -B -u -m unittest test_public -v",workdir:"/workspace/project"};
+      const toolName = wrapped ? "tool_call" : "exec";
+      const params = wrapped ? {id:"openclaw:core:exec",args} : args;
+      const before = call(guard, toolName, {event:{toolCallId:"flag-reject",params},context:{toolCallId:"flag-reject"}});
+      assert.notEqual(before?.block,true);
+      const executed = wrapped ? before?.params ?? params : {...params,...before?.params};
+      afterCall(guard, toolName, {event:{toolCallId:"flag-reject",params:executed,
+        result:wrapped ? wrappedCoreResult("exec",{details}) : {details}},context:{toolCallId:"flag-reject"}});
+      assert.equal(guard.verificationForRun("run-1").status,expected,JSON.stringify(details));
+    }
+    // Masked commands are still refused before execution.
+    const guard = createToolLoopGuard();
+    const args = {command:"python3 -B -u -m unittest test_public -v; echo done",workdir:"/workspace/project"};
+    const toolName = wrapped ? "tool_call" : "exec";
+    const params = wrapped ? {id:"openclaw:core:exec",args} : args;
+    assert.equal(call(guard, toolName, {event:{params}})?.blockReason, VERIFICATION_COMMAND_NOT_AUDITABLE_REASON);
+  });
+}
+
+// A clean unittest run with a negative-path test that logs ERROR must trust the
+// actual runner summary, not the program's ERROR logging.
+for (const wrapped of [false, true]) {
+  test(`clean unittest with negative-case ERROR logging passes (wrapped=${wrapped})`, () => {
+    const guard = createToolLoopGuard();
+    guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"},"pixel",
+      {prompt:"Run the unit tests and report their actual result in chat."});
+    const args = {command:"python3 -B -u -m unittest test_public -v",workdir:"/workspace/project"};
+    const toolName = wrapped ? "tool_call" : "exec";
+    const params = wrapped ? {id:"openclaw:core:exec",args} : args;
+    const before = call(guard, toolName, {event:{toolCallId:"neg-log",params},context:{toolCallId:"neg-log"}});
+    assert.notEqual(before?.block,true);
+    const executed = wrapped ? before?.params ?? params : {...params,...before?.params};
+    const output = "ERROR:root:expected negative path\ntest_public (test_public.TestPublic.test_ok) ... ok\n\nRan 1 test in 0.000s\n\nOK";
+    const result = {content:[{type:"text",text:output}],details:{status:"completed",exitCode:0,aggregated:output}};
+    afterCall(guard, toolName, {event:{toolCallId:"neg-log",params:executed,
+      result:wrapped ? wrappedCoreResult("exec",result) : result},context:{toolCallId:"neg-log"}});
+    assert.equal(guard.verificationForRun("run-1").status,"passed");
+  });
+}
+
+// Canonical workdir receipt: the runner summary is trusted only when the
+// fingerprint's command is the unittest runner, even with -B/-u flags.
+test("canonical workdir receipt trusts runner summary with -B/-u flags", () => {
+  const guard = createToolLoopGuard();
+  guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"},"pixel",
+    {prompt:"Run the unit tests and report their actual result in chat."});
+  const args = {command:"python3 -B -u -m unittest test_public -v",workdir:"/workspace/project"};
+  const before = call(guard,"exec",{event:{toolCallId:"canon-wd",params:args},context:{toolCallId:"canon-wd"}});
+  assert.notEqual(before?.block,true);
+  const executed = {...args,...before?.params};
+  const output = "test_public (test_public.TestPublic.test_ok) ... ok\n\nRan 1 test in 0.000s\n\nOK";
+  const result = {content:[{type:"text",text:output}],details:{status:"completed",exitCode:0,aggregated:output,cwd:"/workspace/project"}};
+  afterCall(guard,"exec",{event:{toolCallId:"canon-wd",params:executed,result},context:{toolCallId:"canon-wd"}});
+  assert.equal(guard.verificationForRun("run-1").status,"passed");
+});
+
+test("Python module flags preserve requested unittest path canonicalization", () => {
+  const source = readFileSync(new URL("../plugin/tool-loop-guard.mjs", import.meta.url), "utf8");
+  const scope = {path};
+  vm.runInNewContext(
+    source.slice(source.indexOf("function normalizeExecWorkdir("), source.indexOf("function normalizeApplyPatchInput(")) +
+    source.slice(source.indexOf("function verificationCommand("), source.indexOf("function requestedUnittestCoachingParams(")), scope);
+  const canonical = scope.canonicalRequestedUnittestParams({
+    command:"python3 -B -u -m unittest /workspace/project/test_public.py -v",
+    workdir:"/workspace",
+  }, {workspaceTaskDirectory:"project", workspaceRequestedFiles:["solution.py", "test_public.py"]});
+  assert.equal(canonical?.command, "python3 -B -u -m unittest test_public.py -v");
+  assert.equal(canonical?.workdir, "/workspace/project");
+});
+
+test("Python module flags classify pytest without broadening interpreter options", () => {
+  for (const command of ["python3 -B -m pytest", "python3.12 -u -B -m pytest tests/"]) {
+    const guard = createToolLoopGuard();
+    const params = {command, workdir:"/workspace/project"};
+    call(guard, "exec", {event:{params}});
+    afterCall(guard, "exec", {event:{params, result:{details:{status:"completed",exitCode:0}}}});
+    assert.equal(guard.verificationForRun("run-1").status, "passed", command);
+  }
+  for (const command of ["python3 -I -m unittest", "python3 -Bu -m unittest", "python3 -c 'print(1)'"]) {
+    const guard = createToolLoopGuard();
+    const params = {command, workdir:"/workspace/project"};
+    call(guard, "exec", {event:{params}});
+    afterCall(guard, "exec", {event:{params, result:{details:{status:"completed",exitCode:0}}}});
+    assert.equal(guard.verificationForRun("run-1").status, "none", command);
+  }
+});
