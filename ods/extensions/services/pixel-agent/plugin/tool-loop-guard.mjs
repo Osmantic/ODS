@@ -14553,7 +14553,9 @@ export function createToolLoopGuard({
     if (state?.clientCancelled) return CLIENT_CANCELLED_REASON;
     const withdrawn = state?.withdrawnOwnerRequest && !resendsWithdrawnAnswer(state) ? OWNER_CANCELLED_REQUEST_CONTEXT : undefined;
     const outputLimit = state?.priorOutputLimit ? outputLimitContext(state.priorOutputLimit) : undefined;
-    return [withdrawn, outputLimit].filter(Boolean).join('\n\n') || undefined;
+    const readonly = state?.ownerFileMutationForbidden && !state.ownerNoTools
+      ? OWNER_FILE_MUTATION_FORBIDDEN_REASON : undefined;
+    return [withdrawn, outputLimit, readonly].filter(Boolean).join('\n\n') || undefined;
   }
 
   // The owner stopped a clarification answer and sent the same answer again.

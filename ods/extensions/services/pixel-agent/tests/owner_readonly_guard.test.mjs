@@ -25,6 +25,13 @@ function fixture(text = prompt, options = {}) {
   return {authority, guard, scope, call};
 }
 
+test('file restriction supplies calculation guidance before tools, without overriding no-tools',()=>{
+  const readonly=fixture();
+  assert.equal(readonly.guard.promptContextForRun('readonly'),OWNER_FILE_MUTATION_FORBIDDEN_REASON);
+  assert.equal(fixture(prompt+' Do not use tools.').guard.promptContextForRun('readonly'),undefined);
+  assert.equal(fixture('Write a script.').guard.promptContextForRun('readonly'),undefined);
+});
+
 test('ordinary file ban denies direct, deferred, delegated and unknown mutation paths', () => {
   const cases = [
     ['write',{path:'orders.csv',content:'wrong'}], ['edit',{path:'orders.csv',oldText:'paid',newText:'free'}],
