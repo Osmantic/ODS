@@ -2,7 +2,7 @@
 
 Saved evidence redacts the authentication environment-variable selector as well as its value. Keep your private execution manifest to repeat authenticated requests; the public evidence manifest alone does not reconstruct authentication.
 
-This is the measurement foundation for the [fleet performance study](../../docs/fleet-performance-study.md). It probes one already-running OpenAI-compatible engine or gateway. It does not install or tune engines, execute tools, certify Pixel/UI behavior, or establish sustainable capacity.
+This is the measurement foundation for the [fleet performance study](../../docs/fleet-performance-study.md). The engine probe targets one already-running OpenAI-compatible engine or gateway. The separate Portal adapter below submits real Pixel tasks. Neither installs or tunes engines, certifies UI behavior, or establishes sustainable capacity.
 
 Python 3.10+ and the standard library are sufficient. Copy `pilot.example.json` outside the repository, set the verified endpoint/model and provenance, then run from `ods/`:
 
@@ -22,6 +22,81 @@ Requests use balanced, shuffled closed-loop scheduling at the configured concurr
 Timeouts, protocol errors, identity mismatches and wrong answers remain in the planned-request denominator. Summary latency percentiles cover protocol-complete responses, with successful-task median reported separately. Neither is a claim about the censored/failed requests. p95 is suppressed below 100 completed samples and p99 below 1,000; those thresholds do not establish statistical precision. The 10-second example SLO is a diagnostic threshold, not a product SLA. Repeated four-case fixtures validate instrumentation, not broad model quality.
 
 Run only against an explicit idle target after coordinating its workload window. The probe does not acquire the fleet lock or automatically sample resources. Keep cache state `uncontrolled`: this adapter cannot prove a cache flush, prefix hit, or cold model. Unknown provenance is permitted for exploration and blocks a qualified causal comparison. See the study for inventory, agent/UI adapters, quality vetoes, paired experiments, and later open-loop capacity work.
+
+## Single Portal task adapter
+
+`pixel_adapter.py` submits a real Pixel task through the dashboard API. Use
+synthetic tasks only. Supply the dashboard key through a private environment
+variable, then run with an unused output path:
+
+```sh
+python3 tests/performance/pixel_adapter.py --manifest pixel-task.json --output task-receipt.json
+python3 -m unittest discover -s tests/performance -p 'test_pixel_adapter.py' -v
+```
+
+Example private execution manifest (port 9 is a placeholder):
+
+```json
+{
+  "schema_version": 1,
+  "base_url": "http://127.0.0.1:9",
+  "api_key_env": "ODS_PERF_DASHBOARD_KEY",
+  "timeout_s": 60,
+  "recovery_timeout_s": 40,
+  "task": {
+    "id": "synthetic-arithmetic",
+    "messages": [{"role": "user", "content": "Use the protected read-only execution tool to calculate 12 * 37 + 10. Do not change any files. Return only the integer."}],
+    "validator": {"kind": "exact", "expected": "454"},
+    "required_tools": ["pixel_ods_readonly_exec"]
+  }
+}
+```
+
+The CLI saves chat/request IDs before submitting once. It reconciles the exact
+retained result after transport completion or failure; observer failure never
+triggers a second generation. Unresolved attempts receive one exact cancellation
+attempt and bounded readback. Recovery shares one additional time budget.
+Connected transport deadlines include trickle headers and bodies; OS DNS remains
+outside that bound. The Python `run` caller must persist supplied IDs before
+dispatch if it needs recovery after its own process exits.
+
+The receipt hashes the answer and task instead of publishing their text. It
+omits authentication selectors, values, endpoint URLs and server error bodies.
+Task latency runs from API submission to observing a complete retained receipt.
+A correct answer recovered after the deadline remains censored and unsuccessful.
+Stream content is never concatenated with the retained answer.
+
+`answer_quality_pass` grades exact text or strict JSON. `quality_pass` additionally
+requires any declared tool execution to be proven. Without a native witness,
+declaring `required_tools` keeps `quality_pass` and `success` false even when a
+tool request and correct answer are observed.
+
+On the serving host, add `--native-sessions-dir /absolute/path/to/agents/pixel/sessions`
+to join native execution evidence. The read-only witness verifies that the exact
+chat's native session was absent before submission, then binds the session index,
+single user message, retained final-answer hash, ordered tool-call/result pairs,
+and model usage receipts. Failed command results cannot prove successful tool
+execution. It independently regrades the native answer; an incorrect answer
+remains a bound failure. Unsupported native continuations, ambiguous identities,
+stale or malformed transcripts, unsafe paths and changing files remain unproven.
+The initial witness supports a fresh chat with one submitted user message.
+
+These are operator-observed host records, not protection against a compromised
+host. Only declared tool names and hashes/counts are public; transcript text,
+arguments, outputs and paths are omitted. Model-call count is populated only
+when every observed assistant call has valid completed usage. Missing usage
+stays unknown. Underlying model identity and owned-process cleanup remain null.
+Successful tool return alone does not validate generated file contents; coding
+and artifact tasks still need independent fixture oracles.
+
+Native preflight and observation overhead are recorded separately from API task
+latency. `worker_elapsed_ms` includes this overhead and recovery. Measure the
+witness's cost before using it in a throughput comparison.
+
+`admission_safe` means the chat activity endpoint proved it terminal, not that
+its owned processes were removed. Stop new work when this field is false. Keep
+resource monitoring and stop rules in an external coordinator. This is a single
+task adapter, not an agent load scheduler or capacity qualification.
 
 ## Resource sampling and admission control
 
