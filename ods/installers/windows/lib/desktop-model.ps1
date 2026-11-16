@@ -24,6 +24,14 @@ function Get-ODSModelStampPath {
     return ($ModelPath + '.sha256.json')
 }
 
+function Protect-ODSProcessArgument {
+    param([string]$Value)
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+    # Win32 command-line quoting also works with Windows PowerShell 5.1,
+    # where ProcessStartInfo.ArgumentList is unavailable.
+    return '"' + [regex]::Replace([regex]::Replace($Value, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
+}
+
 function Read-ODSModelSha256Stamp {
     param([Parameter(Mandatory = $true)][string]$ModelPath)
     $stampPath = Get-ODSModelStampPath -ModelPath $ModelPath
@@ -184,6 +192,7 @@ function Invoke-ODSResumableModelDownload {
         [Parameter(Mandatory = $true)][string]$Url,
         [string]$ExpectedSha256 = '',
         [long]$ExpectedSize = 0,
+        [string]$CurlPath = '',
         [AllowNull()][scriptblock]$CurlRunner = $null,
         [AllowNull()][scriptblock]$ProgressCallback = $null
     )
@@ -223,6 +232,12 @@ function Invoke-ODSResumableModelDownload {
     }
 
     $partial = "$target.partial"
+    $curlBinary = if (![string]::IsNullOrWhiteSpace($CurlPath) -and (Test-Path -LiteralPath $CurlPath -PathType Leaf)) {
+        $CurlPath
+    } else {
+        $found = (Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1)
+        if ($found) { $found } else { 'curl.exe' }
+    }
     $runCurl = {
         param([bool]$Resume, [string]$OutFile, [string]$DownloadUrl)
         $curlArgs = @(
@@ -241,7 +256,8 @@ function Invoke-ODSResumableModelDownload {
             return (& $CurlRunner $curlArgs $OutFile $DownloadUrl)
         }
         if ($null -ne $activeProgressCallback) {
-            $psi = [Diagnostics.ProcessStartInfo]::new('curl.exe', ($curlArgs -join ' '))
+            $escapedArgs = ($curlArgs | ForEach-Object { Protect-ODSProcessArgument $_ }) -join ' '
+            $psi = [Diagnostics.ProcessStartInfo]::new($curlBinary, $escapedArgs)
             $psi.UseShellExecute = $false
             $psi.CreateNoWindow = $true
             $proc = [Diagnostics.Process]::Start($psi)
@@ -254,9 +270,15 @@ function Invoke-ODSResumableModelDownload {
                 }
                 Start-Sleep -Milliseconds 600
             }
+            if (Test-Path -LiteralPath $OutFile -PathType Leaf) {
+                try {
+                    $curBytes = (Get-Item -LiteralPath $OutFile).Length
+                    & $activeProgressCallback $curBytes $ExpectedSize
+                } catch {}
+            }
             return $proc.ExitCode
         }
-        & curl.exe @curlArgs
+        & $curlBinary @curlArgs
         return $LASTEXITCODE
     }
 

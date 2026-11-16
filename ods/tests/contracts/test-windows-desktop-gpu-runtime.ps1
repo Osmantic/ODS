@@ -142,6 +142,63 @@ try {
     Assert-Check ($dlRange.Status -ceq 'downloaded' -and $rangeRetryCalls -eq 2) `
         'Invoke-ODSResumableModelDownload recovers automatically when curl returns exit 33 (HTTP 416)'
 
+    # Regression test: Exercise the process-launch branch with spaces in both directory and filename
+    # using a local mock curl executable to verify argument boundaries are preserved without splitting.
+    $mockCurlBin = Join-Path $tempRoot 'mock-curl-bin'
+    New-Item -ItemType Directory -Force -Path $mockCurlBin | Out-Null
+    $mockCurlExe = Join-Path $mockCurlBin 'curl.exe'
+    $mockCurlSrc = @'
+using System;
+using System.IO;
+public class MockCurlApp {
+    public static int Main(string[] args) {
+        string outFile = null;
+        for (int i = 0; i < args.Length; i++) {
+            if (args[i] == "--output" && i + 1 < args.Length) {
+                outFile = args[i + 1];
+            }
+        }
+        if (!string.IsNullOrEmpty(outFile)) {
+            File.WriteAllBytes(outFile, System.Text.Encoding.UTF8.GetBytes("GGUF-TEST-MODEL-PAYLOAD-BYTES-0123456789"));
+            File.WriteAllLines(outFile + ".args.txt", args);
+        }
+        return 0;
+    }
+}
+'@
+    Add-Type -TypeDefinition $mockCurlSrc -OutputAssembly $mockCurlExe -OutputType ConsoleApplication
+
+    $spacedModelsDir = Join-Path $tempRoot 'models with spaces'
+    $spacedGgufFile = 'model with spaces.gguf'
+    $progressCalls = 0
+
+    $origEnvPath = $env:PATH
+    try {
+        $env:PATH = "$mockCurlBin;$origEnvPath"
+        $dlSpaced = Invoke-ODSResumableModelDownload -ModelsDir $spacedModelsDir -GgufFile $spacedGgufFile `
+            -Url 'https://huggingface.co/example/model%20with%20spaces.gguf' -ExpectedSha256 $expectedSha -ExpectedSize $payloadBytes.Length `
+            -CurlPath $mockCurlExe `
+            -ProgressCallback {
+                param($curBytes, $totalBytes)
+                $script:progressCalls++
+            }
+
+        $spacedModelPath = Join-Path $spacedModelsDir $spacedGgufFile
+        $argsRecordPath = "$spacedModelPath.partial.args.txt"
+        $recordedArgs = if (Test-Path -LiteralPath $argsRecordPath) { Get-Content -LiteralPath $argsRecordPath } else { @() }
+        $outputArgIndex = [array]::IndexOf($recordedArgs, '--output')
+        $actualOutFileArg = if ($outputArgIndex -ge 0 -and $outputArgIndex + 1 -lt $recordedArgs.Count) { $recordedArgs[$outputArgIndex + 1] } else { '' }
+
+        Assert-Check ($dlSpaced.Status -ceq 'downloaded' -and `
+            (Test-Path -LiteralPath $spacedModelPath -PathType Leaf) -and `
+            $actualOutFileArg -eq "$spacedModelPath.partial" -and `
+            $actualOutFileArg -match ' ' -and `
+            $progressCalls -ge 1) `
+            'Invoke-ODSResumableModelDownload preserves curl argument boundaries for paths with spaces during process launch'
+    } finally {
+        $env:PATH = $origEnvPath
+    }
+
     # --- 5. Pinned Embeddable Python Contract & Tamper Verification ---
     $pyContract = Read-ODSWindowsDesktopPythonContract -SourceRoot $root
     Assert-Check ($pyContract.id -ceq 'python-3.12.10-embed-amd64' -and @($pyContract.wheels).Count -ge 15) `
