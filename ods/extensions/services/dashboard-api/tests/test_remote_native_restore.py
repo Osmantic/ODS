@@ -32,7 +32,7 @@ def route(monkeypatch, tmp_path):
         p.parent.mkdir(exist_ok=True)
         p.write_text("remote activation receipt")
     originals = {p: p.read_bytes() for p in paths}
-    events = []
+    events: list[str] = []
     state = types.SimpleNamespace(root=root, env=env, previous=previous, events=events, present=False,
                                   originals=originals, fault=None, stop_fails=False, local=local)
 
