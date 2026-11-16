@@ -199,9 +199,18 @@ def extract_read_env_value_func(script_path: Path) -> str:
 
 
 def test_read_env_value_selects_last_assignment():
+    # Both macOS copies must agree with Compose, which uses the last assignment.
     repo_root = Path(__file__).resolve().parents[1]
-    env_gen = repo_root / "installers/macos/lib/env-generator.sh"
-    helper_code = extract_read_env_value_func(env_gen)
+    for script in (
+        repo_root / "installers/macos/lib/env-generator.sh",
+        repo_root / "installers/macos/ods-macos.sh",
+    ):
+        check_read_env_value_selects_last_assignment(script)
+
+
+def check_read_env_value_selects_last_assignment(script: Path):
+    helper_code = extract_read_env_value_func(script)
+    assert helper_code, f"read_env_value not found in {script}"
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -245,7 +254,7 @@ echo "ALL_TESTS_PASSED"
         runner.chmod(0o755)
 
         result = subprocess.run([BASH, runner.as_posix()], capture_output=True, text=True, check=False)
-        assert result.returncode == 0, f"stdout: {result.stdout}, stderr: {result.stderr}"
+        assert result.returncode == 0, f"{script.name}: stdout: {result.stdout}, stderr: {result.stderr}"
         assert "ALL_TESTS_PASSED" in result.stdout
 
 
