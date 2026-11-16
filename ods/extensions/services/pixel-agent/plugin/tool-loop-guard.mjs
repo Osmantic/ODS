@@ -1,4 +1,5 @@
-import {ownerLaneText, ownerForbidsTools} from './owner-tool-policy.mjs';
+import {ownerLaneText, ownerForbidsTools, ownerForbidsFileMutation} from './owner-tool-policy.mjs';
+import {ownerReadonlyToolAllowed, OWNER_FILE_MUTATION_FORBIDDEN_REASON} from './owner-readonly-tools.mjs';
 import {validDeliveredArtifact, normalizeWorkspaceArtifact, WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE} from './workspace-artifact.mjs';
 // Pixel per-run tool-loop guard.
 //
@@ -8115,6 +8116,7 @@ export function createToolLoopGuard({
   abortRunAndDrain,
   cancelProjectRun,
   execControl,
+  readonlyExecutionAuthority,
   evidenceArtifactWriter,
   onWorkspaceMutation = () => {},
   verifyWorkspacePreview,
@@ -9187,6 +9189,12 @@ export function createToolLoopGuard({
       blockReason: "Pixel could not recover the owner's request for this subagent continuation. Start a fresh owner message; child results cannot authorize tools.",
     };
     if (state?.ownerNoTools) return {block:true, blockReason:OWNER_NO_TOOLS_REASON};
+    const internalReadonlyExecution = readonlyExecutionAuthority?.consume(event, context) === true;
+    if (state?.ownerFileMutationForbidden &&
+        !ownerReadonlyToolAllowed(toolName, normalizedParams ?? event?.params, internalReadonlyExecution,
+          state.workspacePreviewRequired === true)) {
+      return {block:true, blockReason:OWNER_FILE_MUTATION_FORBIDDEN_REASON};
+    }
     if (state?.execGuidanceLeakRetried) return {block:true, blockReason:"Correct the answer from existing output without calling tools or repeating completed work."};
     // After compaction the pixels may have left the context; re-reading is then legitimate.
     if (state?.attachedPictureIds && !state.compactionSeen && namesAttachedPicture(event?.params, state.attachedPictureIds)) {
@@ -11324,6 +11332,8 @@ export function createToolLoopGuard({
         priorSourceReceipts);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
       if (ownerIntent && state.ownerNoTools === undefined) state.ownerNoTools=ownerForbidsTools(ownerIntent);
+      if (ownerIntent && state.ownerFileMutationForbidden === undefined)
+        state.ownerFileMutationForbidden=ownerForbidsFileMutation(ownerIntent);
       const pictureIds=attachedPictureIds(currentUserText(event?.messages,event?.prompt));
       if (pictureIds.length && state.attachedPictureIds === undefined) state.attachedPictureIds=pictureIds;
       if (ownerIntent) state.extensionCompletionGate ??= createExtensionCompletionGate(ownerIntent);
