@@ -67,11 +67,31 @@ A correct answer recovered after the deadline remains censored and unsuccessful.
 Stream content is never concatenated with the retained answer.
 
 `answer_quality_pass` grades exact text or strict JSON. `quality_pass` additionally
-requires any declared tool execution to be proven. This adapter has no independent
-tool execution attestor yet: declaring `required_tools` keeps `quality_pass` and
-`success` false even when a tool request and correct answer are observed. Model
-identity, model-call count, execution proof and owned-process cleanup remain null.
-Join independent native-session/host receipts before grading a tool-using task.
+requires any declared tool execution to be proven. Without a native witness,
+declaring `required_tools` keeps `quality_pass` and `success` false even when a
+tool request and correct answer are observed.
+
+On the serving host, add `--native-sessions-dir /absolute/path/to/agents/pixel/sessions`
+to join native execution evidence. The read-only witness verifies that the exact
+chat's native session was absent before submission, then binds the session index,
+single user message, retained final-answer hash, ordered tool-call/result pairs,
+and model usage receipts. Failed command results cannot prove successful tool
+execution. It independently regrades the native answer; an incorrect answer
+remains a bound failure. Unsupported native continuations, ambiguous identities,
+stale or malformed transcripts, unsafe paths and changing files remain unproven.
+The initial witness supports a fresh chat with one submitted user message.
+
+These are operator-observed host records, not protection against a compromised
+host. Only declared tool names and hashes/counts are public; transcript text,
+arguments, outputs and paths are omitted. Model-call count is populated only
+when every observed assistant call has valid completed usage. Missing usage
+stays unknown. Underlying model identity and owned-process cleanup remain null.
+Successful tool return alone does not validate generated file contents; coding
+and artifact tasks still need independent fixture oracles.
+
+Native preflight and observation overhead are recorded separately from API task
+latency. `worker_elapsed_ms` includes this overhead and recovery. Measure the
+witness's cost before using it in a throughput comparison.
 
 `admission_safe` means the chat activity endpoint proved it terminal, not that
 its owned processes were removed. Stop new work when this field is false. Keep

@@ -198,7 +198,7 @@ def _read_result(base, key, identity, deadline):
         return {**receipt, "error": "invalid_result"}
 
 
-def run(manifest, *, chat_id=None, request_id=None):
+def run(manifest, *, chat_id=None, request_id=None, native_sessions_dir=None):
     """Return a redacted receipt. Unknown activity must stop later admission."""
     manifest = validate_manifest(manifest)
     identity = {"chat_id": uuid.uuid4().hex if chat_id is None else chat_id,
@@ -222,6 +222,15 @@ def run(manifest, *, chat_id=None, request_id=None):
     key = os.environ.get(manifest["api_key_env"])
     if not key:
         return {**record, "error": "missing_credential"}
+    witness = None
+    worker_start = time.monotonic()
+    if native_sessions_dir is not None:
+        from native_receipt_join import NativeReceiptWitness
+        try:
+            witness = NativeReceiptWitness(native_sessions_dir, manifest, **identity)
+        except Exception:
+            return {**record, "error": "native_witness_preflight_failed"}
+        record["native_preflight_ms"] = round((time.monotonic() - worker_start) * 1000, 3)
     base, start = manifest["base_url"], time.monotonic()
     deadline = start + manifest["timeout_s"]
     record["submission_attempted"] = True
@@ -274,6 +283,18 @@ def run(manifest, *, chat_id=None, request_id=None):
                          and submitted["status"] == 200 and record["admission_safe"])
     record["recovery_elapsed_ms"] = round((time.monotonic() - recovery_start) * 1000, 3)
     record["elapsed_ms"] = round((time.monotonic() - start) * 1000, 3)
+    if witness is not None:
+        observation_start = time.monotonic()
+        native = witness.finish(record)
+        record["native_observation_ms"] = round((time.monotonic() - observation_start) * 1000, 3)
+        record["native_receipt"] = native
+        record["quality_pass"] = native["quality_pass"] if native["binding_proven"] else False
+        record["success"] = native["success"] if native["binding_proven"] else False
+        if native["binding_proven"]:
+            record["tool_execution_proven"] = native["tool_execution_proven"]
+            if native["model_calls_observed"] == native["model_calls_completed"]:
+                record["model_calls"] = native["model_calls_completed"]
+    record["worker_elapsed_ms"] = round((time.monotonic() - worker_start) * 1000, 3)
     return record
 
 
@@ -281,6 +302,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--native-sessions-dir", help="Read-only native receipt witness on the serving host")
     args = parser.parse_args()
     output = Path(args.output)
     identity = {"chat_id": uuid.uuid4().hex, "request_id": uuid.uuid4().hex}
@@ -294,7 +316,8 @@ def main():
         stream.flush()
         os.fsync(stream.fileno())
     try:
-        record = run(strict_json(Path(args.manifest).read_text(encoding="utf-8")), **identity)
+        record = run(strict_json(Path(args.manifest).read_text(encoding="utf-8")),
+                     native_sessions_dir=args.native_sessions_dir, **identity)
     except Exception:
         record = {**pending, "runner_error": "invalid_manifest_or_runner_failure"}
     temporary = output.with_name(output.name + "." + uuid.uuid4().hex + ".tmp")
