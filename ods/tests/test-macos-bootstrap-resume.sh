@@ -29,6 +29,13 @@ trap 'rm -rf "$tmp_dir"' EXIT
 mkdir -p "$install_dir/data/models" "$install_dir/scripts" "$install_dir/bin" "$bin_dir"
 install_dir="$(cd "$install_dir" && pwd -P)"
 python3 "$script_dir/fixtures/macos-private-store-cli.py" "$install_dir"
+# Bridge ownership is exercised by its manager suites. This fixture isolates
+# the CLI's bootstrap-resume dispatch across successful bridge operations.
+cat > "$install_dir/bin/macos_bridge_service.py" <<'BRIDGE'
+import json,sys
+assert sys.argv[1] in {"configure", "stop"}
+print(json.dumps({"listener_ready": sys.argv[1] == "configure"}))
+BRIDGE
 # This fixture checks resume dispatch, not launchd or native inference. The CLI
 # now delegates both start and stop through its installed service helper.
 mkdir -p "$install_dir/installers/macos/lib"
