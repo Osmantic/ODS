@@ -35,7 +35,7 @@ SCHEMA_VERSION = 1
 MAX_TOTAL_REQUESTS = 1000
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_LINE_BYTES = 1024 * 1024
-ALLOWED_SAMPLING_KEYS = {"temperature", "top_p", "max_tokens", "seed", "chat_template_kwargs"}
+ALLOWED_SAMPLING_KEYS = {"temperature", "top_p", "max_tokens", "seed", "chat_template_kwargs", "thinking_budget_tokens"}
 RESERVED_SAMPLING_KEYS = {"model", "messages", "stream", "stream_options", "tools"}
 ALLOWED_ROLES = {"system", "user", "assistant"}
 ALLOWED_VALIDATOR_KINDS = {"exact", "json_equal"}
@@ -151,6 +151,12 @@ def _validate_sampling(sampling: Any) -> dict:
     if "seed" in out:
         s = out["seed"]
         _require(isinstance(s, int) and not isinstance(s, bool), "sampling.seed must be int")
+    if "thinking_budget_tokens" in out:
+        tb = out["thinking_budget_tokens"]
+        _require(isinstance(tb, int) and not isinstance(tb, bool),
+                 "sampling.thinking_budget_tokens must be int")
+        _require(0 <= tb < out["max_tokens"],
+                 "sampling.thinking_budget_tokens must be 0 <= budget < max_tokens")
     return out
 
 
