@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import traceback
 import uuid
 
 import pytest
@@ -95,6 +96,7 @@ def test_native_replacement_profiles_orphans_and_bystanders():
                       stale_pid_never_signalled=True, passed=True)
     except Exception as exc:
         result['error'] = {'type': type(exc).__name__, 'message': str(exc)}
+        result['traceback'] = traceback.format_exc()
     finally:
         for child in children:
             if child.poll() is None:
