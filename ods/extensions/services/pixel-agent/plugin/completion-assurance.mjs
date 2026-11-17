@@ -1,6 +1,7 @@
 // A bounded completion check, not an executor. All recovered calls still go
 // through the normal tool policy, cancellation, permission and loop guards.
 import { pageExcerpt, requestTerms } from './page-excerpt.mjs';
+import { ownerLaneText, ownerForbidsTools } from './owner-tool-policy.mjs';
 const normalize = value => String(value ?? '').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
 const WEB = new Set(['web_search', 'web_fetch', 'pixel_ods_web_extract', 'pixel_ods_research', 'browser']);
 const DISCOVERY = new Set(['tool_search', 'tool_describe']);
@@ -416,8 +417,24 @@ export function ownerAuthorizesPriorSourceReuse(ownerText) {
     /\b(?:the|that|this|same)\b[^.!?\n]{0,40}\b(?:official )?(?:documentation|docs?|page|source)\b[^.!?\n]{0,60}\b(?:you (?:(?:already|actually) )?(?:found|read|opened|consulted)|already (?:found|read|opened|consulted)|found earlier|read earlier|opened earlier|consulted earlier)\b/.test(value);
 }
 
+// Deliberately narrow: a direct instruction to use the read tool on a path.
+// This is a completion obligation, never a grant of filesystem permission.
+function explicitFileReadRequested(text) {
+  const lane = ownerLaneText(text).trim();
+  if (ownerForbidsTools(text) || /\b(?:if|unless|when|after|never|don't|do not)\b|\?/.test(normalize(lane))) return false;
+  const path = /^(?:please\s+)?use\s+the\s+read\s+tool\s+to\s+read\s+((?:\.?\.?\/)?[\w.-]+(?:\/[\w.-]+)*)(?=\s|[.!]?$)/i.exec(lane)?.[1];
+  return Boolean(path && /[/.]/.test(path));
+}
+
+function claimsMissingFile(text) {
+  return /\bfile\s+(?:does\s+not\s+exist|doesn't\s+exist|was\s+not\s+found|is\s+not\s+found|not\s+found)\b/.test(normalize(text));
+}
+
+const UNATTEMPTED_FILE_READ = 'The requested file read was not performed. The task is incomplete; I do not have a verified file result to report.';
+
 export function createCompletionAssurance({englishOnly = false, now = Date.now} = {}) {
   let initialized = false, research = false, portuguese = false, conversational = false, attempts = 0;
+  let fileReadRequested = false, fileReadRecoveryIssued = false, toolAttemptObserved = false;
   // Bounded current-run source receipts: URL -> timestamp of the actual
   // successful openedSourceUrls observation. Insertion order is recency order
   // (a re-observation moves the URL to the end and refreshes its timestamp).
@@ -526,6 +543,7 @@ export function createCompletionAssurance({englishOnly = false, now = Date.now} 
         conversational = /^(?:(?:please|por favor)[,\s]+)?(?:traduza|translate|reescreva|rewrite|repita|repeat|diga apenas|say exactly|responda apenas|return exactly|explique|explain|rascunho|draft|exemplo|example)\b/.test(normalize(ownerText).trim()) && !research;
         portuguese = !englishOnly && portugueseDateHint(ownerText);
         priorReuseAuthorized = ownerAuthorizesPriorSourceReuse(ownerText);
+        fileReadRequested = explicitFileReadRequested(ownerText);
       }
       // Native prompt hooks may omit the session key. The first fully bound
       // hook may supply receipts later, but cannot change the owner's intent
@@ -553,6 +571,9 @@ export function createCompletionAssurance({englishOnly = false, now = Date.now} 
       withdrawnRequest = {text: typeof text === 'string' ? normalize(text).trim() : ''};
     },
     observe(tool, event) {
+      // Even a failed, denied or result-less attempt prevents this recovery.
+      // No wrapper result or operation-specific receipt needs to be inferred.
+      if (tool) toolAttemptObserved = true;
       // A failed permitted read is still an attempt. The early reminder must
       // not prevent independent file work or ask for repeated denied reads.
       // Wrapper/discovery text cannot supply this operation receipt.
@@ -647,9 +668,27 @@ export function createCompletionAssurance({englishOnly = false, now = Date.now} 
     unlistedCitations(text) {
       return unreadCitations(String(text ?? ''), readSources());
     },
-    finalize(text) {
+    finalize(text, {allowUnattemptedFileReadRecovery = false} = {}) {
       if (cancelled) return;
       if (conversational) return;
+      if (fileReadRequested && !toolAttemptObserved &&
+          (fileReadRecoveryIssued || (allowUnattemptedFileReadRecovery && claimsMissingFile(text)))) {
+        // Arm truthful delivery before requesting another model turn: the
+        // runtime can refuse a revision. Rephrasing cannot erase this gap.
+        terminalStatus = 'failed';
+        terminal = UNATTEMPTED_FILE_READ;
+        if (!fileReadRecoveryIssued && allowUnattemptedFileReadRecovery) {
+          fileReadRecoveryIssued = true;
+          return {action:'revise', reason:'The requested file read was never attempted.', retry:{
+            idempotencyKey:'ods-unattempted-file-read', maxAttempts:1,
+            instruction:'The owner explicitly requested a file read, but no tool call was attempted. ' +
+              'Use the read tool on the exact path the owner requested and report its observed result. ' +
+              'Do not infer that the file exists or is missing. Stay within the owner request and normal permissions. ' +
+              'Do not repeat denied or completed work. If the tool is unavailable or the read fails, report that limitation and that the task is incomplete.',
+          }};
+        }
+        return {action:'finalize', reason:'Bounded file-read recovery ended without an attempt.'};
+      }
       const read = readSources();
       // Prior receipts may satisfy the cited-page read check only when the
       // owner authorized reuse and the receipt is still fresh. They never
