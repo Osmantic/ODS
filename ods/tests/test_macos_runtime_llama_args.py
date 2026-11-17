@@ -7,6 +7,7 @@ installs) and b9014 (current pin). The fixtures are verbatim `llama-server
 
   tests/fixtures/llama-server-help/b8210.txt  llama-b8210-bin-macos-arm64 on the Mac mini M4
   tests/fixtures/llama-server-help/b9014.txt  llama-b9014-bin-macos-arm64 on the Mac mini M4
+  tests/fixtures/llama-server-help/b12445.txt  opt-in llama-b12445-bin-macos-arm64 on the Mac mini M4
 
 b8210 rejects --spec-draft-n-max (its flag is --draft-max), and b9014 lists
 --draft-max as removed. A launcher that passed --spec-draft-n-max stopped the
@@ -94,8 +95,8 @@ def host_agent_flags():
 
 
 class HelpFixtureTests(unittest.TestCase):
-    def test_fixtures_cover_both_shipped_runtimes(self):
-        self.assertLessEqual({"b8210", "b9014"}, set(HELP))
+    def test_fixtures_cover_shipped_and_opt_in_runtimes(self):
+        self.assertLessEqual({"b8210", "b9014", "b12445"}, set(HELP))
 
     def test_b8210_rejects_the_renamed_draft_flag(self):
         self.assertFalse(qualifier.supported(HELP["b8210"], "--spec-draft-n-max"))
@@ -251,6 +252,7 @@ class LauncherWiringTests(unittest.TestCase):
     EXPECTED = {
         "b8210": ["--draft-max", "3", "--ctx-checkpoints", "32", "--reasoning-format", "none"],
         "b9014": ["--spec-draft-n-max", "3", "--ctx-checkpoints", "32", "--spec-type", "ngram-mod", "--reasoning", "off"],
+        "b12445": ["--spec-draft-n-max", "3", "--ctx-checkpoints", "32", "--spec-type", "ngram-mod", "--reasoning", "off"],
     }
     # Stub the OS effects of a native launch; print the llama-server argv NUL-framed.
     STUBS = r'''
@@ -298,7 +300,7 @@ bash() {
         for flag in flags:
             self.assertTrue(qualifier.supported(HELP[release], flag), f"{flag} rejected by {release}: {argv}")
         self.assertEqual(argv[argv.index("--ctx-checkpoints") + 1], "32")
-        if release == "b9014":
+        if release in ("b9014", "b12445"):
             self.assertEqual(argv[argv.index("--reasoning") + 1], "off")
             self.assertNotIn("--reasoning-format", argv)
             self.assertEqual(argv[argv.index("--spec-draft-n-max") + 1], "3")
@@ -393,7 +395,7 @@ macos_resolve_checkpoint_args "$INSTALL" "$RUNTIME" none
             "stop_native_llama() { :; }\n"
             "start_native_llama true\n"
         )
-        for release in ("b8210", "b9014"):
+        for release in self.EXPECTED:
             with self.subTest(release=release):
                 self.use_runtime(release)
                 argv = self.run_bash(script)
@@ -402,11 +404,12 @@ macos_resolve_checkpoint_args "$INSTALL" "$RUNTIME" none
         # An uppercase mode used to become --reasoning-format OFF, which
         # llama-server rejects at startup.
         (self.install / ".env").write_text(self.ENV.replace("LLAMA_REASONING=off", "LLAMA_REASONING=OFF"))
-        for release in ("b8210", "b9014"):
+        for release in self.EXPECTED:
             with self.subTest(release=release, reasoning="OFF"):
                 self.use_runtime(release)
                 self.assert_argv(self.run_bash(script), release)
         (self.install / ".env").write_text(self.ENV + "LLAMA_SPEC_TYPE=none\n")
+        self.use_runtime("b9014")
         self.assert_argv(self.run_bash(script), "b9014", spec=False)
 
     def test_installer_launch(self):
@@ -421,14 +424,14 @@ macos_resolve_checkpoint_args "$INSTALL" "$RUNTIME" none
             "_macos_stop_install_owned_native_llama() { :; }\n"
             + block
         )
-        for release in ("b8210", "b9014"):
+        for release in self.EXPECTED:
             with self.subTest(release=release):
                 self.use_runtime(release)
                 argv = self.run_bash(script)
                 self.assertEqual(argv[argv.index("--model") + 1], str(self.install / "data/models/model.gguf"))
                 self.assert_argv(argv, release)
         (self.install / ".env").write_text(self.ENV.replace("LLAMA_REASONING=off", "LLAMA_REASONING=Off"))
-        for release in ("b8210", "b9014"):
+        for release in self.EXPECTED:
             with self.subTest(release=release, reasoning="Off"):
                 self.use_runtime(release)
                 self.assert_argv(self.run_bash(script), release)
@@ -648,12 +651,12 @@ macos_resolve_checkpoint_args "$INSTALL" "$RUNTIME" none
                                ("ON", "on", "deepseek"), ("AUTO", "auto", "auto"),
                                ("deepseek", "deepseek", "deepseek"),
                                ("DeepSeek", "DeepSeek", "DeepSeek")):
-            for release in ("b8210", "b9014"):
+            for release in self.EXPECTED:
                 with self.subTest(reasoning=raw, release=release):
                     self.use_runtime(release)
                     (self.install / ".env").write_text(f"LLAMA_REASONING={raw}\n")
                     argv = self.run_bash(script + forward)
-                    if release == "b9014" and mode in {"off", "on", "auto"}:
+                    if release in ("b9014", "b12445") and mode in {"off", "on", "auto"}:
                         self.assertEqual(argv[argv.index("--reasoning") + 1], mode)
                         self.assertNotIn("--reasoning-format", argv)
                     else:
