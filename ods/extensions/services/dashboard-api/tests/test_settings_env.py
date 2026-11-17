@@ -2098,3 +2098,140 @@ def test_core_recreate_client_sends_the_expected_revision(monkeypatch):
     assert captured['payload'] == {'service_ids': ['llama-server'], 'expected_env_revision': 'd' * 64}
     main._call_agent_core_recreate(['searxng'])
     assert captured['payload'] == {'service_ids': ['searxng']}
+
+
+# ── Pixel runtime directory schema (installed Mac placeholders) ──────────────
+#
+# The official native activation on macOS writes PIXEL_INGRESS_RUNTIME_DIR and
+# PIXEL_PREVIEW_RUNTIME_DIR under <install>/data/pixel-native/home/unused-docker-*,
+# while legacy native preparation writes the same leaves without the /home
+# segment. Both layouts must be accepted so unrelated Settings saves are not
+# blocked by installed defaults, while Linux/WSL fixed paths keep working and
+# arbitrary paths, traversal, wrong leaves, and malformed components are
+# rejected before any host write.
+
+_PIXEL_RUNTIME_KEYS = ("PIXEL_INGRESS_RUNTIME_DIR", "PIXEL_PREVIEW_RUNTIME_DIR")
+
+
+def _pixel_runtime_schema(settings_env_fixture):
+    """Install the real shipped definitions for the two Pixel runtime keys."""
+    schema_path = settings_env_fixture["schema_path"]
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    shipped = json.loads(
+        (Path(__file__).resolve().parents[4] / ".env.schema.json").read_text()
+    )
+    for key in (*_PIXEL_RUNTIME_KEYS, "LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"):
+        schema["properties"][key] = shipped["properties"][key]
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    return settings_env_fixture
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        # Official native activation layout (with /home).
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-ingress"),
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-preview"),
+        # Legacy native preparation layout (without /home).
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users/michaelbradley/ods/data/pixel-native/unused-docker-ingress"),
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "/Users/michaelbradley/ods/data/pixel-native/unused-docker-preview"),
+        # Install prefix containing a space must still be accepted.
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users/michael bradley/ods/data/pixel-native/home/unused-docker-ingress"),
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "/Users/michael bradley/ods/data/pixel-native/unused-docker-preview"),
+        # Linux and WSL fixed paths remain valid.
+        ("PIXEL_INGRESS_RUNTIME_DIR", "/run/ods-pixel"),
+        ("PIXEL_PREVIEW_RUNTIME_DIR", "/run/ods-pixel-preview"),
+        ("PIXEL_INGRESS_RUNTIME_DIR", "/mnt/wsl/ods-portal-runtime/ingress"),
+        ("PIXEL_PREVIEW_RUNTIME_DIR", "/mnt/wsl/ods-portal-runtime/preview"),
+    ],
+)
+def test_settings_saves_installed_pixel_runtime_dirs_with_unrelated_tuning(
+    test_client, settings_env_fixture, key, value,
+):
+    """Public Settings PUT accepts installed Mac placeholders and Linux/WSL paths."""
+    fixture = _pixel_runtime_schema(settings_env_fixture)
+    env_path = fixture["env_path"]
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + f"{key}={value}\n",
+        encoding="utf-8",
+    )
+    original_secret = "sk-live-secret"
+    response = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={"mode": "form", "values": {"LLAMA_ARG_CACHE_TYPE_K": "q8_0", "LLAMA_ARG_CACHE_TYPE_V": "q8_0"}},
+    )
+    assert response.status_code == 200, response.text
+    from settings import _parse_env_text
+    persisted, issues = _parse_env_text(env_path.read_text(encoding="utf-8"))
+    assert issues == []
+    assert persisted[key] == value
+    assert persisted["LLAMA_ARG_CACHE_TYPE_K"] == "q8_0"
+    assert persisted["LLAMA_ARG_CACHE_TYPE_V"] == "q8_0"
+    assert persisted["OPENAI_API_KEY"] == original_secret
+    assert original_secret not in response.text
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        # Wrong leaf for the key.
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-preview"),
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-ingress"),
+        # Traversal in the install prefix.
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users/../ods/data/pixel-native/home/unused-docker-ingress"),
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "/Users/./ods/data/pixel-native/unused-docker-preview"),
+        # Double slash in the install prefix.
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users//ods/data/pixel-native/home/unused-docker-ingress"),
+        # Relative path.
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "Users/ods/data/pixel-native/unused-docker-preview"),
+        # Control character in the install prefix.
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users/ods\x01/data/pixel-native/home/unused-docker-ingress"),
+        # Backslash in the install prefix.
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "/Users/ods\\data/pixel-native/unused-docker-preview"),
+        # Trailing newline must not be silently accepted.
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-ingress\n"),
+        # Arbitrary root path with the right leaf but no install prefix.
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "/data/pixel-native/unused-docker-preview"),
+    ],
+)
+def test_settings_rejects_invalid_pixel_runtime_dirs_before_host_write(
+    test_client, settings_env_fixture, monkeypatch, key, value,
+):
+    """Public Settings PUT rejects malformed Pixel runtime dirs without writing."""
+    from unittest.mock import Mock
+
+    import main
+
+    fixture = _pixel_runtime_schema(settings_env_fixture)
+    write = Mock(wraps=main._call_agent_env_update)
+    monkeypatch.setattr("main._call_agent_env_update", write)
+    env_path = fixture["env_path"]
+    original = env_path.read_bytes()
+    response = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={"mode": "form", "values": {key: value}},
+    )
+    assert response.status_code == 400, response.text
+    assert key in json.dumps(response.json()["detail"])
+    write.assert_not_called()
+    assert env_path.read_bytes() == original
+    assert not (fixture["data_root"] / "config-backups").exists()
