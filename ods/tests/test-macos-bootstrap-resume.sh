@@ -36,8 +36,21 @@ cat > "$install_dir/installers/macos/lib/native-llama-service.sh" <<'NATIVE'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$1" in
-    start) : > "$4" ;;
-    stop) : ;;
+    start)
+        printf '%s\n' 123 > "$4"
+        printf '%s\n' '{"identity":[123,1,2,501,20,501,20,501,20,"/fixture/runtime"]}'
+        ;;
+    status)
+        if [[ -f "$4" ]]; then
+            printf '%s\n' '{"running":true,"identity":[123,1,2,501,20,501,20,501,20,"/fixture/runtime"]}'
+        else
+            printf '%s\n' '{"running":false,"identity":null}'
+        fi
+        ;;
+    stop)
+        rm -f "$4"
+        printf '%s\n' '{"stopped":true}'
+        ;;
     *) exit 1 ;;
 esac
 NATIVE
