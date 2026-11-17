@@ -348,6 +348,35 @@ class TestProbe(unittest.TestCase):
         with self.assertRaises(probe.ManifestError):
             probe.validate_manifest(bad2)
 
+    def test_thinking_budget_requires_integer_below_effective_total_ceiling(self):
+        for value in (True, False, 1.5, "8", None, -1, -2, 128, 129):
+            with self.subTest(value=value):
+                manifest = _manifest("http://127.0.0.1:1/v1/chat/completions")
+                manifest["sampling"] = {"thinking_budget_tokens": value}
+                with self.assertRaises(probe.ManifestError):
+                    probe.validate_manifest(manifest)
+        manifest = _manifest("http://127.0.0.1:1/v1/chat/completions")
+        manifest["sampling"] = {"max_tokens": 64, "thinking_budget_tokens": 64}
+        with self.assertRaises(probe.ManifestError):
+            probe.validate_manifest(manifest)
+
+    def test_thinking_budget_wire_value_preserves_total_and_mode(self):
+        for budget in (0, 32, 255):
+            with self.subTest(budget=budget):
+                manifest = _manifest("http://127.0.0.1:1/v1/chat/completions")
+                manifest["sampling"] = {"max_tokens": 256, "thinking_budget_tokens": budget,
+                                        "chat_template_kwargs": {"enable_thinking": False}}
+                norm = probe.validate_manifest(manifest)
+                payload = probe._build_payload(norm, norm["tasks"][0])
+                self.assertEqual(payload["thinking_budget_tokens"], budget)
+                self.assertIs(type(payload["thinking_budget_tokens"]), int)
+                self.assertEqual(payload["max_tokens"], 256)
+                self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
+
+    def test_thinking_budget_is_omitted_unless_explicit(self):
+        manifest = probe.validate_manifest(_manifest("http://127.0.0.1:1/v1/chat/completions"))
+        self.assertNotIn("thinking_budget_tokens", probe._build_payload(manifest, manifest["tasks"][0]))
+
     def test_existing_outdir_refused(self):
         d = tempfile.mkdtemp()
         out = os.path.join(d, "out")
