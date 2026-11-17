@@ -7348,7 +7348,18 @@ export function userMessageRequestsWorkspacePreviewInspection(
   );
 }
 
+function workspaceNewCopyRequested(text) {
+  const clauses = ownerLaneText(workspacePreviewInstructionText(text, {preserveFileTargets:true}))
+    .split(/[!?;\n]+|\.(?=\s|$)/);
+  const copy = /^\s*(?:please\s+)?copy\s+/i;
+  const destination = /^\s*(?:please\s+)?work\s+(?:only\s+)?(?:in|inside|within|under)\s+(?:a\s+|the\s+)?new\s+(?:folder|directory)\b/i;
+  const copiedDestination = /^\s*(?:please\s+)?copy\s+[^!?;\n]+\s+(?:into|to)\s+(?:a\s+|the\s+)?new\s+(?:folder|directory)\b/i;
+  return clauses.some(clause => copy.test(clause)) && clauses.some(clause =>
+    destination.test(clause) || copiedDestination.test(clause));
+}
+
 function freshWorkspaceCreationRequested(text) {
+  if (workspaceNewCopyRequested(text)) return true;
   const creation = /\b(?:build|create|develop|design|generate|implement|make|write)\s+(?:(?:me|us)\s+)?(?:a|an|another|new|some)\s+\w/i;
   const rejected = /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,96}\b(?:build|create|develop|design|generate|implement|make|write)\b/i;
   const existingTarget = /\b(?:existing|previous|prior|same|current)\s+\w/i;
@@ -7442,13 +7453,19 @@ export function userMessageRequestsWorkspaceVerificationContinuation(messages, p
 
 function workspacePreviewDirectoryFromState(state) {
   const indexDirectories = new Set(
-    [...(state?.successfulWritePaths ?? []), ...(state?.successfulReadPaths ?? [])]
+    [...(state?.successfulWritePaths ?? []), ...[...(state?.successfulReadPaths ?? [])]
+      // A new copy's input is not its output. Only a write or a read in a
+      // directory edited this turn can select that copy for publication.
+      // Other requests retain read-only publication and build-output discovery.
+      .filter(file => typeof file === "string" && file.endsWith("/index.html") &&
+        (!state?.workspaceNewCopyRequested || [...(state.successfulEditPaths ?? [])]
+          .some(edited => edited.startsWith(file.slice(0, -"index.html".length)))))]
       .filter((value) => typeof value === "string" && value.endsWith("/index.html"))
       .map((value) => value.slice(0, -"/index.html".length))
       .filter(Boolean)
   );
   if (indexDirectories.size === 1) return [...indexDirectories][0];
-  return state?.workspacePreviewDirectory;
+  return state?.workspaceNewCopyRequested ? undefined : state?.workspacePreviewDirectory;
 }
 
 function workspacePreviewMissingEntryReason(state, directory) {
@@ -8735,6 +8752,7 @@ export function createToolLoopGuard({
         ownerIntentObserved: false,
         workspaceTaskRequested: false,
         workspaceMutationRequested: false,
+        workspaceNewCopyRequested: false,
         // A successful write, edit or exec (an exec can change files too).
         workspaceMutationObserved: false,
         workspaceTaskPath: undefined,
@@ -11487,6 +11505,7 @@ export function createToolLoopGuard({
           state.extensionCompletionGate = undefined;
           state.extensionPendingHandoff = false;
         }
+        state.workspaceNewCopyRequested = workspaceNewCopyRequested(ownerIntent);
         state.workspaceMutationRequested =
           state.workspacePreviewRequired ||
           userMessageRequestsWorkspaceMutation(event?.messages, event?.prompt);
