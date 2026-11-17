@@ -94,7 +94,7 @@
                                         - mmap+mlock: mmap + force system to keep model in RAM rather than
                                         swapping or compressing
                                         - dio: use DirectIO if available
-                                        
+
                                         (env: LLAMA_ARG_LOAD_MODE)
 -lzm,  --lazy-mode MODE                 on-demand reading of certain tensors, for example per-layer embeddings
                                         (default: auto)
@@ -232,7 +232,7 @@
                                          - 4: trace (more info)
                                          - 5: debug
                                         (default: 3)
-                                        
+
                                         (env: LLAMA_ARG_LOG_VERBOSITY)
 --log-prefix, --no-log-prefix           Enable prefix in log messages
                                         (env: LLAMA_ARG_LOG_PREFIX)
@@ -401,7 +401,7 @@
 --spec-type none,draft-simple,draft-eagle3,draft-mtp,draft-dflash,draft-dspark,draft-dflash2,draft-lilicorr,ngram-simple,ngram-map-k,ngram-map-k4v,ngram-mod,ngram-cache
                                         comma-separated list of types of speculative decoding to use (default:
                                         none)
-                                        
+
                                         (env: LLAMA_ARG_SPEC_TYPE)
 --spec-ngram-mod-n-min N                minimum number of ngram tokens to use for ngram-based speculative
                                         decoding (default: 48)
@@ -579,7 +579,7 @@
                                         container by ID, won't stop on server exit
                                         'ssh:<target>': run tools on a remote POSIX host over SSH, key-based
                                         auth and a trusted host key are required
-                                        
+
                                         (env: LLAMA_ARG_TOOLS_RUNTIME)
 --allow-unauthenticated-tools           allow server tools, MCP servers or MCP proxy on a non-loopback address
                                         without an API key - only for trusted networks (default: disabled)
@@ -742,7 +742,7 @@
                                         assistant message (default: prefill enabled)
                                         when this flag is set, if the last message is an assistant message
                                         then it will be treated as a full message and not prefilled
-                                        
+
                                         (env: LLAMA_ARG_PREFILL_ASSISTANT)
 -sps,  --slot-prompt-similarity SIMILARITY
                                         how much the prompt of a request must match the prompt of a slot in
