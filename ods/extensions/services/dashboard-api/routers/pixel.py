@@ -965,7 +965,9 @@ async def _status_projection() -> tuple[dict[str, object], bool]:
         if available and runtime is None:
             runtime = await _verified_external_host_runtime(host_status)
         if available and runtime is None and WINDOWS_DESKTOP_PROFILE and isinstance(host_status, dict):
-            runtime = host_status.get("activeRuntime")
+            active_rt = host_status.get("activeRuntime")
+            if isinstance(active_rt, dict):
+                runtime = active_rt
         if available and runtime is not None:
             result["runtime"] = runtime
         model_support = _model_support_from_status(host_status)

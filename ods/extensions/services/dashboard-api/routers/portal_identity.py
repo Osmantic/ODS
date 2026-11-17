@@ -46,17 +46,17 @@ async def _request(method, payload=None):
             })
             if config.DATA_DIR:
                 try:
-                    path = Path(config.DATA_DIR) / "portal-identity.json"
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_text(json.dumps(updated), encoding="utf-8")
+                    identity_file = Path(config.DATA_DIR) / "portal-identity.json"
+                    identity_file.parent.mkdir(parents=True, exist_ok=True)
+                    identity_file.write_text(json.dumps(updated), encoding="utf-8")
                 except OSError:
                     pass
             return JSONResponse(updated, headers=NO_STORE)
         return JSONResponse(current, headers=NO_STORE)
 
-    path = "/v1/pixel/identity/save" if method == "POST" else "/v1/pixel/identity"
+    endpoint = "/v1/pixel/identity/save" if method == "POST" else "/v1/pixel/identity"
     try:
-        result = await request_agent_json(method, path, payload=payload, timeout=10)
+        result = await request_agent_json(method, endpoint, payload=payload, timeout=10)
     except AgentHTTPError as error:
         status = error.status_code if error.status_code in (400, 409, 413, 503) else 502
         detail = ("Assistant identity changed elsewhere; refresh before saving." if status == 409

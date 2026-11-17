@@ -177,14 +177,19 @@ def test_native_downloader_status_normalization_and_stale_idle(monkeypatch, tmp_
 
 
 def test_restart_native_llama_server_logic(monkeypatch, tmp_path):
-    """Verify restart_native_llama_server finds binary, invokes taskkill, and starts process."""
+    """Verify restart_native_llama_server targets managed PID, respects dict GPU pref, and starts process."""
     fake_bin = tmp_path / "llama-server.exe"
     fake_bin.write_text("binary", encoding="utf-8")
     fake_model = tmp_path / "model.gguf"
     fake_model.write_text("weights", encoding="utf-8")
 
     monkeypatch.setattr(native_llm, "find_llama_server_binary", lambda: fake_bin)
-    monkeypatch.setattr(native_llm, "read_windows_user_gpu_preference", lambda: "discrete")
+    # Return real dict shape for high_performance
+    monkeypatch.setattr(
+        native_llm,
+        "read_windows_user_gpu_preference",
+        lambda: {"mode": "high_performance", "preferenceCode": 2, "preferDiscreteGpu": True},
+    )
 
     killed = []
     spawned = []
@@ -195,7 +200,10 @@ def test_restart_native_llama_server_logic(monkeypatch, tmp_path):
 
     def fake_popen(cmd, **kwargs):
         spawned.append(cmd)
-        return MagicMock()
+        mock_proc = MagicMock()
+        mock_proc.pid = 4321
+        mock_proc.poll.return_value = None
+        return mock_proc
 
     class FakeHealthClient:
         def __init__(self, *args, **kwargs):
@@ -211,8 +219,17 @@ def test_restart_native_llama_server_logic(monkeypatch, tmp_path):
     monkeypatch.setattr("subprocess.Popen", fake_popen)
     monkeypatch.setattr("httpx.Client", FakeHealthClient)
 
+    # Pre-set a managed PID and verify process executable check
+    monkeypatch.setattr(native_llm, "_read_managed_llama_pid", lambda: 1234)
+    monkeypatch.setattr(native_llm, "_verify_managed_process_executable", lambda pid, expected_bin: pid == 1234)
+
     ok = native_llm.restart_native_llama_server(fake_model, context_length=8192, alias="test-alias", timeout_seconds=1.0)
     assert ok is True
+
+    # Verify taskkill was called with /PID 1234 and never /IM llama-server.exe
+    assert any("/PID" in k and "1234" in k for k in killed)
+    assert not any("/IM" in k for k in killed)
+
     assert len(spawned) == 1
     cmd = spawned[0]
     assert str(fake_bin) in cmd
@@ -226,6 +243,80 @@ def test_restart_native_llama_server_logic(monkeypatch, tmp_path):
     assert "99" in cmd
 
 
+def test_restart_native_llama_server_power_saving_mode(monkeypatch, tmp_path):
+    """Verify that power_saving GPU preference produces -ngl 0 --device none."""
+    fake_bin = tmp_path / "llama-server.exe"
+    fake_bin.write_text("binary", encoding="utf-8")
+    fake_model = tmp_path / "model.gguf"
+    fake_model.write_text("weights", encoding="utf-8")
+
+    monkeypatch.setattr(native_llm, "find_llama_server_binary", lambda: fake_bin)
+    # Real dict shape for power_saving
+    monkeypatch.setattr(
+        native_llm,
+        "read_windows_user_gpu_preference",
+        lambda: {"mode": "power_saving", "preferenceCode": 1, "preferDiscreteGpu": False},
+    )
+
+    spawned = []
+
+    def fake_popen(cmd, **kwargs):
+        spawned.append(cmd)
+        mock_proc = MagicMock()
+        mock_proc.pid = 4322
+        mock_proc.poll.return_value = None
+        return mock_proc
+
+    class FakeHealthClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def get(self, url, **kwargs):
+            return MagicMock(status_code=200)
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr("httpx.Client", FakeHealthClient)
+    monkeypatch.setattr(native_llm, "stop_managed_native_llama_server", lambda bin_path: None)
+
+    ok = native_llm.restart_native_llama_server(fake_model, context_length=4096, timeout_seconds=1.0)
+    assert ok is True
+    assert len(spawned) == 1
+    cmd = spawned[0]
+    assert "-ngl" in cmd
+    ngl_idx = cmd.index("-ngl")
+    assert cmd[ngl_idx + 1] == "0"
+    assert "--device" in cmd
+    dev_idx = cmd.index("--device")
+    assert cmd[dev_idx + 1] == "none"
+
+
+def test_restart_native_llama_server_preserves_unrelated_process(monkeypatch, tmp_path):
+    """Verify that an unrelated/foreign llama-server process is never terminated."""
+    foreign_pid = 9999
+    fake_bin = tmp_path / "llama-server.exe"
+    fake_bin.write_text("binary", encoding="utf-8")
+
+    # With no managed PID, stop_managed_native_llama_server should do nothing
+    killed = []
+    monkeypatch.setattr(native_llm, "_read_managed_llama_pid", lambda: None)
+    monkeypatch.setattr("subprocess.run", lambda args, **kwargs: killed.append(args))
+
+    native_llm.stop_managed_native_llama_server(fake_bin)
+    assert len(killed) == 0
+
+    # If managed PID is 1111, but foreign PID is 9999, foreign PID is not killed
+    monkeypatch.setattr(native_llm, "_read_managed_llama_pid", lambda: 1111)
+    monkeypatch.setattr(native_llm, "_verify_managed_process_executable", lambda pid, b: pid == 1111)
+
+    native_llm.stop_managed_native_llama_server(fake_bin)
+    assert len(killed) == 1
+    assert "1111" in killed[0]
+    assert str(foreign_pid) not in killed[0]
+
+
 def test_restart_native_llama_server_fallback_on_crash(monkeypatch, tmp_path):
     """Verify that if llama-server crashes at high context, it automatically retries with safe context 4096."""
     fake_bin = tmp_path / "llama-server.exe"
@@ -234,7 +325,11 @@ def test_restart_native_llama_server_fallback_on_crash(monkeypatch, tmp_path):
     fake_model.write_text("weights", encoding="utf-8")
 
     monkeypatch.setattr(native_llm, "find_llama_server_binary", lambda: fake_bin)
-    monkeypatch.setattr(native_llm, "read_windows_user_gpu_preference", lambda: "discrete")
+    monkeypatch.setattr(
+        native_llm,
+        "read_windows_user_gpu_preference",
+        lambda: {"mode": "high_performance", "preferenceCode": 2, "preferDiscreteGpu": True},
+    )
 
     attempts = []
 

@@ -210,10 +210,15 @@ def _annotate_model_lifecycle(payload: dict[str, Any], lifecycle: Optional[dict[
 
 def _configured_ods_mode() -> str:
     """Return the current persisted mode without treating process env as config."""
-    from config import WINDOWS_DESKTOP_PROFILE
+    windows_desktop = False
+    try:
+        import config
+        windows_desktop = bool(getattr(config, "WINDOWS_DESKTOP_PROFILE", False))
+    except (ImportError, ModuleNotFoundError):
+        windows_desktop = bool(globals().get("WINDOWS_DESKTOP_PROFILE", False))
     try:
         mode = normalize_ods_mode(read_env_file_value("ODS_MODE", INSTALL_DIR, raise_on_error=True))
-        if mode == "unknown" and WINDOWS_DESKTOP_PROFILE:
+        if mode == "unknown" and windows_desktop:
             return "local"
         return mode
     except PermissionError:
@@ -223,11 +228,11 @@ def _configured_ods_mode() -> str:
         try:
             snapshot = request_agent_json("GET", "/v1/model/config", timeout=5)
         except AgentClientError:
-            return "local" if WINDOWS_DESKTOP_PROFILE else "unknown"
+            return "local" if windows_desktop else "unknown"
         mode = snapshot.get("configuredMode") if isinstance(snapshot, dict) else None
-        return mode if isinstance(mode, str) and mode in {"local", "cloud", "hybrid"} else ("local" if WINDOWS_DESKTOP_PROFILE else "unknown")
+        return mode if isinstance(mode, str) and mode in {"local", "cloud", "hybrid"} else ("local" if windows_desktop else "unknown")
     except (OSError, UnicodeError):
-        return "local" if WINDOWS_DESKTOP_PROFILE else "unknown"
+        return "local" if windows_desktop else "unknown"
 
 
 def _model_activation_mode_denial(

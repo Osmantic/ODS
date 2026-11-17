@@ -596,7 +596,9 @@ export function useModels({observe=true, reuseLastCatalog=false} = {}) {
             if (Number.isInteger(body?.contextLength) && body.contextLength > 0) {
               answeredContextLength = body.contextLength
             }
-          } catch {}
+          } catch {
+            // Optional contextLength payload; ignore non-JSON or empty response body
+          }
           return
         }
 

@@ -9,13 +9,14 @@ import logging
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import time
 import zlib
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -135,7 +136,7 @@ def resolve_native_llm_api_key() -> str:
     local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
     if local_app_data:
         base = Path(local_app_data) / "ODS"
-        candidate_paths.append(base / "lemonade" / "portal-runtime" / "api-key")
+        candidate_paths.append(base / "portal-runtime" / "api-key")
         candidate_paths.append(base / "native-runtime" / "api-key")
 
     for path in candidate_paths:
@@ -179,7 +180,6 @@ def get_native_models_directories() -> list[Path]:
     local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
     if local_app_data:
         _add(Path(local_app_data) / "ODS" / "models")
-        _add(Path(local_app_data) / "ODS" / "lemonade" / "models")
     return dirs
 
 
@@ -358,6 +358,120 @@ def find_llama_server_binary() -> Path | None:
     return None
 
 
+_MANAGED_LLAMA_PID: Optional[int] = None
+
+
+def _get_managed_llama_pid_file() -> Optional[Path]:
+    for base in (config.DATA_DIR, config.INSTALL_DIR):
+        if base:
+            return Path(base) / ".llama-server.pid"
+    home = Path.home() / "ods"
+    return home / ".llama-server.pid"
+
+
+def _read_managed_llama_pid() -> Optional[int]:
+    global _MANAGED_LLAMA_PID
+    if isinstance(_MANAGED_LLAMA_PID, int) and _MANAGED_LLAMA_PID > 0:
+        return _MANAGED_LLAMA_PID
+    pid_file = _get_managed_llama_pid_file()
+    if pid_file and pid_file.is_file():
+        try:
+            val = pid_file.read_text(encoding="utf-8").strip()
+            if val.isdigit():
+                _MANAGED_LLAMA_PID = int(val)
+                return _MANAGED_LLAMA_PID
+        except OSError:
+            pass
+    return None
+
+
+def _save_managed_llama_pid(pid: int) -> None:
+    global _MANAGED_LLAMA_PID
+    _MANAGED_LLAMA_PID = pid
+    pid_file = _get_managed_llama_pid_file()
+    if pid_file:
+        try:
+            pid_file.parent.mkdir(parents=True, exist_ok=True)
+            pid_file.write_text(str(pid), encoding="utf-8")
+        except OSError as exc:
+            logger.debug("Failed saving managed llama PID file: %s", exc)
+
+
+def _clear_managed_llama_pid() -> None:
+    global _MANAGED_LLAMA_PID
+    _MANAGED_LLAMA_PID = None
+    pid_file = _get_managed_llama_pid_file()
+    if pid_file and pid_file.is_file():
+        try:
+            pid_file.unlink()
+        except OSError:
+            pass
+
+
+def _verify_managed_process_executable(pid: int, expected_bin: Optional[Path] = None) -> bool:
+    """Verify that PID corresponds to our managed llama-server executable."""
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        try:
+            res = subprocess.run(
+                ["tasklist.exe", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if res.returncode != 0 or not res.stdout.strip():
+                return False
+            first_line = res.stdout.strip().splitlines()[0]
+            if "llama-server" not in first_line.lower():
+                return False
+            if expected_bin and expected_bin.exists():
+                try:
+                    wmic_res = subprocess.run(
+                        ["wmic.exe", "process", "where", f"ProcessId={pid}", "get", "ExecutablePath", "/format:value"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    for line in wmic_res.stdout.splitlines():
+                        if line.strip().startswith("ExecutablePath="):
+                            raw_exe = line.split("=", 1)[1].strip()
+                            if raw_exe:
+                                return Path(raw_exe).resolve() == expected_bin.resolve()
+                except Exception:
+                    pass
+            return True
+        except Exception as exc:
+            logger.debug("Process verification failed for PID %d: %s", pid, exc)
+            return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+
+def stop_managed_native_llama_server(expected_bin: Optional[Path] = None) -> None:
+    """Terminate only the ODS-managed llama-server PID, preserving foreign servers."""
+    pid = _read_managed_llama_pid()
+    if not pid:
+        return
+    if _verify_managed_process_executable(pid, expected_bin):
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill.exe", "/F", "/PID", str(pid)],
+                    capture_output=True,
+                    timeout=10,
+                )
+            else:
+                os.kill(pid, signal.SIGTERM)
+        except Exception as exc:
+            logger.warning("Failed terminating managed llama-server PID %s: %s", pid, exc)
+    _clear_managed_llama_pid()
+
+
 def restart_native_llama_server(
     model_path: str | Path,
     context_length: int = 4096,
@@ -383,15 +497,7 @@ def restart_native_llama_server(
     port_num = int(llama_port) if llama_port.isdigit() else 8085
     host = "127.0.0.1"
 
-    if sys.platform == "win32":
-        try:
-            subprocess.run(
-                ["taskkill.exe", "/F", "/IM", "llama-server.exe"],
-                capture_output=True,
-                timeout=10,
-            )
-        except Exception as exc:
-            logger.warning("taskkill llama-server.exe returned: %s", exc)
+    stop_managed_native_llama_server(bin_path)
 
     for _ in range(25):
         try:
@@ -401,7 +507,8 @@ def restart_native_llama_server(
             break
 
     gpu_pref = read_windows_user_gpu_preference()
-    if gpu_pref == "power_saving":
+    pref_mode = gpu_pref.get("mode") if isinstance(gpu_pref, dict) else str(gpu_pref)
+    if pref_mode == "power_saving":
         gpu_args = ["-ngl", "0", "--device", "none"]
     else:
         gpu_args = ["-ngl", "99"]
@@ -447,6 +554,7 @@ def restart_native_llama_server(
             stderr=subprocess.DEVNULL,
             close_fds=True,
         )
+        _save_managed_llama_pid(proc.pid)
     except Exception as exc:
         logger.exception("Failed to spawn native llama-server: %s", exc)
         return False
