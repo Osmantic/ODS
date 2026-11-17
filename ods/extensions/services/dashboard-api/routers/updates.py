@@ -512,6 +512,11 @@ async def trigger_update(action: UpdateAction, api_key: str = Depends(verify_api
 @router.post("/api/update/native/stage", dependencies=[Depends(verify_api_key)])
 async def post_stage_native_update(payload: dict):
     """Download, verify SHA-256, and stage a native Windows Desktop update archive."""
+    if not config.WINDOWS_DESKTOP_PROFILE:
+        raise HTTPException(
+            status_code=400,
+            detail="Native updates are only supported on Windows Desktop profile",
+        )
     from native_updater import stage_native_update
 
     target_version = str(payload.get("targetVersion") or payload.get("version") or "").strip()
@@ -539,20 +544,42 @@ async def post_stage_native_update(payload: dict):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+def _production_update_verify_callback(target_dir: Path) -> bool:
+    """Validate installed application payload and version integrity."""
+    from native_updater import validate_update_payload
+
+    if not validate_update_payload(target_dir):
+        logger.error("Post-update verification failed: missing required binary in %s", target_dir)
+        return False
+    version_file = target_dir / ".version"
+    if version_file.is_file():
+        try:
+            data = json.loads(version_file.read_text(encoding="utf-8"))
+            if not data.get("version"):
+                return False
+        except Exception:
+            return False
+    return True
+
+
 @router.post("/api/update/native/apply", dependencies=[Depends(verify_api_key)])
 async def post_apply_native_update(payload: Optional[dict] = None):
     """Atomically swap a staged native Windows Desktop update into the active app directory."""
+    if not config.WINDOWS_DESKTOP_PROFILE:
+        raise HTTPException(
+            status_code=400,
+            detail="Native updates are only supported on Windows Desktop profile",
+        )
     from native_updater import apply_staged_update
 
-    body = payload or {}
-    raw_app_dir = body.get("appDir") or (
-        str(Path(config.DATA_DIR) / "app" / "current") if config.DATA_DIR else ""
-    )
-    if not raw_app_dir:
-        raise HTTPException(status_code=400, detail="appDir is required")
-    app_dir = Path(str(raw_app_dir))
+    # Destination is strictly derived from trusted install configuration
+    app_dir = Path(config.INSTALL_DIR)
     try:
-        state = await asyncio.to_thread(apply_staged_update, app_dir)
+        state = await asyncio.to_thread(
+            apply_staged_update,
+            app_dir,
+            verify_callback=_production_update_verify_callback,
+        )
         return {"ok": True, **state}
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

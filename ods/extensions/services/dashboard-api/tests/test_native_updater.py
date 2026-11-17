@@ -184,14 +184,16 @@ def test_apply_rolls_back_automatically_on_verification_failure(tmp_path, monkey
 
 def test_updater_router_endpoints(tmp_path, monkeypatch):
     """FastAPI endpoints /api/update/status, /api/update/native/stage, and /api/update/native/apply work end-to-end."""
+    app_dir = tmp_path / "app" / "current"
+    app_dir.mkdir(parents=True)
+    (app_dir / "ODS.exe").write_bytes(b"V300")
+
     monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "INSTALL_DIR", str(app_dir))
     monkeypatch.setattr(config, "WINDOWS_DESKTOP_PROFILE", True)
     reset_native_updater_state("3.0.0")
 
     (tmp_path / ".env").write_text("ODS_VERSION=3.0.0\n", encoding="utf-8")
-    app_dir = tmp_path / "app" / "current"
-    app_dir.mkdir(parents=True)
-    (app_dir / "ODS.exe").write_bytes(b"V300")
 
     zip_bytes = _make_zip_bytes({"ODS.exe": b"V320"})
     sha256_hex = hashlib.sha256(zip_bytes).hexdigest()
@@ -219,8 +221,75 @@ def test_updater_router_endpoints(tmp_path, monkeypatch):
     apply_resp = client.post(
         "/api/update/native/apply",
         headers=headers,
-        json={"appDir": str(app_dir)},
+        json={"appDir": "C:\\fake\\untrusted\\path"},
     )
     assert apply_resp.status_code == 200
     assert apply_resp.json()["status"] == "applied"
+    # Destination derived from config.INSTALL_DIR, ignoring untrusted appDir
     assert (app_dir / "ODS.exe").read_bytes() == b"V320"
+
+
+def test_updater_routes_require_windows_desktop_profile(monkeypatch):
+    """Native update routes return 400 when WINDOWS_DESKTOP_PROFILE is False."""
+    monkeypatch.setattr(config, "WINDOWS_DESKTOP_PROFILE", False)
+    client = TestClient(main.app)
+    headers = {"Authorization": f"Bearer {security.DASHBOARD_API_KEY}"}
+
+    stage_resp = client.post(
+        "/api/update/native/stage",
+        headers=headers,
+        json={"targetVersion": "3.2.0", "downloadUrl": "https://example.com/a.zip", "expectedSha256": "0" * 64},
+    )
+    assert stage_resp.status_code == 400
+    assert "Windows Desktop profile" in stage_resp.json()["detail"]
+
+    apply_resp = client.post(
+        "/api/update/native/apply",
+        headers=headers,
+        json={},
+    )
+    assert apply_resp.status_code == 400
+    assert "Windows Desktop profile" in apply_resp.json()["detail"]
+
+
+def test_updater_rejects_payload_missing_executable(tmp_path, monkeypatch):
+    """An archive missing ODS.exe (e.g. only README.txt) is rejected and previous app is preserved."""
+    app_dir = tmp_path / "app" / "current"
+    app_dir.mkdir(parents=True)
+    (app_dir / "ODS.exe").write_bytes(b"ORIGINAL_EXE_V300")
+
+    monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "INSTALL_DIR", str(app_dir))
+    monkeypatch.setattr(config, "WINDOWS_DESKTOP_PROFILE", True)
+    reset_native_updater_state("3.0.0")
+
+    # ZIP with only README.txt
+    readme_zip = _make_zip_bytes({"README.txt": b"Just a readme without binary."})
+    sha256_hex = hashlib.sha256(readme_zip).hexdigest()
+
+    client = TestClient(main.app)
+    headers = {"Authorization": f"Bearer {security.DASHBOARD_API_KEY}"}
+
+    with patch("native_updater.httpx.AsyncClient", lambda **kw: _FakeAsyncClient(readme_zip, **kw)):
+        stage_resp = client.post(
+            "/api/update/native/stage",
+            headers=headers,
+            json={
+                "targetVersion": "3.2.0",
+                "downloadUrl": "https://releases.open-dev-society.org/ods-3.2.0.zip",
+                "expectedSha256": sha256_hex,
+            },
+        )
+    assert stage_resp.status_code == 200
+
+    apply_resp = client.post(
+        "/api/update/native/apply",
+        headers=headers,
+        json={},
+    )
+    # Fails with 409 because payload is missing ODS.exe
+    assert apply_resp.status_code == 409
+    assert "missing required ODS.exe binary" in apply_resp.json()["detail"]
+
+    # Original executable is preserved!
+    assert (app_dir / "ODS.exe").read_bytes() == b"ORIGINAL_EXE_V300"

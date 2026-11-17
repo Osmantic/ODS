@@ -223,6 +223,13 @@ async def stage_native_update(
         raise
 
 
+def validate_update_payload(directory: Path) -> bool:
+    """Validate that the update directory contains required ODS desktop binaries."""
+    if not directory.is_dir():
+        return False
+    return (directory / "ODS.exe").is_file() or (directory / "bin" / "ODS.exe").is_file()
+
+
 def apply_staged_update(
     app_dir: Path,
     *,
@@ -235,6 +242,13 @@ def apply_staged_update(
     staged_dir = Path(_updater_state.staged_dir)
     if not staged_dir.is_dir():
         raise RuntimeError(f"Staged update directory does not exist: {staged_dir}")
+
+    # Validate application payload before touching active directory
+    if not validate_update_payload(staged_dir):
+        _updater_state.status = "failed"
+        _updater_state.error = "Update payload validation failed: missing required ODS.exe binary"
+        _updater_state.updated_at = time.time()
+        raise RuntimeError(_updater_state.error)
 
     _updater_state.status = "applying"
     _updater_state.updated_at = time.time()
