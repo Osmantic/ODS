@@ -30,6 +30,9 @@ printf 'docker %s\n' "$*" >> "${UNINSTALL_COMMAND_LOG:?}"
 if [[ "${1:-}" == compose && "$*" == *" config --format json" ]]; then
     printf '%s\n' '{"name":"ods","volumes":{}}'
 fi
+if [[ "${1:-}" == info && "$*" == *"{{.ID}}"* ]]; then
+    printf '%s\n' 'fixture-engine'
+fi
 exit 0
 EOF
     cat > "$stub_dir/systemctl" <<'EOF'
@@ -51,6 +54,7 @@ exit 0
 EOF
     cat > "$stub_dir/pgrep" <<'EOF'
 #!/usr/bin/env bash
+printf 'pgrep %s\n' "$*" >> "${UNINSTALL_COMMAND_LOG:?}"
 exit 1
 EOF
     cat > "$stub_dir/uname" <<'EOF'
@@ -223,7 +227,7 @@ main() {
     mkdir -p "$home5"
     LAUNCHCTL_LOG="$TMP_DIR/launchctl5.log" UNAME_S="Linux" \
         run_uninstall "$install5" "$home5" "$stub_dir" "$TMP_DIR/out5.log" \
-        || fail "Linux uninstall must still succeed"
+        || { cat "$TMP_DIR/out5.log" >&2; fail "Linux uninstall must still succeed"; }
     [[ ! -s "$TMP_DIR/launchctl5.log" ]] \
         || fail "Linux uninstall must never invoke launchctl"
     pass "Linux uninstall path never touches launchctl"
@@ -260,6 +264,50 @@ main() {
     fi
     [[ ! -e "$install7" ]] || fail "uninstall without .env left the install directory"
     pass "an install without .env retires native services and is removed without Docker cleanup"
+
+    # The manager is the boundary for both launchd domains. Keep the full
+    # uninstaller real here, while the manager suites exercise native custody.
+    local attempt install8 home8
+    for attempt in success failure; do
+        install8="$TMP_DIR/owned-$attempt"
+        home8="$TMP_DIR/home-owned-$attempt"
+        make_install "$install8"
+        mkdir -p "$install8/bin" "$home8/Library/LaunchAgents"
+        cat > "$install8/bin/macos_native_service.py" <<'MANAGER'
+import os,sys
+from pathlib import Path
+assert sys.argv[1]=='stop'
+label = 'com.ods.llama-server' if Path(sys.argv[0]).name=='macos_native_service.py' else sys.argv[4]
+with open(os.environ['UNINSTALL_COMMAND_LOG'],'a') as stream:
+    stream.write('owned-stop '+label+'\n')
+if os.environ.get('NATIVE_MANAGER_FAIL')=='failure' and label=='com.ods.llm-bridge':
+    sys.exit(7)
+(Path.home()/'Library/LaunchAgents'/f'{label}.plist').unlink(missing_ok=True)
+MANAGER
+        cp "$install8/bin/macos_native_service.py" "$install8/bin/macos_bridge_service.py"
+        if LAUNCHCTL_LOG="$TMP_DIR/owned-$attempt.launchctl" NATIVE_MANAGER_FAIL="$attempt" \
+            run_uninstall "$install8" "$home8" "$stub_dir" "$TMP_DIR/owned-$attempt.log"; then
+            [[ "$attempt" == success ]] || fail "uncertain bridge shutdown was accepted"
+            [[ ! -e "$install8" ]] || fail "successful owned cleanup retained install"
+            for label in com.ods.llama-server com.ods.llm-bridge com.ods.host-agent-bridge; do
+                grep -qx "owned-stop $label" "$TMP_DIR/owned-$attempt.log.commands" \
+                    || fail "manager cleanup skipped $label"
+                if grep -q "$label" "$TMP_DIR/owned-$attempt.launchctl"; then
+                    fail "owned producer was passed to legacy launchctl cleanup"
+                fi
+            done
+            if grep -E 'pgrep .*bin/(llama-server|ods-macos-llm-bridge)' "$TMP_DIR/owned-$attempt.log.commands"; then
+                fail "owned producers were reaped by process-name matching"
+            fi
+        else
+            [[ "$attempt" == failure ]] || { cat "$TMP_DIR/owned-$attempt.log" >&2; fail "owned cleanup failed"; }
+            [[ -f "$install8/bin/macos_bridge_service.py" ]] || fail "uncertain shutdown lost recovery files"
+            if grep -qE '^docker (compose .* down|volume rm)' "$TMP_DIR/owned-$attempt.log.commands"; then
+                fail "uncertain shutdown continued destructive Docker cleanup"
+            fi
+        fi
+    done
+    pass "owned native and bridge cleanup precedes deletion and retains recovery on failure"
 }
 
 main "$@"

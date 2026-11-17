@@ -43,7 +43,7 @@ PY
 
 # Source only the production launch function; OS lifecycle effects are observed
 # through stubs. No real process is killed, no network or GPU is used.
-eval "$(awk '/^start_native_llama\(\)/ {p=1} /^stop_native_llama\(\)/ {p=0} p' "$ROOT_DIR/installers/macos/ods-macos.sh")"
+eval "$(awk '/^native_llama_receipt_identity\(\)/ {p=1} /^stop_native_llama\(\)/ {p=0} p' "$ROOT_DIR/installers/macos/ods-macos.sh")"
 LLAMA_SERVER_BIN="$INSTALL_DIR/bin/llama-server"
 LLAMA_SERVER_PID_FILE="$INSTALL_DIR/data/llama.pid"
 LLAMA_SERVER_LOG="$INSTALL_DIR/data/llama.log"
@@ -52,7 +52,7 @@ ARGV="$TMP_DIR/argv"
 read_ods_env() { ENV_ODS_MODE=local; ENV_CTX_SIZE=8192; ENV_LLAMA_ARG_SPEC_TYPE=legacy; ENV_LLAMA_ARG_CACHE_TYPE_K=f16; }
 macos_configure_llm_bridge_from_env() { :; }
 macos_bind_probe_host() { printf '%s' 127.0.0.1; }
-get_native_llama_status() { NATIVE_LLAMA_RUNNING=true; NATIVE_LLAMA_HEALTHY=true; NATIVE_LLAMA_PID=123; }
+get_native_llama_status() { NATIVE_LLAMA_RUNNING=true; NATIVE_LLAMA_HEALTHY=true; NATIVE_LLAMA_PID=123; NATIVE_LLAMA_IDENTITY='[123,1,2,501,20,501,20,501,20,"/fixture/runtime"]'; }
 stop_native_llama() { printf 'stop\n' >> "$CALLS"; }
 bash() {
     if [[ "$1" == "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" ]]; then
@@ -62,6 +62,7 @@ bash() {
         printf '%s\0' "$binary" "$@" > "$ARGV"
         printf 'start\n' >> "$CALLS"
         printf '%s\n' "$$" > "$pid_file"
+        printf '%s\n' '{"identity":[123,1,2,501,20,501,20,501,20,"/fixture/runtime"]}'
     else
         command bash "$@"
     fi
@@ -73,7 +74,7 @@ ai() { :; }; ai_ok() { :; }; ai_warn() { :; }; ai_err() { :; }
 write_fixture metal
 start_native_llama true || fail "qualified Metal profile did not launch"
 wait
-[[ "$(cat "$CALLS")" == $'stop\nstart' ]] || fail "restart did not validate then replace"
+[[ "$(cat "$CALLS")" == start ]] || fail "restart did not validate then request one atomic replacement"
 python3 - "$ARGV" "$SSD_DIR" <<'PY'
 import sys
 from pathlib import Path

@@ -264,7 +264,8 @@ bash() {
     if [[ "$1" == "$INSTALL/installers/macos/lib/native-llama-service.sh" && "$2" == start ]]; then
         printf '%s\n' "$$" > "$5"
         shift 5
-        for arg in "$@"; do printf '%s\0' "$arg"; done
+        for arg in "$@"; do printf '%s\0' "$arg"; done > "$INSTALL/captured-native-argv"
+        printf '%s\n' '{"identity":[4242,1,2,501,20,501,20,501,20,"/fixture/runtime"]}'
     else
         command bash "$@"
     fi
@@ -288,11 +289,14 @@ bash() {
         self.runtime.chmod(0o755)
 
     def run_bash(self, script):
+        captured = self.install / "captured-native-argv"
+        captured.unlink(missing_ok=True)
         result = subprocess.run(["bash", "-c", script], capture_output=True, timeout=60,
                                 env=dict(os.environ, INSTALL=str(self.install), RUNTIME=str(self.runtime),
                                          ROOT=str(ROOT), ODS_PYTHON_CMD=sys.executable))
         self.assertEqual(result.returncode, 0, result.stderr.decode())
-        return [part.decode() for part in result.stdout.split(b"\0")[:-1]]
+        data = captured.read_bytes() if captured.exists() else result.stdout
+        return [part.decode() for part in data.split(b"\0")[:-1]]
 
     def assert_argv(self, argv, release, spec=True):
         """One reasoning decision, the defaults, and only flags this runtime accepts."""
@@ -420,10 +424,10 @@ macos_resolve_checkpoint_args "$INSTALL" "$RUNTIME" none
             'INSTALL_DIR="$INSTALL"; LLAMA_SERVER_BIN="$RUNTIME"; LLAMA_SERVER_PID_FILE="$INSTALL/data/llama.pid"\n'
             'source "$ROOT/installers/macos/lib/native-model.sh"\n'
             + self.STUBS +
-            'eval "$(awk \'/^start_native_llama\\(\\)/ {p=1} /^stop_native_llama\\(\\)/ {p=0} p\' "$ROOT/installers/macos/ods-macos.sh")"\n'
+            'eval "$(awk \'/^native_llama_receipt_identity\\(\\)/ {p=1} /^stop_native_llama\\(\\)/ {p=0} p\' "$ROOT/installers/macos/ods-macos.sh")"\n'
             'read_ods_env() { ENV_ODS_MODE=local; ENV_CTX_SIZE=8192; ENV_LLAMA_REASONING="$(read_env_value "$INSTALL/.env" LLAMA_REASONING)"; }\n'
             "macos_configure_llm_bridge_from_env() { :; }\n"
-            "get_native_llama_status() { NATIVE_LLAMA_RUNNING=false; NATIVE_LLAMA_HEALTHY=false; NATIVE_LLAMA_PID=0; }\n"
+            "get_native_llama_status() { NATIVE_LLAMA_RUNNING=false; NATIVE_LLAMA_HEALTHY=true; NATIVE_LLAMA_PID=4242; NATIVE_LLAMA_IDENTITY='[4242,1,2,501,20,501,20,501,20,\"/fixture/runtime\"]'; }\n"
             "stop_native_llama() { :; }\n"
             "start_native_llama true\n"
         )
@@ -480,10 +484,10 @@ macos_resolve_checkpoint_args "$INSTALL" "$RUNTIME" none
             'INSTALL_DIR="$INSTALL"; LLAMA_SERVER_BIN="$RUNTIME"; LLAMA_SERVER_PID_FILE="$INSTALL/data/llama.pid"\n'
             'source "$ROOT/installers/macos/lib/native-model.sh"\n'
             + self.STUBS +
-            'eval "$(awk \'/^start_native_llama\\(\\)/ {p=1} /^stop_native_llama\\(\\)/ {p=0} p\' "$ROOT/installers/macos/ods-macos.sh")"\n'
+            'eval "$(awk \'/^native_llama_receipt_identity\\(\\)/ {p=1} /^stop_native_llama\\(\\)/ {p=0} p\' "$ROOT/installers/macos/ods-macos.sh")"\n'
             'read_ods_env() { ENV_ODS_MODE=local; ENV_CTX_SIZE=8192; ENV_LLAMA_REASONING="$(read_env_value "$INSTALL/.env" LLAMA_REASONING)"; }\n'
             "macos_configure_llm_bridge_from_env() { :; }\n"
-            "get_native_llama_status() { NATIVE_LLAMA_RUNNING=false; NATIVE_LLAMA_HEALTHY=false; NATIVE_LLAMA_PID=0; }\n"
+            "get_native_llama_status() { NATIVE_LLAMA_RUNNING=false; NATIVE_LLAMA_HEALTHY=true; NATIVE_LLAMA_PID=4242; NATIVE_LLAMA_IDENTITY='[4242,1,2,501,20,501,20,501,20,\"/fixture/runtime\"]'; }\n"
             "stop_native_llama() { :; }\n"
             "start_native_llama true\n"
         )

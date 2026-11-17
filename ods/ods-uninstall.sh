@@ -490,6 +490,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
 fi
 unset _ods_wsl_retire_helper
 
+_ods_owned_macos_producers=false
 # Native Pixel owns protected launchd services outside the ODS install tree.
 # Retire those receipt-bound resources before removing that tree; otherwise a
 # forced reinstall deletes its owner data but strands active native services.
@@ -505,6 +506,31 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         exit 1
     fi
     unset _ods_native_pixel_helper
+    # New installations bind native and bridge jobs to a private journal and
+    # inspect both GUI and Background domains. Do not follow this with legacy
+    # name-based reaping, or delete recovery files after uncertain shutdown.
+    if [[ -e "$INSTALL_DIR/bin/macos_native_service.py" || -e "$INSTALL_DIR/bin/macos_bridge_service.py" ]]; then
+        if [[ ! -f "$INSTALL_DIR/bin/macos_native_service.py" || ! -f "$INSTALL_DIR/bin/macos_bridge_service.py" ]]; then
+            log_error "Native service managers are incomplete; installation retained"
+            exit 1
+        fi
+        if ! "${ODS_PYTHON_CMD:-python3}" "$INSTALL_DIR/bin/macos_native_service.py" stop \
+            "$INSTALL_DIR" "$INSTALL_DIR/bin/llama-server" "$INSTALL_DIR/data/.llama-server.pid"; then
+            log_error "Native inference shutdown is unconfirmed; installation retained"
+            exit 1
+        fi
+        for _ods_bridge_label in com.ods.llm-bridge com.ods.host-agent-bridge; do
+            if ! "${ODS_PYTHON_CMD:-python3}" "$INSTALL_DIR/bin/macos_bridge_service.py" stop \
+                "$INSTALL_DIR" /usr/bin/python3 "$_ods_bridge_label" \
+                "$HOME/Library/LaunchAgents/${_ods_bridge_label}.plist" \
+                "$HOME/Library/Logs/ODS/${_ods_bridge_label}.log"; then
+                log_error "Native bridge shutdown is unconfirmed; installation retained"
+                exit 1
+            fi
+        done
+        unset _ods_bridge_label
+        _ods_owned_macos_producers=true
+    fi
 fi
 
 # A pending Pixel transition must retain its host-agent and other recovery
@@ -647,6 +673,11 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     for _ods_agent_label in com.ods.llm-bridge com.ods.host-agent-bridge \
                             com.ods.host-agent com.ods.opencode-web \
                             com.ods.llama-server com.ods.full-model-download; do
+        if $_ods_owned_macos_producers; then
+            case "$_ods_agent_label" in
+                com.ods.llama-server|com.ods.llm-bridge|com.ods.host-agent-bridge) continue ;;
+            esac
+        fi
         _ods_agent_plist="$HOME/Library/LaunchAgents/${_ods_agent_label}.plist"
         if launchctl print "gui/${_ods_uid}/${_ods_agent_label}" >/dev/null 2>&1; then
             if launchctl bootout "gui/${_ods_uid}/${_ods_agent_label}" 2>/dev/null; then
@@ -704,13 +735,15 @@ if command -v pgrep >/dev/null 2>&1; then
     while IFS= read -r _pid; do
         [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
     done < <(pgrep -f '\.opencode/bin/opencode (web|serve)' 2>/dev/null || true)
-    # macOS-native llama-server: only matches this install's shipped binary
-    while IFS= read -r _pid; do
-        [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
-    done < <(pgrep -f "$INSTALL_DIR/bin/llama-server" 2>/dev/null || true)
-    while IFS= read -r _pid; do
-        [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
-    done < <(pgrep -f "$INSTALL_DIR/bin/ods-macos-llm-bridge.py" 2>/dev/null || true)
+    if ! $_ods_owned_macos_producers; then
+        # Compatibility with installations predating the ownership managers.
+        while IFS= read -r _pid; do
+            [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
+        done < <(pgrep -f "$INSTALL_DIR/bin/llama-server" 2>/dev/null || true)
+        while IFS= read -r _pid; do
+            [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
+        done < <(pgrep -f "$INSTALL_DIR/bin/ods-macos-llm-bridge.py" 2>/dev/null || true)
+    fi
 fi
 if [[ -n "${_ods_uninstall_orphan_pids[0]-}" ]]; then
     log_info "  Sending SIGTERM to ${#_ods_uninstall_orphan_pids[@]} orphan PID(s): ${_ods_uninstall_orphan_pids[*]}"

@@ -230,6 +230,11 @@ class BootstrapNativeOwnerTest(unittest.TestCase):
         wrapper = self.harness.stub
         wrapper.write_text(real)
         wrapper.chmod(0o755)
+        for name in ("macos_native_service.py", "pixel_macos_process.py"):
+            destination = self.harness.install / "bin" / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((ROOT / "bin" / name).read_bytes())
+        prior_pid = self.harness.pid_file.read_bytes()
         launchctl = self.tmp / "launchctl"
         launchctl.write_text("#!/bin/sh\nexit 1\n")
         launchctl.chmod(0o755)
@@ -246,7 +251,8 @@ class BootstrapNativeOwnerTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertNotIn("curl", self.harness.log_file.read_text())
         self.assertTrue(self.harness.bystander.poll() is None)
-        self.assertFalse(self.harness.pid_file.exists())
+        self.assertEqual(self.harness.pid_file.read_bytes(), prior_pid)
+        self.assertIn("Could not inspect native launchd domain", result.stderr)
 
 
 if __name__ == "__main__":
