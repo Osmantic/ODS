@@ -57,7 +57,7 @@ class Harness:
         self.bystander = None
 
     def _stub_source(self):
-        return textwrap.dedent(f'''\
+        return textwrap.dedent('''\
             #!/usr/bin/env bash
             set -uo pipefail
             action="$1"; shift
@@ -65,7 +65,7 @@ class Harness:
             import json, sys
             path, mode, action, *args = sys.argv[1:]
             data = json.load(open(path))
-            data.append({{"action": action, "args": args, "mode": mode}})
+            data.append({"action": action, "args": args, "mode": mode})
             json.dump(data, open(path, "w"))
             PY
             case "$STUB_MODE:$action" in
