@@ -105,7 +105,26 @@ class NativeService:
                 return None
             raise NativeServiceError("Could not inspect native launchd job")
         fields = {}
+        arguments = None
+        in_arguments = False
+        if len(result.stdout) > 1048576:
+            raise NativeServiceError("Native launchd job output exceeds its bound")
         for line in result.stdout.splitlines():
+            if line == "\targuments = {":
+                if arguments is not None:
+                    raise NativeServiceError("Ambiguous native launchd arguments")
+                arguments, in_arguments = [], True
+                continue
+            if in_arguments:
+                if line == "\t}":
+                    in_arguments = False
+                    fields["arguments"] = arguments
+                elif (line.startswith("\t\t") and len(arguments) < 1024
+                      and not any(c in line[2:] for c in "\0\t\r")):
+                    arguments.append(line[2:])
+                else:
+                    raise NativeServiceError("Invalid native launchd arguments")
+                continue
             match = re.fullmatch(r"\t(path|program|working directory|pid|state|runs|last exit code) = (.+)", line)
             if match:
                 key, value = match.groups()
@@ -117,7 +136,7 @@ class NativeService:
                 if "token" in fields:
                     raise NativeServiceError("Ambiguous native launch marker")
                 fields["token"] = marker.group(1)
-        if not all(key in fields for key in ("path", "program", "working directory", "state")):
+        if in_arguments or not all(key in fields for key in ("path", "program", "working directory", "state")):
             raise NativeServiceError("Native launchd job format is unavailable")
         fields["domain"] = domain
         return fields
@@ -209,6 +228,9 @@ class NativeService:
         if executable == self.executable:
             return self
         return NativeService(self.root, executable, self.pid_file, home=self.home, label=self.label)
+
+    def producer_service(self, identity):
+        return self.bound(identity[-1])
 
     def owned_job(self, job):
         executable = Path(job["program"]).resolve()
@@ -311,11 +333,14 @@ class NativeService:
                     except ProcessIdentityError as exc:
                         # A job may publish its PID before exec completes. Retry
                         # inspection only; never interpret permission errors as absence.
-                        if exc.errno not in {errno.ESRCH, errno.EPERM}:
+                        if not self.startup_identity_pending(exc):
                             raise NativeServiceError("Native startup identity did not match") from exc
             if time.monotonic() >= deadline:
                 raise NativeServiceError("Native job did not produce a verified process")
             time.sleep(.1)
+
+    def startup_identity_pending(self, error):
+        return error.errno in {errno.ESRCH, errno.EPERM}
 
     def remove_job(self, domain, identity, *, token=None):
         job = self.job(domain)
@@ -367,7 +392,7 @@ class NativeService:
             if identity is None and jobs:
                 raise NativeServiceError("Native job exited but an owned producer remains")
             identity = identities[0]
-            if not self.bound(identity[-1]).live(identity):
+            if not self.producer_service(identity).live(identity):
                 raise NativeServiceError("Native producer changed during inspection")
         return {"running": identity is not None, "identity": identity,
                 "managed": bool(jobs), "domain": domain}
@@ -426,7 +451,7 @@ class NativeService:
             owner.remove_job(job["domain"], job_identity, token=job.get("token"))
         for identity in identities:
             if identity != job_identity:
-                self.bound(identity[-1]).terminate(identity)
+                self.producer_service(identity).terminate(identity)
         if self.jobs() or self.processes():
             raise NativeServiceError("Native shutdown is not confirmed")
         # Do not erase files replaced by a different lifecycle operation.
@@ -449,6 +474,17 @@ class NativeService:
         """Preserve a live producer or create a launch with a rollback witness."""
         with self.locked():
             return self._ensure(arguments)
+
+    def launch_plist(self, arguments, domain, token):
+        log = self.home / "Library/Logs/ODS/llama-server.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        return {
+            "Label": self.label, "ProgramArguments": [str(self.executable), *arguments],
+            "WorkingDirectory": str(self.root), "RunAtLoad": True,
+            "LimitLoadToSessionType": "Aqua" if domain.startswith("gui/") else "Background",
+            "EnvironmentVariables": {"ODS_NATIVE_LAUNCH_TOKEN": token},
+            "StandardOutPath": str(log), "StandardErrorPath": str(log),
+        }
 
     def _ensure(self, arguments):
         domains = self.domains()
@@ -478,17 +514,10 @@ class NativeService:
             self.bound(self.journal_document()["executable"])._rollback(self.journal_document())
         domain = domains[0]
         token = uuid.uuid4().hex
-        log = self.home / "Library/Logs/ODS/llama-server.log"
-        log.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "Label": self.label, "ProgramArguments": [str(self.executable), *arguments],
-            "WorkingDirectory": str(self.root), "RunAtLoad": True,
-            "LimitLoadToSessionType": "Aqua" if domain.startswith("gui/") else "Background",
-            "EnvironmentVariables": {"ODS_NATIVE_LAUNCH_TOKEN": token},
-            "StandardOutPath": str(log), "StandardErrorPath": str(log),
-        }
+        payload = self.launch_plist(arguments, domain, token)
         raw = plistlib.dumps(payload)
         receipt = {"created": True, "token": token, "domain": domain, "identity": None,
+                   "arguments": payload["ProgramArguments"],
                    "plist_sha256": hashlib.sha256(raw).hexdigest(),
                    "prior_plist": self.prior_plist()}
         self.save(receipt)  # Recovery provenance precedes the first launchd mutation.

@@ -545,6 +545,12 @@ printf '\n' >> "$EVENT_LOG"
 FAKE_LLAMA
     chmod +x "$ODS_HOME/bin/llama-server"
     : > "$ODS_HOME/bin/ods-macos-llm-bridge.py"
+    cat > "$ODS_HOME/bin/macos_bridge_service.py" <<'BRIDGE_MANAGER'
+import os, sys
+with open(os.environ["EVENT_LOG"], "a") as stream:
+    stream.write("bridge <" + sys.argv[1] + ">\n")
+print('{"listener_ready":true}')
+BRIDGE_MANAGER
     : > "$ODS_HOME/data/models/test.gguf"
 
     MACOS_BRIDGE_PYTHON="$TMP_DIR/fake-bridge-python"
@@ -560,13 +566,6 @@ FAKE_PYTHON
     LLAMA_SERVER_LOG="$ODS_HOME/data/llama-server.log"
     INSTALL_DIR="$ODS_HOME"
 
-    launchctl() {
-        {
-            printf 'launchctl'
-            printf ' <%s>' "$@"
-            printf '\n'
-        } >> "$EVENT_LOG"
-    }
     id() {
         [[ "${1:-}" == "-u" ]] || return 2
         printf '501\n'
@@ -644,22 +643,18 @@ FAKE_PYTHON
         mapfile -t events < "$EVENT_LOG"
         if [[ "$expected_route" == "direct" ]]; then
             [[ "${#events[@]}" -eq 2 ]] \
-                || fail "$label: expected bridge bootout then llama exec, got ${#events[@]} events"
-            [[ "${events[0]}" == "launchctl <bootout> <gui/501/com.ods.llm-bridge>" ]] \
+                || fail "$label: expected bridge stop then llama exec, got ${#events[@]} events"
+            [[ "${events[0]}" == "bridge <stop>" ]] \
                 || fail "$label: bridge bootout was not the first event: ${events[0]}"
             [[ "${events[1]}" == exec\ \<--host\>\ \<"$bind_address"\>* ]] \
                 || fail "$label: native llama did not receive bind $bind_address: ${events[1]}"
         else
-            [[ "${#events[@]}" -eq 4 ]] \
-                || fail "$label: expected bridge bootout/bootstrap/kickstart then llama exec, got ${#events[@]} events"
-            [[ "${events[0]}" == "launchctl <bootout> <gui/501/com.ods.llm-bridge>" ]] \
-                || fail "$label: stale bridge was not unloaded first: ${events[0]}"
-            [[ "${events[1]}" == launchctl\ \<bootstrap\>* ]] \
-                || fail "$label: loopback bridge was not bootstrapped: ${events[1]}"
-            [[ "${events[2]}" == launchctl\ \<kickstart\>* ]] \
-                || fail "$label: loopback bridge was not kickstarted: ${events[2]}"
-            [[ "${events[3]}" == exec\ \<--host\>\ \<127.0.0.1\>* ]] \
-                || fail "$label: UI preference exposed native inference: ${events[3]}"
+            [[ "${#events[@]}" -eq 2 ]] \
+                || fail "$label: expected bridge configure then llama exec, got ${#events[@]} events"
+            [[ "${events[0]}" == "bridge <configure>" ]] \
+                || fail "$label: bridge was not configured first: ${events[0]}"
+            [[ "${events[1]}" == exec\ \<--host\>\ \<127.0.0.1\>* ]] \
+                || fail "$label: UI preference exposed native inference: ${events[1]}"
             [[ "$LAST_BRIDGE_ENABLED" == "true" ]] \
                 || fail "$label: restored bridge state was not persisted"
         fi
