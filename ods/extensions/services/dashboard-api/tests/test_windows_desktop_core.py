@@ -142,6 +142,53 @@ def test_directx_user_gpu_preferences_parsing_and_matching(monkeypatch):
     assert pref_unrelated["source"] == "default_gpu_first"
     assert pref_unrelated["matchedExecutable"] is None
 
+    # Sibling applications under the same or another user profile must NOT match
+    profile_candidates = [
+        r"C:\Users\alice\ODS\ODS.exe",
+        r"C:\Users\alice\ODS\llama.cpp\llama-server.exe",
+    ]
+    pref_sibling_same_user = gpu.read_windows_user_gpu_preference(
+        exe_candidates=profile_candidates,
+        registry_entries={r"C:\Users\alice\OtherApp\llama-server.exe": "GpuPreference=1;"},
+    )
+    assert pref_sibling_same_user["mode"] == "high_performance"
+    assert pref_sibling_same_user["preferDiscreteGpu"] is True
+    assert pref_sibling_same_user["preferenceCode"] == 2
+    assert pref_sibling_same_user["source"] == "default_gpu_first"
+    assert pref_sibling_same_user["matchedExecutable"] is None
+
+    pref_sibling_diff_user = gpu.read_windows_user_gpu_preference(
+        exe_candidates=profile_candidates,
+        registry_entries={r"C:\Users\bob\OtherApp\llama-server.exe": "GpuPreference=1;"},
+    )
+    assert pref_sibling_diff_user["mode"] == "high_performance"
+    assert pref_sibling_diff_user["preferDiscreteGpu"] is True
+    assert pref_sibling_diff_user["preferenceCode"] == 2
+    assert pref_sibling_diff_user["source"] == "default_gpu_first"
+    assert pref_sibling_diff_user["matchedExecutable"] is None
+
+    # Positive control: exact executable match under realistic user profile
+    pref_profile_exact = gpu.read_windows_user_gpu_preference(
+        exe_candidates=profile_candidates,
+        registry_entries={r"C:\Users\alice\ODS\llama.cpp\llama-server.exe": "GpuPreference=1;"},
+    )
+    assert pref_profile_exact["mode"] == "power_saving"
+    assert pref_profile_exact["preferDiscreteGpu"] is False
+    assert pref_profile_exact["preferenceCode"] == 1
+    assert pref_profile_exact["source"] == "directx_registry"
+    assert pref_profile_exact["matchedExecutable"] == r"C:\Users\alice\ODS\llama.cpp\llama-server.exe"
+
+    # Positive control: installed subfolder executable under realistic user profile
+    pref_profile_subfolder = gpu.read_windows_user_gpu_preference(
+        exe_candidates=profile_candidates,
+        registry_entries={r"C:\Users\alice\ODS\bin\ODS.exe": "GpuPreference=1;"},
+    )
+    assert pref_profile_subfolder["mode"] == "power_saving"
+    assert pref_profile_subfolder["preferDiscreteGpu"] is False
+    assert pref_profile_subfolder["preferenceCode"] == 1
+    assert pref_profile_subfolder["source"] == "directx_registry"
+    assert pref_profile_subfolder["matchedExecutable"] == r"C:\Users\alice\ODS\bin\ODS.exe"
+
     # Even without explicit candidates, an unrelated third-party binary must not match
     pref_unrelated_no_cand = gpu.read_windows_user_gpu_preference(
         registry_entries={r"C:\unrelated-app\llama-server.exe": "GpuPreference=1;"},

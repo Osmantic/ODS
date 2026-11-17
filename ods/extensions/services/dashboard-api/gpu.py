@@ -511,6 +511,51 @@ def parse_directx_gpu_preference_string(raw: str) -> Optional[int]:
     return None
 
 
+_GENERIC_ROOT_NAMES = {
+    "users",
+    "home",
+    "program files",
+    "program files (x86)",
+    "appdata",
+    "local",
+    "roaming",
+    "programs",
+    "windows",
+}
+
+
+def _extract_install_root(cand: str) -> Optional[str]:
+    """Extract the base installation root directory for an ODS candidate path."""
+    norm_cand = cand.replace("/", "\\").rstrip("\\")
+    parts = [p for p in norm_cand.split("\\") if p]
+    if len(parts) <= 1:
+        return None
+
+    # If an ODS marker segment exists (e.g. "ODS", "ods-setup", "osmantic"),
+    # take the path up to that segment as the install root.
+    for i, part in enumerate(parts):
+        part_lower = part.casefold()
+        if part_lower in ("ods", "ods-setup", "osmantic") or part_lower.startswith("ods-"):
+            root = "\\".join(parts[: i + 1])
+            return root.casefold()
+
+    # Otherwise derive the root directory from the executable path
+    dir_parts = parts[:-1] if norm_cand.casefold().endswith(".exe") else parts
+    while dir_parts and dir_parts[-1].casefold() in ("bin", "llama.cpp", "runtimes", "llama", "engine"):
+        dir_parts = dir_parts[:-1]
+
+    if len(dir_parts) <= 1:
+        return None
+
+    # Guard against generic ancestor roots (e.g. C:\Users, C:\Users\alice, C:\Program Files)
+    if len(dir_parts) == 2 and dir_parts[0].endswith(":") and dir_parts[1].casefold() in _GENERIC_ROOT_NAMES:
+        return None
+    if len(dir_parts) == 3 and dir_parts[0].endswith(":") and dir_parts[1].casefold() == "users":
+        return None
+
+    return "\\".join(dir_parts).casefold()
+
+
 def _is_registry_path_for_ods(
     reg_path: str,
     explicit_candidates: Optional[list[str]],
@@ -521,17 +566,20 @@ def _is_registry_path_for_ods(
 
     if explicit_candidates:
         candidate_roots: set[str] = set()
+        if install_dir:
+            norm_install = install_dir.replace("/", "\\").casefold().rstrip("\\")
+            if norm_install:
+                candidate_roots.add(norm_install)
+
         for cand in explicit_candidates:
             if not cand:
                 continue
             norm_cand = cand.replace("/", "\\").casefold()
             if norm_reg == norm_cand:
                 return True
-            parts = [p for p in norm_cand.split("\\") if p]
-            for i in range(1, len(parts)):
-                root = "\\".join(parts[:i])
-                if not root.endswith(":") and len(root) > 2:
-                    candidate_roots.add(root)
+            root = _extract_install_root(cand)
+            if root:
+                candidate_roots.add(root)
 
         for root in candidate_roots:
             if norm_reg == root or norm_reg.startswith(root + "\\"):
@@ -541,8 +589,8 @@ def _is_registry_path_for_ods(
 
     # When no explicit candidates are provided:
     if install_dir:
-        norm_install = install_dir.replace("/", "\\").casefold()
-        if norm_reg == norm_install or norm_reg.startswith(norm_install.rstrip("\\") + "\\"):
+        norm_install = install_dir.replace("/", "\\").casefold().rstrip("\\")
+        if norm_reg == norm_install or norm_reg.startswith(norm_install + "\\"):
             return True
 
     segments = [s.casefold() for s in re.split(r"[\\/]", reg_path) if s]
