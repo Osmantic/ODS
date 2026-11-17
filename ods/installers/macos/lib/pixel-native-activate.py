@@ -29,9 +29,12 @@ def helper(filename):
 
 def activate(*, preparation, install_dir, ods_source, compose_files, configure_stack=False,
              resume_final_health=False, restore_host_agent=False, resume_model=False,
-             inspect_continuation=False, opencode_choice=None, restore_optional_tools=False):
+             inspect_continuation=False, opencode_choice=None, restore_optional_tools=False,
+             complete_protected=False):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
+    if complete_protected and (not resume_final_health or configure_stack or inspect_continuation):
+        raise ValueError('protected-completion-requires-explicit-recovery')
     if restore_host_agent and not resume_final_health:
         raise ValueError('host-agent-continuation-requires-recovery')
     if resume_model and not resume_final_health:
@@ -191,6 +194,14 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
                 value['status'] = 'active'
             return value
         continuation = {}
+        if complete_protected:
+            def complete_initial():
+                result = subprocess.run([*protected, '--complete-initial'], cwd='/',
+                    stdout=subprocess.PIPE, text=True, timeout=600, check=False)
+                if result.returncode or len(result.stdout) > 4096:
+                    raise ValueError('native-initial-recovery-proof-failed')
+                return json.loads(result.stdout)
+            continuation['complete_protected'] = complete_initial
         if restore_host_agent:
             continuation['restore_host_agent'] = lambda: helper('pixel-native-continuation.py').restore_host_agent(
                 install_dir, process_env)

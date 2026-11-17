@@ -176,8 +176,30 @@ original preparation and activation receipts are preserved. A rejected check
 before publication does not publish readiness; an identical completed recovery
 can be retried. The optional model handoff described below runs after publication.
 Do not edit the receipts, replay activation, uninstall, or clear volumes to
-bypass a rejection. This helper does not repair an unfinished protected
-activation, perform a native migration, or extend the health timeout.
+bypass a rejection. The default operation requires completed protected
+activation; it does not perform a native migration or extend the health timeout.
+
+An initial installer interrupted during `protected-activation` requires the
+separate explicit `--complete-protected` option. First confirm the original
+installer has exited and that no other lifecycle operation is running. This
+option accepts an owner receipt still marked `activating`, or an error receipt
+requiring recovery, only at that exact phase. It asks the protected installer
+to prove the already running services, finish the persisted admission release,
+and reprove access before the normal final-health recovery continues. It does
+not replay installation or bootstrap missing services. Unknown phases,
+changed selections, stopped services, or competing transitions fail closed.
+The original owner receipts remain unchanged; successful final verification
+publishes the same `selection-update.json` used by ordinary recovery.
+
+```bash
+python3 /path/to/reviewed-ODS/ods/installers/macos/lib/pixel-native-recover.py \
+  --install-dir "$HOME/ods" --ods-source "$HOME/ods" --complete-protected
+```
+
+A failed runtime reproof can leave protected activation active and admission
+released. An explicit retry rechecks the same bindings and resumes reproof;
+it does not repeat service startup. A read-only `--inspect-initial-recovery`
+on the protected install helper checks eligibility without completing anything.
 
 **This is not a whole-installer resume.** Success prints `native-pixel-ready`.
 The original installer may also have stopped before the host-agent setup,

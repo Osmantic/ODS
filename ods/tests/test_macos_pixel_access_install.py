@@ -1160,30 +1160,36 @@ def test_dry_run_output_contains_no_environment_or_credentials(deployment, capsy
     assert "ProgramArguments" not in output
 
 
+@pytest.mark.parametrize('operation', ['--verify-initial', '--inspect-initial-recovery', '--complete-initial'])
 @pytest.mark.parametrize('extra', [['--install'], ['--activate-upgrade'], ['--current-bundle-digest', 'd' * 64]])
-def test_initial_verification_cli_refuses_mutation_flags(monkeypatch, capsys, extra):
+def test_initial_verification_cli_refuses_mutation_flags(monkeypatch, capsys, extra, operation):
     planner = Mock()
     monkeypatch.setattr(installer, 'make_plan', planner)
     assert installer.main(['--source', '/source', '--openclaw-bin', '/bin/openclaw',
-        '--gateway-plist', '/owner/gateway.plist', '--initial-install', '--verify-initial',
+        '--gateway-plist', '/owner/gateway.plist', '--initial-install', operation,
         '--services-bundle', '/services', '--services-digest', 'b' * 64,
         '--pixel-source-ref', 'c' * 40, *extra]) == 1
     planner.assert_not_called()
     assert capsys.readouterr().err == 'error: native-initial-recovery-proof-failed\n'
 
 
+@pytest.mark.parametrize('operation,method', [
+    ('--verify-initial', 'verify_initial_install'),
+    ('--inspect-initial-recovery', 'inspect_initial_recovery'),
+    ('--complete-initial', 'complete_initial_install'),
+])
 @pytest.mark.parametrize('failure', [False, True])
-def test_initial_verification_cli_dispatch_is_read_only_and_redacted(monkeypatch, capsys, failure):
+def test_initial_verification_cli_dispatch_is_explicit_and_redacted(monkeypatch, capsys, failure, operation, method):
     plan = {'initial_install': True}
     monkeypatch.setattr(installer, 'make_plan', Mock(return_value=plan))
     monkeypatch.setattr(installer, 'bind_initial_services', Mock())
     result = dict(status='active', runtimeDigest='a' * 64, serviceDigest='b' * 64)
     proof = Mock(return_value=result, side_effect=ValueError('private-fixture-value') if failure else None)
-    monkeypatch.setattr(installer, 'verify_initial_install', proof)
+    monkeypatch.setattr(installer, method, proof)
     mutate = Mock(side_effect=AssertionError('readback must never activate'))
     monkeypatch.setattr(installer, 'install', mutate)
     assert installer.main(['--source', '/source', '--openclaw-bin', '/bin/openclaw',
-        '--gateway-plist', '/owner/gateway.plist', '--initial-install', '--verify-initial',
+        '--gateway-plist', '/owner/gateway.plist', '--initial-install', operation,
         '--runtime-bundle', '/runtime', '--bundle-digest', 'a' * 64,
         '--services-bundle', '/services', '--services-digest', 'b' * 64,
         '--pixel-source-ref', 'c' * 40]) == int(failure)
@@ -1196,6 +1202,35 @@ def test_initial_verification_cli_dispatch_is_read_only_and_redacted(monkeypatch
     else:
         assert json.loads(captured.out) == result
         assert captured.err == ''
+
+
+@pytest.mark.parametrize('extra', [
+    ['--verify-initial'], ['--held-admission-revision', 'd' * 64],
+])
+def test_interrupted_inspection_cannot_select_active_verification(monkeypatch, capsys, extra):
+    planner = Mock()
+    monkeypatch.setattr(installer, 'make_plan', planner)
+    assert installer.main(['--source', '/source', '--openclaw-bin', '/bin/openclaw',
+        '--gateway-plist', '/owner/gateway.plist', '--initial-install',
+        '--inspect-initial-recovery', '--services-bundle', '/services',
+        '--services-digest', 'b' * 64, '--pixel-source-ref', 'c' * 40, *extra]) == 1
+    planner.assert_not_called()
+    assert capsys.readouterr().err == 'error: native-initial-recovery-proof-failed\n'
+
+
+@pytest.mark.parametrize('extra', [
+    ['--inspect-initial-recovery'], ['--verify-initial'], ['--held-admission-revision', 'd' * 64],
+])
+def test_initial_completion_cli_rejects_other_proof_operations(monkeypatch, capsys, extra):
+    planner = Mock()
+    monkeypatch.setattr(installer, 'make_plan', planner)
+    assert installer.main(['--source', '/source', '--openclaw-bin', '/bin/openclaw',
+        '--gateway-plist', '/owner/gateway.plist', '--initial-install', '--complete-initial',
+        '--runtime-bundle', '/runtime', '--bundle-digest', 'a' * 64,
+        '--services-bundle', '/services', '--services-digest', 'b' * 64,
+        '--pixel-source-ref', 'c' * 40, *extra]) == 1
+    planner.assert_not_called()
+    assert capsys.readouterr().err == 'error: native-initial-recovery-proof-failed\n'
 
 
 @pytest.mark.parametrize('kind', ['stream-progress', 'workspace-root'])
