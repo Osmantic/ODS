@@ -8,7 +8,7 @@ import {pathToFileURL} from 'node:url';
 const plugin = process.env.ODS_PLUGIN_DIR
   ? pathToFileURL(resolve(process.env.ODS_PLUGIN_DIR, 'tool-loop-guard.mjs'))
   : new URL('../plugin/tool-loop-guard.mjs', import.meta.url);
-const {createToolLoopGuard, userMessageRequestsWorkspaceVisualContinuation} = await import(plugin.href);
+const {createToolLoopGuard, userMessageRequestsWorkspaceVisualContinuation, workspacePreviewMode} = await import(plugin.href);
 const owner = 'Make our existing synthetic service demo usable. Work only in a NEW folder service-copy under your workspace. ' +
   'Copy source-demo/index.html into it first; leave previous projects unchanged. Keep its styling and FAQ. ' +
   'Repair the appointment form: require name and email, show inline errors, and keep submission local. ' +
@@ -16,7 +16,7 @@ const owner = 'Make our existing synthetic service demo usable. Work only in a N
 const promise = "Now I'll copy the file to the new folder and then make the repairs.";
 const sourcePublish = /Call tool_call now with id pixel_ods_workspace_preview and args \{"relativeDirectory":"source-demo"\}/;
 
-function replay(prompt, {reads = ['source-demo/index.html'], write, edit, readFailed = false, harnessPrompt, ending = promise} = {}) {
+function replay(prompt, {reads = ['source-demo/index.html'], write, edit, readFailed = false, nativeRevision = false, revisionWrite, probePreview = false, ending = promise} = {}) {
   const guard = createToolLoopGuard();
   const context = {agentId:'pixel', trigger:'user', runId:'copy-order-run', sessionId:'copy-order-session',
     sessionKey:'agent:pixel:openai-user:ods-' + 'a'.repeat(64)};
@@ -39,12 +39,22 @@ function replay(prompt, {reads = ['source-demo/index.html'], write, edit, readFa
   for (const path of reads) observe('read', path, readFailed);
   if (write) observe('write', write);
   if (edit) observe('edit', edit);
-  if (harnessPrompt) guard.observeRun(context, 'pixel', {prompt:harnessPrompt},
-    {executionHost:'sandbox',workspaceRoot:'/home/owner/.openclaw/workspace-pixel'});
-  const decision = guard.beforeAgentFinalize({runId:context.runId, lastAssistantMessage:ending,
+  const finalize = () => guard.beforeAgentFinalize({runId:context.runId, lastAssistantMessage:ending,
     messages:[{role:'user',content:[{type:'text',text:prompt}]},
       {role:'assistant',content:[{type:'text',text:ending}],stopReason:'stop'}]}, context, 'pixel');
-  return {calls, decision};
+  const firstDecision = finalize();
+  if (!nativeRevision) return {calls, decision:firstDecision};
+  assert.equal(firstDecision?.action, 'revise');
+  const revision = 'Before accepting the previous final answer, apply this revision request and produce the revised final answer. ' +
+    'Do not repeat completed work or rerun tools unless the request explicitly requires it.\n\n' +
+    firstDecision.reason + '\n\n' + firstDecision.retry.instruction;
+  guard.observeRun(context, 'pixel', {prompt:revision,messages:[{role:'user',content:[{type:'text',text:prompt}]}]},
+    {executionHost:'sandbox',workspaceRoot:'/home/owner/.openclaw/workspace-pixel'});
+  if (revisionWrite) observe('write', revisionWrite);
+  const previewAdmission = probePreview ? guard.beforeToolCall({runId:context.runId,
+    toolName:'pixel_ods_workspace_preview',toolCallId:'preview-after-revision',params:{}},
+    {...context,toolName:'pixel_ods_workspace_preview',toolCallId:'preview-after-revision'},'pixel') : undefined;
+  return {calls, firstDecision, decision:finalize(), previewAdmission};
 }
 
 test('copy/edit: a source read must not cause an immediate publication instruction for the source', () => {
@@ -125,8 +135,48 @@ test('a copy produced by another tool can be selected after reading and editing 
 });
 
 test('a harness continuation cannot replace the original new-copy obligation', () => {
-  const {decision} = replay(owner, {harnessPrompt:'Continue and publish the inspected page now.'});
-  assert.doesNotMatch(decision.retry.instruction, sourcePublish);
+  const {decision} = replay(owner, {nativeRevision:true});
+  assert.doesNotMatch(decision?.retry?.instruction ?? '', sourcePublish);
+});
+
+test('a native revision must not auto-fill the source for an empty preview call', () => {
+  const {previewAdmission} = replay(owner, {nativeRevision:true,probePreview:true});
+  assert.notEqual(previewAdmission?.params?.relativeDirectory, 'source-demo');
+});
+
+test('a copy written in the native revision remains the selected output', () => {
+  const {decision} = replay(owner, {nativeRevision:true,revisionWrite:'service-copy/index.html'});
+  assert.match(decision.retry.instruction, /Call tool_call now.*"relativeDirectory":"service-copy"/);
+});
+
+const nestedOwner = 'Copy source-demo/index.html into a NEW folder source-demo/copy and repair the form. Publish the repaired copy in the private preview.';
+test('editing a nested copy must not make the input parent eligible for publication', () => {
+  const {decision} = replay(nestedOwner, {edit:'source-demo/copy/index.html'});
+  assert.doesNotMatch(decision?.retry?.instruction ?? '', sourcePublish);
+});
+
+test('reading and editing a nested copy selects that copy alone', () => {
+  const {decision} = replay(nestedOwner, {reads:['source-demo/index.html','source-demo/copy/index.html'],edit:'source-demo/copy/index.html'});
+  assert.match(decision.retry.instruction, /Call tool_call now.*"relativeDirectory":"source-demo\/copy"/);
+});
+
+test('an explicit backup before an in-place repair keeps existing-app continuation', () => {
+  const request='Fix the existing app. Copy app/index.html into a new folder app-backup first as a backup, then repair the form in place and republish the existing app.';
+  assert.equal(userMessageRequestsWorkspaceVisualContinuation([], request), true);
+  assert.equal(workspacePreviewMode([],request), 'continuation');
+});
+
+for (const request of [
+  'Work only in a NEW folder service-copy. Copy source-demo/index.html into it first; keep the original unchanged as a backup and do not edit it in place. Repair the form. Publish the repaired copy in the private preview.',
+  'Copy source-demo/index.html into a new folder service-copy and repair the form there. The original stays as a backup; never modify it in-place. Publish the repaired copy in the private preview.',
+  'Copy source-demo/index.html into a new folder service-copy as a backup. Do not repair the original in place. Repair the copy and publish it in the private preview.',
+]) test('preserving an original backup does not override the new work target: '+request, () => {
+  assert.doesNotMatch(replay(request).decision?.retry?.instruction ?? '', sourcePublish);
+  const retry=replay(request,{nativeRevision:true,probePreview:true});
+  assert.notEqual(retry.previewAdmission?.params?.relativeDirectory,'source-demo');
+  assert.doesNotMatch(retry.decision?.retry?.instruction ?? '', sourcePublish);
+  assert.match(replay(request,{write:'service-copy/index.html'}).decision.retry.instruction,
+    /Call tool_call now.*"relativeDirectory":"service-copy"/);
 });
 
 test('a new-copy request does not inherit the existing app visual-continuation scope', () => {

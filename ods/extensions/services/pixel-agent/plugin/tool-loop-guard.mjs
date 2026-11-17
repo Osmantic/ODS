@@ -7349,11 +7349,21 @@ export function userMessageRequestsWorkspacePreviewInspection(
 }
 
 function workspaceNewCopyRequested(text) {
-  const clauses = ownerLaneText(workspacePreviewInstructionText(text, {preserveFileTargets:true}))
-    .split(/[!?;\n]+|\.(?=\s|$)/);
+  const instruction = ownerLaneText(workspacePreviewInstructionText(text, {preserveFileTargets:true}));
+  const clauses = instruction.split(/[!?;\n]+|\.(?=\s|$)/);
   const copy = /^\s*(?:please\s+)?copy\s+/i;
   const destination = /^\s*(?:please\s+)?work\s+(?:only\s+)?(?:in|inside|within|under)\s+(?:a\s+|the\s+)?new\s+(?:folder|directory)\b/i;
   const copiedDestination = /^\s*(?:please\s+)?copy\s+[^!?;\n]+\s+(?:into|to)\s+(?:a\s+|the\s+)?new\s+(?:folder|directory)\b/i;
+  // Only an explicit backup-copy command plus positive original-work command
+  // keeps the old app target; preserving the original must not cancel a copy.
+  const commands = clauses.flatMap(clause => clause.split(/,\s*(?:then\s+)?|\bthen\s+/));
+  const negated = /\b(?:not|don['’]t|never|avoid|without)\b/i;
+  const backupCopy = commands.some(clause => copiedDestination.test(clause) &&
+    /\b(?:as|for)\s+(?:a\s+)?backup\b/i.test(clause) && !negated.test(clause));
+  const originalWork = commands.some(clause => !negated.test(clause) &&
+    (/^\s*(?:please\s+)?(?:repair|fix|update|edit|modify)\b[^!?;\n]{0,120}\bin[ -]place\b/i.test(clause) ||
+     /^\s*(?:please\s+)?(?:re)?publish\s+(?:the\s+)?(?:existing|original|current)\s+(?:app|page|project)\b/i.test(clause)));
+  if (backupCopy && originalWork) return false;
   return clauses.some(clause => copy.test(clause)) && clauses.some(clause =>
     destination.test(clause) || copiedDestination.test(clause));
 }
@@ -7459,7 +7469,7 @@ function workspacePreviewDirectoryFromState(state) {
       // Other requests retain read-only publication and build-output discovery.
       .filter(file => typeof file === "string" && file.endsWith("/index.html") &&
         (!state?.workspaceNewCopyRequested || [...(state.successfulEditPaths ?? [])]
-          .some(edited => edited.startsWith(file.slice(0, -"index.html".length)))))]
+          .some(edited => edited.slice(0, edited.lastIndexOf("/") + 1) === file.slice(0, -"index.html".length))))]
       .filter((value) => typeof value === "string" && value.endsWith("/index.html"))
       .map((value) => value.slice(0, -"/index.html".length))
       .filter(Boolean)
@@ -11505,7 +11515,7 @@ export function createToolLoopGuard({
           state.extensionCompletionGate = undefined;
           state.extensionPendingHandoff = false;
         }
-        state.workspaceNewCopyRequested = workspaceNewCopyRequested(ownerIntent);
+        state.workspaceNewCopyRequested = workspaceNewCopyRequested(state.ownerRequestText ?? ownerIntent ?? "");
         state.workspaceMutationRequested =
           state.workspacePreviewRequired ||
           userMessageRequestsWorkspaceMutation(event?.messages, event?.prompt);
