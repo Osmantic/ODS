@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from test_host_agent import _mod
-from test_remote_native_restore import route  # noqa: F401 -- shared lifecycle fixture
+from test_remote_native_restore import route as native_route  # noqa: F401 -- shared lifecycle fixture
 
 
 def router_accepts(doc):
@@ -16,13 +16,14 @@ def router_accepts(doc):
     tree = ast.parse(path.read_text(encoding='utf-8'))
     predicate = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
                      and n.name == '_has_verified_active_route')
-    namespace = {'Any': Any}
+    namespace: dict[str, Any] = {'Any': Any}
     exec(compile(ast.Module(body=[predicate], type_ignores=[]), str(path), 'exec'), namespace)
     return namespace['_has_verified_active_route'](doc)
 
 
 @pytest.fixture
-def reconstructed(route, monkeypatch):
+def reconstructed(request, monkeypatch):
+    route = request.getfixturevalue('native_route')
     route.env.write_text(route.env.read_text() +
         'GGUF_FILE=local.gguf\nLLM_MODEL=local\nCTX_SIZE=65536\nODS_MODEL_SWITCHBOARD=enabled\n')
     env = dict(_mod.load_env(route.env), ODS_MODE='local')
