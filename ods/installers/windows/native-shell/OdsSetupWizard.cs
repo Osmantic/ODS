@@ -35,6 +35,10 @@ namespace OdsNativeSetup
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 "ods"
             );
+            string appDataDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ODS"
+            );
             string gpuMode = "high_performance";
             string installProfile = "recommended";
             bool dryRunCheck = false;
@@ -53,7 +57,19 @@ namespace OdsNativeSetup
                 }
                 else if (a.StartsWith("--install-dir=", StringComparison.OrdinalIgnoreCase))
                 {
-                    installDir = a.Substring("--install-dir=".Length).Trim('"');
+                    installDir = a.Substring("--install-dir=".Length).Trim().Trim('"');
+                }
+                else if (a.Equals("--install-dir", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    installDir = args[++i].Trim().Trim('"');
+                }
+                else if (a.StartsWith("--appdata-dir=", StringComparison.OrdinalIgnoreCase))
+                {
+                    appDataDir = a.Substring("--appdata-dir=".Length).Trim().Trim('"');
+                }
+                else if (a.Equals("--appdata-dir", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    appDataDir = args[++i].Trim().Trim('"');
                 }
                 else if (a.StartsWith("--gpu-mode=", StringComparison.OrdinalIgnoreCase))
                 {
@@ -69,8 +85,9 @@ namespace OdsNativeSetup
             {
                 string scriptPath = ResolveInstallerScriptPath();
                 string json = string.Format(
-                    "{{\"executable\":\"ODS-Setup.exe\",\"version\":\"3.0.0\",\"profile\":\"windows-desktop\",\"defaultInstallDir\":\"{0}\",\"defaultGpuPreference\":\"{1}\",\"installerScriptFound\":{2}}}",
+                    "{{\"executable\":\"ODS-Setup.exe\",\"version\":\"3.0.0\",\"profile\":\"windows-desktop\",\"defaultInstallDir\":\"{0}\",\"defaultAppDataDir\":\"{1}\",\"defaultGpuPreference\":\"{2}\",\"installerScriptFound\":{3}}}",
                     EscapeJson(installDir),
+                    EscapeJson(appDataDir),
                     EscapeJson(gpuMode),
                     (!string.IsNullOrEmpty(scriptPath) && File.Exists(scriptPath)) ? "true" : "false"
                 );
@@ -80,7 +97,7 @@ namespace OdsNativeSetup
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new SetupWizardForm(installDir, gpuMode, installProfile));
+            Application.Run(new SetupWizardForm(installDir, gpuMode, installProfile, appDataDir));
             return 0;
         }
 
@@ -152,11 +169,15 @@ namespace OdsNativeSetup
         private readonly Button _installButton;
         private readonly Button _launchButton;
         private string _installDir;
+        private readonly string _appDataDir;
         private bool _isInstalling;
 
-        public SetupWizardForm(string defaultInstallDir, string defaultGpuMode, string defaultProfile)
+        public SetupWizardForm(string defaultInstallDir, string defaultGpuMode, string defaultProfile, string defaultAppDataDir = "")
         {
             _installDir = defaultInstallDir;
+            _appDataDir = !string.IsNullOrWhiteSpace(defaultAppDataDir)
+                ? defaultAppDataDir
+                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ODS");
 
             Text = "ODS Windows Native Setup";
             Size = new Size(720, 620);
@@ -519,13 +540,18 @@ namespace OdsNativeSetup
                 return;
             }
 
+            string appDataArg = !string.IsNullOrWhiteSpace(_appDataDir)
+                ? string.Format(" -LocalAppDataDir \"{0}\"", _appDataDir)
+                : "";
+
             ProcessStartInfo psi = new ProcessStartInfo
             {
                 FileName = "powershell.exe",
                 Arguments = string.Format(
-                    "-NoProfile -ExecutionPolicy Bypass -File \"{0}\" -InstallDir \"{1}\" -DefaultGpuPreference {2} -InstallProfile {3}",
+                    "-NoProfile -ExecutionPolicy Bypass -File \"{0}\" -InstallDir \"{1}\"{2} -DefaultGpuPreference {3} -InstallProfile {4}",
                     scriptPath,
                     installDir,
+                    appDataArg,
                     gpuMode,
                     installProfile
                 ),
@@ -680,13 +706,37 @@ namespace OdsNativeSetup
 
         private void OnLaunchClick(object sender, EventArgs e)
         {
-            string appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string exe = Path.Combine(appData, "ODS", "app", "current", "ODS.exe");
+            string appData = !string.IsNullOrWhiteSpace(_appDataDir)
+                ? _appDataDir
+                : Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string exe = Path.Combine(appData, "app", "current", "ODS.exe");
+            if (!File.Exists(exe))
+            {
+                exe = Path.Combine(appData, "ODS", "app", "current", "ODS.exe");
+            }
+            if (!File.Exists(exe))
+            {
+                string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                exe = Path.Combine(localApp, "ODS", "app", "current", "ODS.exe");
+            }
+
             if (File.Exists(exe))
             {
+                string targetDir = !string.IsNullOrWhiteSpace(_installDir)
+                    ? _installDir.Trim().Trim('"')
+                    : (!string.IsNullOrWhiteSpace(_installDirBox.Text)
+                        ? _installDirBox.Text.Trim().Trim('"')
+                        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "ods"));
+                string args = string.Format("--install-dir=\"{0}\"", targetDir);
+                if (!string.IsNullOrWhiteSpace(_appDataDir))
+                {
+                    args += string.Format(" --appdata-dir=\"{0}\"", _appDataDir.Trim().Trim('"'));
+                }
+
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = exe,
+                    Arguments = args,
                     WorkingDirectory = Path.GetDirectoryName(exe),
                     UseShellExecute = true
                 });

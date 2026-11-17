@@ -64,15 +64,27 @@ namespace OdsNativeDesktop
                 }
                 if (a.StartsWith("--install-dir=", StringComparison.OrdinalIgnoreCase))
                 {
-                    installDir = a.Substring("--install-dir=".Length).Trim('"');
+                    installDir = a.Substring("--install-dir=".Length).Trim().Trim('"');
+                }
+                else if (a.Equals("--install-dir", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    installDir = args[++i].Trim().Trim('"');
                 }
                 else if (a.StartsWith("--appdata-dir=", StringComparison.OrdinalIgnoreCase))
                 {
-                    appDataDir = a.Substring("--appdata-dir=".Length).Trim('"');
+                    appDataDir = a.Substring("--appdata-dir=".Length).Trim().Trim('"');
+                }
+                else if (a.Equals("--appdata-dir", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    appDataDir = args[++i].Trim().Trim('"');
                 }
                 else if (a.StartsWith("--reg-subkey=", StringComparison.OrdinalIgnoreCase))
                 {
-                    DirectXRegSubKey = a.Substring("--reg-subkey=".Length).Trim('"');
+                    DirectXRegSubKey = a.Substring("--reg-subkey=".Length).Trim().Trim('"');
+                }
+                else if (a.Equals("--reg-subkey", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    DirectXRegSubKey = args[++i].Trim().Trim('"');
                 }
             }
 
@@ -103,8 +115,12 @@ namespace OdsNativeDesktop
                     string prefMode = prefCode == 1 ? "power_saving" : (prefCode == 0 ? "let_windows_decide" : "high_performance");
                     bool apiUp = IsTcpPortOpen("127.0.0.1", 3101, 250);
                     bool llamaUp = IsTcpPortOpen("127.0.0.1", 8085, 250);
+                    bool envFound = File.Exists(Path.Combine(installDir, ".env"));
                     string json = string.Format(
-                        "{{\"executable\":\"ODS.exe\",\"version\":\"3.0.0\",\"runtimeProfile\":\"windows-desktop\",\"gpuPreferenceMode\":\"{0}\",\"gpuPreferenceCode\":{1},\"preferDiscreteGpu\":{2},\"dashboardApiListening\":{3},\"llamaServerListening\":{4}}}",
+                        "{{\"executable\":\"ODS.exe\",\"version\":\"3.0.0\",\"runtimeProfile\":\"windows-desktop\",\"installDir\":\"{0}\",\"appDataDir\":\"{1}\",\"envFileFound\":{2},\"gpuPreferenceMode\":\"{3}\",\"gpuPreferenceCode\":{4},\"preferDiscreteGpu\":{5},\"dashboardApiListening\":{6},\"llamaServerListening\":{7}}}",
+                        EscapeJson(installDir),
+                        EscapeJson(appDataDir),
+                        envFound ? "true" : "false",
                         prefMode,
                         prefCode,
                         (prefCode != 1) ? "true" : "false",
@@ -146,6 +162,12 @@ namespace OdsNativeDesktop
                 Application.Run(new DesktopShellForm(installDir, appDataDir));
             }
             return 0;
+        }
+
+        internal static string EscapeJson(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
         }
 
         internal static int GetUserGpuPreferenceCode(params string[] exePaths)

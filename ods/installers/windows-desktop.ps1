@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 # ODS Windows Native Desktop -- 6-Phase Installer Engine
 # ============================================================================
 # Runs the native Windows setup flow (zero Docker, zero WSL) across 6 phases:
@@ -690,12 +690,22 @@ if (-not $SkipShortcuts) {
     if (Test-Path -LiteralPath $odsExePath -PathType Leaf) {
         $shell = New-Object -ComObject WScript.Shell
         try {
+            $launchArgs = @()
+            if ($resolvedInstallDir) {
+                $launchArgs += "--install-dir=`"$resolvedInstallDir`""
+            }
+            if ($resolvedAppDataDir) {
+                $launchArgs += "--appdata-dir=`"$resolvedAppDataDir`""
+            }
+            $shortcutArguments = ($launchArgs -join ' ')
+
             foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
                 if (-not $folder -or -not (Test-Path -LiteralPath $folder -PathType Container)) { continue }
                 $lnkPath = Join-Path $folder 'ODS.lnk'
                 try {
                     $link = $shell.CreateShortcut($lnkPath)
                     $link.TargetPath = $odsExePath
+                    $link.Arguments = $shortcutArguments
                     $link.WorkingDirectory = $binDir
                     $link.Description = 'ODS — Osmantic Deployment System Windows Native Desktop'
                     if (Test-Path -LiteralPath $iconCandidate -PathType Leaf) {
@@ -716,7 +726,7 @@ if (-not $SkipShortcuts) {
                         $pwsh = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
                         $uLink = $shell.CreateShortcut($uninstLnkPath)
                         $uLink.TargetPath = $pwsh
-                        $uLink.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$uninstScript`" -InstallDir `"$resolvedInstallDir`""
+                        $uLink.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$uninstScript`" -InstallDir `"$resolvedInstallDir`" -LocalAppDataDir `"$resolvedAppDataDir`""
                         $uLink.WorkingDirectory = $resolvedAppDataDir
                         $uLink.Description = 'Uninstall ODS (Osmantic Deployment System)'
                         $uLink.Save()

@@ -91,6 +91,62 @@ try {
     $null = (& $odsExe "--reg-subkey=$testRegSubKey" "--appdata-dir=$tmpRoot" --set-gpu-preference=high_performance | Out-String)
     $regValAfterHighPerf = (Get-Item -LiteralPath $testRegFull).GetValue($llamaKey)
     Assert-True ($regValAfterHighPerf -eq 'AppStatus=0;GpuPreference=2;') "ODS.exe restores GpuPreference=2; while preserving AppStatus=0;"
+
+    # 6. Test custom directory containing spaces and verify launch/status with services stopped
+    $customInstallDir = Join-Path $tmpRoot 'Custom Install Dir With Spaces'
+    $customAppDataDir = Join-Path $tmpRoot 'Custom AppData Dir With Spaces'
+    New-Item -ItemType Directory -Path $customInstallDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $customAppDataDir -Force | Out-Null
+
+    # Create dummy .env in custom install directory
+    $customEnvPath = Join-Path $customInstallDir '.env'
+    Set-Content -LiteralPath $customEnvPath -Value "ODS_CUSTOM_MARKER=space_path_verified`nPORT=3999"
+
+    # Test ODS-Setup.exe dry-run-check with space-containing paths
+    $setupCustomRaw = (& $setupExe "--install-dir=$customInstallDir" "--appdata-dir=$customAppDataDir" --dry-run-check | Out-String).Trim()
+    $setupCustom = $setupCustomRaw | ConvertFrom-Json
+    Assert-True ($setupCustom.defaultInstallDir -eq $customInstallDir) "ODS-Setup.exe parses custom install dir containing spaces"
+    Assert-True ($setupCustom.defaultAppDataDir -eq $customAppDataDir) "ODS-Setup.exe parses custom appdata dir containing spaces"
+
+    # Test shortcut creation with space-containing paths and verify Arguments via WScript.Shell
+    $shortcutTestDir = Join-Path $tmpRoot 'Shortcut Test'
+    New-Item -ItemType Directory -Path $shortcutTestDir -Force | Out-Null
+    $testLnkPath = Join-Path $shortcutTestDir 'ODS.lnk'
+    $testUninstLnkPath = Join-Path $shortcutTestDir 'Uninstall ODS.lnk'
+
+    $shellObj = New-Object -ComObject WScript.Shell
+    try {
+        $link = $shellObj.CreateShortcut($testLnkPath)
+        $link.TargetPath = $odsExe
+        $link.Arguments = "--install-dir=`"$customInstallDir`" --appdata-dir=`"$customAppDataDir`""
+        $link.Save()
+
+        $uLink = $shellObj.CreateShortcut($testUninstLnkPath)
+        $uLink.TargetPath = "powershell.exe"
+        $uLink.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"uninstall-ods.ps1`" -InstallDir `"$customInstallDir`" -LocalAppDataDir `"$customAppDataDir`""
+        $uLink.Save()
+
+        # Read back shortcuts
+        $readLink = $shellObj.CreateShortcut($testLnkPath)
+        Assert-True ($readLink.TargetPath -eq $odsExe) "ODS shortcut TargetPath matches ODS.exe"
+        Assert-True ($readLink.Arguments -match [regex]::Escape($customInstallDir)) "ODS shortcut Arguments includes custom install dir with spaces"
+        Assert-True ($readLink.Arguments -match [regex]::Escape($customAppDataDir)) "ODS shortcut Arguments includes custom appdata dir with spaces"
+
+        $readUninstLink = $shellObj.CreateShortcut($testUninstLnkPath)
+        Assert-True ($readUninstLink.Arguments -match [regex]::Escape($customInstallDir)) "Uninstall shortcut Arguments includes custom install dir with spaces"
+        Assert-True ($readUninstLink.Arguments -match [regex]::Escape($customAppDataDir)) "Uninstall shortcut Arguments includes custom appdata dir with spaces"
+    } finally {
+        $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shellObj)
+    }
+
+    # Verify ODS.exe --status-json with custom paths containing spaces when native services are stopped
+    $customStatusRaw = (& $odsExe "--install-dir=$customInstallDir" "--appdata-dir=$customAppDataDir" --status-json | Out-String).Trim()
+    $customStatus = $customStatusRaw | ConvertFrom-Json
+    Assert-True ($customStatus.installDir -eq $customInstallDir) "ODS.exe --status-json reports custom install directory with spaces"
+    Assert-True ($customStatus.appDataDir -eq $customAppDataDir) "ODS.exe --status-json reports custom appdata directory with spaces"
+    Assert-True ($customStatus.envFileFound -eq $true) "ODS.exe locates .env inside custom install directory with spaces"
+    Assert-True ($customStatus.dashboardApiListening -eq $false) "Port 3101 is not running, ensuring daemon does not mask custom directory resolution"
+    Assert-True ($customStatus.llamaServerListening -eq $false) "Port 8085 is not running, ensuring llama service does not mask custom directory resolution"
 } finally {
     if (Test-Path -LiteralPath $testRegFull) {
         Remove-Item -LiteralPath $testRegFull -Recurse -Force -ErrorAction SilentlyContinue
