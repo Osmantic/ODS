@@ -13548,15 +13548,31 @@ export function createToolLoopGuard({
       };
     }
     state.workspacePreviewDirectory = directory;
+    const args = JSON.stringify({ relativeDirectory: directory });
+    // After a confirmed write or edit, a final reply that still announces work
+    // (announcesMoreWork: narration only, never proof or authority) must not
+    // be told to publish now, which can publish a half-done change. Same stage,
+    // budget and exact directory; publication stays required. The directory
+    // is only the publication target: it can be generated output (dist), so
+    // the remaining work keeps the owner's scope, not this directory's.
+    // Unchanged-page publication and a reply announcing nothing more keep the
+    // direct call.
+    const unfinished = !state.workspacePreviewRestrictions?.mutation &&
+      (state.successfulWritePaths.size > 0 || state.successfulEditPaths.size > 0) &&
+      typeof state.finalReplyText === "string" && announcesMoreWork(state.finalReplyText);
     return {
       // A publication followed by a write/check needs a new host receipt.
       // Do not spend that recovery on the initial publication's retry key.
       // Keep one fixed refresh key per run, not an unbounded mutation counter.
       stage: state.workspacePreviewVerifiedDirectory ? "workspace-preview-refresh" : "workspace-preview",
-      instruction:
-        `Do not reply yet. Call tool_call now with id ${WORKSPACE_PREVIEW_TOOL} ` +
-        `and args ${JSON.stringify({ relativeDirectory: directory })}. ` +
-        "Do not start a sandbox server or claim another localhost URL.",
+      instruction: unfinished
+        ? "Do not reply yet. Your reply announces more work. First finish any remaining owner-requested edits and checks " +
+          "within the owner's requested scope; do not repeat completed work, recreate finished files, widen the scope, " +
+          "or delete or clean up directories. " +
+          `Then publish BEFORE your final answer: call tool_call with id ${WORKSPACE_PREVIEW_TOOL} and args ${args}. ` +
+          "Do not start a sandbox server or claim another localhost URL."
+        : `Do not reply yet. Call tool_call now with id ${WORKSPACE_PREVIEW_TOOL} and args ${args}. ` +
+          "Do not start a sandbox server or claim another localhost URL.",
     };
   }
 
