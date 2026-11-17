@@ -575,6 +575,13 @@ FAKE_PYTHON
         NATIVE_LLAMA_RUNNING=false
         NATIVE_LLAMA_PID=0
         NATIVE_LLAMA_HEALTHY=false
+        NATIVE_LLAMA_IDENTITY=null
+        if grep -q '^exec' "$EVENT_LOG"; then
+            NATIVE_LLAMA_RUNNING=true
+            NATIVE_LLAMA_PID=123
+            NATIVE_LLAMA_HEALTHY=true
+            NATIVE_LLAMA_IDENTITY='[123,1,2,501,20,501,20,501,20,"/fixture/runtime"]'
+        fi
     }
     read_ods_env() {
         ENV_GGUF_FILE="test.gguf"
@@ -611,7 +618,7 @@ FAKE_PYTHON
     ai_err() { :; }
     sleep() { command sleep 0.05; }
     curl() { grep -q '^exec' "$EVENT_LOG"; }
-    # Isolate launchd here; its real helper is covered by test_macos_native_service.py.
+    # Isolate launchd here; actual native identity is covered by the manager suites.
     bash() {
         if [[ "$1" == "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" ]]; then
             [[ "$2" == start ]] || return 2
@@ -619,6 +626,7 @@ FAKE_PYTHON
             shift 5
             "$binary" "$@"
             printf '%s\n' "$$" > "$pid_file"
+            printf '%s\n' '{"identity":[123,1,2,501,20,501,20,501,20,"/fixture/runtime"]}'
         else
             command bash "$@"
         fi
