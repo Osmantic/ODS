@@ -110,5 +110,5 @@ def test_native_replacement_profiles_orphans_and_bystanders():
             result['fixture_cleanup'] = True
         except Exception as exc:
             result.update(fixture_cleanup=False, recovery_directory=str(root), cleanup_error=str(exc))
-    assert result.get('fixture_cleanup'), result
-    assert result['passed'], result
+    assert result.get('fixture_cleanup'), json.dumps(result, sort_keys=True)
+    assert result['passed'], json.dumps(result, sort_keys=True)
