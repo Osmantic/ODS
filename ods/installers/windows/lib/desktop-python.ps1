@@ -362,7 +362,7 @@ function Resolve-ODSWindowsDesktopPythonExecutable {
     .SYNOPSIS
         Locate the verified embeddable Python executable in %LOCALAPPDATA%\ODS\python,
         or fall back to a verified local Python 3.11+ interpreter that has
-        fastapi, uvicorn, httpx, aiohttp, and PIL installed.
+        fastapi, uvicorn, httpx, aiohttp, PIL, and qrcode installed.
     #>
     param([string]$SourceRoot = '')
 
@@ -388,7 +388,7 @@ function Resolve-ODSWindowsDesktopPythonExecutable {
 
     foreach ($exe in $candidates) {
         try {
-            $out = & $exe -c "import fastapi, uvicorn, httpx, aiohttp, PIL; print('ODS_PY_OK')" 2>$null
+            $out = & $exe -c "import fastapi, uvicorn, httpx, aiohttp, PIL, qrcode; print('ODS_PY_OK')" 2>$null
             if ($LASTEXITCODE -eq 0 -and ($out -join '') -match 'ODS_PY_OK') {
                 return $exe
             }

@@ -208,36 +208,99 @@ public class MockCurlApp {
 
     # --- 5. Pinned Embeddable Python Contract & Tamper Verification ---
     $pyContract = Read-ODSWindowsDesktopPythonContract -SourceRoot $root
-    Assert-Check ($pyContract.id -ceq 'python-3.12.10-embed-amd64' -and @($pyContract.wheels).Count -ge 15) `
+    Assert-Check ($pyContract.id -ceq 'python-3.12.10-embed-amd64' -and @($pyContract.wheels).Count -ge 30) `
         'config/windows-desktop.json loads valid python-3.12.10-embed-amd64 contract with zero litellm wheels'
 
-    $wheelNames = @($pyContract.wheels | ForEach-Object { [string]$_.name })
-    Assert-Check ($wheelNames -contains 'pillow' -and $wheelNames -contains 'aiohttp' -and $wheelNames -contains 'jsonschema') `
-        'config/windows-desktop.json contains required Pillow (PIL), aiohttp, and jsonschema runtime dependencies'
+    $wheelMap = @{}
+    foreach ($w in @($pyContract.wheels)) {
+        $wheelMap[[string]$w.name] = [string]$w.version
+    }
+    Assert-Check ($wheelMap.ContainsKey('pillow') -and $wheelMap.ContainsKey('aiohttp') -and $wheelMap.ContainsKey('qrcode') -and $wheelMap.ContainsKey('fastapi')) `
+        'config/windows-desktop.json contains required Pillow, aiohttp, qrcode, and fastapi runtime dependencies'
 
-    # Verify that the Windows desktop Python resolver requires PIL and imports dashboard-api main.py
+    Assert-Check ($wheelMap['fastapi'] -eq '0.141.1' -and `
+        $wheelMap['starlette'] -eq '1.7.0' -and `
+        $wheelMap['aiohttp'] -eq '3.14.4' -and `
+        $wheelMap['certifi'] -ge '2026.10.19' -and `
+        $wheelMap['uvicorn'] -match '^0\.2[7-9]\.' -and `
+        $wheelMap.ContainsKey('qrcode')) `
+        'config/windows-desktop.json aligns with dashboard-api requirements.txt (FastAPI 0.141.1, Starlette 1.7.0, aiohttp 3.14.4, certifi 2026.10.19+, uvicorn <0.30.0, qrcode)'
+
+    # Verify that the Windows desktop Python resolver installs the pinned runtime on clean runners,
+    # prioritizes it over host/developer Python, imports dashboard-api main.py, and checks dependency compatibility.
     $apiDir = Join-Path (Join-Path (Join-Path $root 'extensions') 'services') 'dashboard-api'
     if (-not (Test-Path -LiteralPath $apiDir)) {
         $apiDir = Join-Path (Join-Path (Join-Path $root 'ods') 'extensions') 'services\dashboard-api'
     }
 
-    $verifiedPy = $null
-    try {
-        $verifiedPy = Resolve-ODSWindowsDesktopPythonExecutable -SourceRoot $root
-    } catch { }
-
-    if ($verifiedPy -and (Test-Path -LiteralPath $verifiedPy -PathType Leaf)) {
-        $importProbe = "import sys; sys.path.insert(0, r'$apiDir'); import main; print('ODS_API_OK')"
-        $prevEap = $ErrorActionPreference
-        try {
-            $ErrorActionPreference = 'Continue'
-            $probeOut = & $verifiedPy -c $importProbe 2>$null
-        } finally {
-            $ErrorActionPreference = $prevEap
-        }
-        $importOk = ($LASTEXITCODE -eq 0 -and ($probeOut -join '') -match 'ODS_API_OK')
-        Assert-Check $importOk 'Resolved Windows Python runtime imports dashboard-api main.py and all required dependencies (including PIL)'
+    $targetDir = Get-ODSWindowsDesktopPythonInstallDir -PythonContract $pyContract
+    if (-not (Test-Path -LiteralPath $targetDir -PathType Container)) {
+        $null = Install-ODSWindowsDesktopPython -PythonContract $pyContract
     }
+
+    $verifiedPy = Resolve-ODSWindowsDesktopPythonExecutable -SourceRoot $root
+    Assert-Check ($verifiedPy -and (Test-Path -LiteralPath $verifiedPy -PathType Leaf) -and $verifiedPy.StartsWith($targetDir, [StringComparison]::OrdinalIgnoreCase)) `
+        'Resolve-ODSWindowsDesktopPythonExecutable resolves the verified pinned runtime and prioritizes it over developer Python'
+
+    $depScript = @'
+import sys
+from pathlib import Path
+import importlib.metadata
+
+api_dir = sys.argv[1]
+sys.path.insert(0, api_dir)
+
+# 1. Module imports
+import main
+import qrcode
+import PIL
+import fastapi
+import starlette
+import uvicorn
+import aiohttp
+import httpx
+import pydantic
+import yaml
+import jsonschema
+
+# 2. Dependency compatibility with dashboard-api requirements.txt
+req_path = Path(api_dir) / 'requirements.txt'
+assert req_path.is_file(), f'Missing requirements.txt at {req_path}'
+
+fastapi_v = importlib.metadata.version('fastapi')
+assert fastapi_v == '0.141.1', f'fastapi expected 0.141.1, got {fastapi_v}'
+
+starlette_v = importlib.metadata.version('starlette')
+assert starlette_v == '1.7.0', f'starlette expected 1.7.0, got {starlette_v}'
+
+aiohttp_v = importlib.metadata.version('aiohttp')
+assert aiohttp_v == '3.14.4', f'aiohttp expected 3.14.4, got {aiohttp_v}'
+
+certifi_v = importlib.metadata.version('certifi')
+assert certifi_v >= '2026.10.19', f'certifi expected >=2026.10.19, got {certifi_v}'
+
+uvicorn_v = importlib.metadata.version('uvicorn')
+u_parts = [int(x) for x in uvicorn_v.split('.')[:2]]
+assert (0, 27) <= (u_parts[0], u_parts[1]) < (0, 30), f'uvicorn expected [0.27.0, 0.30.0), got {uvicorn_v}'
+
+qrcode_v = importlib.metadata.version('qrcode')
+assert qrcode_v >= '7.4.0', f'qrcode expected >=7.4.0, got {qrcode_v}'
+
+pillow_v = importlib.metadata.version('pillow')
+assert pillow_v == '13.0.0', f'pillow expected 13.0.0, got {pillow_v}'
+
+print('ODS_API_DEP_OK')
+'@
+
+    $prevEap = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $probeOut = & $verifiedPy -c $depScript $apiDir 2>&1
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    $depOk = ($LASTEXITCODE -eq 0 -and ($probeOut -join '') -match 'ODS_API_DEP_OK')
+    Assert-Check $depOk 'Resolved Windows Python runtime imports dashboard-api main.py, qrcode, and verifies dependency compatibility with requirements.txt'
 
     # Build a synthetic embeddable zip + wheel to test Install-ODSWindowsDesktopPython & tamper detection
     Add-Type -AssemblyName System.IO.Compression
@@ -256,8 +319,8 @@ public class MockCurlApp {
 
     $mockWhlSrc = Join-Path $mockArtifacts 'whl-src'
     New-Item -ItemType Directory -Path (Join-Path $mockWhlSrc 'fastapi') -Force | Out-Null
-    [IO.File]::WriteAllText((Join-Path $mockWhlSrc 'fastapi\__init__.py'), '__version__ = "0.115.8"')
-    $mockWhlZip = Join-Path $mockArtifacts 'fastapi-0.115.8-py3-none-any.whl'
+    [IO.File]::WriteAllText((Join-Path $mockWhlSrc 'fastapi\__init__.py'), '__version__ = "0.141.1"')
+    $mockWhlZip = Join-Path $mockArtifacts 'fastapi-0.141.1-py3-none-any.whl'
     [IO.Compression.ZipFile]::CreateFromDirectory($mockWhlSrc, $mockWhlZip)
     $mockWhlSha = (Get-FileHash -LiteralPath $mockWhlZip -Algorithm SHA256).Hash.ToLowerInvariant()
 
@@ -275,9 +338,9 @@ public class MockCurlApp {
         wheels               = @(
             [pscustomobject]@{
                 name     = 'fastapi'
-                version  = '0.115.8'
-                filename = 'fastapi-0.115.8-py3-none-any.whl'
-                url      = 'https://files.pythonhosted.org/packages/fastapi-0.115.8-py3-none-any.whl'
+                version  = '0.141.1'
+                filename = 'fastapi-0.141.1-py3-none-any.whl'
+                url      = 'https://files.pythonhosted.org/packages/fastapi-0.141.1-py3-none-any.whl'
                 sha256   = $mockWhlSha
             }
         )
