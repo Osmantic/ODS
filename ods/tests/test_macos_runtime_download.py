@@ -268,7 +268,7 @@ command() {
     def test_source_call_stays_inside_noncloud_boundary(self):
         source = (ROOT / "installers/macos/install-macos.sh").read_text(encoding="utf-8")
         start = source.index('    # ── Download and start native llama-server')
-        block = source[start:source.index('        # Start native llama-server with Metal', start)]
+        block = source[start:source.index('        # Resolve the exact launch profile', start)]
         self.assertIn('if ! $CLOUD_MODE; then', block)
         self.assertIn('macos_install_native_llama "$LLAMA_SERVER_BIN" "$LLAMA_CPP_RELEASE_TAG"', block)
         self.assertNotIn('LLAMA_ZIP=', block)
