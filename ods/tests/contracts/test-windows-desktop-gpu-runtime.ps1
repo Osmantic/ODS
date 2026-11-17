@@ -317,3 +317,5 @@ public class MockCurlApp {
 }
 
 Write-Host "[PASS] Windows Native Desktop GPU & Runtime tests passed ($checks checks)"
+$global:LASTEXITCODE = 0
+exit 0
