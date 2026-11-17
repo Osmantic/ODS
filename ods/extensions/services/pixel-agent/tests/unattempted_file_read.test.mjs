@@ -173,3 +173,29 @@ test('old read instructions cannot create an obligation for a new conversational
     messages:[{role:'user',content:prompt},{role:'assistant',content:answer}]});
   assert.notEqual(f.guard.beforeAgentFinalize({...next,lastAssistantMessage:answer},next)?.retry?.idempotencyKey,retryKey);
 });
+
+
+test('recovery names only the current owner path despite a synthetic hook or fabricated missing path', () => {
+  const guard = createCompletionAssurance();
+  guard.begin('Use the read tool to read /workspace/Current.json and return its exact JSON.');
+  guard.begin('Use the read tool to read /workspace/Prior.json and return its exact JSON.');
+  const decision = guard.finalize('Path not found: /tmp/fabricated.json', {allowUnattemptedFileReadRecovery:true});
+  assert.equal(decision?.retry?.maxAttempts, 1);
+  assert.ok(decision.retry.instruction.includes(JSON.stringify('/workspace/Current.json')));
+  assert.doesNotMatch(decision.retry.instruction, /Prior|fabricated/);
+  assert.equal(guard.finalize('File not found', {allowUnattemptedFileReadRecovery:true})?.action, 'finalize');
+  assert.match(guard.terminal, /file read was not performed/);
+});
+
+test('read recovery preserves exact case and relative path without sharing between owner runs', () => {
+  for (const path of ['./Reports/Fixture.JSON','../Reports/Fixture.JSON','/workspace/Other.json']) {
+    const guard = createCompletionAssurance();
+    guard.begin(`Use the read tool to read ${path} and return its exact JSON.`);
+    const decision = guard.finalize('File not found', {allowUnattemptedFileReadRecovery:true});
+    assert.ok(decision?.retry?.instruction.includes(JSON.stringify(path)), path);
+    assert.equal(decision.retry.idempotencyKey, 'ods-unattempted-file-read');
+    guard.cancel();
+    assert.equal(guard.finalize('File not found', {allowUnattemptedFileReadRecovery:true}), undefined);
+    assert.equal(guard.terminal, undefined);
+  }
+});
