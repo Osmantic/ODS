@@ -228,8 +228,9 @@ PY
 echo "[PASS] idle unloading is opt-in and capability-checked before stopping inference"
 
 # Exercise the installer argument/lifecycle block too, with the same real helper.
-INSTALL_LAUNCH="$(awk '/^        # Read reasoning mode from .env/ {p=1} /^        # Wait for health endpoint/ {p=0} p' "$ROOT_DIR/installers/macos/install-macos.sh")"
+INSTALL_LAUNCH="$(awk '/^        # Read reasoning mode from .env/ {p=1} p && /^    fi$/ {p=0} p' "$ROOT_DIR/installers/macos/install-macos.sh")"
 [[ -n "$INSTALL_LAUNCH" ]] || fail "installer launch block not found"
+INSTALL_LAUNCH+=$'\n_macos_start_prepared_native_llama'
 MODEL_FULL_PATH="$INSTALL_DIR/data/models/default.gguf"
 MAX_CONTEXT=65536
 _macos_stop_install_owned_native_llama() { printf 'stop\n' >> "$CALLS"; }
