@@ -1,8 +1,7 @@
 import json
 import os
-import platform
+import select
 import shlex
-import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -112,18 +111,22 @@ class Harness:
         ''')
 
     def start_bystander(self):
-        sleep_bin = shutil.which("sleep") or "/bin/sleep"
         target = self.tmp / "ollama"
-        if platform.system() == "Darwin":
-            # Use an actual executable name without relocating an Apple-signed binary.
-            code = self.tmp / "bystander.c"
-            code.write_text("#include <unistd.h>\nint main(void) { sleep(300); return 0; }\n")
-            subprocess.run(["cc", str(code), "-o", str(target)], check=True, timeout=30,
-                           capture_output=True, text=True)
-        else:
-            shutil.copy(sleep_bin, target)
+        # A renamed multicall coreutils binary dispatches on argv[0] and exits.
+        # Compile an actual bystander on both platforms; this also avoids
+        # relocating an Apple-signed executable on macOS.
+        code = self.tmp / "bystander.c"
+        code.write_text('#include <unistd.h>\nint main(void) { '
+                        'if (write(1, "ready\\n", 6) != 6) return 1; '
+                        'sleep(300); return 0; }\n')
+        subprocess.run(["cc", str(code), "-o", str(target)], check=True, timeout=30,
+                       capture_output=True, text=True)
         target.chmod(0o755)
-        self.bystander = subprocess.Popen([str(target), "300"])
+        self.bystander = subprocess.Popen([str(target)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        ready, _, _ = select.select([self.bystander.stdout], [], [], 5)
+        if (not ready or self.bystander.stdout.read(6) != b"ready\n"
+                or self.bystander.poll() is not None):
+            raise RuntimeError("bystander failed to start before bootstrap execution")
         self.pid_file.write_text(str(self.bystander.pid))
 
     def run(self):
@@ -142,6 +145,8 @@ class Harness:
             except subprocess.TimeoutExpired:
                 self.bystander.kill()
                 self.bystander.wait()
+            self.bystander.stdout.close()
+            self.bystander.stderr.close()
 
 
 class BootstrapNativeOwnerTest(unittest.TestCase):
