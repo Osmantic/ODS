@@ -1,6 +1,6 @@
-// Shared owner prose classifier. Extracted unchanged from tool-loop-guard.mjs
-// so the host ingress can apply the same unqualified no-tools directive test
-// without importing the full guard. This module grants no authority.
+// Shared owner prose classifier for host ingress and the plugin guard.
+// Only unqualified current-owner directives disable the tool surface.
+// This module grants no authority.
 
 export function ownerLaneText(text, {preserveCommands = false} = {}) {
   // Classify only current owner prose. Embedded examples cannot opt a workspace
@@ -26,6 +26,16 @@ export function ownerForbidsTools(text) {
     if (/^\s+(?:that|which|except|besides|unless|other\s+than)\b/i.test(qualifier) ||
         /^\s+to\s+(?:change|edit|write|modify|delete|create|remove|mutate)\b/i.test(qualifier) ||
         /^\s+for\s+(?:file|writing|editing|modifying|changing|mutation)\b/i.test(qualifier)) continue;
+    return true;
+  }
+  // Short imperatives must occupy a complete clause. This excludes ordinary
+  // descriptions ("No tools are installed") and questions ("No tools?").
+  const shorthand = /(?:^|[.!?;,\n]\s*|\b(?:and|but|so|then)\s+)\s*(?:please\s+)?no\s+(?:tools|tool\s+calls)(?:\s+please)?(?=\s*(?:[.!;,\n]|$))/gi;
+  for (const match of instruction.matchAll(shorthand)) {
+    const rest = instruction.slice(match.index + match[0].length);
+    // A comma before an exception does not turn a subset restriction into a
+    // blanket ban: "No tools, except read" still permits read.
+    if (/^[\s,]*(?:please[\s,]+)?(?:that|which|except|besides|unless|other\s+than|for|to)\b/i.test(rest)) continue;
     return true;
   }
   return false;
