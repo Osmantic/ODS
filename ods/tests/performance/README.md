@@ -75,19 +75,34 @@ tool request and correct answer are observed.
 
 On the serving host, add `--native-sessions-dir /absolute/path/to/agents/pixel/sessions`
 to join native execution evidence. The read-only witness verifies that the exact
-chat's native session was absent before submission, then binds the session index,
+chat's native session was absent before submission by default, then binds the session index,
 single user message, retained final-answer hash, ordered tool-call/result pairs,
 and model usage receipts. Failed command results cannot prove successful tool
 execution. It independently regrades the native answer; an incorrect answer
-remains a bound failure. Unsupported native continuations, ambiguous identities,
+remains a bound failure. Ambiguous identities,
 stale or malformed transcripts, unsafe paths and changing files remain unproven.
-The initial witness supports a fresh chat with one submitted user message.
+Each submission contains one user message.
+
+An external Python coordinator can reuse a supplied `chat_id` with a new
+`request_id` and `native_allow_continuation=True`. This requires
+`native_sessions_dir` and explicitly permits an existing session. Before dispatch,
+the witness captures its canonical owner-safe transcript and requires its last
+message to be a completed textual assistant stop. At completion it requires the
+same session and file identity, byte-identical prior history, and complete new
+records. Only the appended turn supplies answer, tool and usage evidence; prior
+tool calls cannot satisfy the new task. Rewrites, truncation, rotation, an extra
+user turn or assistant continuation before the new user message remain unproven.
+The coordinator must establish runtime idleness before dispatch: a transcript
+stop alone does not prove idle. Persist IDs before every dispatch and never
+replay a request just because its observer failed. The CLI continues to create
+fresh chats. This option verifies a continuation; it does not grade history
+fidelity unless the frozen task's answer oracle tests that behavior.
 
 A model-level text stop can precede an internal assistant continuation when ODS
 repairs a missing tool call. Such a stop is recorded in `interim_stops` with its
 hash, length, and model-call index. It is accepted only when it has nonempty text,
 no calls or pending results, and the next message is an assistant. A second user
-message remains unsupported. The last assistant stop must still match the exact
+message within the measured turn remains unsupported. The last assistant stop must still match the exact
 retained API answer, and every model call remains in usage accounting. Load
 summaries separately count successful tasks with interim stops. This proves the
 terminal result; whether interim text was visible in the browser needs UI testing.

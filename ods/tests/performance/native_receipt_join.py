@@ -267,7 +267,9 @@ def _tool_success(name, result):
 
 
 class NativeReceiptWitness:
-    def __init__(self, sessions_dir, manifest, chat_id, request_id):
+    def __init__(self, sessions_dir, manifest, chat_id, request_id, *, allow_existing_session=False):
+        if type(allow_existing_session) is not bool:
+            raise ValueError("invalid_allow_existing_session")
         self._errors = []
         try:
             self._sessions_dir = _abs_clean(sessions_dir)
@@ -286,6 +288,7 @@ class NativeReceiptWitness:
         self._chat_id = chat_id
         self._request_id = request_id
         self._key = _native_key(chat_id)
+        self._allow_existing_session = allow_existing_session
         self._before_utc = datetime.now(timezone.utc)
         try:
             self._before = self._capture_before()
@@ -304,10 +307,51 @@ class NativeReceiptWitness:
             raise ValueError("bad_sessions_dir")
         path = os.path.join(root, "sessions.json")
         data, snap = _load_sessions(path)
-        if self._key in data:
+        if self._key not in data:
+            return {"root": root, "root_dev": st.st_dev,
+                    "root_ino": st.st_ino, "sessions_snap": snap,
+                    "existing": None}
+        if not self._allow_existing_session:
             raise ValueError("before_key_present")
+        try:
+            sid, sfile = _entry_identity(data[self._key])
+            canonical = _canonical_session_file(root, sid, sfile)
+        except ValueError:
+            raise ValueError("before_entry_invalid") from None
+        try:
+            raw, jsonl_snap = _read_stable(canonical)
+        except ValueError:
+            raise ValueError("before_transcript_invalid") from None
+        try:
+            rows = _parse_jsonl(raw)
+        except ValueError:
+            raise ValueError("before_transcript_invalid") from None
+        if not rows:
+            raise ValueError("before_transcript_empty")
+        # Metadata may follow the last message. A textual stop is only a
+        # transcript boundary; the coordinator must establish runtime idleness.
+        messages = [row["message"] for row in rows if "message" in row]
+        msg = messages[-1] if messages else None
+        if not isinstance(msg, dict):
+            raise ValueError("before_transcript_invalid")
+        if msg.get("role") != "assistant" or msg.get("stopReason") != "stop":
+            raise ValueError("before_not_terminal")
+        try:
+            text = _extract_text(msg.get("content"))
+            calls = _extract_calls(msg.get("content"))
+        except ValueError:
+            raise ValueError("before_transcript_invalid") from None
+        if not text or calls:
+            raise ValueError("before_not_terminal")
+        # Bind the index on both sides of reading the existing transcript.
+        before2, _ = _load_sessions(path)
+        if self._key not in before2 or _entry_identity(before2[self._key]) != (sid, sfile):
+            raise ValueError("before_entry_changed")
         return {"root": root, "root_dev": st.st_dev,
-                "root_ino": st.st_ino, "sessions_snap": snap}
+                "root_ino": st.st_ino, "sessions_snap": snap,
+                "existing": {"sid": sid, "sfile": sfile,
+                             "canonical": canonical, "raw": raw,
+                             "snap": jsonl_snap}}
 
     def finish(self, api_record):
         if self._finished:
@@ -368,16 +412,44 @@ class NativeReceiptWitness:
         except ValueError as exc:
             errors.append(str(exc))
             return self._unproven(errors)
+        existing = self._before.get("existing")
+        if existing is not None:
+            if (sid, sfile) != (existing["sid"], existing["sfile"]):
+                return self._unproven(["session_identity_changed"])
+            if canonical != existing["canonical"]:
+                return self._unproven(["session_identity_changed"])
         try:
             raw, jsonl_snap = _read_stable(canonical)
         except ValueError as exc:
             errors.append(str(exc))
             return self._unproven(errors)
-        try:
-            rows = _parse_jsonl(raw)
-        except ValueError as exc:
-            errors.append(str(exc))
-            return self._unproven(errors)
+        if existing is not None:
+            if (jsonl_snap[0], jsonl_snap[1]) != (existing["snap"][0], existing["snap"][1]):
+                return self._unproven(["session_identity_changed"])
+            prefix = existing["raw"]
+            if len(raw) < len(prefix) or raw[:len(prefix)] != prefix:
+                return self._unproven(["original_prefix_changed"])
+            suffix = raw[len(prefix):]
+            if not suffix:
+                return self._unproven(["no_append"])
+            if not suffix.endswith(b"\n"):
+                return self._unproven(["partial_suffix"])
+            try:
+                appended = _parse_jsonl(suffix)
+            except ValueError as exc:
+                errors.append(str(exc))
+                return self._unproven(errors)
+            if not appended:
+                return self._unproven(["no_append"])
+            # The byte-identical prefix was parsed at capture time and ended
+            # on a record boundary. Only the new turn contributes evidence.
+            rows = appended
+        else:
+            try:
+                rows = _parse_jsonl(raw)
+            except ValueError as exc:
+                errors.append(str(exc))
+                return self._unproven(errors)
         # Re-read expected entry after JSONL read.
         try:
             after2, after2_snap = _load_sessions(path)
@@ -396,6 +468,11 @@ class NativeReceiptWitness:
         if post_snap != jsonl_snap or post_raw != raw:
             errors.append("jsonl_changed")
             return self._unproven(errors)
+        if existing is not None:
+            if (post_snap[0], post_snap[1]) != (existing["snap"][0], existing["snap"][1]):
+                return self._unproven(["session_identity_changed"])
+            if post_raw[:len(existing["raw"])] != existing["raw"]:
+                return self._unproven(["original_prefix_changed"])
 
         task = self._manifest["task"]
         task_sha = _sha(probe.canonical_json(task))

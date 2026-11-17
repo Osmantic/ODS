@@ -101,6 +101,9 @@ def _post(base_url, key, endpoint, payload, deadline, *, stream=False):
                      headers={"Authorization": "Bearer " + key, "Content-Type": "application/json",
                               "Accept": "text/event-stream" if stream else "application/json"})
         response = conn.getresponse()
+        if time.monotonic() >= deadline:
+            result["error"] = "timeout"
+            return result
         result["status"] = response.status
         if response.status != 200:
             result["error"] = "http_rejected"
@@ -112,6 +115,9 @@ def _post(base_url, key, endpoint, payload, deadline, *, stream=False):
         chunks, size = [], 0
         while time.monotonic() < deadline:
             chunk = response.read1(65536)
+            if time.monotonic() >= deadline:
+                result["error"] = "timeout"
+                return result
             if not chunk:
                 result["body"] = b"".join(chunks)
                 return result
@@ -198,8 +204,13 @@ def _read_result(base, key, identity, deadline):
         return {**receipt, "error": "invalid_result"}
 
 
-def run(manifest, *, chat_id=None, request_id=None, native_sessions_dir=None):
+def run(manifest, *, chat_id=None, request_id=None, native_sessions_dir=None,
+        native_allow_continuation=False):
     """Return a redacted receipt. Unknown activity must stop later admission."""
+    if type(native_allow_continuation) is not bool:
+        raise ValueError("invalid_native_allow_continuation")
+    if native_allow_continuation and native_sessions_dir is None:
+        raise ValueError("native_allow_continuation_requires_sessions_dir")
     manifest = validate_manifest(manifest)
     identity = {"chat_id": uuid.uuid4().hex if chat_id is None else chat_id,
                 "request_id": uuid.uuid4().hex if request_id is None else request_id}
@@ -227,7 +238,9 @@ def run(manifest, *, chat_id=None, request_id=None, native_sessions_dir=None):
     if native_sessions_dir is not None:
         from native_receipt_join import NativeReceiptWitness
         try:
-            witness = NativeReceiptWitness(native_sessions_dir, manifest, **identity)
+            witness = NativeReceiptWitness(
+                native_sessions_dir, manifest, **identity,
+                allow_existing_session=native_allow_continuation)
         except Exception:
             return {**record, "error": "native_witness_preflight_failed"}
         record["native_preflight_ms"] = round((time.monotonic() - worker_start) * 1000, 3)
