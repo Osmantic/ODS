@@ -5960,6 +5960,58 @@ def _activate_remote_provider_route(
         raise RuntimeError(detail) from exc
 
 
+def _prove_restored_macos_route(env: dict, expected_identity, previous_pixel) -> None:
+    """Prove and publish the local backend before LiteLLM uses its stable alias.
+
+    A reconstructed route is deliberately rejected by model-router. Its
+    background proof worker cannot publish during this owned transaction.
+    Keep publication here, after a real identity/context/completion proof.
+    """
+    if _switchboard_state is None:
+        raise RuntimeError("Restored local route state is unavailable")
+    _, errors = _switchboard_state.read_state(_switchboard_state_path())
+    if errors:
+        raise RuntimeError("Restored local route state is invalid")
+    identity = _switchboard_state.migrate_env_identity(env)
+    if not identity or not _macos_native_llama_identity_live(expected_identity):
+        raise RuntimeError("Restored native model identity is unavailable")
+    gguf_file, llm_model_name = _current_runtime_model_inputs(env, identity)
+    model_id, model = _catalog_model_for_current_env(env)
+    proof = _wait_for_model_readiness(
+        env, model_id=model_id or llm_model_name or gguf_file,
+        gguf_file=gguf_file, llm_model_name=llm_model_name,
+        attempts=3, initial_delay=0, interval=1,
+        return_proof=True, require_exact_context=True,
+        env_still_current=lambda: _initial_switchboard_route_env_matches(env),
+    )
+    if (not isinstance(proof, dict) or proof.get('contextVerified') is not True
+            or type(proof.get('contextLength')) is not int
+            or proof['contextLength'] != identity.get('contextLength')
+            or not _runtime_model_identity_matches(
+                proof.get('identity'), model_id=model_id,
+                gguf_file=gguf_file, llm_model_name=llm_model_name)):
+        raise RuntimeError("Restored native model did not pass identity, context and completion proof")
+    if previous_pixel is not None and (
+            not isinstance(previous_pixel, dict)
+            or not _pixel_local_identity_matches(env, proof['identity'], previous_pixel.get('model'))
+            or proof['contextLength'] != previous_pixel.get('contextLength')):
+        raise RuntimeError("Restored native model does not match the saved Portal contract")
+    if (not _initial_switchboard_route_env_matches(env)
+            or not _macos_native_llama_identity_live(expected_identity)):
+        raise RuntimeError("Restored native model changed during route proof")
+    capabilities = {
+        'chat': True, 'tools': bool(model.get('tools')), 'vision': bool(model.get('vision')),
+        'agentViable': _model_agent_viable(model, proof['contextLength']),
+    }
+    if _model_profiles_mode(env) == 'enabled':
+        capabilities = _profiled_capabilities(
+            capabilities, _stored_profile_traits(model_id or llm_model_name or gguf_file), model)
+    # This is the owning lifecycle's publication, not an observational worker.
+    # A later rollback to cloud retains this genuine local proof at a monotonic
+    # sequence, as it retains the configured local model. It is not liveness.
+    _publish_activation_route(env, model_id or llm_model_name or gguf_file, proof, capabilities)
+
+
 def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
     """Restore the pre-remote gateway and Pixel route from private state."""
     activation = _read_remote_provider_activation_state()
@@ -6025,6 +6077,11 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
             _wait_for_macos_native_llama_health(
                 load_env(env_path), expected_identity=native_receipt["identity"],
             )
+            restored_native_env = load_env(env_path)
+            if _normal_switchboard_mode(restored_native_env) == 'enabled':
+                _prove_restored_macos_route(
+                    restored_native_env, native_receipt['identity'], previous.get('pixel'),
+                )
         litellm_attempted = True
         litellm_recreated = _restart_existing_container(
             "ods-litellm", container_state, recreate=True,
