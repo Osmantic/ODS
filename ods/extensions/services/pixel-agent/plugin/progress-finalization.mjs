@@ -71,7 +71,8 @@ const PREVIEW_SITE_URL = /\b(?:https?|wss?):\/\/[^\s<>"'`)\]]*\bsite-[0-9a-f]{24
 export function progressFinalizationAnswer(text, options) {
   const answer = deliverableAnswer(text, options);
   // After a tool-limit stop, a short promise of more work is not an answer.
-  if (answer && promisesExecution(answer) && answer.length < 900 && !/https?:\/\//.test(answer)) return undefined;
+  if (answer && promisesExecution(answer) && answer.length < 900 && !/https?:\/\//.test(answer) &&
+      !hasPartialContent(answer)) return undefined;
   return answer;
 }
 
@@ -124,17 +125,21 @@ const alphanumerics = value => value.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
 export function partialFinalizationAnswer(text, options) {
   const answer = progressFinalizationAnswer(text, options);
   if (!answer) return undefined;
+  return hasPartialContent(answer) ? answer : undefined;
+}
+
+function hasPartialContent(answer) {
   let chars = 0, units = 0;
   for (const line of answer.split('\n')) {
     for (const sentence of line.split(/(?<=[.!?])\s+(?=\S)/)) {
       const unit = sentence.replace(/^[\s>#*_`|~+\-–—•]*(?:\d{1,3}[.)]\s*)?[\s*_`]*/u, '');
       const count = alphanumerics(unit);
-      if (count < 3 || NARRATION.test(unit)) continue;
+      if (count < 3 || NARRATION.test(unit) || promisesExecution(unit)) continue;
       chars += count;
       units += 1;
     }
   }
-  return chars >= MIN_PARTIAL_CONTENT_CHARS && units >= MIN_PARTIAL_CONTENT_UNITS ? answer : undefined;
+  return chars >= MIN_PARTIAL_CONTENT_CHARS && units >= MIN_PARTIAL_CONTENT_UNITS;
 }
 
 // The fallback's page list: host receipts only, at most MAX_READ_PAGES_LISTED.
