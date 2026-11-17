@@ -215,11 +215,15 @@ ps() {
     )
     assert proc.returncode == 1, proc.stdout + proc.stderr
     launches = [row.split(b'\0')[:-1] for row in (install / "launches").read_bytes().splitlines()]
-    assert len(launches) == (2 if previous else 1), proc.stdout + proc.stderr
+    assert [row[0] for row in launches] == ([b'start', b'stop', b'start'] if previous else [b'start', b'stop']), proc.stdout + proc.stderr
     first = [value.decode() for value in launches[0]]
     assert first[first.index('--model') + 1] == str(install / "models/full-model.gguf")
+    assert [value.decode() for value in launches[1]] == [
+        'stop', str(install), str(install / 'bin/llama-server'),
+        str(install / 'data/.llama-server.pid'),
+    ]
     if previous:
-        rollback = [value.decode() for value in launches[1]]
+        rollback = [value.decode() for value in launches[2]]
         assert rollback[rollback.index('--model') + 1] == str(install / "models" / previous)
         assert (install / "models" / previous).read_text() == "previous"
     assert "GGUF_FILE=full-model.gguf\n" in (install / ".env").read_text()
