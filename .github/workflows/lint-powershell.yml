@@ -537,6 +537,16 @@ jobs:
         shell: powershell
         run: ./tests/test-windows-whisper-port-conflict.ps1
 
+      - name: Windows container tuning retention (PowerShell 7)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-container-tuning-carry.ps1
+
+      - name: Windows container tuning retention (Windows PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-container-tuning-carry.ps1
+
       - name: Every PowerShell test runs in a workflow
         if: ${{ !cancelled() }}
         shell: pwsh

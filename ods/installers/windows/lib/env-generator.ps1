@@ -263,6 +263,92 @@ function Get-ODSCarriedEnvLines {
     return $carried
 }
 
+function Get-ODSCarriedLlamaTuningLines {
+    <#
+    .SYNOPSIS
+        Return previous .env lines for optional llama.cpp tuning keys that the
+        new template does not write, when the install identity is unchanged.
+    .DESCRIPTION
+        Preserves LLAMA_ARG_UBATCH and LLAMA_ARG_FIT_TARGET across installer
+        reruns only when the model filename, model store, GPU backend, ODS mode
+        and LLM backend all match the previous install. Values are validated
+        against a fixed positive-integer regex and per-key bounds; each key is
+        rejected independently. Unknown GPU backends are never accepted, even
+        if they match the previous value. Missing prior ODS_ACTIVE_MODEL_STORE
+        defaults to 'default' (matching the generator); any other missing prior
+        identity fails closed.
+    #>
+    param(
+        [hashtable]$PreviousEnv,
+        [AllowEmptyString()][string]$NewContent,
+        [AllowEmptyString()][string]$CurrentGgufFile,
+        [AllowEmptyString()][string]$CurrentModelStore,
+        [AllowEmptyString()][string]$CurrentGpuBackend,
+        [AllowEmptyString()][string]$CurrentOdsMode,
+        [AllowEmptyString()][string]$CurrentLlmBackend
+    )
+
+    $result = @()
+    if ($null -eq $PreviousEnv) { return $result }
+
+    $allowedGpu = @('nvidia', 'none', 'cpu')
+    if ($allowedGpu -cnotcontains $CurrentGpuBackend) { return $result }
+
+    if (-not $PreviousEnv.ContainsKey('GGUF_FILE')) { return $result }
+    if (-not $PreviousEnv.ContainsKey('GPU_BACKEND')) { return $result }
+    if (-not $PreviousEnv.ContainsKey('ODS_MODE')) { return $result }
+    if (-not $PreviousEnv.ContainsKey('LLM_BACKEND')) { return $result }
+
+    # Parse literal dotenv values without interpreting expressions.
+    function Get-TuningLiteral([string]$Value) {
+        $value = $Value.Trim()
+        if ($value.Length -ge 2 -and (
+            ($value[0] -eq "'" -and $value[$value.Length - 1] -eq "'") -or
+            ($value[0] -eq '"' -and $value[$value.Length - 1] -eq '"'))) {
+            $value = $value.Substring(1, $value.Length - 2).Trim()
+        }
+        return $value
+    }
+    $prevGguf = Get-TuningLiteral ([string]$PreviousEnv['GGUF_FILE'])
+    $prevGpu = Get-TuningLiteral ([string]$PreviousEnv['GPU_BACKEND'])
+    $prevOdsMode = Get-TuningLiteral ([string]$PreviousEnv['ODS_MODE'])
+    $prevLlmBackend = Get-TuningLiteral ([string]$PreviousEnv['LLM_BACKEND'])
+    $prevModelStore = 'default'
+    if ($PreviousEnv.ContainsKey('ODS_ACTIVE_MODEL_STORE')) {
+        $prevModelStore = Get-TuningLiteral ([string]$PreviousEnv['ODS_ACTIVE_MODEL_STORE'])
+    }
+    if ([string]::IsNullOrEmpty($CurrentGgufFile) -or $CurrentOdsMode -cne 'local') { return $result }
+
+    if (-not [string]::Equals($prevGguf, $CurrentGgufFile, [StringComparison]::Ordinal)) { return $result }
+    if (-not [string]::Equals($prevModelStore, $CurrentModelStore, [StringComparison]::Ordinal)) { return $result }
+    if (-not [string]::Equals($prevGpu, $CurrentGpuBackend, [StringComparison]::Ordinal)) { return $result }
+    if (-not [string]::Equals($prevOdsMode, $CurrentOdsMode, [StringComparison]::Ordinal)) { return $result }
+    if (-not [string]::Equals($prevLlmBackend, $CurrentLlmBackend, [StringComparison]::Ordinal)) { return $result }
+    if ($CurrentLlmBackend -cne 'llama-server') { return $result }
+
+    $bounds = [ordered]@{
+        'LLAMA_ARG_UBATCH'     = @(1, 512)
+        'LLAMA_ARG_FIT_TARGET' = @(512, 65536)
+    }
+
+    foreach ($key in $bounds.Keys) {
+        if ($NewContent -cmatch ('(?m)^' + [regex]::Escape($key) + '=')) { continue }
+        if (-not $PreviousEnv.ContainsKey($key)) { continue }
+
+        $raw = Get-TuningLiteral ([string]$PreviousEnv[$key])
+        if ($raw -cnotmatch '^[1-9][0-9]{0,4}$') { continue }
+
+        $parsed = 0
+        if (-not [int]::TryParse($raw, [ref]$parsed)) { continue }
+        $range = $bounds[$key]
+        if ($parsed -lt $range[0] -or $parsed -gt $range[1]) { continue }
+
+        $result += ('{0}={1}' -f $key, $raw)
+    }
+
+    return $result
+}
+
 function Get-ODSExtensionEnvKeys {
     <# Return the env_vars keys declared by installed extension manifests,
        in manifest order, deduplicated exactly. Mirrors the awk reader in
@@ -973,9 +1059,27 @@ LANGFUSE_INIT_USER_PASSWORD=$langfuseInitUserPassword
         $envContent += "$nl$nl#=== Owner settings (kept from the previous .env) ===$nl" + ($ownerLines -join $nl)
     }
 
+    # Preserve optional llama.cpp tuning (UBATCH / FIT_TARGET) across reruns
+    # when the install identity is unchanged. Reserved keys are filtered out
+    # of the extension carry so a manifest cannot smuggle them past bounds.
+    $reservedTuningKeys = @('LLAMA_ARG_UBATCH', 'LLAMA_ARG_FIT_TARGET')
+    $carriedTuningLines = @(Get-ODSCarriedLlamaTuningLines `
+        -PreviousEnv $existingEnv `
+        -NewContent $envContent `
+        -CurrentGgufFile ([string]$TierConfig.GgufFile) `
+        -CurrentModelStore $preservedModelStore `
+        -CurrentGpuBackend $GpuBackend `
+        -CurrentOdsMode $effectiveODSMode `
+        -CurrentLlmBackend $llmBackend)
+    if ($carriedTuningLines.Count -gt 0) {
+        $nl = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
+        $envContent += "$nl$nl#=== llama.cpp tuning (kept from the previous .env) ===$nl" + ($carriedTuningLines -join $nl)
+    }
+
     # Keep the settings installed extensions own (their manifest env_vars),
     # as phase 06 does on Linux. New template values win, including empty.
-    $extensionKeys = @(Get-ODSExtensionEnvKeys -ManifestPaths @(Get-ODSExtensionManifestPaths -InstallDir $InstallDir))
+    $extensionKeys = @(Get-ODSExtensionEnvKeys -ManifestPaths @(Get-ODSExtensionManifestPaths -InstallDir $InstallDir) |
+        Where-Object { $reservedTuningKeys -cnotcontains $_ })
     if ($extensionKeys.Count -gt 0) {
         $extensionLines = @(Get-ODSCarriedEnvLines -PreviousLines $previousEnvLines `
             -NewContent $envContent -Keys $extensionKeys)
