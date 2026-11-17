@@ -9,6 +9,7 @@
 param(
     [string]$InstallDir = (Join-Path $env:USERPROFILE 'ods'),
     [string]$LocalAppDataDir = (Join-Path $env:LOCALAPPDATA 'ODS'),
+    [switch]$RemoveAllData = $false,
     [switch]$KeepData = $false,
     [switch]$Quiet = $false
 )
@@ -17,30 +18,62 @@ $ErrorActionPreference = 'SilentlyContinue'
 
 $resolvedInstall = if ($InstallDir) { [System.IO.Path]::GetFullPath($InstallDir) } else { '' }
 $resolvedAppData = if ($LocalAppDataDir) { [System.IO.Path]::GetFullPath($LocalAppDataDir) } else { '' }
+$preserveUserData = if ($RemoveAllData) { $false } elseif ($KeepData) { $true } else { $true }
 
 if (-not $Quiet) {
     Write-Host "============================================================" -ForegroundColor Cyan
-    Write-Host "  ODS (Osmantic Deployment System) — Windows Uninstaller    " -ForegroundColor Cyan
+    Write-Host "  ODS (Osmantic Deployment System) - Windows Uninstaller    " -ForegroundColor Cyan
     Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host "Installation directory: $resolvedInstall"
     Write-Host "App data directory:     $resolvedAppData"
-    Write-Host "Keep user data:         $KeepData`n"
+    Write-Host "Preserve user data:     $preserveUserData`n"
 
-    $confirmation = Read-Host "Are you sure you want to completely uninstall ODS? (Y/N)"
+    $confirmation = Read-Host "Are you sure you want to uninstall ODS? (Y/N)"
     if ($confirmation -notmatch '^(y|yes)$') {
         Write-Host "Uninstallation cancelled." -ForegroundColor Yellow
         exit 0
     }
 }
 
-Write-Host "Stopping any running ODS processes..." -ForegroundColor Yellow
-$procNames = @('ODS', 'ODS.exe', 'llama-server', 'llama-server.exe')
+Write-Host "Stopping running ODS processes..." -ForegroundColor Yellow
+$managedPids = @()
+foreach ($base in @($resolvedInstall, $resolvedAppData)) {
+    if ($base) {
+        $pidFile = Join-Path $base '.llama-server.pid'
+        if (Test-Path -LiteralPath $pidFile) {
+            try {
+                $content = (Get-Content -LiteralPath $pidFile -Raw).Trim()
+                if ($content -match '^\d+$') {
+                    $managedPids += [int]$content
+                }
+            } catch { }
+        }
+    }
+}
+
 foreach ($p in Get-Process -ErrorAction SilentlyContinue) {
     try {
-        if ($p.ProcessName -in @('ODS', 'llama-server')) {
-            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+        $isManaged = $p.Id -in $managedPids
+        $pPath = $null
+        try {
+            $pPath = $p.Path
+            if (-not $pPath -and $p.MainModule) {
+                $pPath = $p.MainModule.FileName
+            }
+        } catch { }
+
+        $belongs = $false
+        if ($pPath) {
+            $normP = [System.IO.Path]::GetFullPath($pPath)
+            if ($resolvedInstall -and ($normP.StartsWith("$resolvedInstall\", [System.StringComparison]::OrdinalIgnoreCase) -or $normP.Equals($resolvedInstall, [System.StringComparison]::OrdinalIgnoreCase))) {
+                $belongs = $true
+            }
+            if ($resolvedAppData -and ($normP.StartsWith("$resolvedAppData\", [System.StringComparison]::OrdinalIgnoreCase) -or $normP.Equals($resolvedAppData, [System.StringComparison]::OrdinalIgnoreCase))) {
+                $belongs = $true
+            }
         }
-        elseif ($p.ProcessName -like 'python*' -and $resolvedInstall -and $p.Path -and ($p.Path.StartsWith($resolvedInstall, [System.StringComparison]::OrdinalIgnoreCase) -or $p.Path.StartsWith($resolvedAppData, [System.StringComparison]::OrdinalIgnoreCase))) {
+
+        if ($isManaged -or $belongs) {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
         }
     } catch { }
@@ -67,20 +100,25 @@ if (Test-Path -LiteralPath $regPath) {
     Remove-Item -LiteralPath $regPath -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# Remove DirectX UserGpuPreferences entries
+# Remove DirectX UserGpuPreferences entries scoped strictly to this installation
 try {
     $dxKey = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
     if (Test-Path -LiteralPath $dxKey) {
         $key = Get-Item -LiteralPath $dxKey
         foreach ($valName in $key.GetValueNames()) {
-            if ($valName -like "*\ODS.exe" -or $valName -like "*\llama-server.exe") {
-                Remove-ItemProperty -LiteralPath $dxKey -Name $valName -Force -ErrorAction SilentlyContinue
+            if ($valName) {
+                $normVal = [System.IO.Path]::GetFullPath($valName)
+                $belongs = ($resolvedInstall -and $normVal.StartsWith("$resolvedInstall\", [System.StringComparison]::OrdinalIgnoreCase)) -or `
+                           ($resolvedAppData -and $normVal.StartsWith("$resolvedAppData\", [System.StringComparison]::OrdinalIgnoreCase))
+                if ($belongs) {
+                    Remove-ItemProperty -LiteralPath $dxKey -Name $valName -Force -ErrorAction SilentlyContinue
+                }
             }
         }
     }
 } catch { }
 
-if ($KeepData) {
+if ($preserveUserData) {
     Write-Host "Removing application runtimes and keeping user data..." -ForegroundColor Yellow
     $runtimeDirs = @(
         (Join-Path $resolvedAppData 'python'),
@@ -105,9 +143,9 @@ if ($KeepData) {
         Remove-Item -LiteralPath $resolvedInstall -Recurse -Force -ErrorAction SilentlyContinue
     }
     if ($resolvedAppData -and (Test-Path -LiteralPath $resolvedAppData)) {
-        # Delete child items in AppData, avoiding immediate lock on the currently running uninstaller
+        $currentScript = if ($PSCommandPath) { $PSCommandPath } elseif ($MyInvocation -and $MyInvocation.PSCommandPath) { $MyInvocation.PSCommandPath } else { "" }
         Get-ChildItem -LiteralPath $resolvedAppData -Force -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -ne $MyInvocation.MyCommand.Path } |
+            Where-Object { -not $currentScript -or $_.FullName -ne $currentScript } |
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
         # Deferred removal of the AppData root folder once PowerShell exits
         Start-Process -FilePath "cmd.exe" -ArgumentList "/c ping 127.0.0.1 -n 2 >nul & rmdir /s /q `"$resolvedAppData`"" -WindowStyle Hidden -ErrorAction SilentlyContinue

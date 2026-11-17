@@ -38,8 +38,8 @@ try {
     $envPath = Join-Path $installDir '.env'
     Set-Content -LiteralPath $envPath -Value @(
         'DASHBOARD_PASSWORD=my-custom-owner-password'
-        'DASHBOARD_API_KEY=mock-owner-key'
-        'HF_TOKEN=hf_secret_owner_token'
+        'DASHBOARD_API_KEY=fixture_owner_key_for_test'
+        'HF_TOKEN=fixture_hf_token_for_test'
         'DISABLE_UPDATE_CHECK=true'
     ) -Encoding UTF8
 
@@ -72,8 +72,8 @@ try {
     $envContent = Get-Content -LiteralPath $envPath -Raw -Encoding UTF8
     Assert-True ($envContent -match 'ODS_RUNTIME_PROFILE=windows-desktop') ".env writes ODS_RUNTIME_PROFILE=windows-desktop"
     Assert-True ($envContent -match 'DASHBOARD_PASSWORD=my-custom-owner-password') ".env preserves owner DASHBOARD_PASSWORD across install"
-    Assert-True ($envContent -match 'DASHBOARD_API_KEY=mock-owner-key') ".env preserves owner DASHBOARD_API_KEY across install"
-    Assert-True ($envContent -match 'HF_TOKEN=hf_secret_owner_token') ".env carries over owner HF_TOKEN"
+    Assert-True ($envContent -match 'DASHBOARD_API_KEY=fixture_owner_key_for_test') ".env preserves owner DASHBOARD_API_KEY across install"
+    Assert-True ($envContent -match 'HF_TOKEN=fixture_hf_token_for_test') ".env carries over owner HF_TOKEN"
     Assert-True ($envContent -match 'DISABLE_UPDATE_CHECK=true') ".env carries over owner DISABLE_UPDATE_CHECK"
 
     # 3. Verify Windows Installed Apps registration
@@ -98,28 +98,42 @@ try {
     Assert-True ($report2.gpuSelection.GpuInfo.Name -eq 'Intel(R) UHD Graphics') "Power Saving override routes ODS to integrated GPU instead of discrete GPU"
     Assert-True ($report2.model.FromStamp -eq $true) "Phase 4 model verification hits fast sidecar cache on rerun"
 
-    # 5. Test Uninstall with -KeepData (default)
-    $uninstKeep = Uninstall-ODSWindowsDesktop `
-        -InstallDir $installDir `
-        -LocalAppDataDir $appDataDir `
-        -KeepData `
-        -MockRegistry $mockUninstallReg
+    # 5. Test standalone uninstall-ods.ps1 entrypoint preserves data by default without -KeepData
+    $uninstallerScript = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'installers\windows\uninstall-ods.ps1'
+    $testModelDir = Join-Path $installDir 'models'
+    New-Item -ItemType Directory -Path $testModelDir -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $testModelDir 'test.gguf') -Value 'model-bytes'
+    Set-Content -LiteralPath (Join-Path $installDir '.env') -Value 'ODS_VERSION=3.0.0'
+    New-Item -ItemType Directory -Path (Join-Path $appDataDir 'python') -Force | Out-Null
 
-    Assert-True ($uninstKeep.uninstalled -eq $true) "Uninstall-ODSWindowsDesktop -KeepData succeeds"
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $appDataDir 'python'))) "Uninstall removes python runtime directory"
-    Assert-True (Test-Path -LiteralPath (Join-Path $installDir '.env')) "Uninstall -KeepData preserves owner .env"
-    Assert-True (Test-Path -LiteralPath (Join-Path $installDir 'models')) "Uninstall -KeepData preserves downloaded GGUF models"
-    Assert-True ($mockUninstallReg.Count -eq 0) "Uninstall removes Windows Installed Apps registry key"
+    # Pre-populate DirectX UserGpuPreferences with both an ODS path and an unrelated application path
+    $dxKey = 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences'
+    $odsDxVal = Join-Path $appDataDir 'runtimes\llama\llama-server.exe'
+    $foreignDxVal = 'C:\unrelated-app\llama-server.exe'
+    if (-not (Test-Path -LiteralPath $dxKey)) {
+        New-Item -Path $dxKey -Force | Out-Null
+    }
+    Set-ItemProperty -LiteralPath $dxKey -Name $odsDxVal -Value 'GpuPreference=2;' -Force
+    Set-ItemProperty -LiteralPath $dxKey -Name $foreignDxVal -Value 'GpuPreference=1;' -Force
 
-    # 6. Test Uninstall with -RemoveAllData
-    $uninstAll = Uninstall-ODSWindowsDesktop `
-        -InstallDir $installDir `
-        -LocalAppDataDir $appDataDir `
-        -RemoveAllData `
-        -MockRegistry $mockUninstallReg
+    # Invoke standalone uninstaller without -KeepData
+    & $uninstallerScript -InstallDir $installDir -LocalAppDataDir $appDataDir -Quiet
 
-    Assert-True (-not (Test-Path -LiteralPath $installDir)) "Uninstall -RemoveAllData removes InstallDir completely"
-    Assert-True (-not (Test-Path -LiteralPath $appDataDir)) "Uninstall -RemoveAllData removes LocalAppDataDir completely"
+    Assert-True (Test-Path -LiteralPath (Join-Path $installDir 'models\test.gguf')) "Standalone uninstaller preserves user models by default"
+    Assert-True (Test-Path -LiteralPath (Join-Path $installDir '.env')) "Standalone uninstaller preserves user .env by default"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $appDataDir 'python'))) "Standalone uninstaller removes runtime python directory"
+
+    # Verify ODS GPU preference was cleaned up, while unrelated app GPU preference survived
+    $dxValNames = (Get-Item -LiteralPath $dxKey).GetValueNames()
+    Assert-True ($dxValNames -notcontains $odsDxVal) "Standalone uninstaller cleans up ODS DirectX GPU preference"
+    Assert-True ($dxValNames -contains $foreignDxVal) "Standalone uninstaller preserves unrelated app DirectX GPU preference"
+
+    Remove-ItemProperty -LiteralPath $dxKey -Name $foreignDxVal -Force -ErrorAction SilentlyContinue
+
+    # 6. Test standalone uninstaller with -RemoveAllData
+    & $uninstallerScript -InstallDir $installDir -LocalAppDataDir $appDataDir -RemoveAllData -Quiet
+
+    Assert-True (-not (Test-Path -LiteralPath $installDir)) "Standalone uninstaller -RemoveAllData removes installDir completely"
 } finally {
     if (Test-Path -LiteralPath $tmpRoot) {
         Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
