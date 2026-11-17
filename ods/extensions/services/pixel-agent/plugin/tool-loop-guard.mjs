@@ -14699,7 +14699,16 @@ export function createToolLoopGuard({
         ? state.extensionCompletionGate.finalize()
         // Generic promise recovery cannot distinguish the suspended portion
         // from remaining work. Only the scoped continuations above may retry.
-        : extensionStopped || workspaceStopped ? undefined : state?.completionAssurance.finalize(event?.lastAssistantMessage ?? '');
+        : extensionStopped || workspaceStopped ? undefined : state?.completionAssurance.finalize(event?.lastAssistantMessage ?? '', {
+          allowUnattemptedFileReadRecovery: Boolean(state && !state.ownerNoTools && !state.toolExecutionAttempted &&
+            !state.clientCancelled && !state.odsAborted && !state.codingExhausted && !state.runDeadlineReached &&
+            !state.progressBudget.exhaustedLanes.length && !state.extensionCompletionGate?.active &&
+            !state.pendingExecSessions.size && !state.execCallsInFlight.size && !state.backgroundExecStarted &&
+            (!event?.runId || event.runId === runId) &&
+            (!event?.sessionId || event.sessionId === state.currentSessionId) &&
+            (!event?.sessionKey || event.sessionKey === state.currentSessionKey) &&
+            !workspaceArtifactUnavailableReason({...context, runId})),
+        });
       if (state?.extensionCompletionGate?.active)
         state.extensionDecisionRecovery.gateRevisionRequested = decision?.action === 'revise';
       return decision;
