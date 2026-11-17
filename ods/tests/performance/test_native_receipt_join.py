@@ -128,6 +128,152 @@ class Fixture:
         self.temp.cleanup()
 
 
+def exec_rows(final="454", details=None, is_error=False, tool_name=join.EXEC_TOOL,
+              call_id="call1", include_result=True):
+    messages = [{"role": "user", "content": PROMPT}]
+    messages.append({
+        "role": "assistant",
+        "stopReason": "toolUse",
+        "usage": USAGE.copy(),
+        "content": [{
+            "type": "toolCall",
+            "id": call_id,
+            "name": tool_name,
+            "arguments": {"command": "PRIVATE_COMMAND"},
+        }],
+    })
+    if include_result:
+        if details is None:
+            details = {"status": "completed", "exitCode": 0,
+                       "aggregated": "{\"tool_check\":\"restored\"}"}
+        messages.append({
+            "role": "toolResult",
+            "toolCallId": call_id,
+            "toolName": tool_name,
+            "isError": is_error,
+            "details": details,
+            "content": [{"type": "text", "text": "PRIVATE_TOOL_OUTPUT"}],
+        })
+    messages.append({
+        "role": "assistant",
+        "stopReason": "stop",
+        "usage": USAGE.copy(),
+        "content": [{"type": "text", "text": final}],
+    })
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return [
+        {"type": "message", "id": str(i), "timestamp": now, "message": m}
+        for i, m in enumerate(messages)
+    ]
+
+
+def exec_manifest():
+    m = manifest()
+    m["task"]["required_tools"] = [join.EXEC_TOOL]
+    return m
+
+
+class ExecReceiptTests(unittest.TestCase):
+    def fixture(self, m=None):
+        f = Fixture()
+        self.addCleanup(f.close)
+        if m is not None:
+            f.manifest = m
+            f.witness = join.NativeReceiptWitness(
+                str(f.root), f.manifest, CHAT, REQUEST
+            )
+        return f
+
+    def run_exec(self, data, record=None, m=None):
+        f = self.fixture(m)
+        f.publish(data)
+        if record is None:
+            record = f.record(final=data[-1]["message"]["content"][0]["text"])
+        return f.witness.finish(record)
+
+    def test_valid_exec_receipt_proves_tool(self):
+        out = self.run_exec(exec_rows(), m=exec_manifest())
+        self.assertTrue(out["success"], out)
+        self.assertTrue(out["tool_execution_proven"])
+        self.assertIsNone(out["owned_cleanup_proven"])
+        self.assertEqual(out["errors"], [])
+
+    def test_missing_details_fails_tool(self):
+        data = exec_rows()
+        data[2]["message"].pop("details")
+        out = self.run_exec(data, m=exec_manifest())
+        self.assertTrue(out["binding_proven"], out)
+        self.assertFalse(out["tool_execution_proven"])
+        self.assertFalse(out["success"])
+
+    def test_invalid_details_shapes_fail_tool(self):
+        cases = [
+            {},
+            {"status": "completed", "aggregated": "x"},
+            {"status": "completed", "exitCode": 0},
+            {"status": "completed", "exitCode": 0, "aggregated": "x", "error": "boom"},
+            {"status": "completed", "exitCode": True, "aggregated": "x"},
+            {"status": "completed", "exitCode": 1, "aggregated": "x"},
+            {"status": "completed", "exitCode": "0", "aggregated": "x"},
+            {"status": "completed", "exitCode": 0.0, "aggregated": "x"},
+            {"status": "running", "exitCode": 0, "aggregated": "x"},
+            {"status": "unknown", "exitCode": 0, "aggregated": "x"},
+            {"status": "completed", "exitCode": 0, "aggregated": 5},
+            {"status": "completed", "exitCode": 0, "aggregated": "x", "sessionId": "s"},
+            {"status": "completed", "exitCode": 0, "aggregated": "x", "background": True},
+        ]
+        for details in cases:
+            with self.subTest(details=details):
+                out = self.run_exec(exec_rows(details=details), m=exec_manifest())
+                self.assertTrue(out["binding_proven"], out)
+                self.assertFalse(out["tool_execution_proven"], out)
+                self.assertFalse(out["success"])
+
+    def test_is_error_true_fails_tool(self):
+        out = self.run_exec(exec_rows(is_error=True), m=exec_manifest())
+        self.assertTrue(out["binding_proven"], out)
+        self.assertFalse(out["tool_execution_proven"])
+        self.assertFalse(out["success"])
+
+    def test_unmatched_call_fails(self):
+        data = exec_rows()
+        data[2]["message"]["toolCallId"] = "other"
+        out = self.run_exec(data, m=exec_manifest())
+        self.assertFalse(out["binding_proven"], out)
+        self.assertFalse(out["success"])
+
+    def test_wrong_name_fails(self):
+        data = exec_rows()
+        data[2]["message"]["toolName"] = "write"
+        out = self.run_exec(data, m=exec_manifest())
+        self.assertFalse(out["binding_proven"], out)
+        self.assertFalse(out["success"])
+
+    def test_no_result_fails(self):
+        out = self.run_exec(exec_rows(include_result=False), m=exec_manifest())
+        self.assertFalse(out["binding_proven"], out)
+        self.assertFalse(out["success"])
+
+    def test_fake_completed_prose_instead_of_details_fails(self):
+        data = exec_rows()
+        data[2]["message"]["details"] = "completed exit 0"
+        out = self.run_exec(data, m=exec_manifest())
+        self.assertTrue(out["binding_proven"], out)
+        self.assertFalse(out["tool_execution_proven"])
+        self.assertFalse(out["success"])
+
+    def test_wrong_final_answer_fails_quality(self):
+        out = self.run_exec(exec_rows(final="148"),
+                            record=None, m=exec_manifest())
+        self.assertTrue(out["binding_proven"], out)
+        self.assertTrue(out["tool_execution_proven"])
+        self.assertFalse(out["answer_quality_pass"])
+        self.assertFalse(out["success"])
+
+    def test_exec_not_in_generic_tools(self):
+        self.assertNotIn(join.EXEC_TOOL, join.GENERIC_TOOLS)
+
+
 class NativeJoinTests(unittest.TestCase):
     def fixture(self):
         fixture = Fixture()

@@ -83,6 +83,16 @@ remains a bound failure. Ambiguous identities,
 stale or malformed transcripts, unsafe paths and changing files remain unproven.
 Each submission contains one user message.
 
+Command receipts are recognized for `pixel_ods_readonly_exec` and the
+foreground `exec` tool. For `exec`, the tool result must have `isError`
+exactly `false`, a `details` object with `status` equal to `completed`, an
+integer `exitCode` equal to `0` (booleans and floats are rejected), and a
+string `aggregated` field. Any `error` key, or any background/session
+identifier such as `sessionId`, `background`, or `jobId`, makes the receipt
+unproven. `exec` is not added to the permissive generic-tool set. A
+completed foreground command does not certify filesystem side effects or
+descendant cleanup; `owned_cleanup_proven` remains null.
+
 An external Python coordinator can reuse a supplied `chat_id` with a new
 `request_id` and `native_allow_continuation=True`. This requires
 `native_sessions_dir` and explicitly permits an existing session. Before dispatch,
