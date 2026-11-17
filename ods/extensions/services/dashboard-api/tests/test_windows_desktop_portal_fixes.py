@@ -666,9 +666,10 @@ async def test_pixel_status_includes_windows_desktop_runtime(monkeypatch):
 
     status = await pixel.pixel_status()
     assert status["available"] is True
-    assert status.get("runtime") is not None
-    assert status["runtime"]["source"] == "windows-desktop"
-    assert status["runtime"]["model"] == "qwen 3.5 4b"
-    assert status["runtime"]["contextLength"] == 4096
+    runtime = status.get("runtime")
+    assert isinstance(runtime, dict)
+    assert runtime["source"] == "windows-desktop"
+    assert runtime["model"] == "qwen 3.5 4b"
+    assert runtime["contextLength"] == 4096
 
 
