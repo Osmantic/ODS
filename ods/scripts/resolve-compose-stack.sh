@@ -72,6 +72,12 @@ while [[ $# -gt 0 ]]; do
             NATIVE_RECOVERY="true"
             shift
             ;;
+        --native-protected-recovery)
+            # Read-only selection for the explicit interrupted-activation
+            # operation; this does not authorize startup or publish readiness.
+            NATIVE_RECOVERY="protected"
+            shift
+            ;;
         *)
             echo "Unknown argument: $1" >&2
             exit 1
@@ -111,7 +117,8 @@ import json
 script_dir = pathlib.Path(sys.argv[1])
 # The source tree of this resolver; --script-dir may name another directory.
 resolver_root = pathlib.Path(sys.argv[10])
-native_recovery = sys.argv[11] == 'true'
+native_recovery = sys.argv[11] in ('true', 'protected')
+complete_protected = sys.argv[11] == 'protected'
 # Windows retained-extension validation executes this shared Python body
 # with the original argument list; it must keep the normal projection mode.
 selection_json = len(sys.argv) > 12 and sys.argv[12] == 'true'
@@ -1791,7 +1798,8 @@ if selected_stack is None and (native_recovery or os.path.lexists(native_activat
             (resolver_root if native_recovery else script_dir) / 'installers/macos/lib/pixel-native-stack.py')
         native_stack = importlib.util.module_from_spec(native_spec)
         native_spec.loader.exec_module(native_stack)
-        resolved = (native_stack.resolve_files(script_dir, resolved, recovery=True) if native_recovery
+        resolved = (native_stack.resolve_files(script_dir, resolved, recovery=True,
+                    complete_protected=complete_protected) if native_recovery
                     else native_stack.resolve_files(script_dir, resolved))
     except (ValueError, OSError, ImportError):
         print('ERROR: Native Pixel Compose selection needs recovery; retain its installation receipts.', file=sys.stderr)

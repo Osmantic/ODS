@@ -188,7 +188,9 @@ def update_selection_records(previous, activation, prepared, proof, install_dir)
         'activation': {**activation, **identities}}
 
 
-def compose_flags(install_dir, process_env, *, recovery=False):
+def compose_flags(install_dir, process_env, *, recovery=False, complete_protected=False):
+    if complete_protected and not recovery:
+        raise ValueError('protected-selection-requires-explicit-recovery')
     cache = install_dir / '.compose-flags'
     use_cache = not recovery and os.path.lexists(cache)
     if use_cache:
@@ -244,7 +246,7 @@ def compose_flags(install_dir, process_env, *, recovery=False):
         resolver_env = {**process_env, **{key: saved.get(key, '') for key in keys}}
         raw = subprocess.run(['/bin/bash', str(resolver), '--script-dir', str(install_dir),
             '--tier', tier, '--gpu-backend', backend, '--gpu-count', count, '--ods-mode', mode,
-            *(['--native-recovery'] if recovery else [])],
+            *(['--native-protected-recovery'] if complete_protected else ['--native-recovery'] if recovery else [])],
             cwd=install_dir, env=resolver_env, capture_output=True, text=True,
             check=True, timeout=30).stdout
     # Retained caches can predate the Mac private-store overlay. Include it
