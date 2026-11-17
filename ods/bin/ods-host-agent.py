@@ -5960,6 +5960,58 @@ def _activate_remote_provider_route(
         raise RuntimeError(detail) from exc
 
 
+def _prove_restored_macos_route(env: dict, expected_identity, previous_pixel) -> None:
+    """Prove and publish the local backend before LiteLLM uses its stable alias.
+
+    A reconstructed route is deliberately rejected by model-router. Its
+    background proof worker cannot publish during this owned transaction.
+    Keep publication here, after a real identity/context/completion proof.
+    """
+    if _switchboard_state is None:
+        raise RuntimeError("Restored local route state is unavailable")
+    _, errors = _switchboard_state.read_state(_switchboard_state_path())
+    if errors:
+        raise RuntimeError("Restored local route state is invalid")
+    identity = _switchboard_state.migrate_env_identity(env)
+    if not identity or not _macos_native_llama_identity_live(expected_identity):
+        raise RuntimeError("Restored native model identity is unavailable")
+    gguf_file, llm_model_name = _current_runtime_model_inputs(env, identity)
+    model_id, model = _catalog_model_for_current_env(env)
+    proof = _wait_for_model_readiness(
+        env, model_id=model_id or llm_model_name or gguf_file,
+        gguf_file=gguf_file, llm_model_name=llm_model_name,
+        attempts=3, initial_delay=0, interval=1,
+        return_proof=True, require_exact_context=True,
+        env_still_current=lambda: _initial_switchboard_route_env_matches(env),
+    )
+    if (not isinstance(proof, dict) or proof.get('contextVerified') is not True
+            or type(proof.get('contextLength')) is not int
+            or proof['contextLength'] != identity.get('contextLength')
+            or not _runtime_model_identity_matches(
+                proof.get('identity'), model_id=model_id,
+                gguf_file=gguf_file, llm_model_name=llm_model_name)):
+        raise RuntimeError("Restored native model did not pass identity, context and completion proof")
+    if previous_pixel is not None and (
+            not isinstance(previous_pixel, dict)
+            or not _pixel_local_identity_matches(env, proof['identity'], previous_pixel.get('model'))
+            or proof['contextLength'] != previous_pixel.get('contextLength')):
+        raise RuntimeError("Restored native model does not match the saved Portal contract")
+    if (not _initial_switchboard_route_env_matches(env)
+            or not _macos_native_llama_identity_live(expected_identity)):
+        raise RuntimeError("Restored native model changed during route proof")
+    capabilities = {
+        'chat': True, 'tools': bool(model.get('tools')), 'vision': bool(model.get('vision')),
+        'agentViable': _model_agent_viable(model, proof['contextLength']),
+    }
+    if _model_profiles_mode(env) == 'enabled':
+        capabilities = _profiled_capabilities(
+            capabilities, _stored_profile_traits(model_id or llm_model_name or gguf_file), model)
+    # This is the owning lifecycle's publication, not an observational worker.
+    # A later rollback to cloud retains this genuine local proof at a monotonic
+    # sequence, as it retains the configured local model. It is not liveness.
+    _publish_activation_route(env, model_id or llm_model_name or gguf_file, proof, capabilities)
+
+
 def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
     """Restore the pre-remote gateway and Pixel route from private state."""
     activation = _read_remote_provider_activation_state()
@@ -5985,8 +6037,9 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
                       and native_env.get("GPU_BACKEND", "").lower() == "apple"
                       and previous["odsMode"] == "local"
                       and not _vllm_engine(native_env))
-    native_present = _macos_native_llama_present() if restore_native else False
-    native_start_attempted = False
+    if restore_native:
+        _macos_native_llama_present()  # Fail before mutation on inspection errors.
+    native_receipt = None
     native_bridge_attempted = False
     owns_transaction = transaction is None
     if owns_transaction:
@@ -6012,16 +6065,23 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
             _require_macos_bridge_manager(env_path)
             native_bridge_attempted = True
             _configure_macos_llm_bridge(env_path)
-            # Recheck after bridge setup: do not replace a runtime that an
-            # owner started while container access was being restored.
-            if not native_present and not _macos_native_llama_present():
-                native_start_attempted = True
-                _launch_native_llama_server(
-                    env_path, INSTALL_DIR / "bin" / "llama-server",
-                    INSTALL_DIR / "data" / "llama-server.log",
-                    INSTALL_DIR / "data" / ".llama-server.pid",
+            # The manager rechecks under its lifecycle lock. A live producer
+            # is preserved; a stopped owned job can be restored without guessing
+            # from the existence of its launchd registration or PID file.
+            native_receipt = _launch_native_llama_server(
+                env_path, INSTALL_DIR / "bin" / "llama-server",
+                INSTALL_DIR / "data" / "llama-server.log",
+                INSTALL_DIR / "data" / ".llama-server.pid",
+                preserve_existing=True,
+            )
+            _wait_for_macos_native_llama_health(
+                load_env(env_path), expected_identity=native_receipt["identity"],
+            )
+            restored_native_env = load_env(env_path)
+            if _normal_switchboard_mode(restored_native_env) == 'enabled':
+                _prove_restored_macos_route(
+                    restored_native_env, native_receipt['identity'], previous.get('pixel'),
                 )
-            _wait_for_macos_native_llama_health(load_env(env_path))
         litellm_attempted = True
         litellm_recreated = _restart_existing_container(
             "ods-litellm", container_state, recreate=True,
@@ -6065,9 +6125,11 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
         if transaction is not None:
             transaction.verify_held()
         rollback_errors: list[str] = []
-        if native_start_attempted:
+        if getattr(exc, "native_cleanup_uncertain", False):
+            rollback_errors.append("native runtime: startup cleanup remains unconfirmed")
+        if native_receipt is not None and native_receipt.get("created"):
             try:
-                _stop_macos_native_llama_server(INSTALL_DIR / "data" / ".llama-server.pid")
+                _rollback_macos_native_llama_start(native_receipt)
             except Exception as rollback_exc:
                 rollback_errors.append(f"native runtime: {rollback_exc}")
         env_restored = False
@@ -21469,59 +21531,137 @@ def _select_runtime_profile(model: dict, env: dict) -> dict | None:
     return None
 
 
-def _macos_native_llama_present() -> bool:
-    """Inspect launchd and install-owned processes without trusting a saved PID.
+def _rollback_macos_native_llama_start(receipt: dict) -> None:
+    from macos_native_service import NativeService
+    binary = Path(receipt["identity"][-1])
+    NativeService(INSTALL_DIR, binary, INSTALL_DIR / "data" / ".llama-server.pid").rollback(receipt)
 
-    An inspection failure is not evidence that a runtime is absent. Refuse
-    before mutation rather than replacing an engine we could not inspect.
-    """
-    job = subprocess.run(
-        ["launchctl", "print", f"gui/{os.getuid()}/com.ods.llama-server"],
+
+def _macos_native_llama_binaries(env: dict) -> tuple[Path, ...]:
+    """Use deployment metadata, never a model path or executable basename."""
+    binaries = [INSTALL_DIR / "bin" / "llama-server"]
+    profile = _model_stores.registered_runtime_profile(
+        INSTALL_DIR / "data", env.get("GGUF_FILE", ""),
+    )
+    if profile:
+        binaries.append(Path(profile["executable"]))
+    if any(not path.is_absolute() for path in binaries):
+        raise RuntimeError("Native llama executable must be an absolute deployment path")
+    return tuple(dict.fromkeys(path.resolve() for path in binaries))
+
+
+def _macos_native_llama_processes(env: dict) -> tuple[tuple, ...]:
+    """Enumerate numeric PIDs, then prove executable, owner and birth natively."""
+    import errno
+    from pixel_macos_process import ProcessIdentityError, process_identity
+
+    uid, gid = os.getuid(), os.getgid()
+    if uid == 0:
+        raise RuntimeError("Native llama inspection requires the installation owner")
+    binaries = _macos_native_llama_binaries(env)
+    result = subprocess.run(
+        ["ps", "-axo", "pid=,uid="],
         capture_output=True, text=True, timeout=10, check=False,
     )
-    if job.returncode == 0:
-        return True
-    # launchctl's ESRCH response means the named service is not loaded.
-    if job.returncode != 113:
-        raise RuntimeError("Could not inspect the native llama LaunchAgent")
-    processes = subprocess.run(
-        ["ps", "-axo", "pid=,command="],
-        capture_output=True, text=True, timeout=10, check=False,
-    )
-    if processes.returncode:
+    lines = result.stdout.splitlines()
+    if result.returncode or not lines or len(lines) > 262144:
         raise RuntimeError("Could not inspect native llama processes")
-    binary = str(INSTALL_DIR / "bin" / "llama-server")
-    for line in processes.stdout.splitlines():
-        parts = line.strip().split(None, 1)
-        if len(parts) != 2 or not parts[0].isdigit():
+    identities = []
+    for line in lines:
+        parts = line.split()
+        if (len(parts) != 2 or not parts[0].isascii() or not parts[0].isdigit()
+                or not parts[1].isascii() or not parts[1].removeprefix("-").isdigit()
+                or not 0 < int(parts[0]) <= 2147483647):
+            raise RuntimeError("Could not parse native process enumeration")
+        pid, owner = map(int, parts)
+        if not -2147483648 <= owner < 4294967295:
+            raise RuntimeError("Could not parse native process owner")
+        if owner != uid:
             continue
-        command = parts[1]
-        executable = command.split(None, 1)[0]
-        if (command == binary or command.startswith(binary + " ")
-                or (Path(executable).name == "llama-server"
-                    and f" --model {INSTALL_DIR / 'data' / 'models'}/" in command)):
+        for binary in binaries:
+            try:
+                identity = process_identity(pid, uid=uid, gid=gid, executable=str(binary))
+            except ProcessIdentityError as exc:
+                if exc.errno == errno.ESRCH:
+                    break  # The enumerated process exited before inspection.
+                if str(exc) == "gateway-process-executable-mismatch":
+                    continue
+                raise RuntimeError("Could not prove native llama process ownership") from exc
+            identities.append(identity)
+            break
+    return tuple(identities)
+
+
+def _macos_native_llama_present() -> bool:
+    """Preserve loaded jobs and kernel-identified installation processes."""
+    for domain in (f"gui/{os.getuid()}", f"user/{os.getuid()}"):
+        job = subprocess.run(
+            ["launchctl", "print", f"{domain}/com.ods.llama-server"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if job.returncode == 0:
             return True
-    return False
+        if job.returncode == 113:
+            continue  # ESRCH: the named service is not loaded.
+        # A nonzero job lookup alone cannot establish that its domain is absent.
+        probe = subprocess.run(
+            ["launchctl", "print", domain],
+            capture_output=True, text=True, timeout=10, check=False,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        kind, owner = domain.split("/", 1)
+        missing_messages = {f"Could not find domain for {domain}"}
+        if kind == "gui":
+            missing_messages.add(f"Could not find domain for user gui: {owner}")
+        if not (probe.returncode in {1, 3, 5, 112}
+                and missing_messages.intersection(probe.stderr.splitlines())):
+            raise RuntimeError("Could not inspect the native llama LaunchAgent")
+    return bool(_macos_native_llama_processes(load_env(INSTALL_DIR / ".env")))
 
 
-def _wait_for_macos_native_llama_health(env: dict) -> None:
-    """Allow a cold native load before the existing exact contract proof.
+def _macos_native_llama_identity(pid: int, executable: Path) -> tuple:
+    from pixel_macos_process import process_identity
+    return process_identity(
+        pid, uid=os.getuid(), gid=os.getgid(), executable=str(executable.resolve()),
+    )
 
-    Health alone never authorizes Pixel's rebind: deactivation still proves
-    the local model, context and completion before applying its contract.
-    """
+
+def _macos_native_llama_identity_live(identity: tuple) -> bool:
+    import errno
+    from pixel_macos_process import ProcessIdentityError
+    try:
+        current = _macos_native_llama_identity(identity[0], Path(identity[-1]))
+    except ProcessIdentityError as exc:
+        if exc.errno == errno.ESRCH or str(exc) in {
+            "gateway-process-mismatch", "gateway-process-executable-mismatch",
+            "gateway-process-owner-mismatch", "gateway-process-changed",
+        }:
+            return False
+        raise RuntimeError("Could not inspect the newly started native llama process") from exc
+    return current == identity
+
+
+def _wait_for_macos_native_llama_health(env: dict, *, expected_identity=None) -> None:
+    """Allow cold loading, but stop waiting when our exact new process exits."""
     deadline = time.monotonic() + 300
     while True:
+        if expected_identity is not None and not _macos_native_llama_identity_live(expected_identity):
+            raise RuntimeError("New native llama-server exited before becoming healthy")
+        healthy = False
         try:
-            if _runtime_health(env) == "ok":
-                return
+            healthy = _runtime_health(env) == "ok"
         except (OSError, subprocess.TimeoutExpired):
-            # A new process may not have bound its listener yet.
-            pass
+            pass  # The live producer may not have bound its listener yet.
+        if healthy:
+            if expected_identity is not None and not _macos_native_llama_identity_live(expected_identity):
+                raise RuntimeError("New native llama-server changed during health verification")
+            return
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise RuntimeError("Native llama-server did not become healthy during remote deactivation")
         time.sleep(min(2, remaining))
+
+
 
 
 def _stop_macos_native_llama_server(pid_file: Path) -> None:
@@ -21675,7 +21815,8 @@ def _restart_macos_native_llama_server(
     _launch_native_llama_server(env_path, llama_bin, llama_log, pid_file)
 
 
-def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path, pid_file: Path):
+def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path, pid_file: Path,
+                                *, preserve_existing=False):
     """Launch the native (Metal) llama-server process and write its PID file.
 
     Reads the current .env for model and llama.cpp runtime settings so the
@@ -21767,6 +21908,9 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         args.append("--no-cache-prompt")
     llama_log.parent.mkdir(parents=True, exist_ok=True)
     pid_file.parent.mkdir(parents=True, exist_ok=True)
+    if platform.system() == "Darwin" and preserve_existing:
+        from macos_native_service import NativeService
+        return NativeService(INSTALL_DIR, llama_bin, pid_file).ensure(args[1:])
     service_script = INSTALL_DIR / "installers" / "macos" / "lib" / "native-llama-service.sh"
     if platform.system() == "Darwin" and service_script.is_file():
         bash = _find_usable_bash()
@@ -21794,8 +21938,9 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
             managed_pid = int(pid_file.read_text(encoding="utf-8").strip())
         except (OSError, ValueError) as exc:
             raise RuntimeError("macOS native llama service did not record its PID") from exc
+        identity = _macos_native_llama_identity(managed_pid, llama_bin)
         logger.info("Native llama-server LaunchAgent started (pid %d, model %s)", managed_pid, gguf_file)
-        return
+        return identity
 
     with open(llama_log, "a") as log_f:
         proc = subprocess.Popen(
@@ -21805,6 +21950,8 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         )
     pid_file.write_text(str(proc.pid), encoding="utf-8")
     logger.info("Native llama-server launched (pid %d, model %s)", proc.pid, gguf_file)
+    if platform.system() == "Darwin":
+        return _macos_native_llama_identity(proc.pid, llama_bin)
 
 
 _RUNTIME_LOG_EXCERPT_MAX_LINES = 12

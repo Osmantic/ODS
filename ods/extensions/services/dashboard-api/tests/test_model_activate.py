@@ -2329,6 +2329,8 @@ class TestLaunchNativeLlamaServer:
         monkeypatch.setattr(_mod, "load_env", lambda _path: env)
         monkeypatch.setattr(_mod.platform, "system", lambda: system)
         monkeypatch.setattr(_mod, "_disable_conflicting_macos_bridge", fake_disable)
+        monkeypatch.setattr(_mod, "_macos_native_llama_identity",
+                            lambda pid, exe: (pid, 42, 0, 501, 20, 501, 20, 501, 20, str(exe.resolve())))
         monkeypatch.setattr(_mod.subprocess, "Popen", fake_popen)
 
         _launch_native_llama_server(

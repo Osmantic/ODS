@@ -17,6 +17,8 @@ def managed(tmp_path, monkeypatch):
     monkeypatch.setattr(host, 'INSTALL_DIR', tmp_path)
     monkeypatch.setattr(host.platform, 'system', lambda: 'Darwin')
     monkeypatch.setattr(host, '_find_usable_bash', lambda: '/bin/bash')
+    monkeypatch.setattr(host, '_macos_native_llama_identity',
+                        lambda pid, exe: (pid, 42, 0, 501, 20, 501, 20, 501, 20, str(exe.resolve())))
     return tmp_path, manager
 
 
@@ -49,7 +51,8 @@ def test_launch_uses_shared_manager_not_popen(managed, monkeypatch):
         return subprocess.CompletedProcess(args, 0)
     monkeypatch.setattr(host.subprocess, 'run', run)
     monkeypatch.setattr(host.subprocess, 'Popen', lambda *_a, **_k: pytest.fail('unmanaged launch'))
-    host._launch_native_llama_server(root / '.env', root / 'bin/llama-server', root / 'log', root / 'pid')
+    identity = host._launch_native_llama_server(root / '.env', root / 'bin/llama-server', root / 'log', root / 'pid')
+    assert identity == (4321, 42, 0, 501, 20, 501, 20, 501, 20, str(root / 'bin/llama-server'))
     assert calls[0][:3] == ['/bin/bash', str(manager), 'start']
     assert calls[0][calls[0].index('--ctx-size') + 1] == '16384'
     assert calls[0][calls[0].index('--alias') + 1] == 'test.gguf'
@@ -287,3 +290,13 @@ def test_real_qualifier_accepts_ubatch(managed):
     result = host._native_llama_tuning_arguments({'LLAMA_ARG_UBATCH': '128'}, runtime)
     assert result[result.index('--ubatch-size') + 1] == '128'
     assert result.count('--ubatch-size') == 1
+
+
+def test_start_rejects_pid_without_native_identity(managed, monkeypatch):
+    root, _ = managed
+    from pixel_macos_process import ProcessIdentityError
+    def reject(pid, executable):
+        raise ProcessIdentityError('gateway-process-executable-mismatch')
+    monkeypatch.setattr(host, '_macos_native_llama_identity', reject)
+    with pytest.raises(ProcessIdentityError, match='executable-mismatch'):
+        _capture_launch(root, monkeypatch, {'GGUF_FILE': 'test.gguf'})
