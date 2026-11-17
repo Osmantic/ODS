@@ -130,7 +130,7 @@ printf untrusted > "$TEST_ROOT/shared/llama-extract-$$/000-seed/llama-server"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("llama-b9014-bin-macos-arm64.tar.gz", self.events())
 
-    def test_opt_in_release_still_rejects_untrusted_archive_before_use(self):
+    def test_current_release_still_rejects_untrusted_archive_before_use(self):
         result = self.run_install(release="b12445", real_pin=True)
         self.assert_rejected_before_use(result)
         self.assertIn("llama-b12445-bin-macos-arm64.tar.gz", self.events())
