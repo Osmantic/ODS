@@ -2336,27 +2336,13 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
                 exit 1
             fi
 
-            # Capture old model path for rollback before we kill the process
-            _old_pid=$(cat "$LLAMA_SERVER_PID_FILE" 2>/dev/null | tr -d '[:space:]')
+            # Capture old model path for rollback before we stop the service.
+            # MACOS_LEGACY_PREVIOUS_GGUF is the pre-promotion verified snapshot;
+            # it is authoritative for rollback and must not be inferred from
+            # process argv or gated on a possibly-stale PID file.
             _old_model_path=""
-            if [[ -n "$_old_pid" && -n "${MACOS_LEGACY_PREVIOUS_GGUF:-}" ]] \
-                && kill -0 "$_old_pid" 2>/dev/null; then
+            if [[ -n "${MACOS_LEGACY_PREVIOUS_GGUF:-}" ]]; then
                 _old_model_path="$MODELS_DIR/$MACOS_LEGACY_PREVIOUS_GGUF"
-            fi
-
-            # Stop existing native llama-server
-            if [[ -n "$_old_pid" ]] && kill -0 "$_old_pid" 2>/dev/null; then
-                # Verify it's actually llama-server (PID could have been reused)
-                if ps -p "$_old_pid" -o comm= 2>/dev/null | grep -q llama; then
-                    log "Stopping native llama-server (PID $_old_pid)..."
-                    kill "$_old_pid" 2>/dev/null || true
-                    sleep 2
-                    if kill -0 "$_old_pid" 2>/dev/null; then
-                        kill -9 "$_old_pid" 2>/dev/null || true
-                    fi
-                else
-                    log "PID $_old_pid is no longer llama-server, skipping kill"
-                fi
             fi
 
             # The dashboard's LAN binding must not expose native inference.
@@ -2384,50 +2370,80 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             [[ -n "$_spec_type" ]] && _llama_args+=(--spec-type "$_spec_type")
             _llama_args+=(${_llama_tuning_args[@]+"${_llama_tuning_args[@]}"})
 
-            # Relaunch with new model
+            # Relaunch with new model. The helper stops any install-owned
+            # engine before starting, so no separate pre-stop is needed here.
             log "Starting native llama-server with ${_gguf_file}..."
-            bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" start \
-                "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE" "${_llama_args[@]}"
-            _new_pid="$(cat "$LLAMA_SERVER_PID_FILE")"
+            _start_ok=false
+            if bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" start \
+                    "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE" "${_llama_args[@]}"; then
+                _start_ok=true
+            fi
+            _new_pid=""
+            if [[ -f "$LLAMA_SERVER_PID_FILE" ]]; then
+                _new_pid="$(cat "$LLAMA_SERVER_PID_FILE" 2>/dev/null | tr -d '[:space:]')"
+            fi
 
-            # Wait for health
-            log "Waiting for native llama-server health..."
             _healthy=false
-            for _i in $(seq 1 60); do
-                if curl -sf --max-time 5 "http://127.0.0.1:${_native_port}/health" &>/dev/null; then
-                    _healthy=true
-                    break
-                fi
-                sleep 5
-            done
+            if $_start_ok; then
+                log "Waiting for native llama-server health..."
+                for _i in $(seq 1 60); do
+                    if curl -sf --max-time 5 "http://127.0.0.1:${_native_port}/health" &>/dev/null; then
+                        _healthy=true
+                        break
+                    fi
+                    sleep 5
+                done
+            else
+                log "WARNING: native-llama-service.sh start returned non-zero."
+            fi
 
             if $_healthy; then
-                log "SUCCESS: Native llama-server running with ${_gguf_file} (PID $_new_pid)"
+                log "SUCCESS: Native llama-server running with ${_gguf_file} (PID ${_new_pid:-unknown})"
                 HOT_SWAP_VERIFIED=true
             else
                 log "WARNING: New model failed to load. Attempting rollback..."
-                kill "$_new_pid" 2>/dev/null || true
-                sleep 2
-                if kill -0 "$_new_pid" 2>/dev/null; then
-                    kill -9 "$_new_pid" 2>/dev/null || true
+                _cleanup_ok=false
+                if bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" stop \
+                        "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE"; then
+                    _cleanup_ok=true
+                else
+                    log "ERROR: native-llama-service.sh stop failed; refusing to start rollback."
                 fi
+
+                if ! $_cleanup_ok; then
+                    write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
+                        "Full model downloaded and verified, but native macOS llama-server failed to load it and cleanup failed. Run './ods-macos.sh restart' to recover."
+                    exit 1
+                fi
+
                 if [[ -n "${_old_model_path:-}" && -f "$_old_model_path" ]]; then
-                    bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" start \
+                    _rollback_ok=false
+                    if bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" start \
                             "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE" \
                             --host "$_bind" --port "$_native_port" \
                             --model "$_old_model_path" \
                             --ctx-size "$_ctx_size" \
                             --n-gpu-layers "$_gpu_layers" \
                             --reasoning-format "${_reasoning_fmt:-none}" \
-                            --metrics
-                    _rollback_pid="$(cat "$LLAMA_SERVER_PID_FILE")"
-                    log "Rolled back to previous model: $(basename "$_old_model_path") (PID $_rollback_pid)"
+                            --metrics; then
+                        _rollback_ok=true
+                    fi
+                    if $_rollback_ok; then
+                        _rollback_pid=""
+                        if [[ -f "$LLAMA_SERVER_PID_FILE" ]]; then
+                            _rollback_pid="$(cat "$LLAMA_SERVER_PID_FILE" 2>/dev/null | tr -d '[:space:]')"
+                        fi
+                        log "Restart requested for previous model: $(basename "$_old_model_path") (PID ${_rollback_pid:-unknown})"
+                    else
+                        log "ERROR: Rollback start failed for previous model: $(basename "$_old_model_path")"
+                        log "Run './ods-macos.sh restart' to manually recover."
+                    fi
                 else
                     log "WARNING: Could not rollback — previous model not found."
                     log "Run './ods-macos.sh restart' to manually recover."
                 fi
                 write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
-                    "Full model downloaded and verified, but native macOS llama-server did not load it after swap. Bootstrap model kept; run './ods-macos.sh restart' or re-run to retry."
+                    "Full model downloaded and verified, but native macOS llama-server did not load it after swap. Previous model file retained; run './ods-macos.sh restart' or re-run to retry."
                 exit 1
             fi
         fi
