@@ -96,7 +96,7 @@ from routers import (
     opencode_app,
 )
 from settings import (
-    _ENV_ASSIGNMENT_RE, _ENV_COMMENTED_ASSIGNMENT_RE, _SETTINGS_APPLY_ALLOWED_SERVICES, _parse_env_text, _read_env_map_from_path,
+    _ENV_ASSIGNMENT_RE, _ENV_COMMENTED_ASSIGNMENT_RE, _SETTINGS_APPLY_ALLOWED_SERVICES, _parse_env_text,
     _slugify,
     _build_env_fields, _validate_env_values, _serialize_form_values,
     _empty_value_unsets_env_key,
@@ -969,6 +969,17 @@ def _call_agent_env_update(raw_text: str) -> dict[str, Any]:
     )
 
 
+def _read_settings_env_text(env_path: Path) -> str:
+    """An unavailable file is not an empty configuration or a safe merge base."""
+    try:
+        return env_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"message": "Current configuration could not be read. Try again shortly."},
+        ) from exc
+
+
 def _build_settings_env_payload(
     *,
     raw_text: Optional[str] = None,
@@ -977,10 +988,7 @@ def _build_settings_env_payload(
 ) -> dict:
     env_path = _resolve_runtime_env_path()
     if raw_text is None:
-        try:
-            raw_text = env_path.read_text(encoding="utf-8")
-        except OSError:
-            raw_text = ""
+        raw_text = _read_settings_env_text(env_path)
 
     values, parse_issues = _parse_env_text(raw_text)
     schema_properties, required_keys = _load_env_schema()
@@ -1024,7 +1032,12 @@ def _relative_install_path(path: Path) -> str:
 def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     mode = payload.get("mode", "form")
     env_path = _resolve_runtime_env_path()
-    current_values, _ = _read_env_map_from_path(env_path)
+    current_values, parse_issues = _parse_env_text(_read_settings_env_text(env_path))
+    if parse_issues or not current_values:
+        raise HTTPException(
+            status_code=503,
+            detail={"message": "Current configuration is empty or invalid. No changes were saved."},
+        )
     schema_properties, required_keys = _load_env_schema()
 
     if mode != "form":

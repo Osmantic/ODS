@@ -2235,3 +2235,110 @@ def test_settings_rejects_invalid_pixel_runtime_dirs_before_host_write(
     write.assert_not_called()
     assert env_path.read_bytes() == original
     assert not (fixture["data_root"] / "config-backups").exists()
+
+
+@pytest.mark.parametrize("method", ["get", "put"])
+@pytest.mark.parametrize("failure", ["io", "missing", "permission", "encoding"])
+def test_settings_env_read_failure_never_uses_empty_configuration(
+    test_client, settings_env_fixture, monkeypatch, method, failure,
+):
+    from unittest.mock import Mock
+    import main
+
+    env_path = settings_env_fixture["env_path"]
+    original = env_path.read_bytes()
+    real_read = Path.read_text
+    errors = {
+        "io": OSError("private-path sk-live-secret"),
+        "missing": FileNotFoundError("private-path sk-live-secret"),
+        "permission": PermissionError("private-path sk-live-secret"),
+        "encoding": UnicodeDecodeError("utf-8", b"\xff", 0, 1, "private-path"),
+    }
+
+    def failed_read(path, *args, **kwargs):
+        if path == env_path:
+            raise errors[failure]
+        return real_read(path, *args, **kwargs)
+
+    write = Mock(wraps=main._call_agent_env_update)
+    monkeypatch.setattr(main, "_call_agent_env_update", write)
+    with monkeypatch.context() as fault:
+        fault.setattr(Path, "read_text", failed_read)
+        kwargs = {"headers": test_client.auth_headers}
+        if method == "put":
+            kwargs["json"] = {"mode": "form", "values": {"LLM_BACKEND": "cloud"}}
+        response = getattr(test_client, method)("/api/settings/env", **kwargs)
+
+    assert response.status_code == 503, response.text
+    assert "private-path" not in response.text
+    assert "sk-live-secret" not in response.text
+    assert str(env_path) not in response.text
+    write.assert_not_called()
+    assert env_path.read_bytes() == original
+    assert not (settings_env_fixture["data_root"] / "config-backups").exists()
+    assert main._cache.get("settings_env") is None
+    recovered = test_client.get("/api/settings/env", headers=test_client.auth_headers)
+    assert recovered.status_code == 200
+    assert recovered.json()["values"]["LLM_BACKEND"] == "local"
+
+
+@pytest.mark.parametrize("contents", ["", "# comment only\n", "OPENAI_API_KEY=sk-live-secret\nmalformed private-data\n"])
+def test_settings_save_rejects_incomplete_merge_base(
+    test_client, settings_env_fixture, monkeypatch, contents,
+):
+    from unittest.mock import Mock
+    import main
+
+    env_path = settings_env_fixture["env_path"]
+    env_path.write_text(contents, encoding="utf-8")
+    original = env_path.read_bytes()
+    write = Mock(wraps=main._call_agent_env_update)
+    monkeypatch.setattr(main, "_call_agent_env_update", write)
+    response = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                               json={"mode": "form", "values": {"LLM_BACKEND": "cloud"}})
+    assert response.status_code == 503, response.text
+    assert "sk-live-secret" not in response.text and "private-data" not in response.text
+    write.assert_not_called()
+    assert env_path.read_bytes() == original
+    assert not (settings_env_fixture["data_root"] / "config-backups").exists()
+
+
+def test_settings_transient_restore_read_failure_preserves_saved_values(
+    test_client, settings_env_fixture, monkeypatch,
+):
+    from unittest.mock import Mock
+    import main
+    from settings import _parse_env_text
+
+    env_path = settings_env_fixture["env_path"]
+    original, _ = _parse_env_text(env_path.read_text(encoding="utf-8"))
+    write = Mock(wraps=main._call_agent_env_update)
+    monkeypatch.setattr(main, "_call_agent_env_update", write)
+    first = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                           json={"mode": "form", "values": {"LLAMA_ARG_N_CPU_MOE": "25"}})
+    assert first.status_code == 200
+    saved = env_path.read_bytes()
+    backup_path = settings_env_fixture["data_root"] / "config-backups/.env.backup.test"
+    backup = backup_path.read_bytes()
+    real_read = Path.read_text
+
+    def failed_read(path, *args, **kwargs):
+        if path == env_path:
+            raise OSError("simulated transient file-sharing failure")
+        return real_read(path, *args, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(Path, "read_text", failed_read)
+        second = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                                json={"mode": "form", "values": {"LLAMA_ARG_N_CPU_MOE": ""}})
+    assert second.status_code == 503, second.text
+    assert write.call_count == 1
+    assert env_path.read_bytes() == saved
+    assert backup_path.read_bytes() == backup
+    third = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                           json={"mode": "form", "values": {"LLAMA_ARG_N_CPU_MOE": ""}})
+    assert third.status_code == 200
+    restored, issues = _parse_env_text(env_path.read_text(encoding="utf-8"))
+    assert not issues
+    assert "LLAMA_ARG_N_CPU_MOE" not in restored
+    assert all(restored[key] == value for key, value in original.items())
