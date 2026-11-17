@@ -333,9 +333,28 @@ export function researchRequested(text) {
 
 export function promisesExecution(text) {
   // Only first-person statements in the reply, not quoted/code examples.
-  const value = normalize(text).replace(/```[\s\S]*?```/g, '').replace(/^\s*>.*$/gm, '');
-  return /(?:^|[.!?\n])\s*(?:(?:ok|sim|certo|claro|agora)[,!]?\s+)?(?:eu\s+)?(?:vou|irei)\s+(?:agora\s+)?(?:(?:comecar|continuar)\s+a\s+)?(?:pesquisar|procurar|buscar|consultar|acessar|abrir|verificar|executar|criar|editar|salvar|testar|corrigir|instalar|baixar|configurar)\b/.test(value) ||
-    /(?:^|[.!?\n])\s*(?:(?:ok|okay|yes|sure)[,!]?\s+)?i(?: will|'ll| am going to)\s+(?:now\s+)?(?:(?:start|continue|begin)\s+to\s+)?(?:search|look up|browse|check|run|create|edit|save|test|fix|open|install|download|configure)\b/.test(value);
+  let fence;
+  const prose = String(text ?? '').split('\n').map(line => {
+    const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (marker) {
+      if (!fence && marker[1][0] === '`' && line.slice(marker[0].length).includes('`')) return line;
+      if (!fence) fence = marker[1];
+      else if (marker[1][0] === fence[0] && marker[1].length >= fence.length &&
+               line.slice(marker[0].length).trim() === '') fence = undefined;
+      return '';
+    }
+    return fence || /^\s*>/.test(line) || /^(?: {4}|\t)/.test(line) ? '' : line;
+  }).join('\n')
+    .replace(/(`+)[\s\S]*?\1(?!`)/g, '')
+    .replace(/"[^"]*(?:"|$)|“[^”]*(?:”|$)/g, '')
+    .replace(/(?<![\p{L}\p{N}])['‘][\s\S]*?['’](?![\p{L}\p{N}])/gu, '');
+  const value = normalize(prose).replace(/[‘’]/g, "'");
+  if (/(?:^|[.!?\n])\s*(?:(?:ok|sim|certo|claro|agora)[,!]?\s+)?(?:eu\s+)?(?:vou|irei)\s+(?:agora\s+)?(?:(?:comecar|continuar)\s+a\s+)?(?:pesquisar|procurar|buscar|consultar|acessar|abrir|verificar|executar|criar|editar|salvar|testar|corrigir|instalar|baixar|configurar)\b/.test(value)) return true;
+  return (value.match(/[^.!?\n]+[.!?]?/g) ?? []).some(sentence => {
+    if (sentence.trimEnd().endsWith('?') ||
+        /\bif\s+(?:you\s+(?:want|wish|agree|approve|confirm)|approved|permitted|needed|that(?:'s| is)\s+(?:ok|okay))\b/.test(sentence)) return false;
+    return /^\s*(?:(?:ok|okay|yes|sure|now|next|then|first)[,!:]?\s+){0,3}(?:the\s+(?:repair|fix|update)\s*[—–:]\s*)?(?:i(?: will|'ll| am going to|'m going to)|let me)\s+(?:now\s+)?(?:(?:start|continue|begin)\s+to\s+)?(?:search|look up|browse|check|run|create|edit|save|test|fix|open|install|download|configure|copy|replace|write|publish|repair)\b/.test(sentence);
+  });
 }
 
 function continuedOwnerRequest(ownerText, event) {
