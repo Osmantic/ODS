@@ -39,6 +39,8 @@ on:
       - 'ods/tests/test_macos_pixel_native_recover.py'
       - 'ods/tests/test_macos_operations_readiness.py'
       - 'ods/tests/test_macos_pixel_access_install.py'
+      - 'ods/tests/test_macos_pixel_initial_recovery.py'
+      - 'ods/tests/test_macos_pixel_native_activate.py'
       - 'ods/tests/test_macos_pixel_runtime_upgrade.py'
       - 'ods/tests/test_pixel_startup_reproof.py'
       - 'ods/tests/test_macos_memory_budget.py'
@@ -95,6 +97,8 @@ on:
       - 'ods/tests/test_macos_pixel_native_recover.py'
       - 'ods/tests/test_macos_operations_readiness.py'
       - 'ods/tests/test_macos_pixel_access_install.py'
+      - 'ods/tests/test_macos_pixel_initial_recovery.py'
+      - 'ods/tests/test_macos_pixel_native_activate.py'
       - 'ods/tests/test_macos_pixel_runtime_upgrade.py'
       - 'ods/tests/test_pixel_startup_reproof.py'
       - 'ods/tests/test_macos_memory_budget.py'
@@ -197,6 +201,8 @@ jobs:
           ods/tests/test_macos_pixel_native_recover.py
           ods/tests/test_macos_operations_readiness.py
           ods/tests/test_macos_pixel_access_install.py
+          ods/tests/test_macos_pixel_initial_recovery.py
+          ods/tests/test_macos_pixel_native_activate.py
           ods/tests/test_macos_pixel_runtime_upgrade.py
           ods/tests/test_pixel_startup_reproof.py
           ods/tests/test_macos_memory_budget.py

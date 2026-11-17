@@ -2954,6 +2954,31 @@ def _execute_upgrade_install(plan, source):
     return 'active'
 
 
+def _initial_recovery(plan, *, complete=False):
+    """Dispatch an explicit initial inspection or completion operation."""
+    from types import SimpleNamespace
+    sys.path.insert(0, str(HERE.parents[2] / 'bin'))
+    spec = importlib.util.spec_from_file_location(
+        'pixel_initial_recovery', HERE / 'pixel-initial-recovery.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        operation = module.complete if complete else module.inspect
+        return operation(plan, SimpleNamespace(**globals()))
+    except module.RecoveryError as error:
+        raise InstallError('native-initial-recovery-inspection-failed') from error
+
+
+def inspect_initial_recovery(plan):
+    """Inspect an interrupted initial activation without changing its state."""
+    return _initial_recovery(plan)
+
+
+def complete_initial_install(plan):
+    """Complete a proved initial activation without replaying service startup."""
+    return _initial_recovery(plan, complete=True)
+
+
 def verify_initial_install(plan, *, held_revision=None):
     """Read back a completed protected initial install without activating it.
 
@@ -3344,11 +3369,29 @@ def main(argv=None):
                         help='With --verify-initial only: prove the runtime under this authenticated owner transaction revision')
     parser.add_argument('--initial-install', action='store_true',
                         help='Plan a new deployment from an unloaded --gateway-plist template, not a migration')
+    parser.add_argument('--complete-initial', action='store_true',
+                        help='Complete a proved interrupted initial activation without replaying service startup')
+    parser.add_argument('--inspect-initial-recovery', action='store_true',
+                        help='Inspect interrupted initial activation without service or state changes')
     parser.add_argument('--activate-upgrade', action='store_true',
                         help='Commit a qualified runtime replacement; requires --current-bundle-digest')
     args = parser.parse_args(argv)
     try:
         service_options = (args.services_bundle, args.services_digest, args.pixel_source_ref)
+        if args.complete_initial and (args.install or args.verify_initial or args.inspect_initial_recovery
+                or args.activate_upgrade or args.current_bundle_digest
+                or args.held_admission_revision is not None):
+            raise InstallError('initial-completion-conflicts-with-activation')
+        if args.complete_initial and (not args.initial_install or not all(service_options)
+                or not args.gateway_plist or not args.runtime_bundle or not args.bundle_digest):
+            raise InstallError('complete-initial-service-selection-required')
+        if args.inspect_initial_recovery and (args.install or args.verify_initial
+                or args.activate_upgrade or args.current_bundle_digest
+                or args.held_admission_revision is not None):
+            raise InstallError('initial-recovery-inspection-conflicts-with-activation')
+        if args.inspect_initial_recovery and (not args.initial_install
+                or not all(service_options) or not args.gateway_plist):
+            raise InstallError('complete-initial-service-selection-required')
         if args.held_admission_revision is not None and not args.verify_initial:
             raise InstallError('held-admission-requires-initial-verification')
         if args.verify_initial and (not args.initial_install or not all(service_options)
@@ -3381,7 +3424,11 @@ def main(argv=None):
         if args.services_bundle:
             bind_initial_services(plan, bundle=args.services_bundle, digest=args.services_digest,
                 source_ref=args.pixel_source_ref)
-        if args.verify_initial:
+        if args.complete_initial:
+            print(json.dumps(complete_initial_install(plan), sort_keys=True, separators=(',', ':')))
+        elif args.inspect_initial_recovery:
+            print(json.dumps(inspect_initial_recovery(plan), sort_keys=True, separators=(',', ':')))
+        elif args.verify_initial:
             options = {'held_revision': args.held_admission_revision} if args.held_admission_revision is not None else {}
             print(json.dumps(verify_initial_install(plan, **options), sort_keys=True, separators=(',', ':')))
         elif args.activate_upgrade:
@@ -3420,7 +3467,7 @@ def main(argv=None):
         print("error: native-service-command-failed", file=sys.stderr)
         return 1
     except (InstallError, KeyError, OSError, ValueError) as error:
-        if args.verify_initial:
+        if args.verify_initial or args.inspect_initial_recovery or args.complete_initial:
             # This command is consumed by the owner recovery coordinator.
             # Detailed configuration/OS errors must not become public logs.
             print('error: native-initial-recovery-proof-failed', file=sys.stderr)
