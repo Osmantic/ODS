@@ -419,11 +419,14 @@ export function ownerAuthorizesPriorSourceReuse(ownerText) {
 
 // Deliberately narrow: a direct instruction to use the read tool on a path.
 // This is a completion obligation, never a grant of filesystem permission.
-function explicitFileReadRequested(text) {
+// Returns the exact recognized path (case and relative prefix preserved) or
+// undefined. The path is quoted as data in the corrective instruction; it is
+// never executed, copied from prior chat, or broadened to other commands.
+function explicitFileReadPath(text) {
   const lane = ownerLaneText(text).trim();
-  if (ownerForbidsTools(text) || /\b(?:if|unless|when|after|never|don't|do not)\b|\?/.test(normalize(lane))) return false;
+  if (ownerForbidsTools(text) || /\b(?:if|unless|when|after|never|don't|do not)\b|\?/.test(normalize(lane))) return undefined;
   const path = /^(?:please\s+)?use\s+the\s+read\s+tool\s+to\s+read\s+((?:\.?\.?\/)?[\w.-]+(?:\/[\w.-]+)*)(?=\s|[.!]?$)/i.exec(lane)?.[1];
-  return Boolean(path && /[/.]/.test(path));
+  return path && /[/.]/.test(path) ? path : undefined;
 }
 
 function claimsMissingFile(text) {
@@ -437,7 +440,7 @@ const UNATTEMPTED_FILE_READ = 'The requested file read was not performed. The ta
 
 export function createCompletionAssurance({englishOnly = false, now = Date.now} = {}) {
   let initialized = false, research = false, portuguese = false, conversational = false, attempts = 0;
-  let fileReadRequested = false, fileReadRecoveryIssued = false, toolAttemptObserved = false;
+  let fileReadRequested = false, fileReadRecoveryIssued = false, toolAttemptObserved = false, fileReadPath; // exact recognized path, retained once at begin
   // Bounded current-run source receipts: URL -> timestamp of the actual
   // successful openedSourceUrls observation. Insertion order is recency order
   // (a re-observation moves the URL to the end and refreshes its timestamp).
@@ -546,7 +549,8 @@ export function createCompletionAssurance({englishOnly = false, now = Date.now} 
         conversational = /^(?:(?:please|por favor)[,\s]+)?(?:traduza|translate|reescreva|rewrite|repita|repeat|diga apenas|say exactly|responda apenas|return exactly|explique|explain|rascunho|draft|exemplo|example)\b/.test(normalize(ownerText).trim()) && !research;
         portuguese = !englishOnly && portugueseDateHint(ownerText);
         priorReuseAuthorized = ownerAuthorizesPriorSourceReuse(ownerText);
-        fileReadRequested = explicitFileReadRequested(ownerText);
+        fileReadPath = explicitFileReadPath(ownerText);
+        fileReadRequested = Boolean(fileReadPath);
       }
       // Native prompt hooks may omit the session key. The first fully bound
       // hook may supply receipts later, but cannot change the owner's intent
@@ -685,7 +689,8 @@ export function createCompletionAssurance({englishOnly = false, now = Date.now} 
           return {action:'revise', reason:'The requested file read was never attempted.', retry:{
             idempotencyKey:'ods-unattempted-file-read', maxAttempts:1,
             instruction:'The owner explicitly requested a file read, but no tool call was attempted. ' +
-              'Use the read tool on the exact path the owner requested and report its observed result. ' +
+              'Use the read tool on this exact path: ' + JSON.stringify(fileReadPath) + '. ' +
+              'Report its observed result. ' +
               'Do not infer that the file exists or is missing. Stay within the owner request and normal permissions. ' +
               'Do not repeat denied or completed work. If the tool is unavailable or the read fails, report that limitation and that the task is incomplete.',
           }};
