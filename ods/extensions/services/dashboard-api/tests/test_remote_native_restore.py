@@ -86,9 +86,13 @@ def route(monkeypatch, tmp_path):
     monkeypatch.setattr(_mod, "_macos_native_llama_present", lambda: state.present)
     monkeypatch.setattr(_mod, "_require_macos_bridge_manager", lambda _: stage("bridge-validation"))
     monkeypatch.setattr(_mod, "_configure_macos_llm_bridge", bridge)
-    monkeypatch.setattr(_mod, "_launch_native_llama_server", lambda *a: stage("launch"))
+    state.identity = (123, 42, 0, 501, 20, 501, 20, 501, 20, str(root / "bin/llama-server"))
+    monkeypatch.setattr(_mod, "_launch_native_llama_server", lambda *a: stage("launch") or state.identity)
     monkeypatch.setattr(_mod, "_stop_macos_native_llama_server", stop)
-    monkeypatch.setattr(_mod, "_wait_for_macos_native_llama_health", lambda _: stage("health"))
+    def wait_health(_env, **kw):
+        state.wait_identity = kw.get("expected_identity")
+        stage("health")
+    monkeypatch.setattr(_mod, "_wait_for_macos_native_llama_health", wait_health)
     return state
 
 
@@ -101,6 +105,7 @@ def test_deactivation_proves_local_before_rebind_and_preserves_live_engine(route
     assert _mod.load_env(route.env)["ODS_MACOS_LLM_BRIDGE_ENABLED"] == "1"
     assert ("launch" in route.events) is not present
     assert "stop" not in route.events
+    assert route.wait_identity == (None if present else route.identity)
     order = ["health", "consumer-start", "consumer-proof", "proof:local", "apply", "finish:commit"]
     assert [route.events.index(x) for x in order] == sorted(route.events.index(x) for x in order)
     if not present:
@@ -188,27 +193,19 @@ def test_other_routes_do_not_touch_native_engine(route, monkeypatch, kind):
     assert not {"launch", "stop", "health", "bridge:local", "bridge:cloud"}.intersection(route.events)
 
 
-@pytest.mark.parametrize("job_code,processes,expected", [
-    (0, "", True), (113, "12 /usr/bin/python unrelated\n", False),
-    (113, "12 {binary} --model /private/model.gguf\n", True),
-    (113, "12 /other/llama-server --model {models}/model.gguf\n", True),
-    (113, "12 /other/llama-server --model /unrelated/model.gguf\n", False),
-])
-def test_presence_uses_job_or_owned_command_not_stale_pid(tmp_path, monkeypatch, job_code, processes, expected):
+@pytest.mark.parametrize("job_code,present", [(0, True), (113, False)])
+def test_presence_preserves_loaded_job_or_checks_native_processes(tmp_path, monkeypatch, job_code, present):
     root = tmp_path / "path with spaces"
     (root / "data").mkdir(parents=True)
-    (root / "data/.llama-server.pid").write_text("12")
-    before = (root / "data/.llama-server.pid").read_bytes()
+    pid_file = root / "data/.llama-server.pid"
+    pid_file.write_text("12")
     monkeypatch.setattr(_mod, "INSTALL_DIR", root)
     monkeypatch.setattr(_mod.os, "getuid", lambda: 501, raising=False)
-
-    def run(cmd, **kw):
-        return subprocess.CompletedProcess(cmd, job_code if cmd[0] == "launchctl" else 0,
-                                          processes.format(binary=root / "bin/llama-server", models=root / "data/models"), "")
-
-    monkeypatch.setattr(_mod.subprocess, "run", run)
-    assert _mod._macos_native_llama_present() is expected
-    assert (root / "data/.llama-server.pid").read_bytes() == before
+    monkeypatch.setattr(_mod.subprocess, "run", lambda cmd, **kw:
+                        subprocess.CompletedProcess(cmd, job_code, "", ""))
+    monkeypatch.setattr(_mod, "_macos_native_llama_processes", lambda env: ())
+    assert _mod._macos_native_llama_present() is present
+    assert pid_file.read_text() == "12"
 
 
 @pytest.mark.parametrize("failure", ["launchctl", "ps", "timeout"])
