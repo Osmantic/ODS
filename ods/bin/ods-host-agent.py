@@ -5985,9 +5985,9 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
                       and native_env.get("GPU_BACKEND", "").lower() == "apple"
                       and previous["odsMode"] == "local"
                       and not _vllm_engine(native_env))
-    native_present = _macos_native_llama_present() if restore_native else False
-    native_start_attempted = False
-    native_identity = None
+    if restore_native:
+        _macos_native_llama_present()  # Fail before mutation on inspection errors.
+    native_receipt = None
     native_bridge_attempted = False
     owns_transaction = transaction is None
     if owns_transaction:
@@ -6013,17 +6013,17 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
             _require_macos_bridge_manager(env_path)
             native_bridge_attempted = True
             _configure_macos_llm_bridge(env_path)
-            # Recheck after bridge setup: do not replace a runtime that an
-            # owner started while container access was being restored.
-            if not native_present and not _macos_native_llama_present():
-                native_start_attempted = True
-                native_identity = _launch_native_llama_server(
-                    env_path, INSTALL_DIR / "bin" / "llama-server",
-                    INSTALL_DIR / "data" / "llama-server.log",
-                    INSTALL_DIR / "data" / ".llama-server.pid",
-                )
+            # The manager rechecks under its lifecycle lock. A live producer
+            # is preserved; a stopped owned job can be restored without guessing
+            # from the existence of its launchd registration or PID file.
+            native_receipt = _launch_native_llama_server(
+                env_path, INSTALL_DIR / "bin" / "llama-server",
+                INSTALL_DIR / "data" / "llama-server.log",
+                INSTALL_DIR / "data" / ".llama-server.pid",
+                preserve_existing=True,
+            )
             _wait_for_macos_native_llama_health(
-                load_env(env_path), expected_identity=native_identity,
+                load_env(env_path), expected_identity=native_receipt["identity"],
             )
         litellm_attempted = True
         litellm_recreated = _restart_existing_container(
@@ -6068,9 +6068,11 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
         if transaction is not None:
             transaction.verify_held()
         rollback_errors: list[str] = []
-        if native_start_attempted:
+        if getattr(exc, "native_cleanup_uncertain", False):
+            rollback_errors.append("native runtime: startup cleanup remains unconfirmed")
+        if native_receipt is not None and native_receipt.get("created"):
             try:
-                _stop_macos_native_llama_server(INSTALL_DIR / "data" / ".llama-server.pid")
+                _rollback_macos_native_llama_start(native_receipt)
             except Exception as rollback_exc:
                 rollback_errors.append(f"native runtime: {rollback_exc}")
         env_restored = False
@@ -21472,6 +21474,12 @@ def _select_runtime_profile(model: dict, env: dict) -> dict | None:
     return None
 
 
+def _rollback_macos_native_llama_start(receipt: dict) -> None:
+    from macos_native_service import NativeService
+    binary = Path(receipt["identity"][-1])
+    NativeService(INSTALL_DIR, binary, INSTALL_DIR / "data" / ".llama-server.pid").rollback(receipt)
+
+
 def _macos_native_llama_binaries(env: dict) -> tuple[Path, ...]:
     """Use deployment metadata, never a model path or executable basename."""
     binaries = [INSTALL_DIR / "bin" / "llama-server"]
@@ -21544,8 +21552,12 @@ def _macos_native_llama_present() -> bool:
             capture_output=True, text=True, timeout=10, check=False,
             env={**os.environ, "LC_ALL": "C"},
         )
-        if not (probe.returncode in {1, 3, 5}
-                and f"Could not find domain for {domain}" in probe.stderr.splitlines()):
+        kind, owner = domain.split("/", 1)
+        missing_messages = {f"Could not find domain for {domain}"}
+        if kind == "gui":
+            missing_messages.add(f"Could not find domain for user gui: {owner}")
+        if not (probe.returncode in {1, 3, 5, 112}
+                and missing_messages.intersection(probe.stderr.splitlines())):
             raise RuntimeError("Could not inspect the native llama LaunchAgent")
     return bool(_macos_native_llama_processes(load_env(INSTALL_DIR / ".env")))
 
@@ -21746,7 +21758,8 @@ def _restart_macos_native_llama_server(
     _launch_native_llama_server(env_path, llama_bin, llama_log, pid_file)
 
 
-def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path, pid_file: Path):
+def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path, pid_file: Path,
+                                *, preserve_existing=False):
     """Launch the native (Metal) llama-server process and write its PID file.
 
     Reads the current .env for model and llama.cpp runtime settings so the
@@ -21838,6 +21851,9 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         args.append("--no-cache-prompt")
     llama_log.parent.mkdir(parents=True, exist_ok=True)
     pid_file.parent.mkdir(parents=True, exist_ok=True)
+    if platform.system() == "Darwin" and preserve_existing:
+        from macos_native_service import NativeService
+        return NativeService(INSTALL_DIR, llama_bin, pid_file).ensure(args[1:])
     service_script = INSTALL_DIR / "installers" / "macos" / "lib" / "native-llama-service.sh"
     if platform.system() == "Darwin" and service_script.is_file():
         bash = _find_usable_bash()

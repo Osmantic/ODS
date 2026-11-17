@@ -1,7 +1,6 @@
 import errno
 import os
-import subprocess
-from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -41,7 +40,7 @@ def fake_identity(monkeypatch):
     """Install a controllable process_identity into pixel_macos_process."""
     import pixel_macos_process
 
-    state = {"calls": [], "handler": None}
+    state: dict[str, Any] = {"calls": [], "handler": None}
 
     def fake(pid, *, uid, gid, executable):
         state["calls"].append((pid, uid, gid, executable))
@@ -53,7 +52,7 @@ def fake_identity(monkeypatch):
 
 @pytest.fixture
 def fake_ps(monkeypatch):
-    state = {"stdout": "", "returncode": 0, "calls": []}
+    state: dict[str, Any] = {"stdout": "", "returncode": 0, "calls": []}
 
     def fake_run(cmd, **kwargs):
         state["calls"].append((cmd, kwargs))
@@ -68,7 +67,7 @@ def fake_ps(monkeypatch):
 @pytest.fixture
 def fake_launchctl(monkeypatch):
     """Map (domain, service) -> (returncode, stderr)."""
-    state = {"responses": {}, "calls": []}
+    state: dict[str, Any] = {"responses": {}, "calls": []}
 
     def fake_run(cmd, **kwargs):
         state["calls"].append((cmd, kwargs))
@@ -84,7 +83,7 @@ def fake_launchctl(monkeypatch):
 
 @pytest.fixture
 def fake_profile(monkeypatch):
-    state = {"profile": None, "calls": []}
+    state: dict[str, Any] = {"profile": None, "calls": []}
 
     def fake(install_data, gguf):
         state["calls"].append((install_data, gguf))
@@ -332,3 +331,16 @@ def test_reused_pid_never_proves_original_process_live(install_dir, fake_identit
         raise ProcessIdentityError(error)
     fake_identity["handler"] = fail
     assert not _mod._macos_native_llama_identity_live(identity())
+
+
+def test_present_accepts_observed_macos_missing_gui_response(install_dir, fake_launchctl, monkeypatch):
+    uid = os.getuid()
+    fake_launchctl["responses"][(f"gui/{uid}/com.ods.llama-server",)] = (112, "")
+    fake_launchctl["responses"][(f"gui/{uid}",)] = (112, f"Bad request.\nCould not find domain for user gui: {uid}\n")
+    observed = []
+    def inspect(env):
+        observed.append(env)
+        return ()
+    monkeypatch.setattr(_mod, "_macos_native_llama_processes", inspect)
+    assert not _mod._macos_native_llama_present()
+    assert len(observed) == 1

@@ -87,8 +87,15 @@ def route(monkeypatch, tmp_path):
     monkeypatch.setattr(_mod, "_require_macos_bridge_manager", lambda _: stage("bridge-validation"))
     monkeypatch.setattr(_mod, "_configure_macos_llm_bridge", bridge)
     state.identity = (123, 42, 0, 501, 20, 501, 20, 501, 20, str(root / "bin/llama-server"))
-    monkeypatch.setattr(_mod, "_launch_native_llama_server", lambda *a: stage("launch") or state.identity)
-    monkeypatch.setattr(_mod, "_stop_macos_native_llama_server", stop)
+    def ensure(*args, **kwargs):
+        assert kwargs == {"preserve_existing": True}
+        stage("native-ensure")
+        if not state.present:
+            stage("launch")
+        return {"created": not state.present, "identity": state.identity}
+    monkeypatch.setattr(_mod, "_launch_native_llama_server", ensure)
+    monkeypatch.setattr(_mod, "_rollback_macos_native_llama_start", stop)
+    monkeypatch.setattr(_mod, "_stop_macos_native_llama_server", lambda *a: pytest.fail("broad rollback stop"))
     def wait_health(_env, **kw):
         state.wait_identity = kw.get("expected_identity")
         stage("health")
@@ -105,7 +112,7 @@ def test_deactivation_proves_local_before_rebind_and_preserves_live_engine(route
     assert _mod.load_env(route.env)["ODS_MACOS_LLM_BRIDGE_ENABLED"] == "1"
     assert ("launch" in route.events) is not present
     assert "stop" not in route.events
-    assert route.wait_identity == (None if present else route.identity)
+    assert route.wait_identity == route.identity
     order = ["health", "consumer-start", "consumer-proof", "proof:local", "apply", "finish:commit"]
     assert [route.events.index(x) for x in order] == sorted(route.events.index(x) for x in order)
     if not present:
@@ -113,7 +120,7 @@ def test_deactivation_proves_local_before_rebind_and_preserves_live_engine(route
     assert not _mod._remote_provider_activation_state_path().exists()
 
 
-@pytest.mark.parametrize("fault", ["launch", "health", "consumer-start", "consumer-proof", "proof:local", "apply"])
+@pytest.mark.parametrize("fault", ["health", "consumer-start", "consumer-proof", "proof:local", "apply"])
 def test_failed_return_cleans_attempted_start_and_restores_remote(route, fault):
     route.fault = fault
     with pytest.raises(RuntimeError, match="injected"):
@@ -143,9 +150,13 @@ def test_failed_cleanup_keeps_maintenance_held(route):
 
 
 def test_engine_started_during_bridge_setup_is_preserved(route, monkeypatch):
-    inspections = iter([False, True])
-    monkeypatch.setattr(_mod, "_macos_native_llama_present", lambda: next(inspections))
+    original = _mod._configure_macos_llm_bridge
+    def bridge(path):
+        original(path)
+        route.present = True
+    monkeypatch.setattr(_mod, "_configure_macos_llm_bridge", bridge)
     _mod._deactivate_remote_provider_route()
+    assert "native-ensure" in route.events
     assert "launch" not in route.events and "stop" not in route.events
 
 
@@ -243,3 +254,24 @@ def test_cold_health_wait_is_bounded_and_retries_refused_connection(monkeypatch,
         with pytest.raises(RuntimeError, match="did not become healthy"):
             _mod._wait_for_macos_native_llama_health({})
         assert clock[0] == 300 and len(calls) == 151
+
+
+def test_launch_failure_uses_manager_cleanup_without_broad_stop(route):
+    route.fault = "launch"
+    with pytest.raises(RuntimeError, match="injected"):
+        _mod._deactivate_remote_provider_route()
+    assert "stop" not in route.events
+    assert {p: p.read_bytes() for p in route.originals} == route.originals
+    assert route.events[-1] == "finish:rollback"
+
+
+def test_uncertain_startup_cleanup_restores_config_and_holds_maintenance(route, monkeypatch):
+    from macos_native_service import NativeServiceUncertain
+    def fail(*args, **kwargs):
+        raise NativeServiceUncertain("owned producer could not be stopped")
+    monkeypatch.setattr(_mod, "_launch_native_llama_server", fail)
+    with pytest.raises(_mod._PixelModelTransactionUncertain, match="rollback is incomplete"):
+        _mod._deactivate_remote_provider_route()
+    assert "stop" not in route.events
+    assert not route.tx.completed
+    assert {p: p.read_bytes() for p in route.originals} == route.originals
