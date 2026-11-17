@@ -1,288 +1,48 @@
-"""Exercise LaunchAgent serialization and lifecycle without touching launchd."""
+"""Shell entrypoint contracts; native ownership is tested in the manager suites."""
+import json
 import os
 from pathlib import Path
-import plistlib
-import select
-import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "installers/macos/lib/native-llama-service.sh"
 
 
-class NativeServiceTests(unittest.TestCase):
-    def live_owned_process(self, binary):
-        # Copied Apple platform binaries can die on launch. Compile a fixture
-        # and require a readiness message before testing whether stop reaps it.
-        compiler = shutil.which("cc")
-        if compiler is None:
-            self.skipTest("cc is required to build a live native process fixture")
-        subprocess.run(
-            [compiler, "-x", "c", "-o", str(binary), "-"],
-            input='#include <stdio.h>\n#include <unistd.h>\n'
-                  'int main(void) { puts("ready"); fflush(stdout); for (;;) pause(); }\n',
-            text=True, capture_output=True, check=True, timeout=30,
-        )
-        child = subprocess.Popen([str(binary), "120"], stdout=subprocess.PIPE)
+class NativeServiceWrapperTests(unittest.TestCase):
+    def test_shell_preserves_arguments_and_action(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "install & spaces"
+            binary = root / "bin/llama-server"
+            manager = root / "bin/macos_native_service.py"
+            manager.parent.mkdir(parents=True)
+            manager.write_text("import sys,json; print(json.dumps(sys.argv[1:]))\n")
+            args = [str(root), str(binary), str(root / "data/native.pid")]
+            env = {**os.environ, "ODS_PYTHON_CMD": sys.executable}
+            for action in ("start", "stop", "status"):
+                tail = ["--model", str(root / "model's & file.gguf"), "--ctx-size", "4096"] if action == "start" else []
+                result = subprocess.run(["bash", str(SCRIPT), action, *args, *tail],
+                                        env=env, text=True, capture_output=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), [action, *args, *tail])
 
-        def cleanup():
-            if child.poll() is None:
-                child.kill()
-            child.wait(timeout=5)
-            child.stdout.close()
-
-        self.addCleanup(cleanup)
-        self.assertTrue(select.select([child.stdout], [], [], 5)[0], "fixture did not become ready")
-        self.assertEqual(child.stdout.readline(), b"ready\n")
-        self.assertIsNone(child.poll(), "fixture died before stop")
-        command = subprocess.check_output(
-            ["ps", "-p", str(child.pid), "-o", "command="], text=True,
-        ).strip()
-        self.assertEqual(command, f"{binary} 120")
-        return child
-
-    def test_stop_reaps_untracked_install_owned_process(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            commands = root / "commands"
-            commands.mkdir()
-            (commands / "launchctl").write_text("#!/bin/sh\nexit 1\n")
-            (commands / "launchctl").chmod(0o700)
-            install = root / "ods"
-            binary = install / "bin" / "llama-server"
-            binary.parent.mkdir(parents=True)
-            child = self.live_owned_process(binary)
-            pid_file = install / "data" / ".llama-server.pid"
-            pid_file.parent.mkdir(parents=True)
-            pid_file.write_text("999999\n")
-            env = dict(
-                os.environ,
-                HOME=str(root),
-                PATH=f"{commands}:{os.environ['PATH']}",
-            )
-
-            result = subprocess.run(
-                ["bash", str(SCRIPT), "stop", str(install), str(binary), str(pid_file)],
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            child.wait(timeout=5)
-            self.assertIsNotNone(child.returncode)
-            self.assertFalse(pid_file.exists())
-
-    def test_stop_reaps_process_when_install_path_contains_spaces(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            commands = root / "commands"
-            commands.mkdir()
-            (commands / "launchctl").write_text("#!/bin/sh\nexit 1\n")
-            (commands / "launchctl").chmod(0o700)
-            install = root / "ods install with spaces"
-            binary = install / "bin" / "llama-server"
-            binary.parent.mkdir(parents=True)
-            child = self.live_owned_process(binary)
-            pid_file = install / "data" / ".llama-server.pid"
-            pid_file.parent.mkdir(parents=True)
-            pid_file.write_text("999999\n")
-            env = dict(
-                os.environ,
-                HOME=str(root),
-                PATH=f"{commands}:{os.environ['PATH']}",
-            )
-
-            result = subprocess.run(
-                ["bash", str(SCRIPT), "stop", str(install), str(binary), str(pid_file)],
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            child.wait(timeout=5)
-            self.assertIsNotNone(child.returncode)
-            self.assertFalse(pid_file.exists())
-
-    def test_stop_spares_processes_that_only_mention_llama_server(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            commands = root / "commands"
-            commands.mkdir()
-            (commands / "launchctl").write_text("#!/bin/sh\nexit 1\n")
-            (commands / "launchctl").chmod(0o700)
-            install = root / "ods install with spaces"
-            binary = install / "bin" / "llama-server"
-            binary.parent.mkdir(parents=True)
-            model_argument = ["--model", str(install / "data" / "models" / "model.gguf")]
-            sleeper = ["-c", "import time; time.sleep(120)"]
-            lookalike = root / "bin" / "notllama-server"
-            lookalike.parent.mkdir()
-            lookalike.symlink_to(sys.executable)
-            bystanders = [
-                subprocess.Popen([sys.executable, *sleeper, "llama-server", *model_argument]),
-                subprocess.Popen([str(lookalike), *sleeper, *model_argument]),
-            ]
-            for bystander in bystanders:
-                self.addCleanup(bystander.wait, timeout=5)
-                self.addCleanup(bystander.kill)
-            pid_file = install / "data" / ".llama-server.pid"
-            pid_file.parent.mkdir(parents=True)
-            env = dict(
-                os.environ,
-                HOME=str(root),
-                PATH=f"{commands}:{os.environ['PATH']}",
-            )
-
-            result = subprocess.run(
-                ["bash", str(SCRIPT), "stop", str(install), str(binary), str(pid_file)],
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            for bystander in bystanders:
-                self.assertIsNone(bystander.poll(), bystander.args)
-
-    def test_live_old_process_blocks_replacement_and_preserves_recovery_files(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            commands = root / 'commands'
-            commands.mkdir()
-            loaded = root / 'loaded'
-            loaded.touch()
-            (commands / 'launchctl').write_text('''#!/bin/sh
-case "$1" in
-  print) test -f "$TEST_STATE" || exit 1; printf '\\tpid = %s\\n' "$TEST_PID" ;;
-  bootout) rm "$TEST_STATE" ;;
-  bootstrap) touch "$TEST_STATE.unexpected-bootstrap" ;;
-  *) exit 2 ;;
-esac
-''')
-            (commands / 'sleep').write_text('#!/bin/sh\nexit 0\n')
-            for path in commands.iterdir():
-                path.chmod(0o700)
-            env = dict(os.environ, HOME=str(root), PATH=f"{commands}:{os.environ['PATH']}",
-                       TEST_STATE=str(loaded), TEST_PID=str(os.getpid()))
-            plist = root / 'Library/LaunchAgents/com.ods.llama-server.plist'
-            plist.parent.mkdir(parents=True)
-            plist.write_bytes(b'original plist retained')
-            pid_file = root / 'native.pid'
-            pid_file.write_text(str(os.getpid()))
-            for action in ('start', 'stop'):
-                loaded.touch()
-                result = subprocess.run(['bash', str(SCRIPT), action, str(root), '/bin/sleep',
-                                         str(pid_file)], env=env, capture_output=True, text=True, timeout=10)
+    def test_missing_manager_fails_without_legacy_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pid = root / "native.pid"
+            pid.write_text(str(os.getpid()))
+            for action in ("start", "stop", "status"):
+                result = subprocess.run(["bash", str(SCRIPT), action, str(root), str(root / "llama-server"), str(pid)],
+                                        text=True, capture_output=True, timeout=10)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn('shutdown is not confirmed', result.stderr)
-                self.assertEqual(plist.read_bytes(), b'original plist retained')
-                self.assertEqual(pid_file.read_text(), str(os.getpid()))
-                self.assertFalse(Path(str(loaded) + '.unexpected-bootstrap').exists())
+                self.assertIn("manager is missing", result.stderr)
+                self.assertEqual(pid.read_text(), str(os.getpid()))
 
-    def test_start_and_stop_preserve_exact_arguments(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            commands = root / "commands"
-            commands.mkdir()
-            launchctl = commands / "launchctl"
-            launchctl.write_text('''#!/bin/sh
-case "$1" in
-  print) test -f "$TEST_STATE" || exit 1; printf '\\tpid = %s\\n' "$TEST_PID" ;;
-  bootstrap)
-    if test ! -f "$TEST_STATE.retry"; then
-      touch "$TEST_STATE.retry"
-      exit 5
-    fi
-    touch "$TEST_STATE" ;;
-  bootout) rm "$TEST_STATE"; kill "$TEST_PID" ;;
-  kickstart) test -f "$TEST_STATE" ;;
-  *) exit 2 ;;
-esac
-''')
-            launchctl.chmod(0o700)
-            child = subprocess.Popen(['sleep', '120'])
-            self.addCleanup(lambda: child.poll() is None and child.terminate())
-            reaper = threading.Thread(target=child.wait, daemon=True)
-            reaper.start()
-            env = dict(os.environ, HOME=str(root), PATH=f"{commands}:{os.environ['PATH']}",
-                       TEST_STATE=str(root / "loaded"), TEST_PID=str(child.pid))
-            install = root / "ODS & quoted ' folder"
-            install.mkdir()
-            pid_file = install / "native.pid"
-            model = install / "data" / "models" / "model & ' quoted.gguf"
-            model.parent.mkdir(parents=True)
-            model.write_bytes(b"model")
-            arguments = ["--model", str(model), "--port", "18081"]
-            command = ["bash", str(SCRIPT), "start", str(install), "/bin/sleep", str(pid_file), *arguments]
-            subprocess.run(command, env=env, check=True)
-            plist = root / "Library/LaunchAgents/com.ods.llama-server.plist"
-            payload = plistlib.loads(plist.read_bytes())
-            self.assertEqual(payload["ProgramArguments"], ["/bin/sleep", *arguments])
-            self.assertEqual(payload["WorkingDirectory"], str(install))
-            self.assertEqual(pid_file.read_text().strip(), str(child.pid))
-            command[2] = "stop"
-            subprocess.run(command[:6], env=env, check=True)
-            reaper.join(timeout=5)
-            self.assertIsNotNone(child.poll())
-            self.assertFalse(plist.exists())
-            self.assertFalse(pid_file.exists())
-            subprocess.run(command[:6], env=env, check=True)
-
-    def test_start_survives_transient_launchctl_print_delay(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            commands = root / "commands"
-            commands.mkdir()
-            launchctl = commands / "launchctl"
-            launchctl.write_text('''#!/bin/sh
-case "$1" in
-  print)
-    test -f "$TEST_STATE" || exit 1
-    if test -f "$TEST_STATE.kickstarted" && test ! -f "$TEST_STATE.retried"; then
-      touch "$TEST_STATE.retried"
-      exit 113
-    fi
-    printf '\\tpid = %s\\n' "$TEST_PID" ;;
-  bootstrap) touch "$TEST_STATE" ;;
-  bootout) rm -f "$TEST_STATE"; kill "$TEST_PID" 2>/dev/null ;;
-  kickstart) touch "$TEST_STATE.kickstarted" ;;
-  *) exit 2 ;;
-esac
-''')
-            launchctl.chmod(0o700)
-            (commands / "sleep").write_text("#!/bin/sh\nexit 0\n")
-            (commands / "sleep").chmod(0o700)
-            child = subprocess.Popen(["sleep", "120"])
-            self.addCleanup(lambda: child.poll() is None and child.terminate())
-            reaper = threading.Thread(target=child.wait, daemon=True)
-            reaper.start()
-            cur_path = os.environ.get("PATH", "")
-            env = dict(
-                os.environ,
-                HOME=str(root),
-                PATH=f"{commands}:{cur_path}",
-                TEST_STATE=str(root / "loaded"),
-                TEST_PID=str(child.pid),
-            )
-            install = root / "ods"
-            install.mkdir()
-            pid_file = install / "native.pid"
-            model = install / "model.gguf"
-            model.write_bytes(b"model")
-            arguments = ["--model", str(model), "--port", "18081"]
-            command = ["bash", str(SCRIPT), "start", str(install), "/bin/sleep", str(pid_file), *arguments]
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, f"Failed with rc={result.returncode}: {result.stderr}")
-            self.assertEqual(pid_file.read_text().strip(), str(child.pid))
-            self.assertTrue((root / "loaded.retried").exists())
+    def test_unknown_action_is_rejected(self):
+        result = subprocess.run(["bash", str(SCRIPT), "bad", "/x", "/x/bin", "/x/pid"],
+                                text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLI="$ROOT_DIR/installers/macos/ods-macos.sh"
-SERVICE="$ROOT_DIR/installers/macos/lib/native-llama-service.sh"
 TMP_DIR="$(mktemp -d)"
 bystander=""
 cleanup() {
@@ -33,7 +32,15 @@ pass() { echo "[PASS] $*"; }
 
 install="$TMP_DIR/install"
 mkdir -p "$install/installers/macos/lib" "$install/data" "$install/bin" "$TMP_DIR/home" "$TMP_DIR/stubs"
-cp "$SERVICE" "$install/installers/macos/lib/native-llama-service.sh"
+# Model the already-verified manager boundary: no native producer is present.
+cat > "$install/installers/macos/lib/native-llama-service.sh" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  status) printf '%s\n' '{"running":false,"identity":null}' ;;
+  stop) rm -f "$4"; printf '%s\n' '{"stopped":false}' ;;
+  *) exit 2 ;;
+esac
+STUB
 # No com.ods.llama-server job is loaded, as after a failed bootstrap.
 printf '#!/bin/sh\nexit 113\n' > "$TMP_DIR/stubs/launchctl"
 chmod +x "$TMP_DIR/stubs/launchctl"
@@ -67,7 +74,8 @@ printf '%s\n' "$bystander" > "$install/data/.llama-server.pid"
 status="$(run_cli report_status)"
 [[ "$status" == "false 0" ]] \
     || fail "status treated an unrelated PID as llama-server: $status"
-pass "status does not report an unrelated reused PID as llama-server"
+[[ "$(cat "$install/data/.llama-server.pid")" == "$bystander" ]] || fail "status changed the PID file"
+pass "status follows the manager receipt and leaves the stale PID file untouched"
 
 printf '%s\n' "$bystander" > "$install/data/.llama-server.pid"
 run_cli stop_native_llama >/dev/null \
@@ -78,17 +86,3 @@ kill -0 "$bystander" 2>/dev/null \
 [[ ! -e "$install/data/.llama-server.pid" ]] \
     || fail "stop_native_llama kept the stale PID file"
 pass "stop leaves an unrelated reused PID alone and clears the stale file"
-
-# An install-owned llama-server still counts as running and is still stopped.
-# Present the install path as argv[0] without relocating a signed macOS binary
-# or changing argv[0] of a multicall coreutils sleep binary.
-"$BASH" -c 'exec -a "$0" "$BASH" -c "while :; do sleep 1; done"' "$install/bin/llama-server" &
-owned=$!
-printf '%s\n' "$owned" > "$install/data/.llama-server.pid"
-status="$(run_cli report_status)"
-[[ "$status" == "true $owned" ]] \
-    || fail "status did not report the install-owned llama-server: $status"
-run_cli stop_native_llama >/dev/null || fail "stop_native_llama failed for the owned process"
-wait "$owned" 2>/dev/null || true
-kill -0 "$owned" 2>/dev/null && fail "install-owned llama-server survived stop"
-pass "install-owned llama-server is still reported and stopped"

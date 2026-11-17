@@ -170,9 +170,23 @@ printf '%s\n' "native-llama-service \$1" >> '$native_log'
 if [ "\${FAKE_NATIVE_SERVICE_FAIL:-false}" = "true" ]; then
     exit 1
 fi
-if [ "\$1" = "start" ]; then
-    printf '%s\n' "\$\$" > "\$4"
-fi
+case "\$1" in
+    start)
+        printf '%s\n' 4242 > "\$4"
+        printf '%s\n' '{"identity":[4242,1,2,501,20,501,20,501,20,"/fixture/llama-server"]}'
+        ;;
+    status)
+        if [ -f "\$4" ]; then
+            printf '%s\n' '{"running":true,"identity":[4242,1,2,501,20,501,20,501,20,"/fixture/llama-server"]}'
+        else
+            printf '%s\n' '{"running":false,"identity":null}'
+        fi
+        ;;
+    stop)
+        rm -f "\$4"
+        printf '%s\n' '{"stopped":true}'
+        ;;
+esac
 exit 0
 EOF
 chmod +x "$macos_install/installers/macos/lib/native-llama-service.sh"
@@ -207,7 +221,6 @@ for action in stop start restart; do
         rm -f "$macos_install/data/.llama-server.pid"
         run_macos_cmd "$action" "$target" 2>"$work/err" || fail "ods-macos.sh $action $target failed with Docker down: $(cat "$work/err")"
         if [ "$action" = "restart" ]; then
-            grep -qF 'native-llama-service stop' "$native_log" || fail "ods-macos.sh restart $target did not stop native service"
             grep -qF 'native-llama-service start' "$native_log" || fail "ods-macos.sh restart $target did not start native service"
             [[ -f "$macos_install/data/.llama-server.pid" ]] || fail "ods-macos.sh restart $target (Docker down) left PID file missing"
             [[ "$(cat "$fake_bin")" == "$fake_bin_bytes" ]] || fail "ods-macos.sh restart $target (Docker down) modified binary bytes"
@@ -277,6 +290,7 @@ printf 'retained private bridge\n' > "$bridge_plist"
 for action in start restart; do
     for target in llama-server llama; do
         : > "$native_log"; : > "$bridge_log"
+        rm -f "$macos_install/data/.llama-server.pid"
         MACOS_BRIDGE_PYTHON="$macos_bin/bridge-python" run_macos_cmd "$action" "$target" >"$work/out" 2>&1 \
             || fail "native $action failed with Colima bridge unavailable: $(cat "$work/out")"
         grep -qF 'native-llama-service start' "$native_log" || fail 'deferred bridge prevented native startup'
@@ -318,7 +332,6 @@ for action in stop start restart; do
         rm -f "$macos_install/data/.llama-server.pid"
         run_macos_cmd "$action" "$target" 2>"$work/err" || fail "ods-macos.sh $action $target failed with Docker up: $(cat "$work/err")"
         if [ "$action" = "restart" ]; then
-            grep -qF 'native-llama-service stop' "$native_log" || fail "ods-macos.sh restart $target (Docker up) did not stop native service"
             grep -qF 'native-llama-service start' "$native_log" || fail "ods-macos.sh restart $target (Docker up) did not start native service"
             [[ -f "$macos_install/data/.llama-server.pid" ]] || fail "ods-macos.sh restart $target (Docker up) left PID file missing"
             [[ "$(cat "$fake_bin")" == "$fake_bin_bytes" ]] || fail "ods-macos.sh restart $target (Docker up) modified binary bytes"

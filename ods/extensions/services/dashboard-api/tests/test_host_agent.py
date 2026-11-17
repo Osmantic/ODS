@@ -7279,6 +7279,13 @@ class TestModelActivationModeAndMacosBridge:
         monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
         monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        identity_calls = []
+
+        def native_identity(pid, executable):
+            identity_calls.append((pid, executable))
+            return (pid, 1, 2, 501, 20, 501, 20, 501, 20, str(executable))
+
+        monkeypatch.setattr(_mod, "_macos_native_llama_identity", native_identity)
         monkeypatch.setattr(
             _mod.subprocess,
             "Popen",
@@ -7288,12 +7295,14 @@ class TestModelActivationModeAndMacosBridge:
         )
 
         _mod._stop_macos_native_llama_server(pid_file)
-        _mod._launch_native_llama_server(
+        receipt = _mod._launch_native_llama_server(
             env_path,
             llama_bin,
             install_dir / "data" / "llama.log",
             pid_file,
         )
+        assert identity_calls == [(4321, llama_bin)]
+        assert receipt[0] == 4321
 
         assert calls[0][0] == [
             "/bin/bash",
