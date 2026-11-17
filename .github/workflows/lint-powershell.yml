@@ -472,6 +472,16 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-llama-memory-budget.ps1
 
+      - name: Required Windows model gateways (PowerShell 7)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: ./tests/test-windows-required-model-gateway.ps1
+
+      - name: Required Windows model gateways (Windows PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-required-model-gateway.ps1
+
       - name: Windows OpenCode Runtime
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
