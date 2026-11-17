@@ -23,6 +23,9 @@ lifecycle to recreate the engine. A normal same-model upgrade preserves valid
 values on the same container backend. Reselection or a backend change drops the
 retained values. Invalid retained values are discarded without discarding the
 active model. Lost tuning is not inferred from a model-state receipt.
+This retention also applies to the legacy PowerShell installer for local
+NVIDIA and CPU containers. Native Windows AMD inference, cloud mode, and
+other engines do not inherit these container settings.
 
 These are operator settings, not per-model catalog recommendations. Ordinary
 model activation can retain them: revalidate them after every model change.
