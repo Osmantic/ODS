@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -183,6 +184,7 @@ def test_restart_native_llama_server_logic(monkeypatch, tmp_path):
     fake_model = tmp_path / "model.gguf"
     fake_model.write_text("weights", encoding="utf-8")
 
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(native_llm, "find_llama_server_binary", lambda: fake_bin)
     # Return real dict shape for high_performance
     monkeypatch.setattr(
@@ -191,8 +193,8 @@ def test_restart_native_llama_server_logic(monkeypatch, tmp_path):
         lambda: {"mode": "high_performance", "preferenceCode": 2, "preferDiscreteGpu": True},
     )
 
-    killed = []
-    spawned = []
+    killed: list[list[str]] = []
+    spawned: list[list[str]] = []
 
     def fake_run(args, **kwargs):
         killed.append(args)
@@ -258,7 +260,7 @@ def test_restart_native_llama_server_power_saving_mode(monkeypatch, tmp_path):
         lambda: {"mode": "power_saving", "preferenceCode": 1, "preferDiscreteGpu": False},
     )
 
-    spawned = []
+    spawned: list[list[str]] = []
 
     def fake_popen(cmd, **kwargs):
         spawned.append(cmd)
@@ -295,12 +297,13 @@ def test_restart_native_llama_server_power_saving_mode(monkeypatch, tmp_path):
 
 def test_restart_native_llama_server_preserves_unrelated_process(monkeypatch, tmp_path):
     """Verify that an unrelated/foreign llama-server process is never terminated."""
+    monkeypatch.setattr(sys, "platform", "win32")
     foreign_pid = 9999
     fake_bin = tmp_path / "llama-server.exe"
     fake_bin.write_text("binary", encoding="utf-8")
 
     # With no managed PID, stop_managed_native_llama_server should do nothing
-    killed = []
+    killed: list[list[str]] = []
     monkeypatch.setattr(native_llm, "_read_managed_llama_pid", lambda: None)
     monkeypatch.setattr("subprocess.run", lambda args, **kwargs: killed.append(args))
 
@@ -331,7 +334,7 @@ def test_restart_native_llama_server_fallback_on_crash(monkeypatch, tmp_path):
         lambda: {"mode": "high_performance", "preferenceCode": 2, "preferDiscreteGpu": True},
     )
 
-    attempts = []
+    attempts: list[list[str]] = []
 
     def fake_popen(cmd, **kwargs):
         attempts.append(cmd)
