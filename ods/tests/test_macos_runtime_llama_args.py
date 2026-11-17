@@ -627,9 +627,10 @@ macos_resolve_checkpoint_args "$INSTALL" "$RUNTIME" none
     def test_bootstrap_reasoning_case_survives_fallback_and_rollback(self):
         source = (ROOT / "scripts/bootstrap-upgrade.sh").read_text(encoding="utf-8")
         block = section(source, "            # Read reasoning mode from .env", "            # Capture old model path")
-        rollback = section(source, '                if [[ -n "${_old_model_path:-}"',
-                           '                    _rollback_pid=')
-        rollback = rollback[rollback.index('                    bash "'):]
+        # Include the complete guarded invocation, without the outer model
+        # existence check or subsequent PID/logging branch.
+        rollback = section(source, '                    _rollback_ok=false',
+                           '                    if $_rollback_ok; then')
         script = (
             "set -uo pipefail\n"
             'ENV_FILE="$INSTALL/.env"; INSTALL_DIR="$INSTALL"; LLAMA_SERVER_BIN="$RUNTIME"\n'
@@ -687,7 +688,7 @@ class LauncherContractTests(unittest.TestCase):
         return {
             "install-macos.sh": array_flags(section(install, "# Read reasoning mode from .env", "# Wait for health endpoint"), "_llama_args"),
             "ods-macos.sh": array_flags(section(cli, "start_native_llama() {", "stop_native_llama() {"), "llama_args"),
-            "bootstrap-upgrade.sh": array_flags(section(upgrade, "# macOS native llama-server (Metal)", "# Wait for health"), "_llama_args"),
+            "bootstrap-upgrade.sh": array_flags(section(upgrade, "# macOS native llama-server (Metal)", "# Relaunch with new model."), "_llama_args"),
             "ods-host-agent.py": agent_flags,
         }, qualified_keys
 
