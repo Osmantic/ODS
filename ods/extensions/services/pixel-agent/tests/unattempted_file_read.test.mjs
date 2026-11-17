@@ -35,6 +35,24 @@ test('exact live missing-file fabrication gets one recovery and truthful deliver
   assert.equal(f.finalize()?.action,'finalize');
 });
 
+for (const missing of [
+  '{"error":{"message":"Path not found: /workspace/.ods-fleet-no-tools-read-v1/fixture.json"}}',
+  'The path does not exist.',
+  'No such file or directory: /workspace/report.json',
+]) test(`missing-path variants require evidence too: ${missing}`, () => {
+  const f=turn();
+  assert.equal(f.finalize(missing)?.retry?.idempotencyKey,retryKey);
+  assert.match(f.guard.deliveryVerificationForRun(f.context.runId).text,/file read was not performed/);
+});
+
+for (const limitation of ['Permission denied.', 'I cannot access that path.', 'The read tool is unavailable.',
+  'If the file does not exist, it cannot be read.', 'I do not know whether the path does not exist.',
+  'Permission denied; I cannot check whether there is no such file or directory.']) {
+  test(`a capability refusal does not create missing-path recovery: ${limitation}`, () => {
+    assert.notEqual(turn().finalize(limitation)?.retry?.idempotencyKey,retryKey);
+  });
+}
+
 for (const rephrased of ['The file was not found.', '{"invented":true}', 'I will read it now.']) {
   test(`an unattempted recovery cannot clear failure by rephrasing: ${rephrased}`, () => {
     const guard = assurance();

@@ -427,7 +427,10 @@ function explicitFileReadRequested(text) {
 }
 
 function claimsMissingFile(text) {
-  return /\bfile\s+(?:does\s+not\s+exist|doesn't\s+exist|was\s+not\s+found|is\s+not\s+found|not\s+found)\b/.test(normalize(text));
+  const value = normalize(text).replace(/\b(?:if|unless|whether)\b[^.!?\n]{0,500}/g, ' ');
+  if (/\b(?:permission denied|cannot access|can't access|read tool is unavailable)\b/.test(value)) return false;
+  return /\b(?:file|path)\s+(?:does\s+not\s+exist|doesn't\s+exist|was\s+not\s+found|is\s+not\s+found|not\s+found)\b/.test(value) ||
+    /\bno such file(?: or directory)?\b/.test(value);
 }
 
 const UNATTEMPTED_FILE_READ = 'The requested file read was not performed. The task is incomplete; I do not have a verified file result to report.';
