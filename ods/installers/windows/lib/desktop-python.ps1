@@ -362,7 +362,7 @@ function Resolve-ODSWindowsDesktopPythonExecutable {
     .SYNOPSIS
         Locate the verified embeddable Python executable in %LOCALAPPDATA%\ODS\python,
         or fall back to a verified local Python 3.11+ interpreter that has
-        fastapi, uvicorn, httpx, and aiohttp installed.
+        fastapi, uvicorn, httpx, aiohttp, and PIL installed.
     #>
     param([string]$SourceRoot = '')
 
@@ -377,8 +377,10 @@ function Resolve-ODSWindowsDesktopPythonExecutable {
         } catch { }
     }
 
+    $pathPython = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
     $candidates = @(
         $env:ODS_PYTHON_EXE,
+        $pathPython,
         (Join-Path $env:LOCALAPPDATA 'Python\pythoncore-3.14-64\python.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\python.exe')
@@ -386,7 +388,7 @@ function Resolve-ODSWindowsDesktopPythonExecutable {
 
     foreach ($exe in $candidates) {
         try {
-            $out = & $exe -c "import fastapi, uvicorn, httpx, aiohttp; print('ODS_PY_OK')" 2>$null
+            $out = & $exe -c "import fastapi, uvicorn, httpx, aiohttp, PIL; print('ODS_PY_OK')" 2>$null
             if ($LASTEXITCODE -eq 0 -and ($out -join '') -match 'ODS_PY_OK') {
                 return $exe
             }

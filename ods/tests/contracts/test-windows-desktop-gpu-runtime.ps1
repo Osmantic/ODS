@@ -211,6 +211,34 @@ public class MockCurlApp {
     Assert-Check ($pyContract.id -ceq 'python-3.12.10-embed-amd64' -and @($pyContract.wheels).Count -ge 15) `
         'config/windows-desktop.json loads valid python-3.12.10-embed-amd64 contract with zero litellm wheels'
 
+    $wheelNames = @($pyContract.wheels | ForEach-Object { [string]$_.name })
+    Assert-Check ($wheelNames -contains 'pillow' -and $wheelNames -contains 'aiohttp' -and $wheelNames -contains 'jsonschema') `
+        'config/windows-desktop.json contains required Pillow (PIL), aiohttp, and jsonschema runtime dependencies'
+
+    # Verify that the Windows desktop Python resolver requires PIL and imports dashboard-api main.py
+    $apiDir = Join-Path (Join-Path (Join-Path $root 'extensions') 'services') 'dashboard-api'
+    if (-not (Test-Path -LiteralPath $apiDir)) {
+        $apiDir = Join-Path (Join-Path (Join-Path $root 'ods') 'extensions') 'services\dashboard-api'
+    }
+
+    $verifiedPy = $null
+    try {
+        $verifiedPy = Resolve-ODSWindowsDesktopPythonExecutable -SourceRoot $root
+    } catch { }
+
+    if ($verifiedPy -and (Test-Path -LiteralPath $verifiedPy -PathType Leaf)) {
+        $importProbe = "import sys; sys.path.insert(0, r'$apiDir'); import main; print('ODS_API_OK')"
+        $prevEap = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $probeOut = & $verifiedPy -c $importProbe 2>$null
+        } finally {
+            $ErrorActionPreference = $prevEap
+        }
+        $importOk = ($LASTEXITCODE -eq 0 -and ($probeOut -join '') -match 'ODS_API_OK')
+        Assert-Check $importOk 'Resolved Windows Python runtime imports dashboard-api main.py and all required dependencies (including PIL)'
+    }
+
     # Build a synthetic embeddable zip + wheel to test Install-ODSWindowsDesktopPython & tamper detection
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
