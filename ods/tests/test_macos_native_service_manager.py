@@ -216,6 +216,89 @@ def test_transient_eperm_capture_retries_but_never_absence(svc, monkeypatch):
     assert calls["n"] >= 3
 
 
+def test_capture_waits_for_exec_and_rechecks_identity(svc, monkeypatch):
+    calls = {"identity": 0, "job": 0}
+    good = ident(42, str(svc.executable))
+
+    def identity(pid):
+        assert pid == 42
+        calls["identity"] += 1
+        if calls["identity"] == 1:
+            raise ProcessIdentityError("gateway-process-executable-mismatch")
+        return good
+
+    def job(domain):
+        calls["job"] += 1
+        return job_for(svc, token="a" * 32, pid=42)
+
+    monkeypatch.setattr(svc, "identity", identity)
+    monkeypatch.setattr(svc, "job", job)
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    assert svc.capture(f"gui/{svc.uid}", token="a" * 32) == good
+    assert calls == {"identity": 3, "job": 3}
+
+
+def test_capture_persistent_exec_mismatch_reaches_deadline(svc, monkeypatch):
+    clock = [0.0]
+    reads = []
+
+    def identity(pid):
+        reads.append(pid)
+        raise ProcessIdentityError("gateway-process-executable-mismatch")
+
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(svc, "identity", identity)
+    monkeypatch.setattr(svc, "job", lambda domain: job_for(svc, token="a" * 32, pid=42))
+    with pytest.raises(NativeServiceError, match="did not produce a verified process"):
+        svc.capture(f"gui/{svc.uid}", token="a" * 32, timeout=.25)
+    assert .25 <= clock[0] <= .35
+    assert reads == [42] * 4
+
+
+@pytest.mark.parametrize("reason", ["gateway-process-owner-mismatch", "gateway-process-changed"])
+def test_capture_exec_wait_does_not_retry_identity_violations(svc, monkeypatch, reason):
+    def identity(pid):
+        raise ProcessIdentityError(reason)
+
+    def no_sleep(seconds):
+        pytest.fail("identity violations must fail immediately")
+
+    monkeypatch.setattr(svc, "identity", identity)
+    monkeypatch.setattr(svc, "job", lambda domain: job_for(svc, token="a" * 32, pid=42))
+    monkeypatch.setattr(time, "sleep", no_sleep)
+    with pytest.raises(NativeServiceError, match="identity did not match"):
+        svc.capture(f"gui/{svc.uid}", token="a" * 32)
+
+
+def test_capture_exec_wait_rejects_changed_operation(svc, monkeypatch):
+    tokens = iter(["a" * 32, "b" * 32])
+    reads = []
+
+    def identity(pid):
+        reads.append(pid)
+        raise ProcessIdentityError("gateway-process-executable-mismatch")
+
+    monkeypatch.setattr(svc, "identity", identity)
+    monkeypatch.setattr(svc, "job", lambda domain: job_for(svc, token=next(tokens), pid=42))
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    with pytest.raises(NativeServiceError, match="different deployment or operation"):
+        svc.capture(f"gui/{svc.uid}", token="a" * 32)
+    assert reads == [42]
+
+
+def test_live_exec_mismatch_remains_false_without_retry(svc, monkeypatch):
+    def identity(pid):
+        raise ProcessIdentityError("gateway-process-executable-mismatch")
+
+    def no_sleep(seconds):
+        pytest.fail("liveness must not retry a changed executable")
+
+    monkeypatch.setattr(svc, "identity", identity)
+    monkeypatch.setattr(time, "sleep", no_sleep)
+    assert svc.live(ident(42, str(svc.executable))) is False
+
+
 def test_rollback_restores_prior_plist(svc, monkeypatch):
     prior = plistlib.dumps({"Label": svc.label, "ProgramArguments": [str(svc.executable)],
                             "WorkingDirectory": str(svc.root)})
