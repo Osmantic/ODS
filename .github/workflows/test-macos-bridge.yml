@@ -21,6 +21,7 @@ on:
       - 'ods/tests/test_pixel_workspace_guidance.py'
       - 'ods/tests/test_pixel_example_projects.py'
       - 'ods/tests/test_macos_pixel_native_install.py'
+      - 'ods/tests/test_macos_native_start_order.py'
       - 'ods/tests/test_macos_pixel_native_uninstall.py'
       - 'ods/tests/test_macos_pixel_ops_account.py'
       - 'ods/tests/test-macos-uninstall-launchagents.sh'
@@ -80,6 +81,7 @@ on:
       - 'ods/tests/test_pixel_workspace_guidance.py'
       - 'ods/tests/test_pixel_example_projects.py'
       - 'ods/tests/test_macos_pixel_native_install.py'
+      - 'ods/tests/test_macos_native_start_order.py'
       - 'ods/tests/test_macos_pixel_native_uninstall.py'
       - 'ods/tests/test_macos_pixel_ops_account.py'
       - 'ods/tests/test-macos-uninstall-launchagents.sh'
@@ -191,6 +193,7 @@ jobs:
         run: >-
           python -m pytest -q
           ods/tests/test_macos_pixel_native_install.py
+          ods/tests/test_macos_native_start_order.py
           ods/tests/test_macos_pixel_native_uninstall.py
           ods/tests/test_macos_pixel_ops_account.py
           ods/tests/test_macos_pixel_native_update.py
