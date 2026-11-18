@@ -104,7 +104,23 @@ function Invoke-WebRequest {
     & $env:ODS_TEST_PYTHON $env:ODS_TEST_HTTP_STUB http $Uri -o $OutFile
     if ($LASTEXITCODE -ne 0) { throw 'Fixture download failed' }
 }
-. $env:ODS_TEST_BOOTSTRAP
+try {
+    . $env:ODS_TEST_BOOTSTRAP
+} catch {
+    $original = $_
+    try {
+        Write-Host ('PSVersion=' + $PSVersionTable.PSVersion + ' CLR=' + [System.Environment]::Version)
+        $archiveCommand = Get-Command Expand-Archive -ErrorAction SilentlyContinue
+        if ($archiveCommand) {
+            Write-Host ('ExpandArchiveVersion=' + $archiveCommand.Version + ' Path=' + $archiveCommand.Module.Path)
+        }
+        Get-Module -ListAvailable Microsoft.PowerShell.Archive -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host ('ArchiveModule=' + $_.Version + ' Path=' + $_.Path)
+        }
+        Write-Host ('ScriptStackTrace=' + $original.ScriptStackTrace)
+    } catch { }
+    throw $original
+}
 ''', encoding='utf-8')
         command = [shell, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(wrapper)]
     else:
