@@ -11,6 +11,46 @@
       "container_images_by_compute": {
         "12.1": "ghcr.io/ggml-org/llama.cpp:server-cuda13-b11429@sha256:9d6ca9a08b5e0c0a6d2560bff7d4c76bdf946776bbde6a20d9d6403594d93a9f"
       },
+      "windows_x64": {
+        "release_tag": "b9014",
+        "flavor": "win-cuda-12.4-x64",
+        "backend": "cuda",
+        "policy_key": "windows-native",
+        "archives": [
+          {
+            "asset": "llama-b9014-bin-win-cuda-12.4-x64.zip",
+            "sha256": "bef10c5cca99c6c53a4f996fc60763237f68c3ba4f5b0de6a12c870d30c70441",
+            "size": 214361213
+          },
+          {
+            "asset": "cudart-llama-bin-win-cuda-12.4-x64.zip",
+            "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
+            "size": 391443627
+          }
+        ],
+        "required_files": [
+          "llama-server.exe",
+          "llama.dll",
+          "ggml.dll",
+          "ggml-base.dll",
+          "ggml-cuda.dll",
+          "cudart64_12.dll",
+          "cublas64_12.dll",
+          "cublasLt64_12.dll"
+        ],
+        "min_driver_version": "551.78",
+        "cuda_archs_by_compute": {
+          "5.0": ["500", "50"],
+          "6.1": ["610", "61"],
+          "7.0": ["700", "70"],
+          "7.5": ["750", "75"],
+          "8.0": ["800", "80"],
+          "8.6": ["860", "86"],
+          "8.9": ["890", "89"]
+        },
+        "model_ladder": [],
+        "fallback_models": []
+      },
       "windows_arm64": {
         "release_tag": "b11429",
         "flavor": "win-cuda-13.4-arm64",

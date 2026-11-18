@@ -1,6 +1,6 @@
 # Real AMD helpers with fixture-only task, process and socket boundaries.
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot '../../installers/windows/lib/wsl-portal-amd.ps1')
+. (Join-Path $PSScriptRoot '../../installers/windows/lib/wsl-portal-setup.ps1')
 $script:checks = 0
 function Assert-Recovery([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -88,7 +88,7 @@ try {
     function Register-ScheduledTask { param($TaskName, $TaskPath, $Action, $Trigger, $Settings, $Principal, $Description, [switch]$Force)
         $script:events.Add('register:' + $TaskName)
         $script:lastDescription = $Description
-        $script:tasks[$TaskName] = [pscustomobject]@{ TaskName = $TaskName; TaskPath = $TaskPath; Principal = $Principal; Actions = @($Action); State = 'Ready' }
+        $script:tasks[$TaskName] = [pscustomobject]@{ TaskName = $TaskName; TaskPath = $TaskPath; Principal = $Principal; Actions = @($Action); State = 'Ready'; Description = $Description }
     }
     $exeDir = Join-Path (Join-Path (Join-Path $fixture 'ODS') 'llama.cpp') 'b9014-win-vulkan-x64'
     $plan = [ordered]@{ ExecutablePath = (Join-Path $exeDir 'llama-server.exe'); Port = 18080; ModelsDir = (Get-ODSPortalModelsDir); ContextSize = 65536; GgufFile = 'Model.gguf' }
@@ -173,6 +173,51 @@ try {
     $message = ''
     try { $null = Test-ODSNativeLlamaWanted $intentPath } catch { $message = $_.Exception.Message }
     Assert-Recovery ($message -match 'intent is invalid') 'invalid intent fails closed'
+
+    # Execute the real cutover and rollback while the scheduler and process
+    # boundaries stay in memory. A failed NVIDIA start must restore the old
+    # generic task together with its generic options, permitting a retry.
+    $script:tasks.Clear()
+    $registration = New-ODSPortalRuntimeAction $plan $options (New-ODSNativeLlamaApiKey) 'Ubuntu-24.04' '/home/user/ods'
+    $null = Register-ODSPortalRuntimeTask $registration
+    $existing = Get-ODSPortalExistingRuntime
+    $oldDescription = $existing.Task.Description
+    $oldAction = $existing.Task.Actions[0] | ConvertTo-Json -Compress
+    $oldOptions = [IO.File]::ReadAllBytes((Join-Path (Get-ODSPortalRuntimeDir) 'runtime-options.json'))
+    function Enter-ODSPortalRuntimeChange { param($Lock) }
+    function Exit-ODSPortalRuntimeChange { param($Lock) }
+    function Stop-ODSPortalRuntime { }
+    function Start-ScheduledTask { param($TaskName,$TaskPath,$ErrorAction) }
+    function Enable-ScheduledTask { param($TaskName,$TaskPath,$ErrorAction) $script:tasks[$TaskName].State='Ready' }
+    function Set-ScheduledTask { param($InputObject,$ErrorAction)
+        $script:tasks[$InputObject.TaskName]=$InputObject
+    }
+    function Wait-ODSPortalRuntimeReady { throw 'fixture NVIDIA startup failure' }
+    $newOptions = [ordered]@{}
+    foreach ($key in $options.Keys) { $newOptions[$key]=$options[$key] }
+    $newOptions.GpuVendor='nvidia'
+    $newOptions.Backend='cuda'; $newOptions.Architecture='x64'; $newOptions.Device='CUDA0'; $newOptions.NGpuLayers='all'
+    $message=''
+    try {
+        $null = Invoke-ODSPortalRuntimeCutover -Existing $existing -Plan $plan -Options $newOptions `
+            -ApiKey (New-ODSNativeLlamaApiKey) -KeepPort $false -WslDistro 'Ubuntu-24.04' -WslInstallDir '/home/user/ods' `
+            -TaskDescription $script:ODSPortalRuntimeTaskDescriptions['nvidia-cuda-x64']
+    } catch { $message=$_.Exception.Message }
+    Assert-Recovery ($message -match 'fixture NVIDIA startup failure') 'real NVIDIA cutover reports the startup failure'
+    Assert-Recovery ((Get-ODSPortalRuntimeTask).Description -ceq $oldDescription) 'NVIDIA rollback restores the previous generic task description'
+    Assert-Recovery (((Get-ODSPortalRuntimeTask).Actions[0] | ConvertTo-Json -Compress) -ceq $oldAction) 'NVIDIA rollback preserves the previous task action'
+    Assert-Recovery ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path (Get-ODSPortalRuntimeDir) 'runtime-options.json'))) -ceq
+        [Convert]::ToBase64String($oldOptions)) 'NVIDIA rollback restores generic options byte for byte'
+    Assert-Recovery ((Resolve-ODSPortalWindowsLlmRoute @{}) -ceq '') 'default setup retry accepts the restored generic route without missing metadata refusal'
+    $script:tasks[$taskName].State='Disabled'
+    $existing = Get-ODSPortalExistingRuntime
+    try {
+        $null = Invoke-ODSPortalRuntimeCutover -Existing $existing -Plan $plan -Options $newOptions `
+            -ApiKey (New-ODSNativeLlamaApiKey) -KeepPort $false -WslDistro 'Ubuntu-24.04' -WslInstallDir '/home/user/ods' `
+            -TaskDescription $script:ODSPortalRuntimeTaskDescriptions['nvidia-cuda-x64']
+    } catch { $message=$_.Exception.Message }
+    Assert-Recovery ((Get-ODSPortalRuntimeTask).Description -ceq $oldDescription -and
+        (Get-ODSPortalRuntimeTask).State -ceq 'Disabled') 'NVIDIA rollback restores the deliberately disabled generic task without enabling it'
 } finally {
     $env:LOCALAPPDATA = $previousLocal
     if (-not ([IO.Path]::GetFullPath($fixture)).StartsWith(([IO.Path]::GetFullPath([IO.Path]::GetTempPath())), [StringComparison]::OrdinalIgnoreCase)) {

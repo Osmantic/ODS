@@ -496,6 +496,34 @@ try {
     $amdSwitch = Invoke-ODSPortalModelControl (New-SwitchRequest 'Small-0.6B.gguf' 65536)
     Assert-Control ($amdSwitch.running -and $script:memoryReads -eq 0 -and
         (Get-Content -LiteralPath $memoryFile -Raw | ConvertFrom-Json).GgufFile -cne 'Small-0.6B.gguf') 'a Vulkan switch reads no memory figures and writes no memory plan'
+    # Discrete x64 CUDA keeps its architecture through the real configuration
+    # reader and never applies Spark's Arm64 unified-memory sizing policy.
+    $cudaOptions.Architecture='x64'; $cudaOptions.ReleaseTag='b9014'
+    Write-ODSPrivateEnvFile -Path $optionsPath -Content ($cudaOptions | ConvertTo-Json -Depth 4 -Compress)
+    & {
+        function Get-ODSPortalControlWslGiB { throw 'Spark WSL sizing called for x64 CUDA' }
+        function Get-ODSPortalControlMemoryNeed { throw 'Spark catalog sizing called for x64 CUDA' }
+        function Assert-ODSPortalControlMemoryFit { throw 'Spark memory fit called for x64 CUDA' }
+        $configuration = Get-ODSPortalManagedConfiguration (New-ControlRequest 'status')
+        Assert-Control ($configuration.Backend -ceq 'cuda' -and $configuration.Architecture -ceq 'x64') 'managed configuration projects validated CUDA x64 architecture'
+        $beforeX64 = $configuration.Plan | ConvertTo-Json | ConvertFrom-Json
+        $x64Switch = Invoke-ODSPortalModelControl (New-SwitchRequest 'Original-9B.gguf' 65536)
+        Assert-Control ($x64Switch.running) 'CUDA x64 activates without Spark sizing'
+        $request = New-ControlRequest 'restore' (Get-ODSPortalPlanDigest $planPath); $request.plan=$beforeX64
+        $x64Restore = Invoke-ODSPortalModelControl $request
+        Assert-Control ($x64Restore.running) 'CUDA x64 restores without Spark sizing'
+        $x64Stop = Invoke-ODSPortalModelControl (New-ControlRequest 'stop' (Get-ODSPortalPlanDigest $planPath))
+        $x64Start = Invoke-ODSPortalModelControl (New-ControlRequest 'start' $x64Stop.planDigest)
+        Assert-Control ($x64Start.running) 'CUDA x64 starts the existing task without Spark sizing'
+        $script:failReady=$true
+        $failedX64=$null
+        try { $null=Invoke-ODSPortalModelControl (New-SwitchRequest 'Original-9B.gguf' 65536) } catch { $failedX64=$_.Exception }
+        Assert-Control ($failedX64.Message -ceq 'fixture load failure' -and $failedX64.Data['newPlanDigest']) 'CUDA x64 failed activation returns the published digest for recovery'
+        $script:failReady=$false
+        $request=New-ControlRequest 'restore' $failedX64.Data['newPlanDigest']; $request.plan=$beforeX64
+        $x64Recovered=Invoke-ODSPortalModelControl $request
+        Assert-Control ($x64Recovered.running) 'CUDA x64 recovers failed activation without Spark sizing'
+    }
     # The real entrypoint must return one JSON error and a nonzero process exit.
     # Invalid actions fail before any task/process/network inspection can occur.
     $entry = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../installers/windows/portal-model-control.ps1'))
