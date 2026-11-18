@@ -8969,12 +8969,41 @@ export function createToolLoopGuard({
   // run's own ledger with each execution matched to an owned terminal
   // receipt here. Known-call settlement is not a no-effects certificate.
   function unfinishedWorkSettled(state, runId, findings) {
+    if (state.outputLimitStop || state.successfulWritePaths.size + state.successfulEditPaths.size === 0) return false;
+    const settled = goalContinuationSettlement(state, runId, findings, state.finalReplyText);
+    return Boolean(settled) && Number.isSafeInteger(settled.edits) && settled.edits >= 1;
+  }
+
+  // A goal round's 'output-limit' stop, beside the same exact
+  // missing-current-preview outcome: the round's own final reply ended at the
+  // model's output limit on visible text (a cut-off answer, no tool call or
+  // path in it) that announces more work, and at least one known call
+  // settled with every execution matched to an owned terminal receipt here,
+  // under every exclusion of the 'unfinished-work' stop. It needs no saved
+  // edit (work made through settled exec calls counts as known calls only),
+  // and like 'unfinished-work' it reports known-call settlement, not that
+  // commands had no other effects. The host goal controller continues it in
+  // a new round; nothing here revises or replays this one. Its reply text is
+  // the cut's own, captured at before_message_write (observeReplyEnd): the
+  // runtime skips before_agent_finalize for such an incomplete reply.
+  function outputLimitWorkSettled(state, runId, findings) {
+    const cut = state.outputLimitStop;
+    if (cut?.answered !== true || cut.tool !== undefined || cut.path !== undefined) return false;
+    const settled = goalContinuationSettlement(state, runId, findings, state.lastReplyCutText);
+    return Boolean(settled) && Number.isSafeInteger(settled.calls) && settled.calls >= 1;
+  }
+
+  // The exclusions both goal continuation stops share, with the stop's own
+  // final reply text, then the run's own known-call ledger: undefined unless
+  // it settled with every listed execution matched to an owned terminal
+  // receipt of this run.
+  function goalContinuationSettlement(state, runId, findings, replyText) {
     if (!state.ownerIntentObserved || !state.artifactOwnerInteractive || state.artifactIdentityConflict ||
         state.artifactNoninteractiveObserved || state.managedTeamWorker || state.managedTeamCoordinator ||
         typeof state.currentSessionId !== 'string' || !state.currentSessionId ||
         typeof state.currentSessionKey !== 'string' || !state.currentSessionKey ||
         sessionRuns.get(state.currentSessionId) !== runId ||
-        state.clientCancelled || state.odsAborted || state.outputLimitStop || state.ownerQuestions ||
+        state.clientCancelled || state.odsAborted || state.ownerQuestions ||
         state.execGuidanceLeakPending || state.recursiveDeleteDenied || state.privateNetworkRequestDenied ||
         state.webLoopAborted || state.unrequestedOperationsAborted || state.unrequestedOperationsTerminal ||
         state.operationsRequired || state.exactDownloadRequested || state.extensionCompletionGate?.active ||
@@ -8983,13 +9012,15 @@ export function createToolLoopGuard({
         state.workspacePreview || state.workspacePreviewAttempted || state.workspacePreviewFailureCode !== undefined ||
         state.workspacePreviewRestrictions?.mutation || state.codingExhausted || state.progressBudget.exhaustedLanes.length ||
         ['failed', 'pending'].includes(state.latestVerificationStatus) || findings.length ||
-        !state.workspaceMutationRequested || state.successfulWritePaths.size + state.successfulEditPaths.size === 0 ||
+        !state.workspaceMutationRequested ||
         state.pendingExecSessions.size || state.execCallsInFlight.size || state.terminalExecOverflow ||
-        typeof state.finalReplyText !== 'string' || !announcesMoreWork(state.finalReplyText)) return false;
+        typeof replyText !== 'string' || !announcesMoreWork(replyText)) return undefined;
     const settled = taskSettlement(runId, {sessionId: state.currentSessionId, sessionKey: state.currentSessionKey});
-    if (settled?.schemaVersion !== 1 || settled.ok !== true || !Number.isSafeInteger(settled.edits) ||
-        settled.edits < 1 || !Array.isArray(settled.executions)) return false;
-    return settled.executions.every(execution => terminalExecution(state, execution?.callId, execution?.tool, settled.executions));
+    if (settled?.schemaVersion !== 1 || settled.ok !== true || !Array.isArray(settled.executions) ||
+        !settled.executions.every(execution => terminalExecution(state, execution?.callId, execution?.tool, settled.executions))) {
+      return undefined;
+    }
+    return settled;
   }
 
   function progressFinalization(state) {
@@ -11445,6 +11476,7 @@ export function createToolLoopGuard({
         armResponseDeadline(state, runId);
         // Like the deadline, a cut belongs to the attempt that wrote it.
         state.lastReplyCut = undefined;
+        state.lastReplyCutText = undefined;
         state.outputLimitStop = undefined;
       }
       if (typeof sessionId === "string" && sessionId) {
@@ -11822,8 +11854,9 @@ export function createToolLoopGuard({
     // The round fuse stops the run as this call starts: its calls come after the stop.
     if (running && state.progressBudget.exhausted) state.progressStopRound = state.operationsPromptRound - 1;
     if (state.progressBudget.exhausted && !compactionCall) progressFinalization(state).modelCallStarted();
-    // A further agent turn means the reply seen at finalization was not final.
-    if (!compactionCall) state.finalReplyText = undefined;
+    // A further agent turn means the reply seen at finalization was not final,
+    // and a cut reply seen before it was not the round's last.
+    if (!compactionCall) { state.finalReplyText = undefined; state.lastReplyCutText = undefined; }
     responseDeadlineModelCall(state, runId, event?.callId, compactionCall);
   }
 
@@ -14675,6 +14708,16 @@ export function createToolLoopGuard({
     const active = activeSessionRun(context?.sessionKey ?? event?.sessionKey);
     if (!active) return;
     active.state.lastReplyCut = outputLimitCut(event.message);
+    // The visible text of this run's own answered cut (a length stop with text
+    // and no tool call), for the goal 'output-limit' stop only: the runtime
+    // delivers such an incomplete reply without before_agent_finalize, so
+    // finalReplyText never sees it. The real hook context carries agentId and
+    // sessionKey; a run or session ID it does supply must be this run's. Every
+    // later reply replaces it and a further model call or attempt clears it.
+    const ownIds = [context?.runId, event?.runId].every(id => id === undefined || id === active.runId) &&
+      [context?.sessionId, event?.sessionId].every(id => id === undefined || id === active.state.currentSessionId);
+    active.state.lastReplyCutText = ownIds && active.state.lastReplyCut?.answered === true
+      ? assistantMessageText(event.message) : undefined;
     // A reply with text and no tool calls ends the attempt's turns: from here
     // OpenClaw delivers it, after the finalization hooks, which can take a
     // while (responseDeadlineDue). A reply cut at the output limit too.
@@ -15460,7 +15503,10 @@ export function createToolLoopGuard({
         !progressFinalizationEligible(state) || state.operationsLoopAborted ? undefined
       : state.runDeadlineReached ? 'run-deadline'
       : state.progressBudget.exhausted && !state.researchStopped ? 'tool-limit'
-      : missingCurrentPreview && unfinishedWorkSettled(state, runId, [...checked, ...carried]) ? 'unfinished-work' : undefined;
+      : missingCurrentPreview && unfinishedWorkSettled(state, runId, [...checked, ...carried]) ? 'unfinished-work'
+      // The same round cut at the output limit on an answer announcing more
+      // work: 'output-limit', after every stop above.
+      : missingCurrentPreview && outputLimitWorkSettled(state, runId, [...checked, ...carried]) ? 'output-limit' : undefined;
     if (stop) result = {...result, stop};
     return artifacts?.length && !state.clientCancelled && ['none','passed','failed'].includes(result.status)
       ? {...result,artifacts:structuredClone(artifacts)} : result;

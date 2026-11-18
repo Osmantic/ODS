@@ -15,13 +15,17 @@ import re
 # known call settled but which ended announcing more work before its requested
 # preview was published. It reports known-call settlement, not that commands
 # had no other effects; the next round inspects before acting as below.
-GOAL_CONTINUE_STOPS = frozenset({'tool-limit', 'run-deadline', 'unfinished-work'})
+# 'output-limit' is emitted only for settled owner build rounds whose visible
+# unfinished text was cut off, never for a truncated tool call or denied work.
+# It uses the existing stopped-round and stall bounds below, even before edits.
+GOAL_CONTINUE_STOPS = frozenset({'tool-limit', 'run-deadline', 'unfinished-work', 'output-limit'})
 # Plain words without defect vocabulary: Pixel picks its defect-report guide
 # from this prompt (tool-loop-guard.mjs userMessageReportsDefect).
 _STOP_NOTES = {
     'tool-limit': "The last round reached Portal's tool limit before it finished. ",
     'run-deadline': "The last round reached Portal's time limit for one response before it finished. ",
     'unfinished-work': "The last round ended before the requested changes were finished and published. ",
+    'output-limit': "The last round reached the model's output limit before it finished. Continue in small steps. ",
 }
 # Pixel marks a stopped round's plan blocked with its own stop summary. The
 # goal card shows the saved plan until the next round publishes its own, so
