@@ -45,6 +45,35 @@ def body(request="attempt-one", text="Do work"):
     return pixel.ChatStreamRequest(chat_id="chat-test", request_id=request, messages=[{"role":"user", "content":text}])
 
 
+@pytest.mark.parametrize("status,content_type,media,state", [
+    (502, "text/event-stream; private=header-canary", "event-stream", "unresolved"),
+    (503, "application/json; private=header-canary", "json", "unresolved"),
+    (200, "text/html; private=header-canary", "other", "unresolved"),
+    (200, "", "missing", "unresolved"),
+    (409, "application/json", "json", "interrupted"),
+])
+def test_invalid_upstream_diagnostics_do_not_leak_or_change_receipts(
+    store, monkeypatch, caplog, status, content_type, media, state,
+):
+    async def run():
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: FakeClient(
+            FakeResponse(status=status, content_type=content_type,
+                         chunks=[b'{"error":"body-canary"}'])))
+        async def not_stopped(*_args): return False
+        monkeypatch.setattr(pixel, "_cancel_edge_run", not_stopped)
+        with caplog.at_level("WARNING", logger=pixel.logger.name):
+            response = await pixel.pixel_chat_stream(Request({"type": "http"}), body(text="prompt-canary"), OWNER)
+            await asyncio.gather(*list(pixel._result_tasks.values()))
+        data = await stream_body(response)
+        assert f"Pixel upstream stream refused (status={status}, media={media})" in caplog.text
+        assert store.get(IDENTITY)["state"] == state
+        assert b'"code": "transition_in_progress"' not in data
+        for private in ("header-canary", "body-canary", "prompt-canary", OWNER, "e" * 64):
+            assert private not in caplog.text
+            assert private.encode() not in data
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("payload,expected", [
     ({"error": "pixel_transition_in_progress"}, "rejected"),
     ({"error": "different_conflict"}, "interrupted"),
@@ -75,6 +104,31 @@ def test_admission_rejection_is_typed_terminal_and_replays_without_execution(sto
         assert await pixel.pixel_chat_result(lookup, OWNER) == {"state": expected, "events": data.decode()}
         assert len(calls) == 1 and not store.has_pending(IDENTITY[:2])
         assert store.reserve((*IDENTITY[:2], "next-attempt"), "new-input")
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ({"error": "image processing busy; retry shortly"}, "rejected"),
+    ({"error": "image processing busy; retry shortly", "private": "secret"}, "interrupted"),
+    ({"error": "different_busy"}, "interrupted"),
+])
+def test_busy_image_slot_is_a_typed_refusal_that_never_ran(store, monkeypatch, payload, expected):
+    # Edge holds one image slot; a second picture gets its exact 429 before
+    # admission. Only that body may tell the owner "busy, send again".
+    async def run():
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: FakeClient(
+            FakeResponse(status=429, chunks=[json.dumps(payload).encode()])))
+        async def forbidden(*args):
+            raise AssertionError("A refused turn must not cancel or inspect an agent run")
+        monkeypatch.setattr(pixel, "_cancel_edge_run", forbidden)
+        monkeypatch.setattr(pixel, "pixel_chat_activity", forbidden)
+        response = await pixel.pixel_chat_stream(Request({"type": "http"}), body(), OWNER)
+        await asyncio.gather(*list(pixel._result_tasks.values()))
+        data = await stream_body(response)
+        assert store.get(IDENTITY)["state"] == expected
+        assert (b'"code": "image_turn_busy"' in data) == (expected == "rejected")
+        assert b"secret" not in data and b"retry shortly" not in data
+        assert not store.has_pending(IDENTITY[:2])
     asyncio.run(run())
 
 

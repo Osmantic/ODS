@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import {createSubagentDelivery} from '../plugin/subagent-delivery.mjs';
 
 const {
+  applyVerificationToCompletion,
   gatewayRuntimeFromConfig,
   readGatewayConfiguration,
   readGatewayToken,
@@ -35,6 +36,7 @@ const {
   validateConfig,
   dockerApps,
   dockerRuntime,
+  dockerVllmRuntime,
   dockerRouterRuntime,
   writeStatus,
   start,
@@ -1957,6 +1959,77 @@ test("runtime projection rejects paths, malformed contexts, and non-JSON output"
   }
 });
 
+// LLM_BACKEND=vllm (docker-compose.vllm.yml): the command Compose builds
+// for ods-vllm-server, catalog VLLM_ARGS included.
+const VLLM_COMMAND = [
+  "--model", "/model", "--served-model-name", "GLM-5.3-Flash-NVFP4", "--host", "0.0.0.0",
+  "--port", "8000", "--gpu-memory-utilization", "0.90", "--max-model-len", "131072",
+  "--kv-cache-dtype", "fp8", "--speculative-config.method=mtp",
+];
+
+test("vLLM runtime projection reads the served name and context from ods-vllm-server", async () => {
+  const fakeDocker = (cmd, args, opts, callback) => {
+    assert.equal(cmd, "docker");
+    assert.deepEqual(args, ["inspect", "ods-vllm-server", "--format", "{{json .Config.Cmd}}"]);
+    assert.ok(opts.timeout > 0, "must have explicit timeout");
+    callback(null, JSON.stringify(VLLM_COMMAND), "");
+  };
+  assert.deepEqual(await dockerVllmRuntime({ execFile: fakeDocker }), {
+    model: "GLM-5.3-Flash-NVFP4",
+    context_length: 131072,
+  });
+  for (const command of [
+    VLLM_COMMAND.filter((item) => item !== "--max-model-len" && item !== "131072"),
+    VLLM_COMMAND.map((item) => (item === "131072" ? "2048" : item)),
+    VLLM_COMMAND.map((item) => (item === "GLM-5.3-Flash-NVFP4" ? "../secret" : item)),
+    ["--model", "/model", "--served-model-name=Joined-Name", "--max-model-len=65536"],
+    "not-json",
+  ]) {
+    const reply = (_cmd, _args, _opts, callback) => {
+      callback(null, command === "not-json" ? command : JSON.stringify(command), "");
+    };
+    const expected = Array.isArray(command) && command.includes("--max-model-len=65536")
+      ? { model: "Joined-Name", context_length: 65536 }
+      : null;
+    assert.deepEqual(await dockerVllmRuntime({ execFile: reply }), expected);
+  }
+});
+
+test("status on a vLLM install lists the engine and reads its runtime, not a stale llama-server", async () => {
+  const statusFile = path.join(DIR, "vllm-runtime-status.json");
+  const inspected = [];
+  const fakeDocker = (_cmd, args, _opts, callback) => {
+    if (args[0] === "ps") {
+      callback(null, [
+        JSON.stringify({ Names: "ods-vllm-server", Status: "Up 4 minutes (health: starting)" }),
+        // An earlier llama-server install left its container behind, stopped.
+        JSON.stringify({ Names: "ods-llama-server", State: "exited", Status: "Exited (0) 2 days ago" }),
+        "",
+      ].join("\n"), "");
+      return;
+    }
+    if (args[0] === "exec") {
+      callback(new Error("model-router state unavailable"));
+      return;
+    }
+    inspected.push(args[1]);
+    callback(null, JSON.stringify(args[1] === "ods-vllm-server" ? VLLM_COMMAND
+      : ["--model", "/models/Stale.gguf", "--ctx-size", "32768"]), "");
+  };
+  const projection = await writeStatus(true, 18999, statusFile, "2.6.0", {
+    fetch: async () => ({ status: 200, body: { cancel: async () => {} } }),
+    execFile: fakeDocker,
+    setTimeout,
+    clearTimeout,
+  });
+  assert.deepEqual(projection.apps, [
+    { name: "ods-llama-server", status: "stopped" },
+    { name: "ods-vllm-server", status: "starting" },
+  ]);
+  assert.deepEqual(projection.runtime, { model: "GLM-5.3-Flash-NVFP4", context_length: 131072 });
+  assert.deepEqual(inspected, ["ods-vllm-server"]);
+});
+
 test("router runtime projection returns the exact active stable-alias target", async () => {
   const fakeDocker = (cmd, args, opts, callback) => {
     assert.equal(cmd, "docker");
@@ -2232,5 +2305,104 @@ test("upstream error and wrong content type never reflect an upstream secret", a
       await new Promise((resolve) => ingress.close(resolve));
       await new Promise((resolve) => upstream.close(resolve));
     }
+  }
+});
+
+const completion = (input) => ({ choices: [{ message: { content: input } }] });
+const contentOf = (out) => out.choices[0].message.content;
+
+test('applyVerificationToCompletion strips only uppercase bare NO_REPLY tail lines', () => {
+  const v = { status: 'none' };
+  const cases = [
+    ['hello\nNO_REPLY', 'hello'],
+    ['hello\r\nNO_REPLY\r\n', 'hello'],
+    ['hello\nNO_REPLY\nNO_REPLY\nNO_REPLY', 'hello'],
+    ['NO_REPLY', 'NO_REPLY'],
+    ['NO_REPLY\nNO_REPLY', 'NO_REPLY\nNO_REPLY'],
+    ['hello NO_REPLY', 'hello NO_REPLY'],
+    ['hello\n> NO_REPLY', 'hello\n> NO_REPLY'],
+    ['hello\nno_reply', 'hello\nno_reply'],
+    ['hello\n  NO_REPLY', 'hello\n  NO_REPLY'],
+    ['hello\n- NO_REPLY', 'hello\n- NO_REPLY'],
+    ['hello\n```\nNO_REPLY\n```', 'hello\n```\nNO_REPLY\n```'],
+    ['hello\n```js\nNO_REPLY\n```', 'hello\n```js\nNO_REPLY\n```'],
+    ['hello\n~~~\nNO_REPLY\n~~~', 'hello\n~~~\nNO_REPLY\n~~~'],
+    ['hello\n```\nNO_REPLY', 'hello\n```\nNO_REPLY'],
+    ['hello\n```js\nNO_REPLY', 'hello\n```js\nNO_REPLY'],
+    ['hello\n```\nNO_REPLY\n```js', 'hello\n```\nNO_REPLY\n```js'],
+    ['hello\n```\n```js\nNO_REPLY', 'hello\n```\n```js\nNO_REPLY'],
+    ['hello\n````\n```\nNO_REPLY', 'hello\n````\n```\nNO_REPLY'],
+    ['hello\n~~~\n```\nNO_REPLY', 'hello\n~~~\n```\nNO_REPLY'],
+    ['hello\n~~~\nNO_REPLY\n~~~\nNO_REPLY', 'hello\n~~~\nNO_REPLY\n~~~'],
+    ['hello\n\nNO_REPLY\n\nNO_REPLY\n', 'hello'],
+    ['hello\n```\nNO_REPLY\n```\nNO_REPLY', 'hello\n```\nNO_REPLY\n```'],
+    ['hello\n~~~\nNO_REPLY', 'hello\n~~~\nNO_REPLY'],
+    ['hello\n"NO_REPLY"', 'hello\n"NO_REPLY"'],
+    ['line1\r\nline2\r\nNO_REPLY\r\n', 'line1\r\nline2'],
+  ];
+  for (const [input, expected] of cases) {
+    const out = applyVerificationToCompletion(completion(input), v);
+    assert.equal(contentOf(out), expected, JSON.stringify(input));
+  }
+});
+
+test('applyVerificationToCompletion is idempotent and non-mutating', () => {
+  const v = { status: 'none' };
+  const input = completion('hello\nNO_REPLY');
+  const snapshot = JSON.parse(JSON.stringify(input));
+  const a = applyVerificationToCompletion(input, v);
+  const b = applyVerificationToCompletion(a, v);
+  assert.deepEqual(a, b);
+  assert.deepEqual(input, snapshot);
+});
+
+test('applyVerificationToCompletion preserves whole-silent NO_REPLY and repeated-whole-silent', () => {
+  const v = { status: 'none' };
+  assert.equal(contentOf(applyVerificationToCompletion(completion('NO_REPLY'), v)), 'NO_REPLY');
+  assert.equal(contentOf(applyVerificationToCompletion(completion('NO_REPLY\nNO_REPLY'), v)), 'NO_REPLY\nNO_REPLY');
+});
+
+test('applyVerificationToCompletion appends trusted verification after stripping footer', () => {
+  const v = { status: 'complete', deliveryMode: 'append', text: 'trusted\nNO_REPLY', notice: 'notice\nNO_REPLY' };
+  const out = contentOf(applyVerificationToCompletion(completion('done\nNO_REPLY'), v));
+  assert.equal(out, 'done\n\ntrusted\nNO_REPLY\nReceipt scope: the Operations evidence above does not establish completion of other requested work.\n\nnotice\nNO_REPLY');
+});
+
+test('HTTP JSON path submits once and returns exact done content', async () => {
+  let submissions = 0;
+  const gw = await fakeGateway({ completionText: 'done\nNO_REPLY', onRequest: (req) => { if (req.url === '/v1/chat/completions') submissions++; } });
+  const srv = await startIngress({ gatewayPort: gw.port });
+  try {
+    const res = await request(srv, 'POST', '/v1/chat/completions', { body: JSON.stringify({ messages: [{ role: 'user', content: 'Do it' }] }), headers: { 'Content-Type': 'application/json' } });
+    assert.equal(res.status, 200);
+    assert.equal(submissions, 1);
+    const body = JSON.parse(res.body);
+    assert.equal(body.choices[0].message.content, 'done');
+  } finally {
+    await new Promise(r => srv.close(r));
+    await new Promise(r => gw.server.close(r));
+  }
+});
+
+test('HTTP SSE path submits once and returns exact done content', async () => {
+  let submissions = 0;
+  const gw = await fakeGateway({ completionText: 'done\nNO_REPLY', onRequest: (req) => { if (req.url === '/v1/chat/completions') submissions++; } });
+  const srv = await startIngress({ gatewayPort: gw.port });
+  try {
+    const res = await request(srv, 'POST', '/v1/chat/completions', { body: JSON.stringify({ messages: [{ role: 'user', content: 'Do it' }], stream: true }), headers: { 'Content-Type': 'application/json' } });
+    assert.equal(res.status, 200);
+    assert.equal(submissions, 1);
+    let content = '';
+    for (const line of res.body.split('\n')) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6).trim();
+      if (data === '[DONE]') continue;
+      const parsed = JSON.parse(data);
+      content += parsed.choices?.[0]?.delta?.content ?? '';
+    }
+    assert.equal(content, 'done');
+  } finally {
+    await new Promise(r => srv.close(r));
+    await new Promise(r => gw.server.close(r));
   }
 });

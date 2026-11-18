@@ -188,11 +188,25 @@ def update_selection_records(previous, activation, prepared, proof, install_dir)
         'activation': {**activation, **identities}}
 
 
-def compose_flags(install_dir, process_env, *, recovery=False):
+def compose_flags(install_dir, process_env, *, recovery=False, complete_protected=False):
+    if complete_protected and not recovery:
+        raise ValueError('protected-selection-requires-explicit-recovery')
     cache = install_dir / '.compose-flags'
-    if not recovery and os.path.lexists(cache):
+    use_cache = not recovery and os.path.lexists(cache)
+    if use_cache:
         raw = cache.read_text()
-    else:
+        cached_tokens = shlex.split(raw)
+        if (not cached_tokens or len(cached_tokens) % 2
+                or any(token != '-f' for token in cached_tokens[::2])):
+            raise ValueError('resolved-compose-flags-required')
+        # Full-stack start/restart freezes this selection before entering the
+        # native lifecycle. Like the CLI, discover an owner override added
+        # after installation through the resolver and its content checks.
+        override = install_dir / 'docker-compose.override.yml'
+        if override.is_file() and not any(
+                install_dir / path == override for path in cached_tokens[1::2]):
+            use_cache = False
+    if not use_cache:
         # Extension changes invalidate this disposable cache. Resolve the saved
         # selection like ods-cli, without sourcing .env or publishing a new cache.
         environment = helper('pixel-native-env')
@@ -232,7 +246,7 @@ def compose_flags(install_dir, process_env, *, recovery=False):
         resolver_env = {**process_env, **{key: saved.get(key, '') for key in keys}}
         raw = subprocess.run(['/bin/bash', str(resolver), '--script-dir', str(install_dir),
             '--tier', tier, '--gpu-backend', backend, '--gpu-count', count, '--ods-mode', mode,
-            *(['--native-recovery'] if recovery else [])],
+            *(['--native-protected-recovery'] if complete_protected else ['--native-recovery'] if recovery else [])],
             cwd=install_dir, env=resolver_env, capture_output=True, text=True,
             check=True, timeout=30).stdout
     # Retained caches can predate the Mac private-store overlay. Include it

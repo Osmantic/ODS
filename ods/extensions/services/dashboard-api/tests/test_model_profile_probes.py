@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import struct
 import sys
@@ -286,6 +287,145 @@ def test_p6_is_skipped_without_a_projector():
     assert runtime.requests == []
 
 
+# --- Remote route vision (not part of the battery) ----------------------------
+
+def _remote_exchange(*answers, clock=None, spent=0.0):
+    requests, pending = [], list(answers)
+
+    def exchange(path, payload, timeout):
+        requests.append((path, payload, timeout))
+        if clock is not None:
+            clock[0] += spent
+        answer = pending.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    return exchange, requests
+
+
+def test_remote_vision_image_is_two_squares_of_the_drawn_colours():
+    png = probes.two_squares_png("yellow", "black")
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert struct.unpack(">II", png[16:24]) == (224, 112)
+    idat_length = struct.unpack(">I", png[33:37])[0]
+    raw = zlib.decompress(png[41:41 + idat_length])
+    assert len(raw) == 112 * (1 + 224 * 3)
+    assert raw[:4] == b"\x00\xff\xff\x00" and raw[1 + 3 * 223:1 + 3 * 224] == b"\x00\x00\x00"
+
+
+@pytest.mark.parametrize("answer, status, failure", [
+    ("Yellow, black.", "pass", None),
+    ("yellow and black", "pass", None),
+    ("Yellow, black squares", "pass", None),
+    # Framing words do not count toward the three-word limit (N5).
+    ("Left: yellow, right: black", "pass", None),
+    ("Yellow square, black square", "pass", None),
+    ("The left square is yellow and the right square is black.", "pass", None),
+    ("<think>left yellow, right black</think>**Yellow**, **black**", "pass", None),
+    ("[THINK]left yellow, right black[/THINK]Yellow, black", "pass", None),
+    # Reasoning whose opening tag the provider dropped ends at the closing tag.
+    ("Is it a test? I can't see images well... it is yellow then black.</think>\n\nYellow, black", "pass", None),
+    ("<|channel|>analysis<|message|>two squares<|end|><|start|>assistant<|channel|>final<|message|>Yellow, black",
+     "pass", None),
+    # Unambiguous misses: a palette colour that is not there, or no sight at all.
+    ("Red, black", "fail", "wrong-color"),
+    ("Green, blue", "fail", "wrong-color"),
+    ("I cannot see images.", "fail", "cannot-see"),
+    ("I’m sorry, but I can’t see the image you’ve shared.", "fail", "cannot-see"),
+    ("I am unable to view images; please describe them.", "fail", "cannot-see"),
+    # Everything else is no evidence either way.
+    ("I can't see the image very well, but: yellow, black", "unknown", "hedged"),
+    ("I cannot see images, but the squares are probably yellow and black", "unknown", "hedged"),
+    # A third colour may be a background, and one alone may name a single square.
+    ("Yellow and black on white", "unknown", "partial"),
+    ("Red and black on white", "unknown", "partial"),
+    ("Red", "unknown", "partial"),
+    ("Black, yellow", "unknown", "partial"),
+    ("Yellow", "unknown", "partial"),
+    ("Shared", "unknown", "partial"),
+    ("Rendered colored squares", "unknown", "partial"),
+    ("First yellow, second black, I think", "unknown", "long-answer"),
+    ("Which colored square do you mean?", "unknown", "long-answer"),
+    ("Not yellow, black", "unknown", "hedged"),
+    ("Probably yellow black", "unknown", "hedged"),
+    ("No image appeared", "unknown", "hedged"),
+    ("", "unknown", "empty"),
+    ("<think>the left square looks", "unknown", "empty"),
+    ("[THINK]the left square looks", "unknown", "empty"),
+])
+def test_remote_vision_judges_only_a_short_plain_answer(answer, status, failure):
+    assert probes.judge_remote_vision(answer, ("yellow", "black")) == (status, failure)
+
+
+def test_remote_vision_probe_sends_the_image_and_reads_the_answer():
+    exchange, requests = _remote_exchange(_completion("Yellow, black"))
+    result = probes.probe_remote_vision(exchange, _budget(30.0), ("yellow", "black"), max_tokens=512)
+    assert (result["status"], result["failureClass"]) == ("pass", None)
+    assert result["evidence"]["colors"] == ["yellow", "black"]
+    path, payload, timeout = requests[0]
+    text, image = payload["messages"][0]["content"]
+    assert path == probes.CHAT_PATH and text["text"] == probes.REMOTE_VISION_PROMPT and timeout == 30.0
+    assert image["image_url"]["url"] == "data:image/png;base64," + base64.b64encode(
+        probes.two_squares_png("yellow", "black")).decode("ascii")
+    assert payload["max_tokens"] == 512 and "chat_template_kwargs" not in payload
+
+
+SEED_REFUSED = (400, '{"error": {"message": "Unsupported parameter: seed is not supported with this model."}}')
+
+
+@pytest.mark.parametrize("answers, status, failure, requests_sent", [
+    # A refusal that names image input, confirmed by the same request without the image.
+    ([(400, '{"error": {"message": "litellm.BadRequestError: image input is not supported"}}'), _completion("Hello")],
+     "fail", "image-rejected", 2),
+    ([(400, '{"error": {"message": "This model does not support multimodal input"}}'), _completion("Hello")],
+     "fail", "image-rejected", 2),
+    # Refused without the image too: the image was not the reason.
+    ([(400, '{"error": {"message": "image input is not supported"}}'), SEED_REFUSED], "error", "http-400", 2),
+    ([(400, '{"error": {"message": "image input is not supported"}}'), OSError("timed out")], "error", "http-400", 2),
+    # Only the model's own id names vision: no refusal of images, no second request.
+    ([(400, '{"error": {"message": "seed is not supported for model gpt-4-vision-preview"}}')], "error", "http-400", 1),
+    ([(400, '{"error": {"message": "max_tokens must be at most 256"}}')], "error", "http-400", 1),
+    ([(429, '{"error": {"message": "image quota exceeded"}}')], "error", "http-429", 1),
+    ([(500, "image decoder crashed")], "error", "http-500", 1),
+    ([_completion("Yellow, bla", finish="length")], "unknown", "truncated", 1),
+    ([(200, "{")], "error", "bad-response", 1),
+    ([OSError("timed out")], "error", "unreachable", 1),
+])
+def test_remote_vision_probe_takes_a_refusal_only_when_the_image_caused_it(answers, status, failure, requests_sent):
+    exchange, requests = _remote_exchange(*answers)
+    result = probes.probe_remote_vision(exchange, _budget(30.0), ("yellow", "black"), max_tokens=512,
+                                        model="gpt-4-vision-preview")
+    assert (result["status"], result["failureClass"], len(requests)) == (status, failure, requests_sent)
+    if requests_sent == 2:
+        first, second = requests[0][1], requests[1][1]
+        assert second == {**first, "messages": [{"role": "user", "content": [
+            {"type": "text", "text": probes.REMOTE_VISION_PROMPT}]}]}
+
+
+def test_a_refusal_is_not_confirmed_without_budget_for_the_second_request():
+    now = [0.0]
+    exchange, requests = _remote_exchange((400, '{"error": {"message": "image input is not supported"}}'),
+                                          _completion("Hello"), clock=now, spent=27.0)
+    result = probes.probe_remote_vision(exchange, probes.Budget(30.0, clock=lambda: now[0]), ("yellow", "black"),
+                                        max_tokens=64)
+    assert (result["status"], len(requests)) == ("error", 1)
+
+
+def test_remote_vision_probe_asks_a_busy_route_again_inside_the_same_budget():
+    now = [0.0]
+    exchange, requests = _remote_exchange((503, "busy"), _completion("Yellow, black"), clock=now, spent=20.0)
+    budget = probes.Budget(30.0, clock=lambda: now[0])
+    assert probes.probe_remote_vision(exchange, budget, ("yellow", "black"), max_tokens=64)["status"] == "pass"
+    assert [timeout for _, _, timeout in requests] == [30.0, 10.0]
+    # Less than a probe's minimum left: no second request.
+    now = [0.0]
+    exchange, requests = _remote_exchange((503, "busy"), _completion("Yellow, black"), clock=now, spent=27.0)
+    budget = probes.Budget(30.0, clock=lambda: now[0])
+    result = probes.probe_remote_vision(exchange, budget, ("yellow", "black"), max_tokens=64)
+    assert (result["status"], result["failureClass"], len(requests)) == ("unknown", "budget-exhausted", 1)
+
+
 # --- P8 -----------------------------------------------------------------------
 
 def test_p8_reads_llama_server_request_timings():
@@ -367,6 +507,7 @@ def test_evidence_is_capped_and_redacted():
 
 def test_probe_prompts_carry_no_private_text():
     prompts = " ".join([probes.READY_PROMPT, probes.TOOL_PROMPT, probes.THINK_PROMPT,
-                        probes.VISION_PROMPT, probes.SPEED_PROMPT, json.dumps(probes.WEATHER_TOOL)])
+                        probes.VISION_PROMPT, probes.REMOTE_VISION_PROMPT, probes.SPEED_PROMPT,
+                        json.dumps(probes.WEATHER_TOOL)])
     for word in ("michael", "tower", "strixy", "light-worker", "fleet", "osmantic", "ods"):
         assert word not in prompts.lower()

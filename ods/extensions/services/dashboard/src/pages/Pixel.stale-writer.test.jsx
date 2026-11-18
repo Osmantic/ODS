@@ -61,7 +61,7 @@ it('opening a second tab on an active request does not overwrite the streaming s
   const before = localStorage.getItem(CHAT_KEY)
   const observer = render(<Pixel/>)
   try {
-    await within(observer.container).findByText(/The previous request is still active in this chat/)
+    await within(observer.container).findByText(/Portal is still working on your last request/)
     expect(localStorage.getItem(CHAT_KEY)).toBe(before)
   } finally {
     observer.unmount()
@@ -157,7 +157,7 @@ it.each(['ack-first','stream-first'])('recovers observer Stop without stale conf
   })
   await deliver(first)
   const observer = render(<Pixel/>)
-  await within(observer.container).findByText(/previous request is still active/)
+  await within(observer.container).findByText(/Portal is still working on your last request/)
   // The source advances after observer hydration; Stop must retain that work.
   await deliver(second)
   fireEvent.click(within(observer.container).getByTitle('Stop'))

@@ -17,11 +17,11 @@ const ownerCardPublicReady = {
   public_url: 'https://ods.example.test',
 }
 
-async function finishWizard(stackName = null) {
+async function finishWizard(stackName = null, username = 'sam') {
   fireEvent.change(screen.getByDisplayValue('ods'), { target: { value: 'spark' } })
   fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
 
-  fireEvent.change(screen.getByPlaceholderText('alice'), { target: { value: 'sam' } })
+  fireEvent.change(screen.getByPlaceholderText('alice'), { target: { value: username } })
   fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
 
   if (stackName) {
@@ -78,6 +78,32 @@ describe('FirstBoot', () => {
     expect(fetchMock.mock.calls.filter(([url]) => url === '/api/templates/onboarding-agents/apply')).toHaveLength(1)
     expect(completeCalls).toBe(2)
     expect(globalThis.localStorage.getItem('ods-firstboot-progress')).toBeNull()
+  })
+
+  test('sends the trimmed username the wizard accepted to owner-card generation', async () => {
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/auth/magic-link/owner-card/status') return response(ownerCardReady)
+      if (url === '/api/auth/magic-link/generate' && options.method === 'POST') {
+        const { target_username: name } = JSON.parse(options.body)
+        // Mirrors GenerateRequest: the pattern rejects surrounding whitespace.
+        if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+          return response({ detail: [{ msg: "String should match pattern '^[A-Za-z0-9._-]+$'" }] }, 422)
+        }
+        return response({ url: 'http://auth.spark.local/magic-link/t', target_username: name, expires_at: null, scope: 'hermes', reusable: true, token_type: 'owner' })
+      }
+      if (url === '/api/setup/complete' && options.method === 'POST') return response({ success: true })
+      if (String(url).startsWith('/api/auth/magic-link/qr?url=')) return response({ data_url: 'data:image/png;base64,qr' })
+      if (url === '/api/auth/admin-session') return response({})
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<FirstBoot onComplete={vi.fn()} />)
+    await finishWizard(null, 'sam ')
+
+    expect(await screen.findByRole('heading', { name: /you're set/i })).toBeInTheDocument()
+    const generateCall = fetchMock.mock.calls.find(([url]) => url === '/api/auth/magic-link/generate')
+    expect(JSON.parse(generateCall[1].body).target_username).toBe('sam')
   })
 
   test('generates the owner card, marks setup complete, and shows the QR', async () => {

@@ -6,12 +6,15 @@
 // screenshot gate and the owner-image route check against each result.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {previewScreenshotCapability} from '../plugin/preview-screenshot.mjs';
+import {INSPECTION_KIND, INSPECTION_SCOPE, createWorkspacePreviewInspectTool, inspectionPlanHash,
+  normalizeWorkspacePreviewInspectionParams} from '../plugin/workspace-preview-inspect.mjs';
 import {createContextCompaction} from '../plugin/context-compaction.mjs';
 import {validateImageRoute} from '../host/chat_image_transport.mjs';
 
@@ -92,4 +95,61 @@ test('owner images need no image-test consent after the readback, and need it ag
   assert.throws(() => validateImageRoute(route(seeing), blind), /image-route-changed/);
   assert.throws(() => validateImageRoute(route(blind), blind), /image-input-unverified/);
   assert.equal(validateImageRoute(route(blind, true), blind).unknownConsent, true);
+});
+
+// A remote route's target (bin/ods-host-agent.py _remote_provider_runtime_contract)
+// carries its route fingerprint and the image input of that route's own vision
+// probe: supported only after the model named both test squares' colours
+// through ods/current.
+const remote = (imageInput, routeFingerprint = 'b'.repeat(64)) => ({model: 'Qwen3.8-Flash-Next', contextLength: 131072,
+  maxTokens: 32768, reasoning: true, routeFingerprint, imageInput});
+
+// One published snapshot, one passing step, and the capture the broker returns.
+const PLAN = Object.freeze({siteId: 'site-' + 'a'.repeat(24), sha256: 'a'.repeat(64), viewport: {width: 800, height: 600},
+  steps: [{action: 'assert-visible', locator: {selector: '#game'}}]});
+function receipt() {
+  const request = normalizeWorkspacePreviewInspectionParams(structuredClone(PLAN));
+  const state = {count: 1, visible: true, display: 'block', visibility: 'visible', opacity: '1', hidden: false, hiddenUntilFound: false, rectCount: 1};
+  return {schemaVersion: 1, kind: INSPECTION_KIND, status: 'passed', siteId: PLAN.siteId, sha256: PLAN.sha256,
+    planSha256: inspectionPlanHash(request), viewport: request.viewport,
+    steps: [{index: 0, ...request.steps[0], before: state, stable: true, status: 'passed'}],
+    diagnostics: {renderedHiddenAttributeCount: 0, hiddenUntilFoundCount: 0}, blockedRequests: [], scope: INSPECTION_SCOPE};
+}
+const segment = (marker, payload) => Buffer.concat([Buffer.from([0xff, marker, (payload.length + 2) >> 8, (payload.length + 2) & 255]), payload]);
+const frame = Buffer.from([8, 600 >> 8, 600 & 255, 800 >> 8, 800 & 255, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8]), segment(0xe0, Buffer.from('JFIF\0\x01\x01\0\0\x01\0\x01\0\0', 'latin1')),
+  segment(0xdb, Buffer.alloc(65)), segment(0xc0, frame), segment(0xc4, Buffer.alloc(29)),
+  segment(0xda, Buffer.from([3, 1, 0, 2, 0x11, 3, 0x11, 0, 0x3f, 0])), Buffer.alloc(32), Buffer.from([0xff, 0xd9])]);
+const CAPTURED = Object.freeze({status: 'captured', mimeType: 'image/jpeg', width: 800, height: 600, bytes: JPEG.length,
+  sha256: createHash('sha256').update(JPEG).digest('hex'), data: JPEG.toString('base64')});
+// The inspection tool as the plugin entry registers it (index.js): the gate reads this run's config and model.
+const inspect = config => createWorkspacePreviewInspectTool({
+  request: async request => ({...receipt(), ...(request.screenshot ? {screenshot: CAPTURED} : {})}),
+  screenshots: {capability: () => previewScreenshotCapability(config, ACTIVE), reserve: () => 'reserved'},
+});
+
+test('a remote route whose vision probe passed gets the screenshot of its own preview', async t => {
+  const [seeing, other, blind] = render(installed(), [remote('supported'), remote('unknown', 'c'.repeat(64)), remote('unknown')]);
+  assert.deepEqual(previewScreenshotCapability(seeing, ACTIVE), {supported: true, directive: DIRECTIVE});
+  const settings = seeing.plugins.entries['pixel-ods'].config;
+  assert.deepEqual([settings.modelImageInput, settings.modelRouteFingerprint], ['supported', 'b'.repeat(64)]);
+  assert.deepEqual(seeing.models.providers['ods-gateway'].models[0].input, ['text', 'image']);
+
+  const result = await inspect(seeing).execute('call-remote', structuredClone(PLAN));
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.content.map(block => block.type), ['text', 'image']);
+  assert.deepEqual(result.content[1], {type: 'image', mimeType: 'image/jpeg', data: CAPTURED.data});
+  assert.match(result.content[0].text, /Screenshot attached: one 800x600 JPEG of the whole 800x600 preview viewport/);
+  // Owner images on that route need no image-test consent either.
+  const model = portalModel(t, seeing);
+  assert.equal(model.imageInput, 'supported');
+  assert.equal(validateImageRoute(route(model), model).unknownConsent, false);
+
+  // Another route, or a proof whose probe got no answer, is unknown again: text only.
+  for (const config of [other, blind]) {
+    assert.deepEqual(previewScreenshotCapability(config, ACTIVE), {supported: false, reason: 'unknown'});
+    const text = await inspect(config).execute('call-remote', structuredClone(PLAN));
+    assert.deepEqual(text.content.map(block => block.type), ['text']);
+    assert.match(text.content[0].text, /No screenshot attached: the selected model's image input is unknown/);
+  }
 });

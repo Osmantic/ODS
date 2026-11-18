@@ -11,6 +11,7 @@ import copy
 from datetime import datetime
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -18,12 +19,14 @@ import stat
 import tempfile
 import time
 import uuid
-from portal_goal import goal_prompt, goal_decision, public_plan
+from portal_goal import GOAL_CONTINUE_STOPS, goal_prompt, goal_decision, public_plan
 
 ACTIVE = {"queued", "running", "waiting", "stopping", "interrupted"}
 TERMINAL = {"completed", "failed", "cancelled", "skipped"}
 MAX_TEAMS = 128
 MAX_BYTES = 4 * 1024 * 1024
+logger = logging.getLogger(__name__)
+FINISHED_TEAM_STATUSES = {"completed", "failed", "cancelled", "stopped", "interrupted"}
 
 
 def publication_receipt(frame):
@@ -187,11 +190,64 @@ class TeamStore:
                 rows.append(row)
         return sorted(rows, key=lambda x: x["created"], reverse=True)
 
+    def _evictable(self, row):
+        # Finished teams, plus teams whose controller died with an earlier
+        # process (TeamManager.view reports those as interrupted). Teams run by
+        # this process, or waiting on the user, are never evicted.
+        if row["status"] in FINISHED_TEAM_STATUSES:
+            return True
+        return row["status"] in {"queued", "running", "stopping"} and row.get("instance") != self.instance
+
+    def _evict_finished(self):
+        """Make room for one more team when history is full, so MAX_TEAMS cannot lock out new teams.
+
+        Below MAX_TEAMS nothing is deleted. A full store loses only as many of
+        its oldest finished teams as it takes to admit one more team.
+        Completed/failed/cancelled/stopped teams go before older interrupted
+        ones, and a chat's newest interrupted team is never evicted.
+        """
+        total = sum(1 for _ in self.directory.glob("*.json"))
+        if total < MAX_TEAMS:
+            return
+        finished: list[tuple[float, Path]] = []
+        gates: dict[tuple[str, str], list[tuple[float, Path]]] = {}
+        for path in self.directory.glob("*.json"):
+            try:
+                row = self.get(path.stem[:64], path.stem[65:])
+                evictable = self._evictable(row)
+            except (ValueError, KeyError, TypeError) as exc:
+                # ValueError covers truncated JSON, non-private files and stray
+                # names; Key/TypeError a row that is not a team. Leave that file
+                # alone (it still counts toward MAX_TEAMS) so one bad file cannot
+                # block every new team.
+                logger.warning("Skipping unreadable agent team file %s during pruning: %s", path.name, exc)
+                continue
+            if not evictable:
+                continue
+            stamp = row.get("updated", row["created"])
+            if row["status"] in ACTIVE:
+                # Interrupted or stale-active teams block new teams in their chat
+                # until the user confirms Stop (TeamManager._check_admission).
+                gates.setdefault((path.stem[:64], row["chat_id"]), []).append((stamp, path))
+            else:
+                finished.append((stamp, path))
+        finished.sort(key=lambda item: item[0])
+        # Only a chat's older gates may go; its newest gate always survives, so
+        # pruning never silently lifts the Stop confirmation.
+        spare = sorted(item for rows in gates.values() for item in sorted(rows)[:-1])
+        for _stamp, path in finished + spare:
+            if total < MAX_TEAMS:
+                break
+            path.unlink()
+            total -= 1
+
     def save(self, owner, row):
         path = self._path(owner, row["id"])
         encoded = json.dumps(row, ensure_ascii=False).encode("utf-8")
         if len(encoded) > MAX_BYTES:
             raise TeamConflict("Agent history reached its size limit; existing history was preserved")
+        if not path.exists():
+            self._evict_finished()
         if not path.exists() and sum(1 for _ in self.directory.glob("*.json")) >= MAX_TEAMS:
             raise TeamConflict("Agent history is full; existing teams were preserved")
         fd, temporary = tempfile.mkstemp(prefix=".team-", dir=self.directory)
@@ -380,7 +436,7 @@ class TeamManager:
                     agent["started"] = agent["started"] or time.time()
                     self._save(owner, row)
                     content, outcome, questions, done, error = "", None, None, False, False
-                    publication = None
+                    publication, limit_stop = None, None
                     # Never reuse an earlier turn's completion plan as a fresh receipt.
                     agent['activity'] = None
                     last_save = 0
@@ -411,6 +467,8 @@ class TeamManager:
                             receipt = frame.get("pixel_outcome", {})
                             if receipt.get("schemaVersion") == 1 and receipt.get("status") in {"none", "passed", "pending", "failed"}:
                                 outcome = receipt["status"]
+                                stop = receipt.get("stop")
+                                limit_stop = stop if outcome == "failed" and isinstance(stop, str) and stop in GOAL_CONTINUE_STOPS else None
                             value = frame.get("pixel_questions", {})
                             if value.get("schemaVersion") == 1 and questions_valid(value.get("questions")):
                                 questions = value["questions"]
@@ -419,7 +477,12 @@ class TeamManager:
                             self._save(owner, row)
                             last_save = time.monotonic()
                     stopped = self.store.get(owner, row["id"])["stop_requested"]
-                    if done and not error and outcome in {'none', 'passed'} and publication:
+                    # A goal round that a Portal limit stopped, with its reply
+                    # received, continues from the saved work like any other
+                    # unfinished round, and keeps its publication; every other
+                    # failed round ends the goal.
+                    goal_stop = limit_stop if row.get('mode') == 'goal' and done and not error and content.strip() else None
+                    if done and not error and (outcome in {'none', 'passed'} or goal_stop) and publication:
                         agent['publication'] = publication
                     row["stop_requested"] = stopped
                     if content:
@@ -432,6 +495,8 @@ class TeamManager:
                             plan = public_plan((agent.get('activity') or {}).get('goal'))
                             if plan and plan['steps']:
                                 agent['goal_plan'] = plan
+                            # The answer continues this round, which was not stopped.
+                            agent['goal_stopped'] = None
                         agent["questions"] = questions
                         agent["status"], row["status"] = "waiting", "waiting"
                         self._save(owner, row)
@@ -443,7 +508,7 @@ class TeamManager:
                         agent["finished"] = time.time()
                         self._stop_remaining(owner, row)
                         return
-                    if not done or error or not content.strip() or outcome not in {"none", "passed"}:
+                    if (not done or error or not content.strip() or outcome not in {"none", "passed"}) and not goal_stop:
                         if (not done or error or not content.strip()) and agent['role']!='builder' and agent.get('recoveries',0)<1:
                             agent['recoveries']=1
                             agent['recovery_request_ids'] = [*agent.get('recovery_request_ids', []), agent['request_id']][-4:]
@@ -468,7 +533,7 @@ class TeamManager:
                         self._save(owner, row)
                         return
                     if row.get('mode') == 'goal':
-                        decision = goal_decision(agent)
+                        decision = goal_decision(agent, goal_stop)
                         if decision == 'continue':
                             agent['goal_round'] = agent.get('goal_round', 0) + 1
                             agent['request_id'] = f"goal-{agent['goal_round']}-answer-{agent.get('clarifications', 0)}"

@@ -84,6 +84,7 @@ function Reset-Scenario {
     $script:calls = [Collections.Generic.List[string]]::new()
     $script:prompts = [Collections.Generic.List[string]]::new()
     $script:scenario = 'ready'
+    $script:windowsBuild = 19045
     $script:delegateCode = 0
     $script:featureCode = 0
     $script:allowPreparation = $true
@@ -120,6 +121,7 @@ function Reset-Scenario {
 function Test-ODSPortalVirtualization { $script:calls.Add('virt-check'); return $script:virtualization }
 function Test-ODSSparkWindowsArm64 { $script:calls.Add('arm64-check'); return $script:arm64 }
 function Get-ODSPortalFreeSystemGB { return $script:freeGB }
+function Get-ODSPortalWindowsBuild { return $script:windowsBuild }
 function Get-ODSPortalWslRegistrations { return $script:wslRegistrations }
 function Get-ODSPortalDockerDesktop { return [pscustomobject]@{ Installed=$script:dockerInstalled; Exe='docker-desktop.exe'; Cli='docker.exe' } }
 function Install-ODSPortalDockerDesktop {
@@ -270,6 +272,32 @@ try {
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'ready host without -All delegates successfully'
     Check ($script:capturedArguments[-1] -ceq '--pixel' -and $script:capturedArguments -notcontains '--no-hermes') 'Linux flags leave --no-hermes out, so a rerun keeps the installed selection'
     Check ((@($script:capturedNewInstallation) -join ' ') -ceq '--no-hermes') 'Hermes is turned off only through the new-installation flag'
+    # Reject old Windows before WSL probes, prompts, elevation or installs,
+    # whether WSL is absent, unprepared, or already running.
+    foreach ($build in @(16299, 18362, 19040)) {
+        foreach ($nonInteractive in @($false, $true)) {
+            foreach ($wslMode in @('no-wsl', 'features', 'ready')) {
+                Reset-Scenario
+                $script:windowsBuild = $build
+                $script:scenario = $wslMode
+                $message = ''
+                try { $null = Invoke-ODSPortalSetup @{NonInteractive=$nonInteractive} 'unused' } catch { $message = $_.Exception.Message }
+                Check ($message -match 'requires Windows build 19041' -and $message -match "reports build $build" -and $message -match 'Update Windows') "build $build ($wslMode, nonInteractive=$nonInteractive) reports the requirement and remedy"
+                Check ($script:calls.Count -eq 0) "build $build ($wslMode, nonInteractive=$nonInteractive) stops before all downstream calls"
+            }
+        }
+    }
+    foreach ($build in @(19041, 19045, 22631)) {
+        Reset-Scenario
+        $script:windowsBuild = $build
+        Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) "supported build $build keeps the ready-host flow"
+        Check ($script:calls.Contains('install:Ubuntu-24.04')) "supported build $build reaches the Linux installer"
+    }
+    Reset-Scenario
+    $script:windowsBuild = 19041
+    $script:scenario = 'no-wsl'
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 3010) 'supported build 19041 keeps the missing-WSL feature flow'
+    Check ($script:calls.Contains('features') -and $script:calls.Contains('resume')) 'supported build 19041 still activates features and schedules resume'
     Reset-Scenario
     $null = Invoke-ODSPortalSetup @{NoHermes=$true} 'unused'
     Check ($script:capturedArguments -contains '--no-hermes') '-NoHermes turns Hermes off on a rerun too'

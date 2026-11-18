@@ -51,6 +51,12 @@ PAINT_SCOPE = " Pixel paint was checked only for explicit assert-painted steps, 
 # only of fill. workspace-preview-inspect.mjs mirrors both exactly.
 STEP_SCOPE = "Only the listed steps were tested, each only as stated here. CSS layout visibility, normalized visible-text assertions and click dispatches do not test pixel paint; no step tests occlusion, clipping, a full accessibility audit, or overall functionality."
 PRESS_FILL_SCOPE = " Native non-sensitive text and number fields were filled only with explicit synthetic values; number constraint flags are observations, not a claim of form validity. Fill sends no key events and does not submit forms."
+# An optional `page` starts the inspection on another page of the same
+# snapshot instead of its entry page. Page plans run only on a capsule labelled
+# for them, and their receipts name the page. workspace-preview-inspect.mjs
+# mirrors the scope and the page rules exactly.
+PAGE_CAPABILITY = "snapshot-page-v1"
+PAGE_SCOPE = " Only the requested page of this snapshot was loaded; links between pages were not followed."
 # One viewport screenshot after the steps, only when the plugin asks for it
 # (a model that accepts images). The directive sits beside the plan, never in
 # it: plan_hash, scope and every receipt field stay those of the plan alone.
@@ -76,11 +82,16 @@ def inspection_scope(request):
     scope += (PRESS_FILL_SCOPE if pressed else FILL_SCOPE) if any(s['action'] == 'fill' for s in request['steps']) else ''
     scope += PRESS_SCOPE if pressed else ''
     scope += PAINT_SCOPE if any(s['action'] == 'assert-painted' for s in request['steps']) else ''
-    return scope + (DOWNLOAD_SCOPE if request['steps'][-1]['action'] == 'download' else '')
+    scope += DOWNLOAD_SCOPE if request['steps'][-1]['action'] == 'download' else ''
+    return scope + (PAGE_SCOPE if 'page' in request else '')
 
 
 class Invalid(ValueError):
     pass
+
+
+class MissingPage(Invalid):
+    """The requested page is not a file of this immutable snapshot."""
 
 
 def read_only_wsl_docker(binary, info):
@@ -281,11 +292,39 @@ def printable(value, chars, size):
     )
 
 
+def snapshot_name(name):
+    """A file path an immutable snapshot may hold: relative POSIX segments of
+    ASCII name characters, so no hidden (leading ".") or reserved names."""
+    return (
+        isinstance(name, str)
+        and len(name) <= 512
+        and len(name.split("/")) <= 12
+        and all(
+            re.fullmatch(r"(?!__ods_)[A-Za-z0-9_\[][A-Za-z0-9._\[\]-]{0,127}", p)
+            and p not in (".", "..", "__pycache__")
+            for p in name.split("/")
+        )
+    )
+
+
+def page_file(page):
+    """The snapshot file a page names. A trailing "/" names that folder's
+    index.html, as preview_inspection_capsule.snapshot_file serves it."""
+    return page + "index.html" if page.endswith("/") else page
+
+
 def validate_request(value):
     keys = ("schemaVersion", "action", "siteId", "sha256", "viewport", "steps")
-    exact(value, (*keys, "screenshot") if isinstance(value, dict) and "screenshot" in value else keys)
+    optional = tuple(key for key in ("page", "screenshot") if isinstance(value, dict) and key in value)
+    exact(value, (*keys, *optional))
     if "screenshot" in value:
         validate_screenshot_directive(value["screenshot"])
+    if "page" in value and (
+        not isinstance(value["page"], str)
+        or not snapshot_name(page_file(value["page"]))
+        or not page_file(value["page"]).endswith(".html")
+    ):
+        raise Invalid("invalid page")
     if (
         type(value["schemaVersion"]) is not int
         or value["schemaVersion"] != 1
@@ -382,17 +421,7 @@ def validate_bundle(bundle):
     for entry in files:
         exact(entry, ("path", "base64"))
         name = entry["path"]
-        if (
-            not isinstance(name, str)
-            or len(name) > 512
-            or len(name.split("/")) > 12
-            or name <= previous
-            or any(
-                not re.fullmatch(r"(?!__ods_)[A-Za-z0-9_\[][A-Za-z0-9._\[\]-]{0,127}", p)
-                or p in (".", "..", "__pycache__")
-                for p in name.split("/")
-            )
-        ):
+        if not snapshot_name(name) or name <= previous:
             raise Invalid("invalid file path")
         if (
             not isinstance(entry["base64"], str)
@@ -416,6 +445,8 @@ def validate_bundle(bundle):
         result[name], previous = data, name
     if "index.html" not in result or digest.hexdigest() != request["sha256"]:
         raise Invalid("snapshot mismatch")
+    if "page" in request and page_file(request["page"]) not in result:
+        raise MissingPage("page not in snapshot")
     download = request['steps'][-1]
     if download['action'] == 'download':
         data = result.get(download['path'])
@@ -435,6 +466,7 @@ def failure(code, request=None):
                 "siteId": request["siteId"],
                 "sha256": request["sha256"],
                 "planSha256": plan_hash(request),
+                **({"page": request["page"]} if "page" in request else {}),
             }
             if request
             else {}

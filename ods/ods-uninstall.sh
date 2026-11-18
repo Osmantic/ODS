@@ -132,6 +132,8 @@ KEEP_MODELS=false
 KEEP_DATA=false
 FORCE=false
 NON_INTERACTIVE=false
+PRESERVE_BROKER_STATE=false
+PIXEL_BROKER_STATE_MODE=strict
 
 validate_requested_install_dir() {
     local target_dir="$1" target_real home_real script_real
@@ -156,6 +158,7 @@ validate_requested_install_dir() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --keep-models) KEEP_MODELS=true; shift ;;
+        --preserve-broker-state) PRESERVE_BROKER_STATE=true; shift ;;
         --keep-data)   KEEP_DATA=true; shift ;;
         --force)       FORCE=true; shift ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;
@@ -179,6 +182,8 @@ Options:
     --keep-models   Keep models beside the install in <install>.models-backup
     --keep-data     Keep user data (chat history, n8n workflows, etc.), backups
                     in .backups/, presets, and update snapshots in ~/.ods
+    --preserve-broker-state  With --force, retain unrecognized Linux Pixel broker
+                    state in private custody instead of deleting its contents
     --force         Skip confirmation prompts
     --non-interactive  Never prompt for sudo; require cached or passwordless sudo
     --install-dir   Uninstall a separately located, fingerprinted ODS installation
@@ -207,6 +212,26 @@ EOF
         *) log_error "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# Forced reinstalls can retain a legacy broker home instead of classifying
+# unexpected distro skeleton files as safe to delete. This changes only the
+# entry cleanup plan: root, parent, ownership and mount checks still apply.
+if $PRESERVE_BROKER_STATE; then
+    if ! $FORCE || $KEEP_DATA; then
+        log_error "--preserve-broker-state requires --force without --keep-data; nothing was changed."
+        exit 1
+    fi
+    PIXEL_BROKER_STATE_MODE=source-transition
+fi
+
+# The installer refuses root, so the install, its unit templates and Pixel
+# belong to the account that installed them. Under sudo, HOME and the user
+# become root's, and every ownership check then reports ODS's own files and
+# units as foreign. Stop before checking anything, with the way out.
+if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
+    log_error "Run this uninstaller as $SUDO_USER, without sudo. It asks for sudo itself when it needs it; nothing was changed."
+    exit 1
+fi
 
 echo ""
 echo -e "${RED}╔══════════════════════════════════════════════════╗${NC}"
@@ -386,7 +411,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
     if [[ -f "$SCRIPT_DIR/lib/pixel-uninstall.sh" ]]; then
         # shellcheck source=lib/pixel-uninstall.sh
         . "$SCRIPT_DIR/lib/pixel-uninstall.sh"
-        if ! ODS_PIXEL_UNINSTALL_VALIDATE_ONLY=true ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME"; then
+        if ! ODS_PIXEL_UNINSTALL_VALIDATE_ONLY=true ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME" "$PIXEL_BROKER_STATE_MODE"; then
             log_error "Pixel validation failed; nothing was changed"
             exit 1
         fi
@@ -450,7 +475,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
     if [[ -f "$SCRIPT_DIR/lib/pixel-uninstall.sh" ]]; then
         # shellcheck source=lib/pixel-uninstall.sh
         . "$SCRIPT_DIR/lib/pixel-uninstall.sh"
-        if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME"; then
+        if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME" "$PIXEL_BROKER_STATE_MODE"; then
             log_error "Pixel cleanup failed; remaining installation retained"
             if [[ -n "${_ods_wsl_retire_helper:-}" ]]; then
                 log_warn "Windows startup changes already applied for this uninstall remain in effect."
@@ -465,6 +490,7 @@ if [[ "$(uname -s)" == "Linux" ]]; then
 fi
 unset _ods_wsl_retire_helper
 
+_ods_owned_macos_producers=false
 # Native Pixel owns protected launchd services outside the ODS install tree.
 # Retire those receipt-bound resources before removing that tree; otherwise a
 # forced reinstall deletes its owner data but strands active native services.
@@ -480,6 +506,31 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         exit 1
     fi
     unset _ods_native_pixel_helper
+    # New installations bind native and bridge jobs to a private journal and
+    # inspect both GUI and Background domains. Do not follow this with legacy
+    # name-based reaping, or delete recovery files after uncertain shutdown.
+    if [[ -e "$INSTALL_DIR/bin/macos_native_service.py" || -e "$INSTALL_DIR/bin/macos_bridge_service.py" ]]; then
+        if [[ ! -f "$INSTALL_DIR/bin/macos_native_service.py" || ! -f "$INSTALL_DIR/bin/macos_bridge_service.py" ]]; then
+            log_error "Native service managers are incomplete; installation retained"
+            exit 1
+        fi
+        if ! "${ODS_PYTHON_CMD:-python3}" "$INSTALL_DIR/bin/macos_native_service.py" stop \
+            "$INSTALL_DIR" "$INSTALL_DIR/bin/llama-server" "$INSTALL_DIR/data/.llama-server.pid"; then
+            log_error "Native inference shutdown is unconfirmed; installation retained"
+            exit 1
+        fi
+        for _ods_bridge_label in com.ods.llm-bridge com.ods.host-agent-bridge; do
+            if ! "${ODS_PYTHON_CMD:-python3}" "$INSTALL_DIR/bin/macos_bridge_service.py" stop \
+                "$INSTALL_DIR" /usr/bin/python3 "$_ods_bridge_label" \
+                "$HOME/Library/LaunchAgents/${_ods_bridge_label}.plist" \
+                "$HOME/Library/Logs/ODS/${_ods_bridge_label}.log"; then
+                log_error "Native bridge shutdown is unconfirmed; installation retained"
+                exit 1
+            fi
+        done
+        unset _ods_bridge_label
+        _ods_owned_macos_producers=true
+    fi
 fi
 
 # A pending Pixel transition must retain its host-agent and other recovery
@@ -622,6 +673,11 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     for _ods_agent_label in com.ods.llm-bridge com.ods.host-agent-bridge \
                             com.ods.host-agent com.ods.opencode-web \
                             com.ods.llama-server com.ods.full-model-download; do
+        if $_ods_owned_macos_producers; then
+            case "$_ods_agent_label" in
+                com.ods.llama-server|com.ods.llm-bridge|com.ods.host-agent-bridge) continue ;;
+            esac
+        fi
         _ods_agent_plist="$HOME/Library/LaunchAgents/${_ods_agent_label}.plist"
         if launchctl print "gui/${_ods_uid}/${_ods_agent_label}" >/dev/null 2>&1; then
             if launchctl bootout "gui/${_ods_uid}/${_ods_agent_label}" 2>/dev/null; then
@@ -679,13 +735,15 @@ if command -v pgrep >/dev/null 2>&1; then
     while IFS= read -r _pid; do
         [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
     done < <(pgrep -f '\.opencode/bin/opencode (web|serve)' 2>/dev/null || true)
-    # macOS-native llama-server: only matches this install's shipped binary
-    while IFS= read -r _pid; do
-        [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
-    done < <(pgrep -f "$INSTALL_DIR/bin/llama-server" 2>/dev/null || true)
-    while IFS= read -r _pid; do
-        [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
-    done < <(pgrep -f "$INSTALL_DIR/bin/ods-macos-llm-bridge.py" 2>/dev/null || true)
+    if ! $_ods_owned_macos_producers; then
+        # Compatibility with installations predating the ownership managers.
+        while IFS= read -r _pid; do
+            [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
+        done < <(pgrep -f "$INSTALL_DIR/bin/llama-server" 2>/dev/null || true)
+        while IFS= read -r _pid; do
+            [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
+        done < <(pgrep -f "$INSTALL_DIR/bin/ods-macos-llm-bridge.py" 2>/dev/null || true)
+    fi
 fi
 if [[ -n "${_ods_uninstall_orphan_pids[0]-}" ]]; then
     log_info "  Sending SIGTERM to ${#_ods_uninstall_orphan_pids[@]} orphan PID(s): ${_ods_uninstall_orphan_pids[*]}"
@@ -783,12 +841,44 @@ elif [[ -d "$HOME/.ods" ]]; then
     log_ok "Backups removed"
 fi
 
-# 7. Remove OpenCode config (if we created it)
-OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
-if [[ -f "$OPENCODE_CONFIG" ]] && grep -q "llama-server" "$OPENCODE_CONFIG" 2>/dev/null; then
-    rm -f "$OPENCODE_CONFIG"
-    log_ok "OpenCode config removed"
-fi
+# 7. Remove ODS's OpenCode settings. The installer merges its llama-server
+# provider into an owner's existing config, so these files can also hold the
+# owner's own providers, MCP servers and agents: remove only what ODS added,
+# and delete a file only when nothing else is left in it.
+_ods_strip_opencode_config() {
+    local config="$1" stripped
+    [[ -f "$config" ]] && grep -q "llama-server" "$config" 2>/dev/null || return 0
+    if ! command -v jq >/dev/null 2>&1 \
+        || ! stripped=$(jq '
+            def ods: type == "string" and startswith("llama-server/");
+            del(.provider["llama-server"])
+            | if .provider == {} then del(.provider) else . end
+            | if (.model | ods) then del(.model) else . end
+            | if (.small_model | ods) then del(.small_model) else . end
+            | if (.agent | type) == "object" then
+                .agent |= with_entries(
+                    if (.value | type) == "object" and (.value.model | ods)
+                    then .value |= del(.model) else . end
+                    | select(.value != {}))
+                | if .agent == {} then del(.agent) else . end
+              else . end' "$config" 2>/dev/null); then
+        log_warn "Kept $config: remove its llama-server provider by hand"
+        return 0
+    fi
+    if [[ "$(printf '%s' "$stripped" | jq 'del(.["$schema"]) | length')" == 0 ]]; then
+        rm -f "$config"
+        log_ok "OpenCode config removed: $config"
+    # cp -p first so the rewrite keeps the owner's mode (the file can hold keys).
+    elif cp -p "$config" "$config.ods-tmp" && printf '%s\n' "$stripped" > "$config.ods-tmp" \
+        && mv "$config.ods-tmp" "$config"; then
+        log_ok "ODS's model provider removed from $config; your other settings were kept"
+    else
+        rm -f "$config.ods-tmp"
+        log_warn "Kept $config: remove its llama-server provider by hand"
+    fi
+}
+_ods_strip_opencode_config "$HOME/.config/opencode/opencode.json"
+_ods_strip_opencode_config "$HOME/.config/opencode/config.json"
 
 if ! $INSTALL_DIR_CLEANED; then
     log_error "ODS uninstall was incomplete; the installation directory remains at $INSTALL_DIR"

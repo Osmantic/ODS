@@ -69,10 +69,12 @@ SHARED_REPAIRS = (
     ('openclaw-hook-provenance.json', 'hook-agent-context-ugCMMoT5.js'),
     ('openclaw-run-id-redaction.json', 'redact-cvFSPoXf.js'),
     ('openclaw-context-usage.json', 'attempt-execution-DnVHak5f.js'),
+    ('openclaw-no-tools-ingress.json', 'openai-http-DkesJHcp.js'),
     ('openclaw-yield-usage.json', 'embedded-agent-CJx-nG3W.js'),
     ('openclaw-compaction-empty.json', 'proxy-Bsfwfsp-.js'),
     ('openclaw-compaction-no-work.json', 'compact-DuWIsaq_.js'),
     ('openclaw-command-attempt-warning.json', 'payloads-CC0zlj7W.js'),
+    ('openclaw-utf8-output.json', 'windows-command-C7mWWxtt.js'),
     ('openclaw-compaction-budget.json', 'selection-BEwSQKM-.js'),
 )
 

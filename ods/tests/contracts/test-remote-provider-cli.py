@@ -241,6 +241,22 @@ def main() -> int:
         text,
         "configured remote-provider test output must inspect the routeProof result",
     )
+    for source in (r"\.routeState\.status\.vision", r"\.routeProof\.status\.vision"):
+        require(
+            r'"Image input: " \+ \(' + source + r" \| image_input\)",
+            text,
+            "remote-provider status and test must show the route's vision verdict",
+        )
+    require(
+        r'"seen the test image"[\s\S]*"text only"[\s\S]*"not measured"',
+        text,
+        "the vision verdict must read as the measured outcome, not a raw value",
+    )
+    require(
+        r"applies at the next check once Portal is idle",
+        text,
+        "a verdict deferred while Portal is busy must say when it applies",
+    )
     require(
         r"if \[\[ \"\$use_configured_probe\" == \"true\" \]\]; then[\s\S]*_remote_provider_probe_configured \"\$@\"",
         body,
