@@ -33,13 +33,23 @@ class InstallerPreservation(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(list(actual.iterdir()), [])
 
-    def run_writer(self, directory, surface):
+    def test_context_and_output_budgets(self):
+        for surface in ['macos', 'linux']:
+            with self.subTest(surface=surface), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp).resolve()
+                for context, output in [(32768, 8192), (131072, 32768), (65536, 16384)]:
+                    result = self.run_writer(directory, surface, context)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    limits = CORE.read_effective(directory)['provider']['llama-server']['models']['new-model']['limit']
+                    self.assertEqual(limits, {'context': context, 'output': output})
+
+    def run_writer(self, directory, surface, context=32768):
         env = dict(os.environ, INSTALL_DIR=str(ODS), OPENCODE_CONFIG_DIR=str(directory),
                    ODS_OPENCODE_MODEL='new-model', ODS_OPENCODE_BASE_URL='http://127.0.0.1:9/v1',
-                   ODS_OPENCODE_API_KEY=KEY, ODS_OPENCODE_CONTEXT='32768',
+                   ODS_OPENCODE_API_KEY=KEY, ODS_OPENCODE_CONTEXT=str(context),
                    _opencode_model_id='new-model', _opencode_model_name='New model',
                    _opencode_provider_name='ODS inference', _opencode_url='http://127.0.0.1:9/v1',
-                   _opencode_key=KEY, _opencode_context='32768')
+                   _opencode_key=KEY, _opencode_context=str(context))
         if surface == 'macos':
             script = '''source "$1"
 _write_macos_opencode_config "$OPENCODE_CONFIG_DIR/opencode.json" "$ODS_OPENCODE_MODEL" "$ODS_OPENCODE_BASE_URL" "$ODS_OPENCODE_API_KEY" "$ODS_OPENCODE_CONTEXT"
