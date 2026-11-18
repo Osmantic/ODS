@@ -342,6 +342,15 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-extension-env-carry.ps1
 
+      - name: Windows Web Search Bypass Carry Contract
+        shell: pwsh
+        run: ./tests/test-windows-web-search-bypass.ps1
+
+      - name: Windows Web Search Bypass Carry Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-web-search-bypass.ps1
+
       - name: Windows Extension .env Settings Carry Contract (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell

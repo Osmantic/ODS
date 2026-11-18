@@ -1316,6 +1316,40 @@ def test_settings_apply_plan_syncs_rag_credential_without_reindex():
     ]
 
 
+def test_settings_apply_plan_web_search_bypass_recreates_only_webui():
+    from settings import _compute_env_apply_plan
+
+    key = "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL"
+    for before, after in [("false", "true"), ("true", "false")]:
+        plan = _compute_env_apply_plan(
+            {key: before}, {key: after}, active_services={"open-webui"},
+        )
+        assert plan["services"] == ["open-webui"]
+        assert plan["postApplyActions"] == []
+
+
+def test_settings_web_search_bypass_uses_shipped_boolean_and_persists(
+    test_client, settings_env_fixture,
+):
+    key = "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL"
+    schema = Path(__file__).resolve().parents[4] / ".env.schema.json"
+    fixture_schema = json.loads(settings_env_fixture["schema_path"].read_text())
+    fixture_schema["properties"][key] = json.loads(schema.read_text())["properties"][key]
+    settings_env_fixture["schema_path"].write_text(json.dumps(fixture_schema))
+    response = test_client.get("/api/settings/env", headers=test_client.auth_headers)
+    assert response.status_code == 200
+    assert response.json()["fields"][key]["type"] == "boolean"
+    for value in ("true", "false"):
+        response = test_client.put(
+            "/api/settings/env", headers=test_client.auth_headers,
+            json={"mode": "form", "values": {key: value}},
+        )
+        assert response.status_code == 200, response.text
+        assert f"{key}={value}\n" in settings_env_fixture["env_path"].read_text()
+        assert response.json()["applyPlan"]["services"] == ["open-webui"]
+        assert response.json()["applyPlan"]["postApplyActions"] == []
+
+
 def test_settings_validation_rejects_gguf_embedding_artifact():
     from settings import _build_env_fields, _validate_env_values
 
