@@ -222,3 +222,117 @@ test('configured agent activity binds to that agent and its exact user session',
   assert.equal(recorder.activeForUser(user), null);
   assert.equal(recorder.projection(runId).state, 'completed');
 });
+
+// The goal partial-work settlement view (tool-loop-guard.mjs unfinished-work):
+// sticky per-call evidence kept beside, never in, the public projection.
+function settlementRun({sessionId = 'owned-session', sessionKey = 'agent:pixel:openai-user:ods-' + 'd'.repeat(64)} = {}) {
+  const context = {...ctx, sessionId, sessionKey};
+  const recorder = createTaskActivity({now});
+  recorder.begin({prompt:'/goal Repair the form'}, context);
+  const call = (toolName, params, result, id, extra = {}) => {
+    recorder.before({toolName, params}, {...context, toolCallId:id, ...extra.before});
+    recorder.after({toolName, params, result, ...extra.event}, {...context, toolCallId:id, ...extra.after});
+  };
+  return {recorder, context, call, owned:{sessionId, sessionKey}};
+}
+const PLAN = {status:'active', summary:'Working', steps:[{id:'work', title:'Repair', status:'running'}]};
+function settledRound(run) {
+  run.call('tool_search', {query:'goal'}, {content:[]}, 'search');
+  const outer = 'plan-outer';
+  run.recorder.before({toolName:'tool_call', params:{id:'openclaw:pixel-ods:pixel_ods_goal', args:PLAN}}, {...run.context, toolCallId:outer});
+  run.recorder.before({toolName:'pixel_ods_goal', params:PLAN}, {...run.context, toolName:'pixel_ods_goal', toolCallId:`tool_search_code:${outer}:pixel_ods_goal:1`});
+  run.recorder.after({toolName:'pixel_ods_goal', params:PLAN, result:{details:{goal:PLAN}}}, {...run.context, toolName:'pixel_ods_goal', toolCallId:`tool_search_code:${outer}:pixel_ods_goal:1`});
+  run.recorder.after({toolName:'tool_call', params:{id:'openclaw:pixel-ods:pixel_ods_goal', args:PLAN}, result:{details:{}}}, {...run.context, toolCallId:outer});
+  run.call('read', {path:'site/index.html'}, {content:[]}, 'read');
+  run.call('edit', {path:'site/index.html'}, {content:[]}, 'edit');
+  run.call('tool_call', {id:'openclaw:core:exec', args:{command:'npm run build'}}, {details:{}}, 'build');
+}
+
+test('settlement lists edits and every execution of a fully settled goal round', () => {
+  const run = settlementRun();
+  settledRound(run);
+  const before = JSON.stringify(run.recorder.projection(runId));
+  assert.deepEqual(run.recorder.settlement(runId, run.owned),
+    {schemaVersion:1, ok:true, calls:5, edits:1, executions:[{callId:'build', tool:'exec'}]});
+  const projected = run.recorder.projection(runId);
+  assert.equal(JSON.stringify(projected), before, 'reading settlement changes nothing');
+  assert.equal(parseTaskActivity(projected, runId), projected, 'the public schema is unchanged');
+  assert.doesNotMatch(JSON.stringify(projected), /evidence|admitted|selected/);
+});
+
+for (const [name, change, reason] of [
+  ['missing run', () => ({id:'chatcmpl_99999999-2222-4333-8444-555555555555'}), 'missing'],
+  ['other session id', () => ({owned:{sessionId:'other'}}), 'identity'],
+  ['other session key', () => ({owned:{sessionKey:'agent:pixel:openai-user:ods-' + 'e'.repeat(64)}}), 'identity'],
+  ['failed call', run => run.call('read', {path:'x'}, {isError:true}, 'bad'), 'failed'],
+  ['duplicate success after failure', run => {
+    run.call('exec', {command:'npm test'}, {details:{status:'completed', exitCode:1}}, 'twice');
+    run.recorder.after({toolName:'exec', result:{details:{status:'completed', exitCode:0}}}, {...run.context, toolCallId:'twice'});
+  }, 'failed'],
+  ['blocked call', run => run.recorder.before({toolName:'write'}, {...run.context, toolCallId:'refused'}, true), 'failed'],
+  ['running call', run => run.recorder.before({toolName:'exec'}, {...run.context, toolCallId:'open'}), 'unsettled'],
+  ['after without before', run => run.recorder.after({toolName:'read', result:{}}, {...run.context, toolCallId:'orphan'}), 'unsettled'],
+  ['foreign session hook', run => run.call('read', {path:'x'}, {}, 'foreign', {after:{sessionId:'elsewhere'}}), 'identity'],
+  ['foreign run in the event', run => run.call('read', {path:'x'}, {}, 'foreign-run',
+    {event:{runId:'chatcmpl_99999999-2222-4333-8444-555555555555'}}), 'identity'],
+  ['an after hook with an invalid session key', run => run.call('read', {path:'x'}, {}, 'bad-key', {after:{sessionKey:'not-owned'}}), 'identity'],
+  ['an after hook with an empty session key', run => run.call('read', {path:'x'}, {}, 'empty-key', {after:{sessionKey:''}}), 'identity'],
+  ['a hook without a call id', run => {
+    run.recorder.before({toolName:'read'}, {...run.context, toolCallId:undefined});
+    run.recorder.after({toolName:'read', result:{}}, {...run.context, toolCallId:undefined});
+  }, 'identity'],
+  ['a hook with an oversized call id', run => run.call('read', {path:'x'}, {}, 'x'.repeat(257)), 'identity'],
+  ['a hook whose event names another tool than its context', run => {
+    const ctx = {...run.context, toolName:'read', toolCallId:'renamed'};
+    run.recorder.before({toolName:'read', params:{path:'x'}}, ctx);
+    run.recorder.after({toolName:'write', params:{path:'x'}, result:{}}, ctx);
+  }, 'identity'],
+  ['a child two catalog parents could own', run => {
+    for (const id of ['pair x', 'pair_x']) {
+      run.recorder.before({toolName:'tool_call', params:{id:'openclaw:core:exec', args:{}}}, {...run.context, toolName:'tool_call', toolCallId:id});
+      run.recorder.after({toolName:'tool_call', params:{id:'openclaw:core:exec', args:{}}, result:{}}, {...run.context, toolName:'tool_call', toolCallId:id});
+    }
+  }, 'identity'],
+  ['catalog calls sharing one sanitized child prefix, child first', run => {
+    const exec = id => ({toolName:'tool_call', params:{id:'openclaw:core:exec', args:{}}});
+    const ctx = id => ({...run.context, toolName:'tool_call', toolCallId:id});
+    run.recorder.before(exec(), ctx('pair_y'));
+    run.recorder.before({toolName:'exec'}, {...run.context, toolName:'exec', toolCallId:'tool_search_code:pair_y:exec:1'});
+    run.recorder.after({toolName:'exec', result:{}}, {...run.context, toolName:'exec', toolCallId:'tool_search_code:pair_y:exec:1'});
+    run.recorder.after({...exec(), result:{}}, ctx('pair_y'));
+    run.recorder.before(exec(), ctx('pair y'));
+    run.recorder.after({...exec(), result:{}}, ctx('pair y'));
+  }, 'identity'],
+  ['an after receipt without a result', run => run.call('read', {path:'x'}, undefined, 'no-result'), 'unsettled'],
+  ['a null result', run => run.call('read', {path:'x'}, null, 'null-result'), 'unsettled'],
+  ['contradictory event and context call ids', run => run.call('read', {path:'x'}, {}, 'mine',
+    {event:{toolCallId:'theirs'}}), 'identity'],
+  ['unknown tool', run => run.call('memory_search', {}, {}, 'memory'), 'unknown-tool'],
+  ['plan from another source', run => run.call('tool_call', {id:'openclaw:other:pixel_ods_goal', args:PLAN}, {}, 'spoof'), 'unknown-tool'],
+  ['core id for a plugin tool', run => run.call('tool_call', {id:'openclaw:core:pixel_ods_goal', args:PLAN}, {}, 'spoof'), 'unknown-tool'],
+  ['browser tool', run => run.call('web_fetch', {url:'https://example.com'}, {}, 'web'), 'unknown-tool'],
+  ['an outer receipt naming another tool than its admission', run => {
+    run.recorder.before({toolName:'tool_call', params:{id:'openclaw:core:read', args:{path:'x'}}}, {...run.context, toolCallId:'wrap'});
+    run.recorder.before({toolName:'read'}, {...run.context, toolName:'read', toolCallId:'tool_search_code:wrap:read:1'});
+    run.recorder.after({toolName:'read', result:{}}, {...run.context, toolName:'read', toolCallId:'tool_search_code:wrap:read:1'});
+    run.recorder.after({toolName:'tool_call', params:{id:'openclaw:core:exec', args:{}}, result:{}}, {...run.context, toolCallId:'wrap'});
+  }, 'identity'],
+]) test(`settlement refuses: ${name}`, () => {
+  const run = settlementRun();
+  settledRound(run);
+  const changed = change(run) ?? {};
+  const result = run.recorder.settlement(changed.id ?? runId, {...run.owned, ...changed.owned});
+  assert.deepEqual(result, {schemaVersion:1, ok:false, reason});
+});
+
+test('settlement refuses a run whose session key conflicted and a truncated ledger', () => {
+  const conflicted = settlementRun();
+  settledRound(conflicted);
+  conflicted.recorder.before({toolName:'read'}, {...conflicted.context, sessionKey:'agent:pixel:openai-user:ods-' + 'f'.repeat(64), toolCallId:'x'});
+  assert.equal(conflicted.recorder.settlement(runId, conflicted.owned).reason, 'identity');
+  const recorder = createTaskActivity({now, maximumCalls:2});
+  const context = {...ctx, sessionId:'s', sessionKey:'agent:pixel:openai-user:ods-' + 'd'.repeat(64)};
+  recorder.begin({prompt:'/goal x'}, context);
+  for (const id of ['a', 'b', 'c']) { recorder.before({toolName:'read'}, {...context, toolCallId:id}); recorder.after({toolName:'read', result:{}}, {...context, toolCallId:id}); }
+  assert.equal(recorder.settlement(runId, {sessionId:'s', sessionKey:context.sessionKey}).reason, 'truncated');
+});

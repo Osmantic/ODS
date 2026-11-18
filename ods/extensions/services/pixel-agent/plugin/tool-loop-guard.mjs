@@ -621,6 +621,9 @@ const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 const RESPONSE_DEADLINE_TOOL_REASON = 'Portal stopped this response at its time limit before this call ran.';
 const MAX_SESSION_DOWNLOAD_JOBS = 32;
 const MAX_PENDING_EXEC_SESSIONS = 64;
+// Per-run owned terminal execution receipts kept for the goal stop; the same
+// bound as the task-activity ledger's calls per run.
+const MAX_TERMINAL_EXEC_CALLS = 512;
 const ODS_OPENAI_USER = /^ods-[0-9a-f]{64}$/;
 const EXEC_CONTROL_WRAPPER = "/run/pixel-ods-control/cancellable-exec.sh";
 const ARTIFACT_DRAFT_PREFIX =
@@ -7348,7 +7351,28 @@ export function userMessageRequestsWorkspacePreviewInspection(
   );
 }
 
+function workspaceNewCopyRequested(text) {
+  const instruction = ownerLaneText(workspacePreviewInstructionText(text, {preserveFileTargets:true}));
+  const clauses = instruction.split(/[!?;\n]+|\.(?=\s|$)/);
+  const copy = /^\s*(?:please\s+)?copy\s+/i;
+  const destination = /^\s*(?:please\s+)?work\s+(?:only\s+)?(?:in|inside|within|under)\s+(?:a\s+|the\s+)?new\s+(?:folder|directory)\b/i;
+  const copiedDestination = /^\s*(?:please\s+)?copy\s+[^!?;\n]+\s+(?:into|to)\s+(?:a\s+|the\s+)?new\s+(?:folder|directory)\b/i;
+  // Only an explicit backup-copy command plus positive original-work command
+  // keeps the old app target; preserving the original must not cancel a copy.
+  const commands = clauses.flatMap(clause => clause.split(/,\s*(?:then\s+)?|\bthen\s+/));
+  const negated = /\b(?:not|don['’]t|never|avoid|without)\b/i;
+  const backupCopy = commands.some(clause => copiedDestination.test(clause) &&
+    /\b(?:as|for)\s+(?:a\s+)?backup\b/i.test(clause) && !negated.test(clause));
+  const originalWork = commands.some(clause => !negated.test(clause) &&
+    (/^\s*(?:please\s+)?(?:repair|fix|update|edit|modify)\b[^!?;\n]{0,120}\bin[ -]place\b/i.test(clause) ||
+     /^\s*(?:please\s+)?(?:re)?publish\s+(?:the\s+)?(?:existing|original|current)\s+(?:app|page|project)\b/i.test(clause)));
+  if (backupCopy && originalWork) return false;
+  return clauses.some(clause => copy.test(clause)) && clauses.some(clause =>
+    destination.test(clause) || copiedDestination.test(clause));
+}
+
 function freshWorkspaceCreationRequested(text) {
+  if (workspaceNewCopyRequested(text)) return true;
   const creation = /\b(?:build|create|develop|design|generate|implement|make|write)\s+(?:(?:me|us)\s+)?(?:a|an|another|new|some)\s+\w/i;
   const rejected = /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,96}\b(?:build|create|develop|design|generate|implement|make|write)\b/i;
   const existingTarget = /\b(?:existing|previous|prior|same|current)\s+\w/i;
@@ -7442,13 +7466,19 @@ export function userMessageRequestsWorkspaceVerificationContinuation(messages, p
 
 function workspacePreviewDirectoryFromState(state) {
   const indexDirectories = new Set(
-    [...(state?.successfulWritePaths ?? []), ...(state?.successfulReadPaths ?? [])]
+    [...(state?.successfulWritePaths ?? []), ...[...(state?.successfulReadPaths ?? [])]
+      // A new copy's input is not its output. Only a write or a read in a
+      // directory edited this turn can select that copy for publication.
+      // Other requests retain read-only publication and build-output discovery.
+      .filter(file => typeof file === "string" && file.endsWith("/index.html") &&
+        (!state?.workspaceNewCopyRequested || [...(state.successfulEditPaths ?? [])]
+          .some(edited => edited.slice(0, edited.lastIndexOf("/") + 1) === file.slice(0, -"index.html".length))))]
       .filter((value) => typeof value === "string" && value.endsWith("/index.html"))
       .map((value) => value.slice(0, -"/index.html".length))
       .filter(Boolean)
   );
   if (indexDirectories.size === 1) return [...indexDirectories][0];
-  return state?.workspacePreviewDirectory;
+  return state?.workspaceNewCopyRequested ? undefined : state?.workspacePreviewDirectory;
 }
 
 function workspacePreviewMissingEntryReason(state, directory) {
@@ -8148,6 +8178,9 @@ export function createToolLoopGuard({
   // Whether a run is a /goal round (goal-progress.mjs), whose verification
   // says which limit stopped it.
   goalRun = () => false,
+  // The run's settled known calls (task-activity.mjs settlement), for a goal
+  // round's 'unfinished-work' stop. Nothing settles without it.
+  taskSettlement = () => null,
   // Whether Pixel's model is the owner's remote API route, whose output limit
   // the owner sets (Settings → Remote model), for output-limit stop text.
   remoteModelRoute = () => false,
@@ -8315,7 +8348,18 @@ export function createToolLoopGuard({
   function boundExecReceipt(state, pendingToolRun, event, context, runId, toolCallId, toolName) {
     const execution = toolName === 'exec' ? event
       : toolName === 'tool_call' ? toolSearchEventEnvelope(event, 'exec', 'core') : undefined;
-    if (!state || !execution || pendingToolRun?.runId !== runId || pendingToolRun.selectedToolName !== 'exec' ||
+    return boundToolReceipt(state, pendingToolRun, execution, 'exec', event, context, runId, toolCallId, toolName);
+  }
+
+  // The same binding for a direct (or Tool Search child) process call: its
+  // receipt must carry exactly the parameters it was admitted with.
+  function boundProcessReceipt(state, pendingToolRun, event, context, runId, toolCallId, toolName) {
+    return toolName === 'process'
+      ? boundToolReceipt(state, pendingToolRun, event, 'process', event, context, runId, toolCallId, toolName) : undefined;
+  }
+
+  function boundToolReceipt(state, pendingToolRun, execution, selected, event, context, runId, toolCallId, toolName) {
+    if (!state || !execution || pendingToolRun?.runId !== runId || pendingToolRun.selectedToolName !== selected ||
         pendingToolRun.transport !== toolName ||
         pendingToolRun.inspectionSessionId !== state.currentSessionId ||
         pendingToolRun.inspectionSessionKey !== state.currentSessionKey ||
@@ -8584,7 +8628,9 @@ export function createToolLoopGuard({
       selectedParams: [PREVIEW_INSPECTION_TOOL, 'exec', SYNCHRONOUS_HOST_OBSERVE_TOOL,
         SYNCHRONOUS_HOST_COMMAND_TOOL].includes(selectedToolName)
         ? structuredClone(selectedParams) : selectedParams,
-      executedParams: selectedToolName === 'exec' ? structuredClone(selectedParams) : undefined,
+      // The admitted parameters a receipt must match (boundToolReceipt): an
+      // exec's after its wrapper, a process call's after normalization.
+      executedParams: ['exec', 'process'].includes(selectedToolName) ? structuredClone(selectedParams) : undefined,
       inspectionSessionId: runs.get(runId)?.currentSessionId,
       inspectionSessionKey: runs.get(runId)?.currentSessionKey,
       priorVisibilityInspection,
@@ -8735,6 +8781,7 @@ export function createToolLoopGuard({
         ownerIntentObserved: false,
         workspaceTaskRequested: false,
         workspaceMutationRequested: false,
+        workspaceNewCopyRequested: false,
         // A successful write, edit or exec (an exec can change files too).
         workspaceMutationObserved: false,
         workspaceTaskPath: undefined,
@@ -8801,6 +8848,13 @@ export function createToolLoopGuard({
         // not been observed yet, and whether any exec went to the background.
         execCallsInFlight: new Set(),
         backgroundExecStarted: false,
+        // Hook call IDs with an owned terminal exit-0 receipt in this run: a
+        // bound exec, or a matched poll and the exec whose session it ended.
+        // Owned polls still waiting for that end. Bounded; overflow settles
+        // nothing (the goal 'unfinished-work' stop).
+        terminalExecCalls: new Set(),
+        ownedProcessPolls: new Map(),
+        terminalExecOverflow: false,
         // Budget-free corrective answers used so far, by kind.
         freeCorrections: new Map(),
         // Destinations whose re-typed write was already refused once.
@@ -8900,6 +8954,39 @@ export function createToolLoopGuard({
       !state.unrequestedOperationsAborted && !state.webLoopAborted &&
       !state.operationsRequired && !state.exactDownloadRequested && !state.extensionCompletionGate?.active &&
       !state.extensionPendingHandoff && !state.managedTeamCoordinator;
+  }
+
+  // A goal round's 'unfinished-work' stop (deliveryVerificationForRun), beside
+  // the exact missing-current-preview outcome: this run still owns its session;
+  // no cancel, abort, cut-off reply, question, refusal, fuse, stopped lane,
+  // Operations, download, extension, artifact or publication attempt; no
+  // failed or pending check or file-check finding; saved owner-requested
+  // edits; no execution still in flight; a final reply announcing more work
+  // (narration only, never proof); and every known call settled in the
+  // run's own ledger with each execution matched to an owned terminal
+  // receipt here. Known-call settlement is not a no-effects certificate.
+  function unfinishedWorkSettled(state, runId, findings) {
+    if (!state.ownerIntentObserved || !state.artifactOwnerInteractive || state.artifactIdentityConflict ||
+        state.artifactNoninteractiveObserved || state.managedTeamWorker || state.managedTeamCoordinator ||
+        typeof state.currentSessionId !== 'string' || !state.currentSessionId ||
+        typeof state.currentSessionKey !== 'string' || !state.currentSessionKey ||
+        sessionRuns.get(state.currentSessionId) !== runId ||
+        state.clientCancelled || state.odsAborted || state.outputLimitStop || state.ownerQuestions ||
+        state.execGuidanceLeakPending || state.recursiveDeleteDenied || state.privateNetworkRequestDenied ||
+        state.webLoopAborted || state.unrequestedOperationsAborted || state.unrequestedOperationsTerminal ||
+        state.operationsRequired || state.exactDownloadRequested || state.extensionCompletionGate?.active ||
+        state.extensionPendingHandoff || state.workspaceDocumentDeliveryRequested ||
+        state.workspaceArtifacts?.length || state.artifactAttempts ||
+        state.workspacePreview || state.workspacePreviewAttempted || state.workspacePreviewFailureCode !== undefined ||
+        state.workspacePreviewRestrictions?.mutation || state.codingExhausted || state.progressBudget.exhaustedLanes.length ||
+        ['failed', 'pending'].includes(state.latestVerificationStatus) || findings.length ||
+        !state.workspaceMutationRequested || state.successfulWritePaths.size + state.successfulEditPaths.size === 0 ||
+        state.pendingExecSessions.size || state.execCallsInFlight.size || state.terminalExecOverflow ||
+        typeof state.finalReplyText !== 'string' || !announcesMoreWork(state.finalReplyText)) return false;
+    const settled = taskSettlement(runId, {sessionId: state.currentSessionId, sessionKey: state.currentSessionKey});
+    if (settled?.schemaVersion !== 1 || settled.ok !== true || !Number.isSafeInteger(settled.edits) ||
+        settled.edits < 1 || !Array.isArray(settled.executions)) return false;
+    return settled.executions.every(execution => terminalExecution(state, execution?.callId, execution?.tool, settled.executions));
   }
 
   function progressFinalization(state) {
@@ -11213,6 +11300,13 @@ export function createToolLoopGuard({
       }
       if (fetchUrl) state.fetchedUrls.set(fetchUrl, fetchChars);
     }
+    // A direct process call runs with its before-hook params merged into its
+    // own; that admitted snapshot is what its receipt must match.
+    if (toolName === "process") {
+      const pendingProcess = pendingToolRuns.get(context?.toolCallId ?? event?.toolCallId);
+      if (pendingProcess?.runId === runId && pendingProcess.selectedToolName === "process")
+        pendingProcess.executedParams = structuredClone({...event?.params, ...normalizedParams});
+    }
     return normalizedParams ? { params: normalizedParams } : undefined;
   }
 
@@ -11487,6 +11581,7 @@ export function createToolLoopGuard({
           state.extensionCompletionGate = undefined;
           state.extensionPendingHandoff = false;
         }
+        state.workspaceNewCopyRequested = workspaceNewCopyRequested(state.ownerRequestText ?? ownerIntent ?? "");
         state.workspaceMutationRequested =
           state.workspacePreviewRequired ||
           userMessageRequestsWorkspaceMutation(event?.messages, event?.prompt);
@@ -12884,6 +12979,17 @@ export function createToolLoopGuard({
     }
     if (toolName === "process") {
       const completion = completedProcessResult(event);
+      // A poll or log read of this run's own pending session, whose receipt
+      // carries exactly the parameters it was admitted with (identity and
+      // params bound like an exec receipt); settled only if that session
+      // later ends with exit 0.
+      const ownedHook = Boolean(boundProcessReceipt(state, pendingToolRun, event, context, runId, toolCallId, toolName));
+      const polled = event?.params?.sessionId;
+      if (ownedHook && ["poll", "log"].includes(event?.params?.action) && typeof polled === "string" &&
+          state.pendingExecSessions.has(polled) && !toolCallFailed(event) && typeof toolCallId === "string" && toolCallId) {
+        if (state.ownedProcessPolls.size >= MAX_TERMINAL_EXEC_CALLS) state.terminalExecOverflow = true;
+        else state.ownedProcessPolls.set(toolCallId, polled);
+      }
       if (!completion) return;
       const pending = state.pendingExecSessions.get(completion.sessionId);
       if (!pending) return;
@@ -12938,6 +13044,10 @@ export function createToolLoopGuard({
         if (pending.executionReceiptBound && event?.params?.sessionId === completion.sessionId &&
             event?.result?.details?.exitCode === 0 && !completion.failed && !toolCallFailed(event)) {
           state.executionReceiptObserved = true;
+          // The same receipt settles this poll, earlier owned polls of the
+          // session and the bound exec that started it.
+          if (ownedHook) rememberTerminalExecution(state, [toolCallId, pending.originCallId,
+            ...[...state.ownedProcessPolls].filter(([, session]) => session === completion.sessionId).map(([id]) => id)]);
         }
       }
       return;
@@ -12988,14 +13098,19 @@ export function createToolLoopGuard({
         state.codingExhausted = true;
         return;
       }
+      const executionReceiptBound = Boolean(boundExecReceipt(
+        state, pendingToolRun, event, context, runId, toolCallId, toolName
+      )) && !toolCallFailed(event);
+      const earlier = state.pendingExecSessions.get(pendingSessionId);
       state.pendingExecSessions.set(pendingSessionId, {
         fingerprint,
         verificationFingerprint,
         standaloneUnittest,
         standaloneParams: standaloneUnittest ? pendingToolRun.selectedParams : undefined,
-        executionReceiptBound: Boolean(boundExecReceipt(
-          state, pendingToolRun, event, context, runId, toolCallId, toolName
-        )) && !toolCallFailed(event),
+        executionReceiptBound,
+        // The bound exec call that started this session. A Tool Search child
+        // and its outer call report the same session; keep the bound one.
+        originCallId: executionReceiptBound ? toolCallId : earlier?.originCallId,
       });
       if (verificationFingerprint) state.latestVerificationStatus = "pending";
       return;
@@ -13089,14 +13204,39 @@ export function createToolLoopGuard({
     // Durable action evidence: only a terminal exit-0 receipt counts. Attempts,
     // missing exit status, isError, and failed/pending/read/previous-run
     // receipts do not satisfy an explicit execution request.
-    if (!verificationFailed && !toolCallFailed(event) &&
-        boundExecReceipt(state, pendingToolRun, event, context, runId, toolCallId, toolName) &&
+    const terminalReceipt = !verificationFailed && !toolCallFailed(event) &&
+        Boolean(boundExecReceipt(state, pendingToolRun, event, context, runId, toolCallId, toolName)) &&
         execEvent?.result?.details?.status === "completed" &&
         Number.isSafeInteger(execEvent.result.details.exitCode) &&
         execEvent.result.details.exitCode === 0 &&
-        !toolCallFailed(execEvent)) {
+        !toolCallFailed(execEvent);
+    if (terminalReceipt) {
       state.executionReceiptObserved = true;
+      // The same receipt, kept per call for the goal 'unfinished-work' stop.
+      rememberTerminalExecution(state, [toolCallId]);
     }
+  }
+
+  function rememberTerminalExecution(state, callIds) {
+    for (const callId of callIds) {
+      if (typeof callId !== "string" || !callId || state.terminalExecCalls.has(callId)) continue;
+      if (state.terminalExecCalls.size >= MAX_TERMINAL_EXEC_CALLS) { state.terminalExecOverflow = true; return; }
+      state.terminalExecCalls.add(callId);
+    }
+  }
+
+  // A settled execution of the run's ledger (task-activity.mjs settlement):
+  // its own call ID, or its Tool Search child's, holds an owned terminal
+  // exit-0 receipt (rememberTerminalExecution).
+  function terminalExecution(state, callId, tool, executions = []) {
+    if (typeof callId !== "string" || !callId || !["exec", "process"].includes(tool)) return false;
+    if (state.terminalExecCalls.has(callId)) return true;
+    // A child receipt is its parent's only when no other listed call shares
+    // the sanitized child prefix ("pair x" and "pair_x" do).
+    if (executions.some(other => other?.callId !== callId && typeof other?.callId === "string" &&
+        toolSearchChildPrefix(other.callId) === toolSearchChildPrefix(callId))) return false;
+    const prefix = `${toolSearchChildPrefix(callId)}${tool}:`;
+    return [...state.terminalExecCalls].some(id => id.startsWith(prefix) && /^[1-9][0-9]*$/.test(id.slice(prefix.length)));
   }
 
   // The host state chooses the next catalog step. Small models need the exact
@@ -13519,15 +13659,31 @@ export function createToolLoopGuard({
       };
     }
     state.workspacePreviewDirectory = directory;
+    const args = JSON.stringify({ relativeDirectory: directory });
+    // After a confirmed write or edit, a final reply that still announces work
+    // (announcesMoreWork: narration only, never proof or authority) must not
+    // be told to publish now, which can publish a half-done change. Same stage,
+    // budget and exact directory; publication stays required. The directory
+    // is only the publication target: it can be generated output (dist), so
+    // the remaining work keeps the owner's scope, not this directory's.
+    // Unchanged-page publication and a reply announcing nothing more keep the
+    // direct call.
+    const unfinished = !state.workspacePreviewRestrictions?.mutation &&
+      (state.successfulWritePaths.size > 0 || state.successfulEditPaths.size > 0) &&
+      typeof state.finalReplyText === "string" && announcesMoreWork(state.finalReplyText);
     return {
       // A publication followed by a write/check needs a new host receipt.
       // Do not spend that recovery on the initial publication's retry key.
       // Keep one fixed refresh key per run, not an unbounded mutation counter.
       stage: state.workspacePreviewVerifiedDirectory ? "workspace-preview-refresh" : "workspace-preview",
-      instruction:
-        `Do not reply yet. Call tool_call now with id ${WORKSPACE_PREVIEW_TOOL} ` +
-        `and args ${JSON.stringify({ relativeDirectory: directory })}. ` +
-        "Do not start a sandbox server or claim another localhost URL.",
+      instruction: unfinished
+        ? "Do not reply yet. Your reply announces more work. First finish any remaining owner-requested edits and checks " +
+          "within the owner's requested scope; do not repeat completed work, recreate finished files, widen the scope, " +
+          "or delete or clean up directories. " +
+          `Then publish BEFORE your final answer: call tool_call with id ${WORKSPACE_PREVIEW_TOOL} and args ${args}. ` +
+          "Do not start a sandbox server or claim another localhost URL."
+        : `Do not reply yet. Call tool_call now with id ${WORKSPACE_PREVIEW_TOOL} and args ${args}. ` +
+          "Do not start a sandbox server or claim another localhost URL.",
     };
   }
 
@@ -14721,6 +14877,9 @@ export function createToolLoopGuard({
   // a failed or pending one keeps the agent's final explanation ahead of
   // Portal's text (deliveryVerificationForRun, preview-explanation.mjs).
   const previewOutcomes = new WeakSet();
+  // The exact saved-work, no-preview outcome (taskVerificationForRun), by
+  // identity. derivedOutcome deliberately does not copy it.
+  const missingCurrentPreviewOutcomes = new WeakSet();
   // The owner's wording of a published preview's outcome ({text, rest, note},
   // ownerPreviewText). The outcome's text keeps every check fact for this
   // record, as the model read them in its tool results; the owner reads
@@ -14915,12 +15074,17 @@ export function createToolLoopGuard({
         ].some(
           (value) => typeof value === "string" && value.endsWith("/index.html")
         );
-        return previewOutcome({
+        const missing = previewOutcome({
           status: "failed",
           text: hasIndexEvidence
             ? WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX
             : WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX,
         });
+        // Saved work with no current or earlier preview: the one cause a goal
+        // round's 'unfinished-work' stop names. Marked on this object only;
+        // a derived or replaced outcome is another failure and never carries it.
+        if (hasIndexEvidence) missingCurrentPreviewOutcomes.add(missing);
+        return missing;
       }
       // Publication and verification are independent evidence. A successful
       // snapshot cannot turn a failed or still-running check into completion.
@@ -15228,6 +15392,8 @@ export function createToolLoopGuard({
     const checksOff=fileChecks.off || (state?.fileChecksOff === true && fileChecksKind(state));
     const checkedLine=fileCheckFacts(checked, FILE_CHECK_LIMITS.ownerChars, carried, checksOff);
     let result=baseDeliveryVerificationForRun(runId, checkedLine);
+    // Identity, before any later text or status replacement below.
+    const missingCurrentPreview=missingCurrentPreviewOutcomes.has(result);
     const artifacts=state?.workspaceArtifacts;
     // A preview outcome delivered as is (no stop, deadline or question text
     // replaced it) reads in the owner's wording, with the agent's final reply
@@ -15278,10 +15444,15 @@ export function createToolLoopGuard({
     // for receipt-based work (Operations, exact downloads, managed extension
     // requests, a refused delete) or a repeated web-research loop: resumed,
     // they would repeat a download, an approval card or the loop.
+    // A goal round that saved requested work, settled every known call and
+    // ended announcing more before publishing: 'unfinished-work', after the
+    // limit stops above. It reports known-call settlement and the missing
+    // preview only, never that commands had no other effects.
     const stop = result.status !== 'failed' || !state || !goalRun(runId) ||
         !progressFinalizationEligible(state) || state.operationsLoopAborted ? undefined
       : state.runDeadlineReached ? 'run-deadline'
-      : state.progressBudget.exhausted && !state.researchStopped ? 'tool-limit' : undefined;
+      : state.progressBudget.exhausted && !state.researchStopped ? 'tool-limit'
+      : missingCurrentPreview && unfinishedWorkSettled(state, runId, [...checked, ...carried]) ? 'unfinished-work' : undefined;
     if (stop) result = {...result, stop};
     return artifacts?.length && !state.clientCancelled && ['none','passed','failed'].includes(result.status)
       ? {...result,artifacts:structuredClone(artifacts)} : result;
