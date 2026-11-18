@@ -16912,6 +16912,67 @@ test('actual registered finalize hook awaits trusted revalidation before goal an
   assert.equal(guard.verificationForRun('run-1').status,'passed');
 });
 
+// Native-shaped (direct-mode goal 7d3beb0b): publish, one settled foreground
+// diff/ls, then /goal plan updates and the final answer. A plan update records
+// host-memory metadata only, so it neither advances nor revokes the pending
+// comparison; only the trusted host byte check restores currency, and a
+// completed plan never stands in for it.
+const GOAL_PLAN={status:'active',summary:'Working',steps:[{id:'work',title:'Fulfill the request',status:'running'},{id:'verify',title:'Check the result',status:'pending'}]};
+const GOAL_DONE={status:'completed',summary:'Work checked and completed',steps:[{id:'work',title:'Fulfill the request',status:'completed'},{id:'verify',title:'Check the result',status:'completed'}]};
+const NATIVE_DIFF={command:'diff finish-q4/index.html signal-garden/index.html | head -40; ls -la finish-q4 signal-garden'};
+const EXITED={content:[{type:'text',text:'observed'}],details:{status:'completed',exitCode:0}};
+const goalResult=goal=>({content:[{type:'text',text:'Progress reported.'}],details:{goal}});
+function goalCall(invoke,shape,goal,id,result=goalResult(goal)){
+  if(shape==='direct')return invoke('pixel_ods_goal',goal,result,id);
+  return invoke('tool_call',{id:shape,args:goal},result&&wrappedPluginResult('pixel-ods','pixel_ods_goal',result),id);
+}
+function registeredFinalize(guard){
+  const source=readFileSync(new URL('../plugin/index.js',import.meta.url),'utf8');
+  const start=source.indexOf('    api.on("before_agent_finalize",');
+  const end=source.indexOf('    // Delivery rewriting',start);
+  assert.ok(start>=0&&end>start);
+  let finalize;
+  vm.runInNewContext(source.slice(start,end),{api:{on:(_name,callback)=>{finalize=callback;}},toolLoopGuard:guard,AGENT_ID:'pixel',
+    goalProgress:{finalize(_event,_context,decision){return decision;}},delegationDelivery:{finalize(){}}});
+  return finalize;
+}
+
+for(const shape of ['direct','pixel_ods_goal','openclaw:pixel-ods:pixel_ods_goal']) for(const matched of [true,false])
+test(`goal plan updates after a settled diff keep the one trusted host byte check: ${shape}, matched=${matched}`,async()=>{
+  let probes=0,publishes=0;
+  const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return matched;},
+    matched?{guard:{publishWorkspacePreview:async()=>{publishes++;throw new Error('no publication is needed');}}}:{});
+  invoke('exec',NATIVE_DIFF,EXITED,'diff');
+  assert.equal(guard.verificationForRun('run-1').status,'failed','the settled command invalidates the preview at once');
+  goalCall(invoke,shape,GOAL_PLAN,'goal-active');
+  goalCall(invoke,shape,GOAL_DONE,'goal-done');
+  assert.equal(guard.verificationForRun('run-1').status,'failed','a completed plan restores nothing by itself');
+  await registeredFinalize(guard)({},context);
+  assert.equal(probes,1,'exactly one host comparison for the one settled generation');
+  assert.equal(publishes,0,'currency comes from the existing snapshot, not a new publication');
+  assert.equal(guard.verificationForRun('run-1').status,matched?'passed':'failed');
+  assert.equal(await guard.revalidateWorkspacePreview({},context),false,'no second probe of the same generation');
+  assert.equal(probes,1);
+});
+
+for(const control of ['core-namespace','foreign-namespace','unknown-tool','detached-exec','pending-exec','cancelled'])
+test(`calls that are not the goal plan update, or that may still act, keep revalidation refused: ${control}`,async()=>{
+  let probes=0;const user='ods-'+'d'.repeat(64);
+  const {guard,context,invoke}=revalidationGuardFixture(async()=>{probes++;return true;},
+    {context:{sessionKey:`agent:pixel:openai-user:${user}`},guard:{abortRunAndDrain:async()=>({aborted:true,drained:true,forceCleared:false})}});
+  invoke('exec',NATIVE_DIFF,EXITED,'diff');
+  goalCall(invoke,'direct',GOAL_PLAN,'goal-active');
+  if(control==='core-namespace')goalCall(invoke,'openclaw:core:pixel_ods_goal',GOAL_DONE,'goal-core');
+  if(control==='foreign-namespace')goalCall(invoke,'openclaw:other:pixel_ods_goal',GOAL_DONE,'goal-foreign');
+  if(control==='unknown-tool')invoke('pixel_ods_goal_sync',GOAL_DONE,goalResult(GOAL_DONE),'unknown');
+  if(control==='detached-exec')invoke('exec',{command:'python3 worker.py &'},EXITED,'detached');
+  if(control==='pending-exec')invoke('exec',NATIVE_DIFF,null,'pending-diff');
+  if(control==='cancelled')assert.equal(await guard.abortUserRun(user),true);
+  await registeredFinalize(guard)({},context);
+  assert.equal(probes,0,'the host is never asked');
+  assert.equal(guard.verificationForRun('run-1').status,'failed');
+});
+
 function previewDeliveryFixture(publish, prompt='Build and publish a website in existing signal-garden.') {
   const context={agentId:'pixel',runId:'run-1',sessionId:'session-1',sessionKey:'agent:pixel:test'};
   const writes=[{path:'signal-garden/index.html',content:'<!doctype html><title>Game</title>'}];

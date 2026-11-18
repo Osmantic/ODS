@@ -78,11 +78,17 @@ export function settledRevalidationReceipt(tool, event) {
 // Calls that cannot change workspace bytes, whatever their outcome. They
 // neither advance nor revoke a pending host revalidation. Preview inspection
 // renders the immutable published snapshot in the isolated inspection broker.
+// The /goal plan update only records the public plan in host memory
+// (goal-progress.mjs); through Tool Search only under its own ids.
+const GOAL_PROGRESS_TOOL = 'pixel_ods_goal';
+const GOAL_PROGRESS_IDS = new Set([GOAL_PROGRESS_TOOL, `openclaw:pixel-ods:${GOAL_PROGRESS_TOOL}`]);
 const READ_ONLY_TOOLS = new Set(['read','web_search','web_fetch','pixel_ods_web_extract','pixel_ods_research','tool_search','tool_describe',
-  'pixel_ods_workspace_preview_inspect']);
+  'pixel_ods_workspace_preview_inspect',GOAL_PROGRESS_TOOL]);
 export function workspaceReadOnlyCall(tool, params) {
   if (tool === 'tool_call') {
-    const name = /^(?:openclaw:(?:core|pixel-ods):)?([a-z_]+)$/.exec(typeof params?.id === 'string' ? params.id : '')?.[1];
+    const id = typeof params?.id === 'string' ? params.id : '';
+    const name = /^(?:openclaw:(?:core|pixel-ods):)?([a-z_]+)$/.exec(id)?.[1];
+    if (name === GOAL_PROGRESS_TOOL) return GOAL_PROGRESS_IDS.has(id);
     return Boolean(name) && name !== 'tool_call' && workspaceReadOnlyCall(name, params.args);
   }
   return READ_ONLY_TOOLS.has(tool) || tool === 'process' && ['list','poll','log'].includes(params?.action);

@@ -79,6 +79,19 @@ test('read-only calls are recognized directly and through Tool Search, never mut
     assert.equal(workspaceReadOnlyCall(tool,params),false,tool+JSON.stringify(params));
 });
 
+test('the /goal plan update has no workspace effect, directly and under its own wrapped ids only',()=>{
+  const plan={status:'active',summary:'Working',steps:[{id:'work',title:'Fulfill the request',status:'running'}]};
+  for(const [tool,params] of [['pixel_ods_goal',plan],['pixel_ods_goal',{}],['tool_call',{id:'pixel_ods_goal',args:plan}],
+    ['tool_call',{id:'openclaw:pixel-ods:pixel_ods_goal',args:{}}]]) assert.equal(workspaceReadOnlyCall(tool,params),true,tool+JSON.stringify(params));
+  for(const [tool,params] of [['tool_call',{id:'openclaw:core:pixel_ods_goal',args:plan}],['tool_call',{id:'openclaw:other:pixel_ods_goal',args:plan}],
+    ['tool_call',{id:'openclaw:pixel-ods:pixel_ods_goal_sync',args:{}}],['tool_call',{id:'tool_call',args:{id:'pixel_ods_goal',args:plan}}],
+    ['tool_call',{id:'pixel_ods_goal '}],['pixel_ods_goal_sync',{}],['pixel_ods_activity',{}],['pixel_ods_workspace_preview',{}]])
+    assert.equal(workspaceReadOnlyCall(tool,params),false,tool+JSON.stringify(params));
+  // It never requests or settles a host comparison by itself.
+  assert.equal(workspaceRevalidationCandidate('pixel_ods_goal',plan),false);
+  assert.equal(settledRevalidationReceipt('pixel_ods_goal',{result:{details:{goal:plan}}}),false);
+});
+
 test('an exited command settles whatever its exit code; unfinished or inconsistent receipts do not',()=>{
   const exec=(details,extra={})=>({result:{content:[],details,...extra.result},...extra.event});
   for(const exitCode of [0,1,2]) assert.equal(settledRevalidationReceipt('exec',exec({status:'completed',exitCode},exitCode?{result:{isError:true},event:{error:'exit'}}:{})),true,exitCode);
