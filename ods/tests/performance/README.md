@@ -289,6 +289,14 @@ Poisson with explicit seed:
 
 Capacity confirmation additionally requires the study's balanced quality gates and at least three independent windows of one minute or longer at the tested load, with resource gates and no unaccounted arrivals. These conditions are necessary, not a substitute for the full protocol. A short Poisson run alone cannot establish production capacity.
 
+The native receipt witness also supports a fresh installation whose session tree
+or index has not yet been created. It records an owned existing ancestor and
+requires the runtime to create real, owned directories before joining the first
+transcript. It never creates session files itself. Continuations still require an
+existing store, and prompt, timestamp, tool, usage, and terminal-answer binding
+remain required. A successful first-chat proof does not qualify model quality or
+serving capacity.
+
 ## macOS process memory attribution
 
 The host sampler can optionally record memory for up to eight explicitly

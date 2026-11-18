@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -549,6 +550,100 @@ class NativeJoinTests(unittest.TestCase):
         f.manifest["task"]["messages"].append({"role": "user", "content": "second"})
         with self.assertRaises(ValueError):
             join.NativeReceiptWitness(str(f.root), f.manifest, CHAT, REQUEST)
+
+
+class FreshSessionTests(unittest.TestCase):
+    def fresh(self, existing_root=False):
+        f = Fixture()
+        self.addCleanup(f.temp.cleanup)
+        f.store.unlink()
+        f.anchor = f.root / "owned"
+        f.anchor.mkdir()
+        f.root = f.anchor / "agents/pixel/sessions"
+        f.store = f.root / "sessions.json"
+        f.transcript = f.root / (SESSION + ".jsonl")
+        if existing_root:
+            f.root.mkdir(parents=True)
+        f.witness = join.NativeReceiptWitness(str(f.root), f.manifest, CHAT, REQUEST)
+        return f
+
+    def test_first_chat_creates_tree_without_witness_writes(self):
+        f = self.fresh()
+        self.assertFalse(f.root.exists())
+        self.assertEqual(list(f.anchor.iterdir()), [])
+        f.root.mkdir(parents=True)
+        f.publish()
+        self.assertTrue(f.witness.finish(f.record())["success"])
+
+    def test_existing_directory_missing_index(self):
+        f = self.fresh(existing_root=True)
+        self.assertFalse(f.store.exists())
+        f.publish()
+        self.assertTrue(f.witness.finish(f.record())["success"])
+
+    def test_continuation_never_accepts_absent_store(self):
+        for existing in [False, True]:
+            with self.subTest(existing=existing):
+                f = self.fresh(existing)
+                with self.assertRaises(ValueError):
+                    join.NativeReceiptWitness(str(f.root), f.manifest, CHAT, REQUEST,
+                                              allow_existing_session=True)
+
+    def test_missing_runtime_tree_fails(self):
+        f = self.fresh()
+        self.assertFalse(f.witness.finish(f.record())["success"])
+
+    def test_anchor_replacement_fails(self):
+        f = self.fresh()
+        f.anchor.rename(f.anchor.with_name("old-owned"))
+        f.root.mkdir(parents=True)
+        f.publish()
+        self.assertFalse(f.witness.finish(f.record())["success"])
+
+    def test_created_directory_symlink_fails(self):
+        f = self.fresh()
+        real = f.anchor / "real"
+        real.mkdir()
+        try:
+            (f.anchor / "agents").symlink_to(real, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlink unavailable")
+        f.root.mkdir(parents=True)
+        f.publish()
+        self.assertFalse(f.witness.finish(f.record())["success"])
+
+    @unittest.skipUnless(hasattr(os, "getuid"), "POSIX ownership and modes")
+    def test_created_directory_writable_by_others_fails(self):
+        f = self.fresh()
+        f.root.mkdir(parents=True)
+        (f.anchor / "agents").chmod(0o777)
+        f.publish()
+        self.assertFalse(f.witness.finish(f.record())["success"])
+
+    def test_fresh_store_keeps_prompt_binding(self):
+        f = self.fresh()
+        f.root.mkdir(parents=True)
+        messages = rows()
+        messages[0]["message"]["content"] = "different prompt"
+        f.publish(messages)
+        self.assertFalse(f.witness.finish(f.record())["success"])
+
+    def test_creation_during_absence_capture_fails(self):
+        f = self.fresh()
+        real = os.lstat
+        reads = [0]
+
+        def racing(path, *args, **kwargs):
+            if str(path) == str(f.root):
+                reads[0] += 1
+                # _abs_clean, initial root observation, then anchor walk.
+                if reads[0] == 3:
+                    f.root.mkdir(parents=True)
+            return real(path, *args, **kwargs)
+
+        with patch.object(join.os, "lstat", side_effect=racing):
+            with self.assertRaisesRegex(ValueError, "prestate_changed"):
+                join.NativeReceiptWitness(str(f.root), f.manifest, CHAT, REQUEST)
 
 
 if __name__ == "__main__":
