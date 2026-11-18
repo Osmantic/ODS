@@ -990,8 +990,15 @@ cmd_status() {
         ep_urls+=("http://127.0.0.1:3003")
     fi
     if webui_is_selected "$flags"; then
+        # Compose publishes Open WebUI on ${WEBUI_PORT:-3000}
+        # (docker-compose.base.yml); read_ods_env decodes it as Compose does.
+        local webui_port
+        unset ENV_WEBUI_PORT
+        read_ods_env WEBUI_PORT
+        webui_port="${ENV_WEBUI_PORT:-}"
+        [[ "$webui_port" =~ ^[0-9]+$ ]] || webui_port=3000
         ep_names+=("Chat UI (Open WebUI)")
-        ep_urls+=("http://127.0.0.1:3000")
+        ep_urls+=("http://127.0.0.1:${webui_port}")
     else
         local selection_rc=$?
         if [[ "$selection_rc" == 2 ]]; then
