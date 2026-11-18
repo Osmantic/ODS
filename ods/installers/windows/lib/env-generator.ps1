@@ -226,7 +226,9 @@ function ConvertTo-ODSDotenvValue {
 # whether apps use measured model profiles (ODS_MODEL_PROFILES,
 # docs/MODEL-MANAGEMENT.md) and the opt-out from the dashboard's GitHub
 # release check (DISABLE_UPDATE_CHECK, FAQ.md).
-# Same list as ODS_OWNER_ENV_KEYS in installers/lib/extension-env-carry.sh.
+# Same list as ODS_OWNER_ENV_KEYS in installers/lib/extension-env-carry.sh,
+# except BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL: Windows preserves that key
+# through its dedicated generator path below, including value validation.
 # Installer-managed keys must not be listed: an old value would override the
 # installer's new choice.
 $script:ODS_OWNER_ENV_KEYS = @(
