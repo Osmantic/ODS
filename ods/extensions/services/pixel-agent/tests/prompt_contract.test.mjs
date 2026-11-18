@@ -5,6 +5,7 @@ import {
   ODS_COMPACT_CONVERSATION_CONTRACT,
   ODS_TINY_CONVERSATION_CONTRACT,
   ODS_CONVERSATION_CONTRACT,
+  ODS_OUTPUT_FORMAT_CONTRACT,
   ODS_SEPTEMBER16_CONVERSATION_CONTRACT,
   ODS_EXTENSION_CATALOG_CONTRACT,
   ODS_EXTENSION_GITHUB_CONTRACT,
@@ -34,6 +35,29 @@ import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "../plugin/agent-skills.m
 import { workspacePreviewMode } from "../plugin/tool-loop-guard.mjs";
 import { RESPONSE_LANGUAGE_CONTRACT } from '../plugin/response-language.mjs';
 import { createAskUserTool } from '../plugin/ask-user.mjs';
+
+test('JSON-only formatting guidance reaches assembled context routes once', () => {
+  for (const options of [
+    {configuredContextWindow:65536},
+    {configuredContextWindow:65536, configuredLeanPrompt:true},
+    {configuredContextWindow:16384},
+    {configuredContextWindow:8192},
+  ]) {
+    for (const executionHost of ['sandbox', 'gateway']) {
+      for (const prompt of [
+        'Reply with only a JSON object.',
+        'Return only a JSON array.',
+        'Read orders.csv, compute the paid total, and return only JSON.',
+        'Show this code in a fenced JavaScript block.',
+        'Explain how the parser works.',
+      ]) {
+        const result = promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt}, {...options, executionHost});
+        assert.equal(result.appendSystemContext.split(ODS_OUTPUT_FORMAT_CONTRACT).length, 2,
+          `${JSON.stringify(options)} ${executionHost}: shared format guidance appears once`);
+      }
+    }
+  }
+});
 
 test('language fallback reaches website and ordinary requests on full, lean and small-context routes', () => {
   for (const options of [
@@ -510,13 +534,15 @@ test("restores the full September 16 operating core while retaining compact fall
   assert.equal(evaluatedCore.length, 17751);
   assert.equal(createHash('sha256').update(evaluatedCore).digest('hex'),
     '94d4a2c3cf7c7469219f0592a4a6f9e451dff0e92b8918bfb1adbbc1827c97de');
-  // The sandbox runtime rule is the only addition inside the compact core.
+  // Exclude the current runtime and output-format supplements when checking
+  // that the historical compact core remains unchanged.
   const oldCompact = ODS_COMPACT_CONVERSATION_CONTRACT.replace(` ${ODS_SANDBOX_RUNTIME_CONTRACT}`, '')
+    .replace(` ${ODS_OUTPUT_FORMAT_CONTRACT}`, '')
     .slice(0, -(RESPONSE_LANGUAGE_CONTRACT.length + PREVIEW_RUNTIME_CONTRACT.length + 2));
   assert.equal(oldCompact.length, 3087);
   assert.equal(createHash('sha256').update(oldCompact).digest('hex'),
     '9223e1d30c01d44bf709012903027276dbbf8724e4fa53ec0766bd02e9a377f0');
-  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.endsWith(' ' + PREVIEW_RUNTIME_CONTRACT));
+  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.endsWith(' ' + PREVIEW_RUNTIME_CONTRACT + ' ' + ODS_OUTPUT_FORMAT_CONTRACT));
   assert.ok(ODS_CONVERSATION_CONTRACT.startsWith(ODS_SEPTEMBER16_CONVERSATION_CONTRACT + ' '));
   assert.ok(ODS_CONVERSATION_CONTRACT.length < 20500);
   assert.notEqual(ODS_CONVERSATION_CONTRACT, ODS_COMPACT_CONVERSATION_CONTRACT);
