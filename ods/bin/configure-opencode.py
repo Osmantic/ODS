@@ -110,21 +110,30 @@ def main(argv: list[str]) -> int:
     patch = _build_patch(model, display_name, provider_name, base_url, api_key, context)
     if "$schema" in effective:
         del patch["$schema"]
-    if platform == "linux":
-        selected = f"llama-server/{model}"
+    selected = f"llama-server/{model}"
+    previous = effective.get("model")
+    previous_ods = isinstance(previous, str) and previous.startswith("llama-server/")
+
+    def managed_selection(current):
+        return current is None or (previous_ods and current == previous)
+
+    # Linux retains its existing small-model policy. On macOS, fill an unset
+    # selection or follow the prior ODS model while preserving owner choices.
+    if platform == "linux" or managed_selection(effective.get("small_model")):
         patch["small_model"] = selected
-        previous = effective.get("model")
-        previous_ods = isinstance(previous, str) and previous.startswith("llama-server/")
-        agents = effective.get("agent", {})
-        if not isinstance(agents, dict):
-            _fail("agent config must be an object")
-        for role in ("build", "plan"):
-            agent = agents.get(role, {})
-            if not isinstance(agent, dict):
-                _fail("agent role config must be an object")
-            current = agent.get("model")
-            if current is None or (previous_ods and current == previous):
-                patch.setdefault("agent", {})[role] = {"model": selected}
+
+    # OpenCode 1.18.32's web fallback truncates slash-containing model IDs in
+    # the top-level model string. Agent models are parsed server-side into
+    # provider/model objects, preserving ODS's "ods/current" route.
+    agents = effective.get("agent", {})
+    if not isinstance(agents, dict):
+        _fail("agent config must be an object")
+    for role in ("build", "plan"):
+        agent = agents.get(role, {})
+        if not isinstance(agent, dict):
+            _fail("agent role config must be an object")
+        if managed_selection(agent.get("model")):
+            patch.setdefault("agent", {})[role] = {"model": selected}
 
     try:
         core.update_config(str(config_dir), patch, expected_effective=effective)
