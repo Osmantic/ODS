@@ -5,5 +5,55 @@
   "public_api_port": 8080,
   "public_health_url": "http://127.0.0.1:8080/health",
   "provider_name": "local-llama",
-  "provider_url": "http://llama-server:8080/v1"
+  "provider_url": "http://llama-server:8080/v1",
+  "runtime": {
+    "llama_server": {
+      "windows": {
+        "release_tag": "b9014",
+        "flavor": "win-cpu-x64",
+        "backend": "cpu",
+        "policy_key": "windows-native",
+        "archives": [
+          {
+            "asset": "llama-b9014-bin-win-cpu-x64.zip",
+            "sha256": "3503cc30154266ac0fbedd38e39e35a313a13412415738ae8f9e23e4fcb44da2",
+            "size": 15917797
+          }
+        ],
+        "required_files": [
+          "llama-server.exe",
+          "llama.dll",
+          "llama-common.dll",
+          "mtmd.dll",
+          "ggml.dll",
+          "ggml-base.dll",
+          "ggml-cpu-x64.dll",
+          "libomp140.x86_64.dll"
+        ]
+      },
+      "windows_arm64": {
+        "release_tag": "b9014",
+        "flavor": "win-cpu-arm64",
+        "backend": "cpu",
+        "policy_key": "windows-native",
+        "archives": [
+          {
+            "asset": "llama-b9014-bin-win-cpu-arm64.zip",
+            "sha256": "e4c4efea06adf317ceb3f09f2f42b99580ccd6cf37eb8b31c474d4817e57a502",
+            "size": 9638582
+          }
+        ],
+        "required_files": [
+          "llama-server.exe",
+          "llama.dll",
+          "llama-common.dll",
+          "mtmd.dll",
+          "ggml.dll",
+          "ggml-base.dll",
+          "ggml-cpu.dll",
+          "libomp140.aarch64.dll"
+        ]
+      }
+    }
+  }
 }

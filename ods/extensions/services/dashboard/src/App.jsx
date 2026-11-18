@@ -11,6 +11,7 @@ import { useVersion } from './hooks/useVersion'
 import { useFirstRun } from './hooks/useFirstRun'
 import { useSessionBootstrap } from './hooks/useSessionBootstrap'
 import { getInternalRoutes } from './plugins/registry'
+import { runtimeUnavailable } from './lib/runtime'
 import { X, PanelRightClose, PanelRightOpen, Loader2 } from 'lucide-react'
 import { PortalIdentityProvider } from './contexts/PortalIdentityContext'
 
@@ -22,6 +23,7 @@ const ODSTalk = lazy(() => import('./pages/ODSTalk'))
 const SettingsModal = lazy(() => import('./components/SettingsModal'))
 const Pixel = lazy(() => import('./pages/Pixel'))
 const PixelSettings = lazy(() => import('./pages/PixelSettings'))
+const Dashboard = lazy(() => import('./pages/Dashboard'))
 
 function getStorageValue(storage, key) {
   try {
@@ -51,7 +53,12 @@ function App() {
   const [panelWidth, setPanelWidth] = useState(440)
   useEffect(() => { setPanelCollapsed(false) }, [panelLocation.pathname])
   const isTalkHost = typeof window !== 'undefined' && window.location.hostname.startsWith('talk.')
-  const isTalkPath = isTalkHost || location.pathname.startsWith('/talk')
+  const talkRequested = isTalkHost || location.pathname.startsWith('/talk')
+  const { status, loading, error } = useSystemStatus()
+  // A native install (no Docker) has neither Talk nor Portal: the dashboard
+  // takes the main workspace instead.
+  const isTalkPath = talkRequested && !runtimeUnavailable(status, 'talk')
+  const portalAvailable = !runtimeUnavailable(status, 'pixel')
 
   // Auto-mint a ods-session cookie on load so the install owner can
   // reach cookie-gated services (Hermes, future ones) without redeeming
@@ -59,7 +66,6 @@ function App() {
   // See hooks/useSessionBootstrap.js for the full rationale.
   useSessionBootstrap(!isTalkPath)
 
-  const { status, loading, error } = useSystemStatus()
   const { version, showUpdate, dismissUpdate } = useVersion()
   // Server-side first-run flag (sourced from /api/setup/status). localStorage
   // was per-browser and gave the wrong answer on re-imaged devices or fresh
@@ -130,7 +136,7 @@ function App() {
         <div className="portal-chat">
           {showUpdate && <PortalUpdateNotice version={version} onDismiss={dismissUpdate} onReview={() => navigate('/settings?section=updates')} />}
           {status?.bootstrap?.active && <BootstrapBanner bootstrap={status.bootstrap} />}
-          <Suspense fallback={<p className="p-6 text-theme-text-muted">Opening Portal…</p>}><Pixel systemStatus={status} /></Suspense>
+          <Suspense fallback={<p className="p-6 text-theme-text-muted">Opening Portal…</p>}>{portalAvailable ? <Pixel systemStatus={status} /> : <Dashboard status={status} loading={loading} />}</Suspense>
         </div>
         {panelOpen && <aside style={{'--portal-panel-width':`${panelWidth}px`}} className={`portal-side-panel ${panelCollapsed ? 'is-collapsed' : ''}`} aria-label="Workspace panel">
           {!panelCollapsed && <PanelResizeHandle width={panelWidth} onResize={setPanelWidth} />}
@@ -146,7 +152,7 @@ function App() {
         }>
           <Routes location={panelLocation}>
             <Route path="/settings" element={<SettingsModal />} />
-            <Route path="/pixel/settings" element={<PixelSettings />} />
+            {portalAvailable && <Route path="/pixel/settings" element={<PixelSettings />} />}
             <Route path="/extensions/integrations" element={<Navigate to="/settings?section=integrations" replace />} />
             <Route path="/remote-provider" element={<Navigate to="/settings?section=remote" replace />} />
             {routes.filter(route => !['/', '/pixel', '/pixel/settings', '/settings', '/extensions/integrations', '/remote-provider'].includes(route.path)).map(route => {

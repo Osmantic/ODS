@@ -183,6 +183,7 @@ canonical source and treat older recipes as context.
 | [WSL2-GPU-TROUBLESHOOTING.md](WSL2-GPU-TROUBLESHOOTING.md) | Operators | WSL2 GPU issues |
 | [WINDOWS-WSL2-GPU-GUIDE.md](WINDOWS-WSL2-GPU-GUIDE.md) | Operators | Combined WSL2 GPU guide |
 | [DOCKER-DESKTOP-OPTIMIZATION.md](DOCKER-DESKTOP-OPTIMIZATION.md) | Operators | Docker Desktop tuning |
+| [WINDOWS-NATIVE-PLAN.md](WINDOWS-NATIVE-PLAN.md) | Contributors | Plan: ODS as a native Windows app, no Docker or WSL |
 
 ## Operations
 

@@ -67,6 +67,11 @@ export function PreFlightChecks({ onComplete, onIssuesFound }) {
         if (!current()) return
         const result = await check()
         if (!current()) return
+        if (result.omit) {
+          results.pop()
+          setChecks([...results])
+          continue
+        }
         results[results.length - 1] = { name, icon, ...result }
         setChecks([...results])
       }
@@ -83,6 +88,10 @@ export function PreFlightChecks({ onComplete, onIssuesFound }) {
   const checkDocker = async (signal) => {
     try {
       const response = await fetch('/api/preflight/docker', { signal })
+      // A native install (no Docker) answers that Docker is not part of it.
+      if (response.status === 404 && (await response.clone().json().catch(() => ({}))).code === 'native_unavailable') {
+        return { omit: true }
+      }
       if (!response.ok) {
         return { status: 'warning', message: `API error (${response.status})`, fix: 'Check dashboard-api logs' }
       }
