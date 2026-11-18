@@ -3272,6 +3272,36 @@ else
     ai_warn "Could not write ${_setup_complete_file} (non-fatal)"
 fi
 
+# ── Verified local route before reporting installation success ──
+# Native /health does not prove that Portal can use the model. Status polls
+# schedule the existing host-agent proof after Pixel activation has settled.
+if ! $CLOUD_MODE && ! $DRY_RUN; then
+    _route_backend="$(read_env_value "$INSTALL_DIR/.env" "LLM_BACKEND")"
+    _route_switchboard="$(read_env_value "$INSTALL_DIR/.env" "ODS_MODEL_SWITCHBOARD")"
+    if [[ "${_route_backend:-llama-server}" == "llama-server" && "${_route_switchboard:-enabled}" == "enabled" ]]; then
+        _route_helper="${LIB_DIR}/first-chat-readiness.py"
+        [[ -f "$_route_helper" ]] || { ai_err "Local route readiness helper is missing"; exit 1; }
+        _route_host="$(read_env_value "$INSTALL_DIR/.env" "ODS_AGENT_HOST")"
+        _route_port="$(read_env_value "$INSTALL_DIR/.env" "ODS_AGENT_PORT")"
+        [[ -n "$_route_host" ]] || _route_host="host.docker.internal"
+        [[ "$_route_port" =~ ^[0-9]+$ ]] || _route_port="7710"
+        ai "Verifying the local model route..."
+        # Source enters through stdin; credentials stay in the container's env.
+        if ! docker exec -i ods-dashboard-api python3 - \
+            --agent-url "http://${_route_host}:${_route_port}" \
+            --dashboard-url "http://127.0.0.1:3002" \
+            --router-url "http://model-router:9099" \
+            --env-file /ods/.env --timeout 180 --interval 3 \
+            < "$_route_helper" >>"$ODS_LOG_FILE" 2>&1; then
+            ai_err "The local model route is not ready; installation could not be verified."
+            ai "  Inspect the installer log and ods-host-agent.log for readiness details."
+            exit 1
+        fi
+        ai_ok "Local model route verified"
+    fi
+    unset _route_backend _route_switchboard _route_helper _route_host _route_port
+fi
+
 # ── Success card ──
 if ! $ALL_HEALTHY; then
     echo ""
