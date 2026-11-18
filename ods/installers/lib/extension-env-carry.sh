@@ -110,8 +110,9 @@ ods_carry_public_url_env_keys() {
 # gated downloads (routers/models.py), the Intel Arc image override
 # (docker-compose.arc.yml), Open WebUI's speech settings (tts/README.md) and
 # whether apps use measured model profiles (ODS_MODEL_PROFILES,
-# docs/MODEL-MANAGEMENT.md) and the opt-out from the dashboard's GitHub
-# release check (DISABLE_UPDATE_CHECK, FAQ.md).
+# docs/MODEL-MANAGEMENT.md), the opt-out from the dashboard's GitHub
+# release check (DISABLE_UPDATE_CHECK, FAQ.md) and the opt-in to bypass
+# web search embedding/retrieval (BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL).
 # Installer-managed keys must not be listed: an old value would override the
 # installer's new choice.
 # shellcheck disable=SC2034  # read by installers/phases/06-directories.sh
@@ -126,6 +127,7 @@ ODS_OWNER_ENV_KEYS=(
     AUDIO_TTS_OPENAI_API_KEY
     ODS_MODEL_PROFILES
     DISABLE_UPDATE_CHECK
+    BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL
 )
 
 # Append to NEW_ENV each named KEY that NEW_ENV lacks and PREVIOUS_ENV has,

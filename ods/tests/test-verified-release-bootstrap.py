@@ -90,6 +90,11 @@ def harness(tmp_path):
         shell = shutil.which('powershell.exe')
         if not shell:
             pytest.skip('Windows PowerShell 5.1 is required')
+        # A pwsh parent can export its Core-only module directories. Let the
+        # Windows PowerShell child construct its own normal module search path.
+        for key in list(env):
+            if key.casefold() == 'psmodulepath':
+                del env[key]
         wrapper = root / 'run-test.ps1'
         wrapper.write_text('''
 $ErrorActionPreference = 'Stop'
@@ -104,7 +109,23 @@ function Invoke-WebRequest {
     & $env:ODS_TEST_PYTHON $env:ODS_TEST_HTTP_STUB http $Uri -o $OutFile
     if ($LASTEXITCODE -ne 0) { throw 'Fixture download failed' }
 }
-. $env:ODS_TEST_BOOTSTRAP
+try {
+    . $env:ODS_TEST_BOOTSTRAP
+} catch {
+    $original = $_
+    try {
+        Write-Host ('PSVersion=' + $PSVersionTable.PSVersion + ' CLR=' + [System.Environment]::Version)
+        $archiveCommand = Get-Command Expand-Archive -ErrorAction SilentlyContinue
+        if ($archiveCommand) {
+            Write-Host ('ExpandArchiveVersion=' + $archiveCommand.Version + ' Path=' + $archiveCommand.Module.Path)
+        }
+        Get-Module -ListAvailable Microsoft.PowerShell.Archive -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host ('ArchiveModule=' + $_.Version + ' Path=' + $_.Path)
+        }
+        Write-Host ('ScriptStackTrace=' + $original.ScriptStackTrace)
+    } catch { }
+    throw $original
+}
 ''', encoding='utf-8')
         command = [shell, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(wrapper)]
     else:
