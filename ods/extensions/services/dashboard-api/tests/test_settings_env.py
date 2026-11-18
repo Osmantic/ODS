@@ -141,7 +141,7 @@ def constrained_settings(settings_env_fixture):
     schema_path = settings_env_fixture["schema_path"]
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     shipped = json.loads((Path(__file__).resolve().parents[4] / ".env.schema.json").read_text())
-    for key in ("REMOTE_LLM_SSH_PORT", "LLAMA_ARG_N_CPU_MOE", "LLAMA_LOG_VERBOSITY",
+    for key in ("REMOTE_LLM_SSH_PORT", "LLAMA_ARG_N_CPU_MOE", "LLAMA_LOG_VERBOSITY", "LLAMA_PARALLEL",
                 "N8N_PASS", "PIXEL_OPENWEBUI_KEY", "TS_HOSTNAME"):
         schema["properties"][key] = shipped["properties"][key]
     schema_path.write_text(json.dumps(schema), encoding="utf-8")
@@ -346,6 +346,48 @@ def test_api_settings_env_marks_runtime_mode_read_only(test_client, settings_env
     field = response.json()["fields"]["ODS_MODE"]
     assert field["readOnly"] is True
     assert "installer" in field["readOnlyReason"].lower()
+
+
+@pytest.mark.parametrize("initial,submitted", [(None, "2"), ("1", "2"), ("2", "1"), ("2", "")])
+def test_settings_rejects_independent_slot_changes_before_host_write(
+    test_client, constrained_settings, monkeypatch, initial, submitted,
+):
+    from unittest.mock import Mock
+    import main
+
+    env_path = constrained_settings["env_path"]
+    if initial is not None:
+        env_path.write_text(env_path.read_text(encoding="utf-8") + f"LLAMA_PARALLEL={initial}\n", encoding="utf-8")
+    original = env_path.read_bytes()
+    write = Mock(wraps=main._call_agent_env_update)
+    monkeypatch.setattr(main, "_call_agent_env_update", write)
+    field = test_client.get("/api/settings/env", headers=test_client.auth_headers).json()["fields"]["LLAMA_PARALLEL"]
+    response = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                               json={"mode": "form", "values": {"LLAMA_PARALLEL": submitted}})
+    assert response.status_code == 400, response.text
+    assert field["readOnly"] is True
+    assert "per-request context" in field["readOnlyReason"]
+    assert response.json()["detail"]["issues"] == [{"key": "LLAMA_PARALLEL", "message": field["readOnlyReason"]}]
+    write.assert_not_called()
+    assert env_path.read_bytes() == original
+    assert not (constrained_settings["data_root"] / "config-backups").exists()
+
+
+@pytest.mark.parametrize("include_unchanged", [False, True])
+def test_settings_preserves_existing_slots_when_other_tuning_changes(
+    test_client, constrained_settings, include_unchanged,
+):
+    env_path = constrained_settings["env_path"]
+    env_path.write_text(env_path.read_text(encoding="utf-8") + "LLAMA_PARALLEL=2\n", encoding="utf-8")
+    values = {"LLAMA_LOG_VERBOSITY": "4"}
+    if include_unchanged:
+        values["LLAMA_PARALLEL"] = "2"
+    response = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                               json={"mode": "form", "values": values})
+    assert response.status_code == 200, response.text
+    assert response.json()["values"]["LLAMA_PARALLEL"] == "2"
+    assert "LLAMA_PARALLEL=2\n" in env_path.read_text(encoding="utf-8")
+    assert response.json()["values"]["LLAMA_LOG_VERBOSITY"] == "4"
 
 
 def test_api_settings_env_marks_model_context_and_recommendation_read_only(

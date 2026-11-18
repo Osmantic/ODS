@@ -106,6 +106,7 @@ _READ_ONLY_ENV_FIELDS = {
     "GGUF_SHA256": "Model integrity metadata is managed by Model Manager.",
     "CTX_SIZE": "The active context is managed by Model Manager so the runtime and every model consumer remain synchronized.",
     "MAX_CONTEXT": "The active context is managed by Model Manager so the runtime and every model consumer remain synchronized.",
+    "LLAMA_PARALLEL": "Changing request slots also changes per-request context. This requires coordinated runtime and model-consumer updates and is not supported by the Settings editor.",
     "MODEL_RUNTIME_PROFILE": "The runtime profile is selected and managed during model activation.",
     "MODEL_RUNTIME_PROFILE_LABEL": "The runtime profile is selected and managed during model activation.",
     "MODEL_RUNTIME_PROFILE_SOURCE": "The runtime profile is selected and managed during model activation.",
