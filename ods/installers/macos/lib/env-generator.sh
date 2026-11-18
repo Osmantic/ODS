@@ -652,7 +652,7 @@ LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
 # LLAMA_ARG_CACHE_RAM=512
 $(if [[ -n "${LLAMA_ARG_CACHE_RAM:-}" ]]; then printf 'LLAMA_ARG_CACHE_RAM=%s\n' "$(dotenv_quote "$LLAMA_ARG_CACHE_RAM")"; fi)
 # Lossless n-gram speculation (--spec-type ngram-mod) is on by default when the
-# installed llama-server supports it (b8955+; ODS pins b9014). Turn it off with:
+# installed llama-server supports it (b8955+). Turn it off with:
 # LLAMA_SPEC_TYPE=none
 # Optional idle unloading: saves RAM between sessions, but loses prompt cache on sleep.
 # LLAMA_ARG_SLEEP_IDLE_SECONDS=120
