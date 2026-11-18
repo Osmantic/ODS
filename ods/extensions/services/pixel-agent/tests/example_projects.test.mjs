@@ -286,15 +286,21 @@ test('the owner-initiated publisher returns only a verified receipt for that fol
     await assert.rejects(createWorkspacePreviewPublisher({request: async () => reply})('Playground/elf-of-doom'),
       error => error.code === undefined);
   }
-  // A validated host refusal keeps its code; the folder codes are every
-  // refusal that is not about a source capture.
+  // A validated host refusal keeps its code. The owner-initiated publisher
+  // sends no source capture or conditional republication policy, so those
+  // specialized failures are separate from ordinary folder failures.
   for (const code of previewTesting.FAILURE_CODES) {
     const reply = {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', status: 'failed', boundary: previewTesting.BOUNDARY,
       error: 'ODS workspace preview publication failed', errorCode: code};
     await assert.rejects(createWorkspacePreviewPublisher({request: async () => reply})('Playground/elf-of-doom'), {code});
   }
+  const conditionalFailures = previewTesting.FAILURE_CODES.filter(code => code.startsWith('conditional_'));
+  assert.deepEqual(conditionalFailures.sort(),
+    ['conditional_entry_unchanged', 'conditional_prior_unverified', 'conditional_publication_unavailable']);
+  assert.ok(conditionalFailures.every(code => !PREVIEW_FOLDER_FAILURES.includes(code)));
   assert.deepEqual([...PREVIEW_FOLDER_FAILURES].sort(),
-    previewTesting.FAILURE_CODES.filter(code => !code.startsWith('source_') && code !== 'no_eligible_source').sort());
+    previewTesting.FAILURE_CODES.filter(code => !code.startsWith('source_') &&
+      !conditionalFailures.includes(code) && code !== 'no_eligible_source').sort());
   await assert.rejects(publish('../outside'));
 });
 

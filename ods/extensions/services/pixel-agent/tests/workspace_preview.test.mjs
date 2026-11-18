@@ -465,3 +465,93 @@ test('source capture failure codes remain actionable without exposing host detai
     assert.match(result.content[0].text,expected);
   }
 });
+
+// The owner's conditional repeat publication: only the trusted guard's per-call
+// policy sends the prior identity; the model's parameters never can.
+const PRIOR = Object.freeze({siteId: `site-${'a'.repeat(24)}`, sha256: 'a'.repeat(64), entrySha256: 'b'.repeat(64)});
+
+test('a conditional request comes only from the trusted per-call policy, never from model parameters', async () => {
+  const calls = [];
+  const seen = [];
+  const tool = createWorkspacePreviewTool({
+    request: async (request) => { calls.push(request); return succeededResponse({conditionalPublication: 'reused'}); },
+    publicationCondition: (toolCallId, params) => { seen.push([toolCallId, params]); return {ifEntryUnchanged: PRIOR}; },
+  });
+  const result = await tool.execute('call-trusted', {relativeDirectory: 'demo-site'});
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(seen, [['call-trusted', {relativeDirectory: 'demo-site'}]]);
+  assert.deepEqual(calls, [{schemaVersion: 1, action: 'publish', relativeDirectory: 'demo-site', ifEntryUnchanged: {...PRIOR}}]);
+  for (const params of [{relativeDirectory: 'demo-site', ifEntryUnchanged: {...PRIOR}},
+    {relativeDirectory: 'demo-site', conditionalPublication: 'reused'}]) {
+    const forged = await tool.execute('call-forged', params);
+    assert.equal(forged.isError, true);
+  }
+  assert.equal(calls.length, 1, 'model-supplied private fields never reach the host');
+});
+
+test('a reused receipt says so and must carry exactly the prior identity', async () => {
+  const tool = createWorkspacePreviewTool({request: async () => succeededResponse({conditionalPublication: 'reused'}),
+    publicationCondition: () => ({ifEntryUnchanged: PRIOR})});
+  const result = await tool.execute('call-reuse', {relativeDirectory: 'demo-site'});
+  assert.equal(result.details.conditionalPublication, 'reused');
+  assert.match(result.content[0].text, /reused that existing preview snapshot and did not create a new publication/);
+  assert.match(result.content[0].text, /Earlier inspection results for this same snapshot still apply/);
+  assert.doesNotMatch(result.content[0].text, /independently published/);
+  assert.ok(!result.content[0].text.includes(result.details.url));
+  for (const patch of [{entrySha256: 'c'.repeat(64)}, {sha256: 'd'.repeat(64), siteId: `site-${'d'.repeat(24)}`,
+    url: `http://site-${'d'.repeat(24)}.localhost:9437/site-${'d'.repeat(24)}/`}, {conditionalPublication: 'cached'}]) {
+    const mismatched = createWorkspacePreviewTool({request: async () => succeededResponse({conditionalPublication: 'reused', ...patch}),
+      publicationCondition: () => ({ifEntryUnchanged: PRIOR})});
+    assert.equal((await mismatched.execute('call-bad-reuse', {relativeDirectory: 'demo-site'})).isError, true, JSON.stringify(patch));
+  }
+});
+
+test('a conditional new publication must show a changed entry; an ordinary request accepts no conditional field', async () => {
+  const changed = {sha256: 'e'.repeat(64), siteId: `site-${'e'.repeat(24)}`, url: `http://site-${'e'.repeat(24)}.localhost:9437/site-${'e'.repeat(24)}/`,
+    entrySha256: 'f'.repeat(64)};
+  const published = createWorkspacePreviewTool({request: async () => succeededResponse({...changed, conditionalPublication: 'published'}),
+    publicationCondition: () => ({ifEntryUnchanged: PRIOR})});
+  const result = await published.execute('call-changed', {relativeDirectory: 'demo-site'});
+  assert.equal(result.isError, undefined);
+  assert.match(result.content[0].text, /independently published and read back/);
+  const sameEntry = createWorkspacePreviewTool({request: async () => succeededResponse({...changed, entrySha256: PRIOR.entrySha256,
+    conditionalPublication: 'published'}), publicationCondition: () => ({ifEntryUnchanged: PRIOR})});
+  assert.equal((await sameEntry.execute('call-same-entry', {relativeDirectory: 'demo-site'})).isError, true);
+  const missing = createWorkspacePreviewTool({request: async () => succeededResponse(), publicationCondition: () => ({ifEntryUnchanged: PRIOR})});
+  assert.equal((await missing.execute('call-missing-field', {relativeDirectory: 'demo-site'})).isError, true);
+  const ordinary = createWorkspacePreviewTool({request: async () => succeededResponse({conditionalPublication: 'reused'})});
+  assert.equal((await ordinary.execute('call-ordinary', {relativeDirectory: 'demo-site'})).isError, true);
+});
+
+test('a refused, invalid or failing policy publishes nothing', async () => {
+  for (const [name, policy, params] of [
+    ['refusal', () => ({refuse: true}), {relativeDirectory: 'demo-site'}],
+    ['throws', () => { throw new Error('unbound'); }, {relativeDirectory: 'demo-site'}],
+    ['malformed', () => ({ifEntryUnchanged: {...PRIOR, siteId: `site-${'0'.repeat(24)}`}}), {relativeDirectory: 'demo-site'}],
+    ['extra field', () => ({ifEntryUnchanged: PRIOR, extra: true}), {relativeDirectory: 'demo-site'}],
+    ['source capture', () => ({ifEntryUnchanged: PRIOR}), {relativeDirectory: 'demo-site/dist', sourceDirectory: 'demo-site'}],
+  ]) {
+    let calls = 0;
+    const tool = createWorkspacePreviewTool({request: async () => { calls += 1; return succeededResponse(); }, publicationCondition: policy});
+    const result = await tool.execute('call-refused', params);
+    assert.equal(result.isError, true, name);
+    assert.equal(result.details.errorCode, 'conditional_publication_unavailable', name);
+    assert.equal(calls, 0, name);
+  }
+});
+
+test('conditional host refusals are explained without claiming a current preview', async () => {
+  for (const [errorCode, expected] of [
+    ['conditional_entry_unchanged', /named entry file is unchanged.*other files in the published directory changed.*did not republish/],
+    ['conditional_prior_unverified', /could not verify the earlier published snapshot.*did not publish/],
+  ]) {
+    const tool = createWorkspacePreviewTool({request: async () => ({schemaVersion: 1, kind: 'ods-pixel-workspace-preview', status: 'failed',
+      boundary: testing.BOUNDARY, error: 'ODS workspace preview publication failed', errorCode}),
+      publicationCondition: () => ({ifEntryUnchanged: PRIOR})});
+    const result = await tool.execute('call-conditional-refusal', {relativeDirectory: 'demo-site'});
+    assert.equal(result.isError, true);
+    assert.equal(result.details.errorCode, errorCode);
+    assert.match(result.content[0].text, expected);
+    assert.match(result.content[0].text, /do not claim a localhost URL is live/i);
+  }
+});

@@ -365,9 +365,12 @@ export default definePluginEntry({
       onWorkspaceMutation:mutation=>workspaceProjects.record(mutation),
       verifyWorkspacePreview:createWorkspacePreviewVerifier({transport:api.pluginConfig?.workspacePreviewTransport}),
       workspacePreviewInspectionAvailable: ["unix", "native"].includes(api.pluginConfig?.workspacePreviewInspectionTransport),
-      publishWorkspacePreview: previewRecoveryAllowed(api.config) ? (params, {signal}) =>
-        createWorkspacePreviewTool({transport:api.pluginConfig?.workspacePreviewTransport})
-          .execute('ods-preview-delivery', params, signal) : undefined,
+      // Finalize recovery runs under the same trusted per-call condition as
+      // the model's tool: its own admitted call ID binds the owner's policy.
+      publishWorkspacePreview: previewRecoveryAllowed(api.config) ? (params, {signal, toolCallId} = {}) =>
+        createWorkspacePreviewTool({transport:api.pluginConfig?.workspacePreviewTransport,
+          publicationCondition: (id, request) => toolLoopGuard.previewPublicationCondition(id, request)})
+          .execute(toolCallId ?? 'ods-preview-delivery', params, signal) : undefined,
       // Cited pages the model never opened are read once by the host through
       // the same strict guard as pixel_ods_web_extract, only where the
       // operator's configuration permits page reads.
@@ -968,7 +971,10 @@ export default definePluginEntry({
       names: ["pixel_ods_download_promote"],
     });
 
-    registerTool(api, createWorkspacePreviewTool({ transport: api.pluginConfig?.workspacePreviewTransport }), {
+    // The trusted guard supplies each admitted call's owner condition; the
+    // model's parameters never carry it.
+    registerTool(api, createWorkspacePreviewTool({ transport: api.pluginConfig?.workspacePreviewTransport,
+      publicationCondition: (toolCallId, params) => toolLoopGuard.previewPublicationCondition(toolCallId, params) }), {
       names: ["pixel_ods_workspace_preview"],
     });
 

@@ -57,6 +57,7 @@ import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehavio
   requestsReloadPersistence } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
+import { extractConditionalRepublication } from './preview-publication-constraint.mjs';
 import { PREVIEW_CONTINUE_NOTE, PREVIEW_EARLIER_NOTE, PREVIEW_INCOMPLETE_NOTE, PREVIEW_MISSING_NOTE, PREVIEW_SCRIPT_NOTE,
   PREVIEW_STOPPED_NOTE, PREVIEW_STORAGE_NOTE, PREVIEW_UNFINISHED_NOTE, announcesMoreWork, explainedPreviewDelivery,
   ownerPreviewText, previewCheckNote } from './preview-explanation.mjs';
@@ -614,6 +615,8 @@ const SYNCHRONOUS_HOST_COMMAND_TOOL = "pixel_ods_host_command_propose";
 const EVIDENCE_REPORT_TOOL = "pixel_ods_evidence_report";
 const EVIDENCE_READBACK_TOOL = "pixel_ods_evidence_readback";
 const WORKSPACE_PREVIEW_TOOL = "pixel_ods_workspace_preview";
+const CONDITIONAL_PUBLICATION_SCOPE_REASON =
+  "Pixel publishes only the directory the owner named, without a separate source capture, under the owner's conditional publication. Do not publish another directory.";
 const MAX_TRACKED_RUNS = 256;
 // How long a model call must have run before the guard's deadline stop may
 // abort it: past its stream setup (responseDeadlineDue).
@@ -6810,10 +6813,31 @@ function ownerPreviewStance(messages, prompt, sessionPreview = undefined) {
   return ownerRequestOutweighsShowNegation(text, sessionPreview) ? "optional" : "forbidden";
 }
 
+// The owner's explicit first publication of one named index.html whose repeat
+// is limited to a changed entry ("If that post-publication hash check did not
+// change the file, do not republish it."). Only that closed sentence is set
+// aside: the rest of the owner's words must keep publication open under the
+// existing stance, and the request must be explicit and not deferred. A
+// preview of that directory from an earlier turn keeps the refusal.
+function conditionalRepublicationPolicy(messages, prompt, sessionPreview = undefined) {
+  const found = extractConditionalRepublication(localPreviewPolicyText(currentOwnerIntentText(messages, prompt)));
+  if (!found || sessionPreview?.relativeDirectory === found.relativeDirectory) return undefined;
+  if (ownerPreviewStance([], found.remaining, sessionPreview) !== "open") return undefined;
+  if (PREVIEW_NEGATION.test(found.request) || !PUBLICATION_DIRECTIVE.test(found.request) ||
+      !hasExplicitWorkspacePreviewDirective(found.request) ||
+      DEFERRED_REQUEST.test(found.request.split(PURPOSE_CLAUSE)[0]) || ACTION_DEFERRAL.test(found.afterRequest)) return undefined;
+  return Object.freeze({relativeDirectory: found.relativeDirectory, entryFile: "index.html"});
+}
+
 // The owner's preview stance for the prompt's guidance, without session
-// evidence: only "open" asks the model for a publication.
+// evidence: only "open" asks the model for a publication. The owner's exact
+// conditional first publication is open here as at admission, through the
+// same closed policy; every other prohibition, deferral or hold still forbids.
+// Guidance only, never host authority: admission also requires the session
+// evidence (an earlier turn's preview of that directory still refuses there).
 export function userMessagePreviewStance(messages, prompt = undefined) {
-  return ownerPreviewStance(messages, prompt);
+  const stance = ownerPreviewStance(messages, prompt);
+  return stance === "forbidden" && conditionalRepublicationPolicy(messages, prompt) ? "open" : stance;
 }
 
 function portuguesePreviewForbidden(text) {
@@ -8561,6 +8585,100 @@ export function createToolLoopGuard({
     return 'reserved';
   }
 
+  // The admitted pending publication this tool execution belongs to: the call
+  // itself, or the pending tool_call parent of a Tool Search child.
+  function pendingPreviewPublication(toolCallId, params) {
+    if (typeof toolCallId !== 'string' || !toolCallId) return [];
+    const parent = toolCallId.startsWith('tool_search_code:')
+      ? [...pendingToolRuns].find(([id, run]) => !id.startsWith('tool_search_code:') && run.transport === 'tool_call' &&
+        toolCallId.startsWith(toolSearchChildPrefix(id))) : undefined;
+    return [[toolCallId, pendingToolRuns.get(toolCallId)], parent ?? []].filter(([, run]) =>
+      run?.selectedToolName === WORKSPACE_PREVIEW_TOOL && isDeepStrictEqual(run.selectedParams, params));
+  }
+
+  // The owner's conditional republication for one admitted publication call:
+  // undefined for an ordinary publication (no condition in its run, or its
+  // first explicitly requested publication), the prior verified snapshot the
+  // host must compare its capture with, or a refusal. An unbound, stale,
+  // cancelled, foreign or concurrent call never publishes under a condition.
+  const REFUSE_PUBLICATION = Object.freeze({refuse: true});
+  const previewPublicationBindings = new Map();
+  const appliedPublicationBindings = new WeakSet();
+  function previewPublicationCondition(toolCallId, params) {
+    const bound = pendingPreviewPublication(toolCallId, params);
+    const runId = bound[0]?.[1]?.runId, state = runs.get(runId);
+    if (!bound.length) {
+      return [...runs.values()].some(other => other.workspaceRepublicationCondition &&
+        other.workspaceRepublicationCondition.relativeDirectory === params?.relativeDirectory) ? REFUSE_PUBLICATION : undefined;
+    }
+    if (!state || bound.some(([, run]) => run.runId !== runId)) return REFUSE_PUBLICATION;
+    const condition = state.workspaceRepublicationCondition;
+    if (!condition) return undefined;
+    // The complete identity the condition was recognized and this call was
+    // admitted under: never adopted from a later observation, never missing.
+    const origin = state.workspaceRepublicationBinding, identity = state.artifactOwnerContext;
+    const sessionId = origin?.sessionId, sessionKey = identity?.sessionKey;
+    if (!origin || state.artifactIdentityConflict || typeof sessionId !== 'string' || !sessionId ||
+        typeof sessionKey !== 'string' || !sessionKey || identity.sessionId !== sessionId ||
+        (origin.sessionKey !== undefined && origin.sessionKey !== sessionKey) ||
+        state.currentSessionId !== sessionId || state.currentSessionKey !== sessionKey ||
+        sessionRuns.get(sessionId) !== runId ||
+        bound.some(([, run]) => run.inspectionSessionId !== sessionId || run.inspectionSessionKey !== sessionKey)) {
+      return REFUSE_PUBLICATION;
+    }
+    const boundIds = new Set(bound.map(([id]) => id));
+    if (state.clientCancelled || !state.ownerIntentObserved || state.workspacePreviewForbidden ||
+        (state.currentSessionId && sessionRuns.get(state.currentSessionId) !== runId) ||
+        params?.relativeDirectory !== condition.relativeDirectory || Object.keys(params ?? {}).join(',') !== 'relativeDirectory' ||
+        [...pendingToolRuns].some(([id, run]) => run.runId === runId && run.selectedToolName === WORKSPACE_PREVIEW_TOOL &&
+          !boundIds.has(id) && ![...boundIds].some(parentId => id.startsWith(toolSearchChildPrefix(parentId))))) {
+      return REFUSE_PUBLICATION;
+    }
+    const prior = state.workspaceRepublicationPrior;
+    if (!prior) return undefined;
+    if (prior.relativeDirectory !== condition.relativeDirectory) return REFUSE_PUBLICATION;
+    const binding = Object.freeze({runId, sessionId, sessionKey, prior,
+      generation: state.previewVerificationGeneration});
+    for (const id of boundIds) {
+      while (previewPublicationBindings.size >= MAX_TRACKED_RUNS * 4) {
+        previewPublicationBindings.delete(previewPublicationBindings.keys().next().value);
+      }
+      previewPublicationBindings.set(id, binding);
+    }
+    return Object.freeze({ifEntryUnchanged: Object.freeze({siteId: prior.siteId, sha256: prior.sha256,
+      entrySha256: prior.entrySha256})});
+  }
+
+  // A conditional receipt counts only for the exact call, run, session and
+  // prior it was issued for, with no other workspace effect since (this call's
+  // own receipt advances the generation once).
+  function conditionalReceiptBinding(state, runId, toolCallId, details) {
+    const binding = previewPublicationBindings.get(toolCallId);
+    return binding && binding.runId === runId && runs.get(runId) === state && !state.clientCancelled &&
+      !state.artifactIdentityConflict && state.currentSessionId === binding.sessionId &&
+      state.currentSessionKey === binding.sessionKey && sessionRuns.get(binding.sessionId) === runId &&
+      state.workspaceRepublicationPrior === binding.prior &&
+      state.previewVerificationGeneration === binding.generation + 1 &&
+      details?.relativeDirectory === binding.prior.relativeDirectory ? binding : undefined;
+  }
+
+  // This run's own conditional publication, seen again in the session record
+  // when the same run is re-observed. Set aside only for the owner's exact
+  // original words under the complete original identity; changed words,
+  // another or conflicting identity, or any other preview keep it.
+  function ownConditionalPreview(state, runId, context, ownerIntent, previousPreview) {
+    const origin = state.workspaceRepublicationBinding, prior = state.workspaceRepublicationPrior;
+    const identity = state.artifactOwnerContext;
+    if (!origin || !prior || !previousPreview || state.artifactIdentityConflict || state.clientCancelled ||
+        typeof ownerIntent !== 'string' || ownerIntent !== origin.ownerIntent || context?.sessionId !== origin.sessionId ||
+        identity?.sessionId !== origin.sessionId || typeof identity.sessionKey !== 'string' || !identity.sessionKey ||
+        (origin.sessionKey !== undefined && origin.sessionKey !== identity.sessionKey) ||
+        state.currentSessionKey !== identity.sessionKey || sessionRuns.get(origin.sessionId) !== runId ||
+        previousPreview.relativeDirectory !== prior.relativeDirectory || previousPreview.siteId !== prior.siteId ||
+        previousPreview.sha256 !== prior.sha256) return previousPreview;
+    return undefined;
+  }
+
   function previewInspectionTransition(toolCallId, params) {
     const bound = pendingPreviewInspection(toolCallId, params);
     const runId = bound[0]?.runId, state = runs.get(runId);
@@ -9894,6 +10012,11 @@ export function createToolLoopGuard({
       }
       const suppliedArgs =
         toolName === "tool_call" ? pendingParams?.args : pendingParams;
+      const republication = state.workspaceRepublicationCondition;
+      if (republication && (normalizeWorkspaceFilePath(suppliedArgs?.relativeDirectory) !== republication.relativeDirectory ||
+          suppliedArgs?.sourceDirectory !== undefined)) {
+        return {block: true, blockReason: CONDITIONAL_PUBLICATION_SCOPE_REASON};
+      }
       if (suppliedArgs?.scaffold !== undefined) {
         return {
           block: true,
@@ -11522,7 +11645,25 @@ export function createToolLoopGuard({
         const previousPreview = typeof sessionId === "string" && sessionId
           ? sessionPreviews.get(sessionId)
           : undefined;
-        const previewStance = ownerPreviewStance(event?.messages, event?.prompt, previousPreview);
+        let previewStance = ownerPreviewStance(event?.messages, event?.prompt, previousPreview);
+        // Once recognized, the owner's condition holds for the whole run, bound
+        // to the owner's exact words and this session; a later prompt can still
+        // forbid publication outright. Repeating those exact words in this run
+        // (a native retry or a compaction attempt) keeps it: only this run's own
+        // conditional publication is set aside, never an earlier turn's.
+        const republication = previewStance === "forbidden" && typeof sessionId === "string" && sessionId &&
+            !state.artifactIdentityConflict
+          ? conditionalRepublicationPolicy(event?.messages, event?.prompt,
+            ownConditionalPreview(state, runId, context, ownerIntent, previousPreview)) : undefined;
+        if (republication && (!state.workspaceRepublicationCondition ||
+            state.workspaceRepublicationCondition.relativeDirectory === republication.relativeDirectory)) {
+          previewStance = "open";
+          if (!state.workspaceRepublicationCondition) {
+            state.workspaceRepublicationCondition = republication;
+            state.workspaceRepublicationBinding = Object.freeze({ownerIntent, sessionId,
+              sessionKey: typeof context.sessionKey === "string" && context.sessionKey ? context.sessionKey : undefined});
+          }
+        }
         state.workspacePreviewForbidden = previewStance === "forbidden";
         state.workspacePreviewOptional = previewStance === "optional";
         state.workspaceDocumentDeliveryRequested = userMessageRequestsWorkspaceDocumentDelivery(event?.messages, event?.prompt);
@@ -12684,7 +12825,44 @@ export function createToolLoopGuard({
     const documentPreviewError = state.ownerIntentObserved &&
       state.workspaceDocumentDeliveryRequested && !state.workspacePreviewRequired &&
       toolCallFailed(previewEvent);
-    if (previewEvent && !declinedPreviewError && !documentPreviewError) {
+    // The owner's conditional republication: an exact reuse keeps the prior
+    // verified receipt current with no new publication event or proof reset;
+    // a changed entry is an ordinary new publication below. Anything not bound
+    // to the issued policy, or any receipt lacking the condition once a prior
+    // exists, is never accepted as current.
+    const conditionalOutcome = previewEvent && !declinedPreviewError && !documentPreviewError &&
+      state.workspaceRepublicationCondition && !toolCallFailed(previewEvent)
+      ? previewEvent.result?.details?.conditionalPublication : undefined;
+    let conditionalHandled = false;
+    if (previewEvent && !declinedPreviewError && !documentPreviewError) state.previewReceipts = (state.previewReceipts ?? 0) + 1;
+    const issuedBinding = previewPublicationBindings.get(toolCallId);
+    // A Tool Search child and its outer call report the same reuse once.
+    if (previewEvent && issuedBinding && appliedPublicationBindings.has(issuedBinding)) conditionalHandled = true;
+    else if (previewEvent && state.workspaceRepublicationCondition && state.workspaceRepublicationPrior &&
+        !declinedPreviewError && !documentPreviewError && !toolCallFailed(previewEvent)) {
+      const binding = conditionalReceiptBinding(state, runId, toolCallId, previewEvent.result?.details);
+      const prior = binding?.prior;
+      const outcome = binding ? workspacePreviewOutcome(previewEvent, prior.relativeDirectory, state) : undefined;
+      if (conditionalOutcome === 'reused' && outcome && ['siteId', 'sha256', 'entrySha256', 'files', 'bytes', 'port', 'url']
+        .every(key => outcome[key] === prior[key])) {
+        state.workspacePreviewAttempted = true;
+        state.workspacePreviewDirectory = prior.relativeDirectory;
+        state.workspacePreviewFailureCode = undefined;
+        state.workspacePreviewLastAttemptSucceeded = true;
+        state.workspacePreview = prior;
+        state.previewRevalidationCandidate = Object.freeze({preview: Object.freeze({...prior}),
+          sessionId: state.currentSessionId, sessionKey: state.currentSessionKey, workspaceRoot: state.configuredWorkspaceRoot});
+        state.previewRevalidationCompletedGeneration = state.previewVerificationGeneration;
+        rememberSessionPreview(state.currentSessionId, prior, state);
+        appliedPublicationBindings.add(binding);
+        conditionalHandled = true;
+      } else if (!(conditionalOutcome === 'published' && outcome && outcome.entrySha256 !== prior.entrySha256)) {
+        state.workspacePreviewAttempted = true;
+        state.workspacePreviewLastAttemptSucceeded = false;
+        conditionalHandled = true;
+      }
+    }
+    if (previewEvent && !declinedPreviewError && !documentPreviewError && !conditionalHandled) {
       state.workspacePreviewAttempted = true;
       const requestedDirectory = normalizeWorkspaceFilePath(
         previewEvent?.params?.relativeDirectory
@@ -12732,6 +12910,11 @@ export function createToolLoopGuard({
         state.workspaceLastVerifiedPreview = Object.freeze({ ...preview });
         state.successfulWriteContentByPath.clear();
         rememberSessionPreview(state.currentSessionId, preview, state);
+        // This run's verified publication of the owner's named directory is
+        // what a later conditional republication is compared with.
+        if (state.workspaceRepublicationCondition?.relativeDirectory === preview.relativeDirectory) {
+          state.workspaceRepublicationPrior = state.workspacePreview;
+        }
       }
     }
     if (state.operationsRequired || state.hostObservationUsed || extensionDiscoveryActive(state)) {
@@ -14330,7 +14513,8 @@ export function createToolLoopGuard({
     if (prepared?.block) { pendingToolRuns.delete(callId); return false; }
     generation = state.previewVerificationGeneration;
     try {
-      const result = await boundedPreviewDelivery(publishWorkspacePreview, prepared?.params ?? params, valid);
+      const result = await boundedPreviewDelivery((delivery, options) =>
+        publishWorkspacePreview(delivery, {...options, toolCallId: callId}), prepared?.params ?? params, valid);
       if (!result || !valid()) return false;
       afterToolCall({toolName: WORKSPACE_PREVIEW_TOOL, toolCallId: callId, params, result}, ctx, agentId);
       return Boolean(state.workspacePreview);
@@ -15765,6 +15949,15 @@ export function createToolLoopGuard({
     },
     afterToolCall,
     previewInspectionTransition,
+    previewPublicationCondition,
+    // Read-only conditional republication record for one run (diagnostics and tests).
+    previewRepublicationForRun(runId) {
+      const state = runs.get(runId);
+      const prior = state?.workspaceRepublicationPrior;
+      return {condition: state?.workspaceRepublicationCondition, priorSiteId: prior?.siteId, priorSha256: prior?.sha256,
+        priorEntrySha256: prior?.entrySha256, inspectionGeneration: state?.workspaceInspectionGeneration,
+        previewReceipts: state?.previewReceipts ?? 0};
+    },
     reservePreviewScreenshot,
     toolResultPersist,
     beforeAgentFinalize,

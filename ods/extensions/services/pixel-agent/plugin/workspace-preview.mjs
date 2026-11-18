@@ -68,7 +68,19 @@ export function validSourceReview(value, directory) {
     && Object.values(value.omitted).every(n => Number.isInteger(n) && n >= 0 && n <= 16384);
 }
 
-function validResponse(value, request) {
+// The trusted guard's per-call condition (never a model parameter): the prior
+// verified snapshot of the same directory whose named index.html must have
+// changed before a new publication is created.
+function validPublicationCondition(value) {
+  const prior = value?.ifEntryUnchanged;
+  return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).join(',') === 'ifEntryUnchanged' &&
+    !!prior && typeof prior === 'object' && !Array.isArray(prior) &&
+    Object.keys(prior).sort().join(',') === 'entrySha256,sha256,siteId' &&
+    SITE_ID.test(prior.siteId) && SHA256.test(prior.sha256) && SHA256.test(prior.entrySha256) &&
+    prior.siteId === `site-${prior.sha256.slice(0, 24)}`;
+}
+
+function validResponse(value, request, prior = undefined) {
   const expectedKeys = [
     "boundary",
     "bytes",
@@ -97,6 +109,8 @@ function validResponse(value, request) {
     ...(hasPaths ? ["publishedPaths", "publishedPathsOmitted"] : []),
     ...(hasEmptyPaths ? ["publishedEmptyPaths", "publishedEmptyPathsOmitted"] : []),
     ...(value && Object.hasOwn(value, 'source') ? ['source'] : []),
+    // Present exactly when the trusted request carried the condition.
+    ...(prior ? ['conditionalPublication'] : []),
   ].sort();
   if (
     !value ||
@@ -131,6 +145,12 @@ function validResponse(value, request) {
     value.boundary !== BOUNDARY
   ) {
     throw new Error("invalid Pixel workspace preview response");
+  }
+  // Reused: the identical prior snapshot. Published: a changed named entry.
+  if (prior && !(value.conditionalPublication === 'reused'
+    ? value.siteId === prior.siteId && value.sha256 === prior.sha256 && value.entrySha256 === prior.entrySha256
+    : value.conditionalPublication === 'published' && value.entrySha256 !== prior.entrySha256 && value.sha256 !== prior.sha256)) {
+    throw new Error("invalid Pixel workspace preview conditional receipt");
   }
   if (hasPaths && (
     !validPathList(value.publishedPaths, value.publishedPathsOmitted) ||
@@ -243,6 +263,9 @@ export function socketRequest(payload, { socketPath = SOCKET_PATH, signal, timeo
 }
 
 const FAILURE_MESSAGES = {
+  conditional_entry_unchanged: "The owner's named entry file is unchanged since the verified publication, but other files in the published directory changed. Portal did not republish, as the owner asked not to republish an unchanged file, and does not claim that the earlier preview shows the current files. Report this; do not work around it.",
+  conditional_prior_unverified: "Portal could not verify the earlier published snapshot that the owner's republication condition depends on, so it did not publish. Do not retry to work around this; report that the earlier preview could not be confirmed.",
+  conditional_publication_unavailable: "Portal could not apply the owner's republication condition to this call, so it did not publish. Do not retry to work around this; report that the preview was not republished.",
   source_capture_limit: "The requested source capture exceeds its bounded limits (128 text files, 256 KiB each, 1 MiB total, bounded directory enumeration). No complete source delivery is verified. Narrow the explicit project source selection; do not silently omit required files or publish a different project.",
   source_store_full: "The owner's source review store has reached its 128-capture or 64 MiB limit. This attempt did not create a new source capture or website output. Existing records are preserved. Do not delete history or repeatedly republish to work around this limit; ask the owner to review storage.",
   source_capture_changed: "Project source changed during capture. Wait for project writes to finish, then retry the exact requested source directory. No source snapshot is verified.",
@@ -303,7 +326,21 @@ function failedResult(code, diagnostic) {
   };
 }
 
-export function createWorkspacePreviewTool({ request, transport = "unix" } = {}) {
+// A reused receipt: the host compared its one capture with the prior verified
+// snapshot and created nothing. It is not a new publication.
+function reusedText(response) {
+  return `ODS verified that ${JSON.stringify(response.relativeDirectory)} and its named entry index.html are unchanged ` +
+    `since the verified publication (${response.files} files, ${response.bytes} bytes). It reused that existing preview snapshot ` +
+    'and did not create a new publication, as the owner asked. ' + PREVIEW_CARD_GUIDANCE + ' ' +
+    `Inspection snapshot: ${JSON.stringify({siteId:response.siteId,sha256:response.sha256})}. ` +
+    'Earlier inspection results for this same snapshot still apply. This comparison and HTTP readback hold at this moment only; ' +
+    'they do not show that later writes cannot change the workspace.';
+}
+
+// publicationCondition(toolCallId, params): the trusted guard's policy for this
+// admitted call. undefined is an ordinary publication; {refuse: true} or any
+// invalid value publishes nothing; {ifEntryUnchanged} is sent to the host.
+export function createWorkspacePreviewTool({ request, transport = "unix", publicationCondition } = {}) {
   if (!["unix", "docker-desktop"].includes(transport)) throw new Error("invalid preview transport");
   request ??= transport === "docker-desktop" ? dockerWorkspacePreviewRequest : socketRequest;
   return {
@@ -323,15 +360,26 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
         },
       },
     },
-    execute: async (_toolCallId, params, signal) => {
+    execute: async (toolCallId, params, signal) => {
       try {
         signal?.throwIfAborted();
         const normalized = normalizeWorkspacePreviewParams(params);
-        const raw = await request(normalized, { signal });
+        let condition;
+        if (typeof publicationCondition === "function") {
+          try { condition = publicationCondition(toolCallId, params); } catch { condition = {refuse: true}; }
+          if (condition !== undefined && (!validPublicationCondition(condition) || normalized.sourceDirectory !== undefined)) {
+            return failedResult("conditional_publication_unavailable");
+          }
+        }
+        const prior = condition?.ifEntryUnchanged;
+        const raw = await request(prior ? {...normalized, ifEntryUnchanged: {...prior}} : normalized, { signal });
         signal?.throwIfAborted();
         const failureCode = validatedFailureCode(raw);
         if (failureCode) return failedResult(failureCode, raw.artifactError);
-        const response = validResponse(raw, normalized);
+        const response = validResponse(raw, normalized, prior);
+        if (response.conditionalPublication === 'reused') {
+          return {content: [{type: "text", text: reusedText(response)}], details: response};
+        }
         // The verified URL stays in details for the card and the guard. In the
         // model's text it ended up pasted into replies, and that localhost
         // address opens only on the ODS machine (DGX Station, 2026-10-26).
