@@ -18,13 +18,18 @@ extract() {
         in_block && /^}$/ { exit }
     ' "$ROOT/ods-cli"
 }
-for name in _remote_provider_print_apply_result _remote_provider_print_status _remote_provider_fail \
-    _remote_provider_not_serving_reason _remote_provider_transport_reason; do
+for name in _remote_provider_image_input_jq _remote_provider_print_apply_result _remote_provider_print_status \
+    _remote_provider_fail _remote_provider_not_serving_reason _remote_provider_transport_reason; do
     body="$(extract "$name")"
     [[ -n "$body" ]] || fail "$name was not found in ods-cli"
     eval "$body"
 done
 RED="" NC=""
+
+printf '%s' '{"action":"disable","applied":true,"dashboardMode":{"matches":false}}' > "$fixture/mode.json"
+output="$(_remote_provider_print_apply_result "$fixture/mode.json")"
+grep -qF 'Dashboard refresh required: open Settings > Remote model and choose Refresh dashboard.' <<<"$output" \
+    || fail "a completed provider route hid the pending dashboard refresh"
 
 printf '%s' '{"action":"configure","applied":true,"mutated":true,"probe":{"httpStatus":200,"endpoint":"/v1/models","modelCount":1}}' \
     > "$fixture/apply.json"

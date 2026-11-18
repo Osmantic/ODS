@@ -69,6 +69,15 @@ case "${DOCKER_STUB_MODE:-success}" in
         echo "network busy (try again later)"
         exit 1
         ;;
+    fail-missing-service)
+        echo "no such service: missing-service"
+        exit 1
+        ;;
+    fail-mixed-missing-service)
+        echo "Error response from daemon: permission denied"
+        echo "no such service: missing-service"
+        exit 1
+        ;;
     fail-port-once)
         state_file="$TMPDIR_TEST/port-retry-count"
         count=0
@@ -228,6 +237,25 @@ teardown() {
 }
 
 # ── failure path, zero keyword matches (nounset/pipefail-hardening) ─────────
+
+@test "wrapper: missing service is included in the failure summary" {
+    export DOCKER_STUB_MODE=fail-missing-service
+    run _compose_run_with_summary "Starting service" up -d missing-service
+    [ "$status" -eq 1 ]
+    assert_output --partial "no such service: missing-service"
+    assert_output --partial "Full compose output:"
+    refute_output --partial "(no error keywords matched in compose log)"
+}
+
+@test "wrapper: missing service is retained alongside another error" {
+    export DOCKER_STUB_MODE=fail-mixed-missing-service
+    run _compose_run_with_summary "Starting service" up -d missing-service
+    [ "$status" -eq 1 ]
+    assert_output --partial "permission denied"
+    assert_output --partial "no such service: missing-service"
+    assert_output --partial "Full compose output:"
+    refute_output --partial "(no error keywords matched in compose log)"
+}
 
 # These two tests must execute the wrapper under `set -euo pipefail` because
 # the `|| warn "(no error keywords matched...)"` branch only fires when

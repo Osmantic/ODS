@@ -353,15 +353,29 @@ ods_hud_columns() {
   fi
 }
 
+# The live counter spin_task shows: the reader function's text when one is
+# given, else the .part file's bytes against the expected size.
+_ods_spin_counter() {
+  local progress_part="$1" progress_total_mb="$2" progress_reader="$3"
+  if [[ -n "$progress_reader" ]]; then
+    "$progress_reader"
+  else
+    format_download_progress "$(download_part_bytes "$progress_part")" "$progress_total_mb"
+  fi
+}
+
 # Spinner with mm:ss timer + lore messages every 8 seconds.
 # Optional args 3/4 turn the label into a live download counter: pass the .part
 # file the task is writing and the expected size in MB (0 when unknown). Without
-# them a long download is indistinguishable from a stalled one.
+# them a long download is indistinguishable from a stalled one. Optional arg 5
+# names a function that prints a short live status instead (a download of many
+# files, a model loading); pass "" and 0 for args 3/4 with it.
 spin_task() {
   local pid=$1
   local msg=$2
   local progress_part="${3:-}"
   local progress_total_mb="${4:-0}"
+  local progress_reader="${5:-}"
   local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
   local i=0
   local elapsed=0
@@ -372,11 +386,11 @@ spin_task() {
   ods_select_lore_messages
   if ! ods_ui_cinematic; then
     local plain_label="$msg"
-    if [[ -n "$progress_part" ]]; then
-      plain_label="$msg — $(format_download_progress "$(download_part_bytes "$progress_part")" "$progress_total_mb")"
+    if [[ -n "$progress_part" || -n "$progress_reader" ]]; then
+      plain_label="$msg — $(_ods_spin_counter "$progress_part" "$progress_total_mb" "$progress_reader")"
     fi
     printf "  ... %s\n" "$plain_label"
-    if [[ -n "$progress_part" ]]; then
+    if [[ -n "$progress_part" || -n "$progress_reader" ]]; then
       # Plain/redirected installs have no spinner: retain a bounded heartbeat
       # for large downloads instead of leaving the initial byte count frozen.
       while kill -0 "$pid" 2>/dev/null; do
@@ -385,7 +399,7 @@ spin_task() {
         if (( elapsed % 30 == 0 )); then
           printf "  ... [%02d:%02d] %s — %s\n" \
             "$((elapsed / 60))" "$((elapsed % 60))" "$msg" \
-            "$(format_download_progress "$(download_part_bytes "$progress_part")" "$progress_total_mb")"
+            "$(_ods_spin_counter "$progress_part" "$progress_total_mb" "$progress_reader")"
         fi
       done
     fi
@@ -402,8 +416,8 @@ spin_task() {
     local ss=$((elapsed % 60))
     local label="$msg"
     counter=''
-    if [[ -n "$progress_part" ]]; then
-      counter="$(format_download_progress "$(download_part_bytes "$progress_part")" "$progress_total_mb")"
+    if [[ -n "$progress_part" || -n "$progress_reader" ]]; then
+      counter="$(_ods_spin_counter "$progress_part" "$progress_total_mb" "$progress_reader")"
     fi
     ods_hud_columns
     printf -v timer '[%02d:%02d]' "$mm" "$ss"

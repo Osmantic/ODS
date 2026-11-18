@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -86,9 +87,22 @@ class CatalogTests(unittest.TestCase):
     def test_shipped_comfyui_manifest_reaches_pixel_catalog(self):
         function = (ROOT / "installers/lib/pixel-host-install.sh").read_text().split("_ods_pixel_write_extension_catalog() {", 1)[1]
         body = function.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        # The writer refuses group-writable sources. Judge the shipped files
+        # with the modes the installer gives them, not a checkout's umask.
+        # The writer reads built-in services beside the library
+        # (extensions/services), so keep that layout in the copy.
+        shipped = self.root / "shipped"
+        skip = shutil.ignore_patterns("node_modules", "__pycache__", "*.pyc")
+        shutil.copytree(ROOT / "extensions/services", shipped / "extensions/services", ignore=skip)
+        shutil.copytree(ROOT / "extensions/library/services", shipped / "extensions/library/services", ignore=skip)
+        (shipped / "config").mkdir()
+        shutil.copyfile(ROOT / "config/extensions-catalog.json", shipped / "config/extensions-catalog.json")
+        for path in [shipped, *shipped.rglob("*")]:
+            if not path.is_symlink():
+                path.chmod(path.stat().st_mode & ~0o022)
         output = self.root / "catalog.json"
-        result = subprocess.run([sys.executable, "-", str(ROOT / "config/extensions-catalog.json"),
-                                 str(ROOT / "extensions/library/services"), str(output)],
+        result = subprocess.run([sys.executable, "-", str(shipped / "config/extensions-catalog.json"),
+                                 str(shipped / "extensions/library/services"), str(output)],
                                 input=body, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         entries = {entry["id"]: entry for entry in json.loads(output.read_text())["extensions"]}

@@ -46,7 +46,7 @@ def read_selection(preparation):
     return read_record(preparation / 'preparation.json'), read_record(preparation / 'activation.json')
 
 
-def retained_recovery_selection(install_dir):
+def retained_recovery_selection(install_dir, *, complete_protected=False):
     """Read original private failure receipts without publishing readiness."""
     preparation = install_dir / 'data/pixel-native/preparation'
     info = preparation.lstat()
@@ -62,7 +62,7 @@ def retained_recovery_selection(install_dir):
     config = load('pixel-native-config')
     prepared = config.private_json(preparation / 'preparation.json')
     record = config.private_json(preparation / 'activation.json')
-    expected = load('pixel-native-recover').selection(prepared, record)
+    expected = load('pixel-native-recover').selection(prepared, record, interrupted=complete_protected)
     if prepared.get('home') != str(install_dir / 'data/pixel-native/home'):
         raise ValueError('retained-native-home-mismatch')
     updated = preparation / UPDATE_SELECTION
@@ -71,13 +71,15 @@ def retained_recovery_selection(install_dir):
     return prepared, record
 
 
-def resolve_files(install_dir, files, *, recovery=False):
+def resolve_files(install_dir, files, *, recovery=False, complete_protected=False):
+    if complete_protected and not recovery:
+        raise ValueError('protected-selection-requires-explicit-recovery')
     install_dir = Path(install_dir).resolve(strict=True)
     preparation = install_dir / 'data/pixel-native/preparation'
     activation = preparation / 'activation.json'
     if not recovery and not os.path.lexists(activation) and not os.path.lexists(preparation / UPDATE_SELECTION):
         return list(files)
-    prepared, record = (retained_recovery_selection(install_dir) if recovery
+    prepared, record = (retained_recovery_selection(install_dir, complete_protected=complete_protected) if recovery
                         else read_selection(preparation))
     migration = prepared.get('kind') == 'legacy-native'
     if migration:

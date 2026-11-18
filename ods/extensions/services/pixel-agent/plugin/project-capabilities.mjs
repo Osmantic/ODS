@@ -64,8 +64,22 @@ export function compactProjectCapabilities(value) {
     platformSets: packedSets, groups}};
 }
 
+// An agent ID as OpenClaw 2026.6.33 compares them (session-key normalizeAgentId).
+function openClawAgentId(value) {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (!trimmed) return 'main';
+  const lower = trimmed.toLowerCase();
+  if (/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(trimmed)) return lower;
+  return lower.replace(/[^a-z0-9_-]+/g, '-').replace(/^-+/, '').replace(/-+$/, '').slice(0, 64) || 'main';
+}
+
+// The agent's configured per-result cap (contextLimits.toolResultMaxChars; an
+// agent's contextLimits replace the defaults'), or the installer's 4,000 floor.
 export function projectCapabilityOutputLimit(config, agentId) {
-  const agent = config?.agents?.list?.find(entry => entry?.id === agentId);
+  const list = config?.agents?.list;
+  const id = openClawAgentId(agentId);
+  const agent = Array.isArray(list)
+    ? list.find(entry => entry && typeof entry === 'object' && openClawAgentId(entry.id) === id) : undefined;
   const cap = (agent?.contextLimits ?? config?.agents?.defaults?.contextLimits)?.toolResultMaxChars;
   return Number.isSafeInteger(cap) && cap > 0 ? cap : 4000;
 }

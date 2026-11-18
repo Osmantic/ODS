@@ -53,7 +53,10 @@ if [[ "$_external_disable" == "true" ]]; then
     return 0
 fi
 
-if [[ -z "$_external_url" && "${ODS_MODE:-local}" == "local" ]] && ! ods_native_llm_requested; then
+# The vLLM engine (phase 02) serves its own model: a running Ollama or LM
+# Studio is not offered in its place.
+if [[ -z "$_external_url" && "${ODS_MODE:-local}" == "local" && "${LLM_BACKEND:-}" != "vllm" ]] \
+    && ! ods_native_llm_requested; then
     _detected_provider=""
     _detected_url=""
     _detected_model=""

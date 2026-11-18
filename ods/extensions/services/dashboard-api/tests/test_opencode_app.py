@@ -403,6 +403,25 @@ def test_library_start_never_installs_without_an_install_action(test_client, mon
     assert calls == ["/v1/opencode/start"]
 
 
+def test_library_start_prepares_no_images_for_the_host_app(test_client, monkeypatch, tmp_path):
+    # The Extensions page prepares a core service's images before its Start.
+    # OpenCode has none; sending it to the agent's image preparation failed
+    # every Start with "could not prepare this extension's images" (#7781).
+    _patch_library(monkeypatch, tmp_path)
+    (tmp_path / "builtin" / "opencode").mkdir(parents=True)
+    calls = []
+
+    def fake(method, path, **kwargs):
+        calls.append(path)
+        raise AgentHTTPError(400, "opencode has no Compose definition", "{}")
+
+    monkeypatch.setattr("routers.extensions.request_agent_json", fake)
+    response = test_client.post("/api/extensions/opencode/prepare", headers=test_client.auth_headers)
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready", "service_ids": []}
+    assert calls == []
+
+
 def test_library_start_reports_host_failures(test_client, monkeypatch, tmp_path):
     _patch_library(monkeypatch, tmp_path)
 

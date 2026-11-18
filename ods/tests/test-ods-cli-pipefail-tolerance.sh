@@ -46,7 +46,7 @@ run_ods() {
     # pattern as test-validate-env.sh and test-ods-config-secret-mask.sh.
     local output rc
     set +e
-    output=$(ODS_HOME="$INSTALL_DIR" NO_COLOR=1 "$BASH" "$ODS_CLI" "$@" 2>&1)
+    output=$(INSTALL_DIR="$INSTALL_DIR" ODS_HOME="$INSTALL_DIR" NO_COLOR=1 "$BASH" "$ODS_CLI" "$@" 2>&1)
     rc=$?
     set -e
     printf '%s\n' "$rc"
@@ -57,6 +57,10 @@ reset_install() {
     rm -rf "$INSTALL_DIR"
     mkdir -p "$INSTALL_DIR"
     cp "$ROOT_DIR/docker-compose.base.yml" "$INSTALL_DIR/docker-compose.base.yml"
+    # WSL startup validates this installed helper before Compose. The Docker
+    # fixture reports no Desktop host, so the real helper safely no-ops.
+    mkdir -p "$INSTALL_DIR/scripts"
+    cp "$ROOT_DIR/scripts/wsl-bind-recovery.py" "$INSTALL_DIR/scripts/"
 }
 
 mkdir -p "$BIN_DIR"
@@ -210,6 +214,8 @@ TIER=1
 GPU_BACKEND=cpu
 LLM_MODEL=test
 OLLAMA_PORT=65535
+# This fixture intentionally exercises the explicit legacy local route.
+ODS_MODEL_SWITCHBOARD=disabled
 EOF
 result="$(run_ods chat hello)"
 rc="$(printf '%s\n' "$result" | sed -n '1p')"

@@ -130,7 +130,8 @@ async def hermes_session(request: Request):
         raise HTTPException(status_code=503, detail="Hermes sign-in is unavailable") from exc
     if cookies is not None and not any(c.key == "hermes_session_at" and c.value for c in cookies):
         raise HTTPException(status_code=503, detail="Hermes did not issue a login session")
-    response = RedirectResponse("/", status_code=303)
+    # Land in Hermes's chat; its root opens an empty Sessions list.
+    response = RedirectResponse("/chat", status_code=303)
     response.headers["Cache-Control"] = "no-store"
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
     allowed = {"hermes_session_at", "hermes_session_rt", "hermes_session_provider"}
@@ -174,13 +175,13 @@ def verify_session(request: Request) -> dict:
 
         forward_auth dashboard-api:3002 {
             uri /api/auth/verify-session
-            copy_headers Cookie
         }
 
-    Caddy forwards the original request's Cookie header here; we read
-    the ods-session cookie, hand it to session_signer.verify(), and
-    return 200/401 based on the result. The proxy honors the status
-    code: 2xx → forward the original request to the upstream; non-2xx
+    Caddy forwards the original request's Cookie header here by default;
+    we read the ods-session cookie, hand it to session_signer.verify(),
+    and return 200/401 based on the result. Successful verification leaves
+    the browser's original cookies intact for Hermes's separate session check.
+    The proxy honors the status code: 2xx → forward the original request to the upstream; non-2xx
     → return the forward_auth response to the client.
 
     Response body on success is intentionally minimal — proxies just

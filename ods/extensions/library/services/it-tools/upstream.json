@@ -8,6 +8,9 @@
     "linux/arm64"
   ],
   "runtime_validation": "pending",
-  "notes": "Latest GitHub release v2024.10.22-7ca5933 inspected on 2026-09-20; not a 2026 application release. Official static assets served by separately pinned nginx 1.28 Alpine with nonroot read-only filesystem and SPA routing. Browser preferences only; no server database or model integration.",
-  "runtime_image": "nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236"
+  "notes": "Same official release source rebuilt with a reviewed CSV roundtrip patch. The image field identifies the original upstream release; ODS builds the source with pinned Node/pnpm and serves its assets using the existing nonroot read-only nginx runtime. Source archive, patch and license are served with the application.",
+  "runtime_image": "nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236",
+  "source_revision": "7ca59331784bfe564cfbca2a5b1971ea7ae82735",
+  "source_archive_sha256": "1829b78fdea40d9a4a9aaf0c6aa7131e33898351e713356af07941959d3407d4",
+  "local_patch": "csv-rfc4180.patch"
 }

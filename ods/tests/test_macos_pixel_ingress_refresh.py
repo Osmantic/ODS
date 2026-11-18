@@ -18,6 +18,87 @@ pytestmark = pytest.mark.skipif(not hasattr(os, 'getuid') or os.getuid() == 0,
     reason='requires an unprivileged POSIX owner')
 
 
+@pytest.mark.parametrize('fault', [None, 'operation', 'phase', 'project', 'rollback', 'source', 'volume',
+    'token', 'released', 'streams', 'pointer-link'])
+def test_retained_hold_proof_authenticates_own_operation(tmp_path, monkeypatch, request, fault):
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    def close_loop():
+        loop.close()
+        asyncio.set_event_loop(None)
+    request.addfinalizer(close_loop)
+    spec = importlib.util.spec_from_file_location('retained_recovery_gate',
+        Path(__file__).resolve().parents[1] / 'extensions/services/pixel-edge/transition_gate.py')
+    gate_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate_module)
+    state = tmp_path / 'gate'
+    state.mkdir(mode=0o700)
+    gate_module.initialize(str(state))
+    active = {}
+    gate = gate_module.TransitionGate(str(state), active)
+    binding = {'revision': loop.run_until_complete(gate.status())['revision'], 'token': 'c' * 64}
+    loop.run_until_complete(gate.acquire(binding['token'], binding['revision']))
+    source = tmp_path / 'source.json'
+    source.write_bytes(b'config')
+    source.chmod(0o600)
+    preparation = tmp_path / 'preparation'
+    directory = preparation / ('ingress-refresh-' + 'a' * 32)
+    directory.mkdir(parents=True, mode=0o700)
+    pointer = preparation / 'ingress-refresh-current.json'
+    pointer.write_text(json.dumps({'directory': directory.name}))
+    pointer.chmod(0o600)
+    if fault == 'pointer-link':
+        pointer.rename(preparation / 'actual-pointer.json')
+        pointer.symlink_to(preparation / 'actual-pointer.json')
+    record = dict(phase='operation-failed', project='ods', source=str(source),
+        operation={'kind': 'retained-recovery', 'key': 'd' * 64},
+        rollback={'path': str(directory / 'rollback.compose.json')}, binding=binding,
+        selection={'sha256': hashlib.sha256(b'config').hexdigest()}, edgeTransitionVolume={'Name': 'owned'})
+    if fault == 'operation': record['operation']['key'] = 'e' * 64
+    if fault == 'phase': record['phase'] = 'releasing'
+    if fault == 'project': record['project'] = 'other'
+    if fault == 'rollback': record['rollback']['path'] = str(tmp_path / 'other')
+    if fault == 'source': record['selection']['sha256'] = 'e' * 64
+    if fault == 'token': record['binding'] = dict(binding, token='e' * 64)
+    journal = directory / 'refresh.json'
+    journal.write_text(json.dumps(record))
+    journal.chmod(0o600)
+    before = journal.read_bytes()
+    events = []
+    if fault == 'released': loop.run_until_complete(gate.release(binding['token'], binding['revision']))
+    if fault == 'streams': active['existing'] = object()
+    def docker(*args, **kwargs):
+        events.append('authenticate')
+        supplied = json.loads(kwargs['input'])['binding']
+        try:
+            value = loop.run_until_complete(gate.acquire(supplied['token'], supplied['revision']))
+            return SimpleNamespace(returncode=0, stdout=json.dumps(value))
+        except gate_module.GateError:
+            return SimpleNamespace(returncode=1, stdout='')
+    original_helper = module.helper
+    real_compose = original_helper('pixel-native-compose')
+    monkeypatch.setattr(module, 'helper', lambda name: SimpleNamespace(
+        _managed_edge=lambda *args: 'a' * 64, _edge_transition=real_compose._edge_transition)
+        if name == 'pixel-native-compose' else original_helper(name))
+    monkeypatch.setattr(module, 'native_idle', lambda path: events.append('idle'))
+    monkeypatch.setattr(module, 'verify_current', lambda *args: events.append('custody'))
+    monkeypatch.setattr(module, 'edge_storage', lambda *args: {'Name': 'other' if fault == 'volume' else 'owned'})
+    def prove():
+        return module.operation_hold_revision(docker, preparation=preparation, project='ods',
+            dashboard_key='f' * 64, operation_kind='retained-recovery', operation_key='d' * 64)
+    if fault:
+        with pytest.raises((ValueError, OSError)):
+            prove()
+    else:
+        assert prove() == binding['revision']
+        assert events == ['idle', 'custody', 'authenticate']
+        # The second sample uses the same private hold and does not release it.
+        assert prove() == binding['revision']
+    assert journal.read_bytes() == before
+    gate.close()
+
+
 def fixture(tmp_path):
     source = tmp_path / 'config.json'
     source.write_text('{"gateway":{"port":18789,"auth":{"token":"synthetic-token"}}}')

@@ -87,6 +87,10 @@ function stubHandler(req, res) {
     respond(200, JSON.stringify({ web: { results: "not-an-array" } }));
   } else if (q === "slow") {
     setTimeout(() => respond(200, braveBody()), SLOW_UPSTREAM_DELAY_MS);
+  } else if (q === "slow-body") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.flushHeaders();
+    setTimeout(() => res.end(braveBody()), SLOW_UPSTREAM_DELAY_MS);
   } else if (q === "redirect") {
     res.writeHead(302, { location: redirectTarget });
     res.end();
@@ -181,6 +185,8 @@ async function testV1Route(base) {
   console.log("v1 route (must stay stable):");
 
   const ok = await getJson(base, "/v1/search?q=ok&count=5");
+  const slowBody = await getJson(base, "/v1/search?q=slow-body");
+  check("504 when headers arrive but the body stalls", slowBody.status === 504 && slowBody.body.error === "upstream_timeout");
   check("200 on success", ok.status === 200, `got ${ok.status}`);
   check("query echoed", ok.body.query === "ok");
   check("empty-url result dropped", ok.body.results.length === 2, `got ${ok.body.results.length}`);
@@ -368,6 +374,7 @@ async function testCompatEnabled(base) {
     ["err500", "HTTP error 500"],
     ["badjson", "invalid JSON"],
     ["slow", "timeout"],
+    ["slow-body", "timeout"],
     ["redirect", "unavailable"],
   ];
   for (const [q, reason] of cases) {
