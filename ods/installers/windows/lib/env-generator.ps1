@@ -15,6 +15,8 @@
 # Write-Utf8NoBom and the current-user-only writers live in private-file.ps1,
 # which the Portal's durable launcher also copies beside its private plan.
 . (Join-Path $PSScriptRoot 'private-file.ps1')
+# Active-model runtime carry (LLAMA_ARG_MMPROJ + paired chat template).
+. (Join-Path $PSScriptRoot 'active-model-runtime-carry.ps1')
 
 function Resolve-WindowsODSPort {
     <#
@@ -1086,7 +1088,8 @@ LANGFUSE_INIT_USER_PASSWORD=$langfuseInitUserPassword
     # Preserve optional llama.cpp tuning (UBATCH / FIT_TARGET) across reruns
     # when the install identity is unchanged. Reserved keys are filtered out
     # of the extension carry so a manifest cannot smuggle them past bounds.
-    $reservedTuningKeys = @('LLAMA_ARG_UBATCH', 'LLAMA_ARG_FIT_TARGET')
+    $reservedTuningKeys = @('LLAMA_ARG_UBATCH', 'LLAMA_ARG_FIT_TARGET',
+        'LLAMA_ARG_MMPROJ', 'MODEL_CHAT_TEMPLATE_OVERRIDE', 'LLAMA_ARG_CHAT_TEMPLATE_FILE')
     $carriedTuningLines = @(Get-ODSCarriedLlamaTuningLines `
         -PreviousEnv $existingEnv `
         -NewContent $envContent `
@@ -1098,6 +1101,22 @@ LANGFUSE_INIT_USER_PASSWORD=$langfuseInitUserPassword
     if ($carriedTuningLines.Count -gt 0) {
         $nl = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
         $envContent += "$nl$nl#=== llama.cpp tuning (kept from the previous .env) ===$nl" + ($carriedTuningLines -join $nl)
+    }
+
+    # Preserve the active model's vision projector and paired chat-template
+    # override across reruns when the install identity is unchanged. New
+    # generated values win; the template pair is all-or-nothing.
+    $carriedRuntimeLines = @(Get-ODSCarriedActiveModelRuntimeLines `
+        -PreviousEnv $existingEnv `
+        -NewContent $envContent `
+        -CurrentGgufFile ([string]$TierConfig.GgufFile) `
+        -CurrentModelStore $preservedModelStore `
+        -CurrentOdsMode $effectiveODSMode `
+        -CurrentLlmBackend $llmBackend `
+        -InstallDir $InstallDir)
+    if ($carriedRuntimeLines.Count -gt 0) {
+        $nl = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
+        $envContent += "$nl$nl#=== Active model runtime (kept from the previous .env) ===$nl" + ($carriedRuntimeLines -join $nl)
     }
 
     # Keep the settings installed extensions own (their manifest env_vars),
