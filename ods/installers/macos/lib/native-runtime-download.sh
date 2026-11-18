@@ -9,8 +9,11 @@ macos_llama_asset_sha256() {
     case "$1" in
         # Previous default pin, kept so rolling constants.sh back needs no new digest.
         b8210) printf '%s\n' '8cc228499f05adb69b92462f8060448bec75a7ba406f03c1fca8e628b4ff5c91' ;;
-        # Default pin (constants.sh); tag commit d4b0c22f9e67, 8,593,054 bytes.
+        # Retained installations and Gemma4 profile; tag d4b0c22f9e67, 8,593,054 bytes.
         b9014) printf '%s\n' '565aecda0838daa433f363ae9a1c9ed6c94831de3fd093cb08179a5a3fd4f22d' ;;
+        # Native default pin (constants.sh).
+        # Tag ef3848f9d7d4, 17,011,789 bytes; independently hashed on two hosts.
+        b12445) printf '%s\n' '44a097f66c5ceadb3eb1b3eccd54c331cf1fa3d93cbb246eda583b1fe0980540' ;;
         *) ai_err "No trusted checksum for llama.cpp release $1."; return 1 ;;
     esac
 }

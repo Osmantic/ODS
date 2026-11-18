@@ -130,6 +130,12 @@ printf untrusted > "$TEST_ROOT/shared/llama-extract-$$/000-seed/llama-server"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("llama-b9014-bin-macos-arm64.tar.gz", self.events())
 
+    def test_current_release_still_rejects_untrusted_archive_before_use(self):
+        result = self.run_install(release="b12445", real_pin=True)
+        self.assert_rejected_before_use(result)
+        self.assertIn("llama-b12445-bin-macos-arm64.tar.gz", self.events())
+        self.assertIn("checksum mismatch", result.stderr)
+
     @unittest.skipIf(os.name == "nt", "requires Unix symlink semantics")
     def test_shared_symlinks_cannot_redirect_download_or_extraction(self):
         victim = self.root / "victim"
@@ -262,7 +268,7 @@ command() {
     def test_source_call_stays_inside_noncloud_boundary(self):
         source = (ROOT / "installers/macos/install-macos.sh").read_text(encoding="utf-8")
         start = source.index('    # ── Download and start native llama-server')
-        block = source[start:source.index('        # Start native llama-server with Metal', start)]
+        block = source[start:source.index('        # Resolve the exact launch profile', start)]
         self.assertIn('if ! $CLOUD_MODE; then', block)
         self.assertIn('macos_install_native_llama "$LLAMA_SERVER_BIN" "$LLAMA_CPP_RELEASE_TAG"', block)
         self.assertNotIn('LLAMA_ZIP=', block)

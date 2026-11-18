@@ -52,6 +52,7 @@ on:
       - 'ods/scripts/macos-bootstrap-promote.py'
       - 'ods/tests/test_macos_bootstrap_promote.py'
       - 'ods/tests/test_macos_bootstrap_dispatch.py'
+      - 'ods/tests/test_macos_native_start_order.py'
       - 'ods/tests/test-macos-bootstrap-resume.sh'
       - 'ods/tests/test-mode-restart-agent.sh'
       - 'ods/tests/test-macos-native-mode-refresh.sh'
@@ -111,6 +112,7 @@ on:
       - 'ods/scripts/macos-bootstrap-promote.py'
       - 'ods/tests/test_macos_bootstrap_promote.py'
       - 'ods/tests/test_macos_bootstrap_dispatch.py'
+      - 'ods/tests/test_macos_native_start_order.py'
       - 'ods/tests/test-macos-bootstrap-resume.sh'
       - 'ods/tests/test-mode-restart-agent.sh'
       - 'ods/tests/test-macos-native-mode-refresh.sh'
@@ -155,6 +157,7 @@ jobs:
           python -m pytest -q
           ods/tests/test_macos_bootstrap_promote.py
           ods/tests/test_macos_bootstrap_dispatch.py
+          ods/tests/test_macos_native_start_order.py
       - name: Verify saved macOS bootstrap resume arguments
         run: bash ods/tests/test-macos-bootstrap-resume.sh
       - name: Verify mode application refreshes only a stale host agent
