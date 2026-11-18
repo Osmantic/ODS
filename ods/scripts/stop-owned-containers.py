@@ -4,6 +4,8 @@
 Ownership comes
 from Docker's existing Compose labels, not names supplied by a changed recipe.
 No container is created, no lifecycle hook is run, and no data is deleted.
+remove_owned_containers() deletes the stopped containers of a removed
+extension under the same ownership rule, and its data only when asked.
 """
 from __future__ import annotations
 
@@ -14,6 +16,12 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+
+_SERVICE_RE = re.compile(r'[a-z0-9][a-z0-9_-]*')
+# Docker's own rule for volume names.
+_VOLUME_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]+')
+# States in which a container runs nothing. Removal never stops a container.
+_STOPPED_STATES = frozenset({'created', 'exited', 'dead'})
 
 
 def _path(value):
@@ -28,10 +36,13 @@ def _docker(arguments, timeout=30):
     return result.stdout
 
 
-def stop_owned_containers(install_dir, services=None, preserve_restart_policy=False):
+def _owned_rows(install_dir, services):
+    """Docker's inspection rows for this installation's containers of ``services``.
+
+    An empty ``services`` matches every container of the installation.
+    """
     root = Path(install_dir).resolve(strict=True)
-    services = list(services or [])
-    if not root.is_dir() or any(not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', name) for name in services):
+    if not root.is_dir() or any(not _SERVICE_RE.fullmatch(name) for name in services):
         raise ValueError('Invalid installation or service identity')
     ids = _docker(['ps', '--all', '--quiet', '--no-trunc', '--filter',
                    'label=com.docker.compose.project.working_dir']).split()
@@ -62,22 +73,31 @@ def stop_owned_containers(install_dir, services=None, preserve_restart_policy=Fa
                 continue
             # A matching project name alone is insufficient: native Windows and
             # WSL installations may both have used the old default project ods.
-            if not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', project):
+            if not _SERVICE_RE.fullmatch(project):
                 continue
             if not any(os.path.isabs(name) and _path(name) in base_files for name in config_files.split(',')):
                 continue
-            if not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', service) or (services and service not in services):
+            if not _SERVICE_RE.fullmatch(service) or (services and service not in services):
                 continue
-            if preserve_restart_policy:
-                host_config = row.get('HostConfig')
-                restart = host_config.get('RestartPolicy') if isinstance(host_config, dict) else None
-                policy = restart.get('Name') if isinstance(restart, dict) else None
-                # Docker keeps a manually stopped unless-stopped container
-                # down across daemon restarts. An always policy can resurrect
-                # a deselected extension, so refuse it before stopping any.
-                if policy not in ('no', 'unless-stopped', 'on-failure'):
-                    raise ValueError(f'Unsupported restart policy for preset stop: {service}')
-            owned.append(row['Id'])
+            owned.append(row)
+    return owned
+
+
+def stop_owned_containers(install_dir, services=None, preserve_restart_policy=False):
+    services = list(services or [])
+    owned = []
+    for row in _owned_rows(install_dir, services):
+        if preserve_restart_policy:
+            host_config = row.get('HostConfig')
+            restart = host_config.get('RestartPolicy') if isinstance(host_config, dict) else None
+            policy = restart.get('Name') if isinstance(restart, dict) else None
+            # Docker keeps a manually stopped unless-stopped container
+            # down across daemon restarts. An always policy can resurrect
+            # a deselected extension, so refuse it before stopping any.
+            if policy not in ('no', 'unless-stopped', 'on-failure'):
+                service = row['Config']['Labels']['com.docker.compose.service']
+                raise ValueError(f'Unsupported restart policy for preset stop: {service}')
+        owned.append(row['Id'])
     if owned:
         if not preserve_restart_policy:
             # Recovery for a rejected recipe must not resurrect after reboot.
@@ -88,6 +108,67 @@ def stop_owned_containers(install_dir, services=None, preserve_restart_policy=Fa
         # containers in parallel, so the bound covers the longest grace.
         _docker(['stop', *owned], timeout=300)
     return owned
+
+
+def _project_volumes(rows):
+    """The named volumes Compose created for these containers' own project."""
+    names = set()
+    for row in rows:
+        project = row['Config']['Labels']['com.docker.compose.project']
+        for mount in row.get('Mounts') or []:
+            name = mount.get('Name') if isinstance(mount, dict) else None
+            if mount.get('Type') == 'volume' and isinstance(name, str) and _VOLUME_RE.fullmatch(name):
+                names.add((name, project))
+    volumes = []
+    for name, project in sorted(names):
+        details = json.loads(_docker(['volume', 'inspect', name]))
+        labels = details[0].get('Labels') if isinstance(details, list) and len(details) == 1 else None
+        # An anonymous volume carries no Compose volume label; it goes with
+        # its container. Another project's volume is never touched.
+        if (isinstance(labels, dict) and labels.get('com.docker.compose.project') == project
+                and labels.get('com.docker.compose.volume')):
+            volumes.append(name)
+    return volumes
+
+
+def remove_owned_containers(install_dir, services, remove_volumes=False):
+    """Delete this installation's stopped containers of ``services``.
+
+    Named volumes and bind-mounted folders are kept unless ``remove_volumes``
+    is set; then the containers' anonymous volumes go with them and each named
+    volume Compose created for them is deleted once no other container uses
+    it. A running container is refused, never stopped, and nothing is deleted.
+    Returns ``(removed_container_names, removed_volumes, kept_volumes)``.
+    """
+    services = list(services or [])
+    if not services:
+        # Never turn an empty request into the removal of every ODS container.
+        raise ValueError('Container removal requires the services to remove')
+    rows = _owned_rows(install_dir, services)
+    for row in rows:
+        state = row.get('State')
+        status = state.get('Status') if isinstance(state, dict) else None
+        if status not in _STOPPED_STATES:
+            service = row['Config']['Labels']['com.docker.compose.service']
+            raise ValueError(f'The {service} container is {status or "in an unknown state"}; '
+                             'stop it before removing it')
+    if not rows:
+        return [], [], []
+    names = sorted(str(row.get('Name') or row['Id'][:12]).lstrip('/') for row in rows)
+    volumes = _project_volumes(rows)
+    _docker(['rm', *(['--volumes'] if remove_volumes else []), *(row['Id'] for row in rows)],
+            timeout=120)
+    if not remove_volumes:
+        return names, [], volumes
+    removed, kept = [], []
+    for name in volumes:
+        # A volume another service of the project mounts stays.
+        if _docker(['ps', '--all', '--quiet', '--filter', f'volume={name}']).split():
+            kept.append(name)
+            continue
+        _docker(['volume', 'rm', name], timeout=120)
+        removed.append(name)
+    return names, removed, kept
 
 
 def main():

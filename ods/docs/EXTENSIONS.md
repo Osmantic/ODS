@@ -589,9 +589,11 @@ If the host agent is unreachable, file-level operations (install, enable, disabl
 
 ### 7. Uninstall
 
-Uninstalling (`DELETE /api/extensions/{service_id}`) requires the extension to be disabled first (compose file must be renamed to `.disabled`). It then removes the extension directory from `user-extensions/` under file lock.
+Uninstalling (`DELETE /api/extensions/{service_id}`) requires the extension to be disabled first (compose file must be renamed to `.disabled`). The host performs the complete removal under the native CLI's selection lock; the Dashboard does not hold its graph lock across that request. Host and container locks are separate on native macOS.
 
-One state is handled by the endpoint itself: an extension whose last install or start attempt failed (status `error`) still has an enabled `compose.yaml`, so the uninstall performs the disable step first. The host agent must stop the service before the definition is touched (a failed stop returns 502 and nothing is removed), and removal is refused with 409 while any enabled extension depends on it. Running, stopped, starting and unhealthy extensions still return 400 until they are disabled explicitly. Uninstall never deletes service data; purging stays a separate, confirmed request (`DELETE /api/extensions/{service_id}/data`).
+One state is handled by the endpoint itself: an extension whose last install or start attempt failed (status `error`) still has an enabled `compose.yaml`, so the uninstall performs the disable step first. The host agent must stop the service before the definition is touched (a failed stop returns 502 and nothing is removed), and removal is refused with 409 while any enabled extension depends on it. Running, stopped, starting and unhealthy extensions still return 400 until they are disabled explicitly.
+
+`POST /v1/extension/remove` rechecks selection and dependents on the host, then deletes the extension's stopped containers while the definition still exists. Service data, the `./data/<id>` folder and the extension's Docker volumes, is kept unless the request sets `?delete_data=true`, which the Remove dialog's "Also delete … data" choice sends. The host retains its lock through optional data deletion and final definition cleanup, preventing concurrent native CLI selection. Container/data failures leave the disabled definition; transport failures and partial outcomes require refreshing state before retrying. Older hosts that lack the complete operation require an ODS update, with no partial-removal fallback. The response says what was deleted (`containers_removed`, `volumes_removed`) and kept (`data_info`, `volumes_kept`). Purging data without removing stays a separate, confirmed request (`DELETE /api/extensions/{service_id}/data`).
 
 ### 8. Dashboard UI Status Polling
 
@@ -602,6 +604,8 @@ The dashboard frontend polls `GET /api/extensions/catalog` to display extension 
 - For extensions not yet installed: whether the current GPU backend is compatible
 
 The catalog response also includes `agent_available` (whether the host agent is reachable) and `library_available` (whether the extensions library directory exists and is non-empty).
+
+An install or start whose worker died with the host agent (a WSL or Docker Desktop crash, a reboot) never writes its final progress record. The host agent marks such records as interrupted when it starts again, and until then the Dashboard API compares active records with the agent's running operations (`GET /v1/extension/jobs`). Either way the catalog and `GET /api/extensions/{service_id}/progress` report the record as `status: "error"` with `interrupted: true`, and the catalog adds `interrupted_operation` (`install`, `start`, or `null`). The card shows "The install was interrupted" with Retry, which repeats the operation, and Cancel: for a Library install, Cancel removes it through the Remove dialog; otherwise `DELETE /api/extensions/{service_id}/progress` forgets the interrupted record and nothing else changes. When the agent cannot answer, records stand as written and the card says it is waiting for the host service.
 
 ### Lifecycle Summary
 

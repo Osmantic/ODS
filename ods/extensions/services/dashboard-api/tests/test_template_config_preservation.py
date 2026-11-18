@@ -77,6 +77,8 @@ def test_chat_playground_preserves_owner_config(tmp_path, monkeypatch, layout):
     monkeypatch.setattr(extensions, "_call_agent_hook", lambda sid, hook: True)
     monkeypatch.setattr(extensions, "_call_agent_invalidate_compose_cache", lambda: None)
     monkeypatch.setattr(extensions, "_select_extensions_on_host", lambda *_a, **_kw: None)
+    from test_extensions import _test_host_remove
+    monkeypatch.setattr(extensions, "_call_agent_remove_extension", _test_host_remove)
 
     if layout == "removed":
         extensions._install_from_library("sillytavern")
