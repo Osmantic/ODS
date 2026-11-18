@@ -138,6 +138,7 @@ class ReleaseProviderRuntimeTests(unittest.TestCase):
         env = dict(os.environ)
         env.update({
             "PIXEL_SOURCE_BROKER_ENABLED": "0",
+            "PIXEL_SKIP_NPM_CI": "1",
             "PIXEL_OPS_BROKER_ENABLED": "0",
             "PIXEL_FRONTIER_BROKER_ENABLED": "0",
             "PIXEL_WEB_COURIER_ENABLED": "0",

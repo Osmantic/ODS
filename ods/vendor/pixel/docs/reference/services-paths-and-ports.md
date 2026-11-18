@@ -58,10 +58,13 @@ These are sanitized repository example values, not proof of the paths, ports, un
 | `PIXEL_SOURCE_RECONCILE_UNIT` | `pixel-source-reconcile@.service` | Service identity; verify the effective installed unit |
 | `PIXEL_SOURCE_DIRECT_UNIT` | `pixel-source-direct.service` | Service identity; verify the effective installed unit |
 | `PIXEL_SOURCE_DIRECT_PATH_UNIT` | `pixel-source-direct.path` | Service identity; verify the effective installed unit |
+| `PIXEL_SOURCE_EXCHANGE_UNIT` | `pixel-source-exchange@.service` | Service identity; verify the effective installed unit |
+| `PIXEL_SOURCE_REVOKE_UNIT` | `pixel-source-revoke.service` | Service identity; verify the effective installed unit |
 | `PIXEL_SOURCE_BROKER_SYSTEMD_DIR` | `/etc/systemd/system` | Generated/configured path; verify the installed host instead of assuming the example value |
 | `PIXEL_SOURCE_BROKER_INSTALL_DIR` | `/opt/pixel-source-broker` | Generated/configured path; verify the installed host instead of assuming the example value |
 | `PIXEL_SOURCE_BROKER_STATE_DIR` | `/var/lib/pixel-source-broker` | Generated/configured path; verify the installed host instead of assuming the example value |
 | `PIXEL_SOURCE_TOKEN_PATH` | `/var/lib/pixel-source-broker/private/google-token.json` | Private custody; do not copy or inspect contents for routine diagnosis |
+| `PIXEL_SOURCE_OAUTH_DIR` | `/var/lib/pixel-source-broker/private/oauth` | Generated/configured path; verify the installed host instead of assuming the example value |
 | `PIXEL_SOURCE_PROJECTION_DIR` | `/var/lib/pixel-source-broker/projection` | Generated/configured path; verify the installed host instead of assuming the example value |
 | `PIXEL_ACTION_PROPOSAL_DIR` | `/var/lib/pixel-source-broker/proposals` | Generated/configured path; verify the installed host instead of assuming the example value |
 | `PIXEL_ACTION_RESULT_DIR` | `/var/lib/pixel-source-broker/results` | Generated/configured path; verify the installed host instead of assuming the example value |
