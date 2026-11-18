@@ -340,7 +340,11 @@ class NativeService:
             time.sleep(.1)
 
     def startup_identity_pending(self, error):
-        return error.errno in {errno.ESRCH, errno.EPERM}
+        # launchd can expose a child PID before it execs the configured image.
+        # capture's deadline bounds this wait; success still requires the full
+        # identity and a second custody/PID check. Liveness checks stay strict.
+        return (error.errno in {errno.ESRCH, errno.EPERM}
+                or str(error) == "gateway-process-executable-mismatch")
 
     def remove_job(self, domain, identity, *, token=None):
         job = self.job(domain)
