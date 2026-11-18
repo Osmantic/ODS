@@ -77,7 +77,10 @@ def test_low_vram_catalog_has_six_agent_viable_downloadable_models():
     low_vram = [
         model
         for model in models
-        if int(model.get("vram_required_gb") or 0) <= 8
+        # vLLM entries need a large NVIDIA GPU (min_gpu_mib) and download a
+        # snapshot, not a GGUF; they are never low-VRAM downloads.
+        if model.get("runtime") != "vllm"
+        and int(model.get("vram_required_gb") or 0) <= 8
         and int(model.get("context_length") or 0) >= HERMES_CONTEXT_FLOOR
         and _agent_viable_for_release(model)
     ]

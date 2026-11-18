@@ -219,6 +219,192 @@ function ConvertTo-ODSDotenvValue {
     return "'" + $text + "'"
 }
 
+# Settings ODS tells the owner to put in .env that no installer writes: the
+# dashboard's n8n API key (routers/workflows.py), the Hugging Face token for
+# gated downloads (routers/models.py), the Intel Arc image override
+# (docker-compose.arc.yml), Open WebUI's speech settings (tts/README.md) and
+# whether apps use measured model profiles (ODS_MODEL_PROFILES,
+# docs/MODEL-MANAGEMENT.md) and the opt-out from the dashboard's GitHub
+# release check (DISABLE_UPDATE_CHECK, FAQ.md).
+# Same list as ODS_OWNER_ENV_KEYS in installers/lib/extension-env-carry.sh.
+# Installer-managed keys must not be listed: an old value would override the
+# installer's new choice.
+$script:ODS_OWNER_ENV_KEYS = @(
+    "N8N_API_KEY"
+    "HF_TOKEN"
+    "LLAMA_ARC_IMAGE"
+    "AUDIO_TTS_ENGINE"
+    "AUDIO_TTS_MODEL"
+    "AUDIO_TTS_VOICE"
+    "AUDIO_TTS_OPENAI_API_BASE_URL"
+    "AUDIO_TTS_OPENAI_API_KEY"
+    "ODS_MODEL_PROFILES"
+    "DISABLE_UPDATE_CHECK"
+)
+
+function Get-ODSCarriedEnvLines {
+    <# Return, for each key the new .env content lacks, its last assignment line
+       in the previous .env, as it is when .env is read. Keys match exactly. #>
+    param(
+        [AllowEmptyCollection()][string[]]$PreviousLines,
+        [AllowEmptyString()][string]$NewContent,
+        [string[]]$Keys
+    )
+    $carried = @()
+    foreach ($key in $Keys) {
+        $prefix = "$key="
+        if ($NewContent -cmatch ("(?m)^" + [regex]::Escape($prefix))) { continue }
+        $last = $null
+        foreach ($line in $PreviousLines) {
+            if ($line.StartsWith($prefix, [StringComparison]::Ordinal)) { $last = $line }
+        }
+        if ($null -ne $last) { $carried += $last }
+    }
+    return $carried
+}
+
+function Get-ODSCarriedLlamaTuningLines {
+    <#
+    .SYNOPSIS
+        Return previous .env lines for optional llama.cpp tuning keys that the
+        new template does not write, when the install identity is unchanged.
+    .DESCRIPTION
+        Preserves LLAMA_ARG_UBATCH and LLAMA_ARG_FIT_TARGET across installer
+        reruns only when the model filename, model store, GPU backend, ODS mode
+        and LLM backend all match the previous install. Values are validated
+        against a fixed positive-integer regex and per-key bounds; each key is
+        rejected independently. Unknown GPU backends are never accepted, even
+        if they match the previous value. Missing prior ODS_ACTIVE_MODEL_STORE
+        defaults to 'default' (matching the generator); any other missing prior
+        identity fails closed.
+    #>
+    param(
+        [hashtable]$PreviousEnv,
+        [AllowEmptyString()][string]$NewContent,
+        [AllowEmptyString()][string]$CurrentGgufFile,
+        [AllowEmptyString()][string]$CurrentModelStore,
+        [AllowEmptyString()][string]$CurrentGpuBackend,
+        [AllowEmptyString()][string]$CurrentOdsMode,
+        [AllowEmptyString()][string]$CurrentLlmBackend
+    )
+
+    $result = @()
+    if ($null -eq $PreviousEnv) { return $result }
+
+    $allowedGpu = @('nvidia', 'none', 'cpu')
+    if ($allowedGpu -cnotcontains $CurrentGpuBackend) { return $result }
+
+    if (-not $PreviousEnv.ContainsKey('GGUF_FILE')) { return $result }
+    if (-not $PreviousEnv.ContainsKey('GPU_BACKEND')) { return $result }
+    if (-not $PreviousEnv.ContainsKey('ODS_MODE')) { return $result }
+    if (-not $PreviousEnv.ContainsKey('LLM_BACKEND')) { return $result }
+
+    # Parse literal dotenv values without interpreting expressions.
+    function Get-TuningLiteral([string]$Value) {
+        $value = $Value.Trim()
+        if ($value.Length -ge 2 -and (
+            ($value[0] -eq "'" -and $value[$value.Length - 1] -eq "'") -or
+            ($value[0] -eq '"' -and $value[$value.Length - 1] -eq '"'))) {
+            $value = $value.Substring(1, $value.Length - 2).Trim()
+        }
+        return $value
+    }
+    $prevGguf = Get-TuningLiteral ([string]$PreviousEnv['GGUF_FILE'])
+    $prevGpu = Get-TuningLiteral ([string]$PreviousEnv['GPU_BACKEND'])
+    $prevOdsMode = Get-TuningLiteral ([string]$PreviousEnv['ODS_MODE'])
+    $prevLlmBackend = Get-TuningLiteral ([string]$PreviousEnv['LLM_BACKEND'])
+    $prevModelStore = 'default'
+    if ($PreviousEnv.ContainsKey('ODS_ACTIVE_MODEL_STORE')) {
+        $prevModelStore = Get-TuningLiteral ([string]$PreviousEnv['ODS_ACTIVE_MODEL_STORE'])
+    }
+    if ([string]::IsNullOrEmpty($CurrentGgufFile) -or $CurrentOdsMode -cne 'local') { return $result }
+
+    if (-not [string]::Equals($prevGguf, $CurrentGgufFile, [StringComparison]::Ordinal)) { return $result }
+    if (-not [string]::Equals($prevModelStore, $CurrentModelStore, [StringComparison]::Ordinal)) { return $result }
+    if (-not [string]::Equals($prevGpu, $CurrentGpuBackend, [StringComparison]::Ordinal)) { return $result }
+    if (-not [string]::Equals($prevOdsMode, $CurrentOdsMode, [StringComparison]::Ordinal)) { return $result }
+    if (-not [string]::Equals($prevLlmBackend, $CurrentLlmBackend, [StringComparison]::Ordinal)) { return $result }
+    if ($CurrentLlmBackend -cne 'llama-server') { return $result }
+
+    $bounds = [ordered]@{
+        'LLAMA_ARG_UBATCH'     = @(1, 512)
+        'LLAMA_ARG_FIT_TARGET' = @(512, 65536)
+    }
+
+    foreach ($key in $bounds.Keys) {
+        if ($NewContent -cmatch ('(?m)^' + [regex]::Escape($key) + '=')) { continue }
+        if (-not $PreviousEnv.ContainsKey($key)) { continue }
+
+        $raw = Get-TuningLiteral ([string]$PreviousEnv[$key])
+        if ($raw -cnotmatch '^[1-9][0-9]{0,4}$') { continue }
+
+        $parsed = 0
+        if (-not [int]::TryParse($raw, [ref]$parsed)) { continue }
+        $range = $bounds[$key]
+        if ($parsed -lt $range[0] -or $parsed -gt $range[1]) { continue }
+
+        $result += ('{0}={1}' -f $key, $raw)
+    }
+
+    return $result
+}
+
+function Get-ODSExtensionEnvKeys {
+    <# Return the env_vars keys declared by installed extension manifests,
+       in manifest order, deduplicated exactly. Mirrors the awk reader in
+       installers/lib/extension-env-carry.sh: keys under any env_vars: block
+       at any indentation, only uppercase [A-Z][A-Z0-9_]* names. #>
+    param([string[]]$ManifestPaths)
+    $keys = New-Object 'System.Collections.Generic.List[string]'
+    $seen = @{}
+    foreach ($manifestPath in $ManifestPaths) {
+        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { continue }
+        $inEnv = $false
+        $envIndent = 0
+        foreach ($line in @(Get-Content -LiteralPath $manifestPath -Encoding UTF8)) {
+            if ($line -match '^\s*($|#)') { continue }
+            $indent = $line.Length - $line.TrimStart().Length
+            if ($inEnv -and $indent -le $envIndent) { $inEnv = $false }
+            if ($line -match '^\s*env_vars:\s*($|#)') {
+                $inEnv = $true
+                $envIndent = $indent
+                continue
+            }
+            if (-not $inEnv) { continue }
+            if ($line -match '^\s*-\s*key:\s*(.*)$') {
+                $key = $Matches[1] -replace '["''\s]', ''
+                if ($key -cmatch '^[A-Z][A-Z0-9_]*$' -and -not $seen.ContainsKey($key)) {
+                    $seen[$key] = $true
+                    [void]$keys.Add($key)
+                }
+            }
+        }
+    }
+    return $keys.ToArray()
+}
+
+function Get-ODSExtensionManifestPaths {
+    <# Return manifest.yaml paths for direct extension directories of
+       extensions/services and data/user-extensions, in that order.
+       Never recurses into extensions/library; no InstallDir/services root. #>
+    param([string]$InstallDir)
+    $paths = New-Object 'System.Collections.Generic.List[string]'
+    $roots = @(
+        (Join-Path (Join-Path $InstallDir 'extensions') 'services'),
+        (Join-Path (Join-Path $InstallDir 'data') 'user-extensions')
+    )
+    foreach ($rootDir in $roots) {
+        if (-not (Test-Path -LiteralPath $rootDir -PathType Container)) { continue }
+        foreach ($dir in @(Get-ChildItem -LiteralPath $rootDir -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+            $manifest = Join-Path $dir.FullName 'manifest.yaml'
+            if (Test-Path -LiteralPath $manifest -PathType Leaf) {
+                [void]$paths.Add($manifest)
+            }
+        }
+    }
+    return $paths.ToArray()
+}
+
 function New-ODSEnv {
     <#
     .SYNOPSIS
@@ -263,9 +449,11 @@ function New-ODSEnv {
 
     # Preserve existing secrets on re-install (mirrors Linux _env_get logic)
     $existingEnv = @{}
+    $previousEnvLines = @()
     $envPath = Join-Path $InstallDir ".env"
     if (Test-Path $envPath) {
-        Get-Content $envPath | ForEach-Object {
+        $previousEnvLines = @(Get-Content $envPath)
+        $previousEnvLines | ForEach-Object {
             if ($_ -match "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
                 $existingEnv[$Matches[1]] = $Matches[2]
             }
@@ -641,6 +829,29 @@ function New-ODSEnv {
     $ragEmbeddingModel = Get-EnvOrNewAllowEmpty "RAG_EMBEDDING_MODEL" ([Environment]::GetEnvironmentVariable("RAG_EMBEDDING_MODEL"))
     $ragOpenAiApiBaseUrl = Get-EnvOrNewAllowEmpty "RAG_OPENAI_API_BASE_URL" ([Environment]::GetEnvironmentVariable("RAG_OPENAI_API_BASE_URL"))
     $ragOpenAiApiKey = Get-EnvOrNewAllowEmpty "RAG_OPENAI_API_KEY" ([Environment]::GetEnvironmentVariable("RAG_OPENAI_API_KEY"))
+    # Keep this opt-in until full-page retrieval is qualified for each surface.
+    # An explicit owner setting survives reinstall; false must not be treated
+    # as an absent value. Blank means unspecified. Never evaluate dotenv input.
+    $webSearchEmbeddingBypass = "false"
+    $bypassCandidates = @(
+        [string]$existingEnv['BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL'],
+        [Environment]::GetEnvironmentVariable('BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL')
+    )
+    foreach ($candidate in $bypassCandidates) {
+        $rawBypass = ([string]$candidate).Trim()
+        if ($rawBypass.Length -ge 2 -and (
+            ($rawBypass[0] -eq "'" -and $rawBypass[$rawBypass.Length - 1] -eq "'") -or
+            ($rawBypass[0] -eq '"' -and $rawBypass[$rawBypass.Length - 1] -eq '"')
+        )) {
+            $rawBypass = $rawBypass.Substring(1, $rawBypass.Length - 2).Trim()
+        }
+        if ([string]::IsNullOrWhiteSpace($rawBypass)) { continue }
+        if ($rawBypass -notmatch '\A(?i:true|false)\z') {
+            throw 'BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL must be true or false.'
+        }
+        $webSearchEmbeddingBypass = $rawBypass.ToLowerInvariant()
+        break
+    }
     $embeddingsMemoryLimitDefault = [Environment]::GetEnvironmentVariable("EMBEDDINGS_MEMORY_LIMIT")
     if ([string]::IsNullOrWhiteSpace($embeddingsMemoryLimitDefault)) { $embeddingsMemoryLimitDefault = "4G" }
     $embeddingsMemoryLimit = Get-EnvOrNew "EMBEDDINGS_MEMORY_LIMIT" $embeddingsMemoryLimitDefault
@@ -703,6 +914,7 @@ TOGETHER_API_KEY=$(Get-EnvOrNew "TOGETHER_API_KEY" "")
 MINIMAX_API_KEY=$(Get-EnvOrNew "MINIMAX_API_KEY" "")
 
 #=== LLM Settings (llama-server) ===
+TIER=$Tier
 MODEL_PROFILE=$(Get-EnvOrNew "MODEL_PROFILE" "$(if ($TierConfig.ModelProfileRequested) { $TierConfig.ModelProfileRequested } else { "qwen" })")
 LLM_MODEL=$($TierConfig.LlmModel)
 GGUF_FILE=$($TierConfig.GgufFile)
@@ -834,6 +1046,7 @@ EMBEDDINGS_MEMORY_LIMIT=$embeddingsMemoryLimit
 # Loopback installs open directly. LAN installs require a login by default.
 WEBUI_AUTH=$webuiAuth
 ENABLE_WEB_SEARCH=$enableWebSearchValue
+BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=$webSearchEmbeddingBypass
 WEB_SEARCH_ENGINE=searxng
 
 #=== n8n Settings ===
@@ -862,12 +1075,64 @@ LANGFUSE_INIT_USER_PASSWORD=$langfuseInitUserPassword
     # NOTE: No VIDEO_GID, RENDER_GID, HSA_OVERRIDE_GFX_VERSION on Windows
     # Those are Linux-only for AMD ROCm container device access
 
+    # The template above replaces .env; keep the owner's own settings.
+    $ownerLines = @(Get-ODSCarriedEnvLines -PreviousLines $previousEnvLines `
+        -NewContent $envContent -Keys $script:ODS_OWNER_ENV_KEYS)
+    if ($ownerLines.Count -gt 0) {
+        $nl = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
+        $envContent += "$nl$nl#=== Owner settings (kept from the previous .env) ===$nl" + ($ownerLines -join $nl)
+    }
+
+    # Preserve optional llama.cpp tuning (UBATCH / FIT_TARGET) across reruns
+    # when the install identity is unchanged. Reserved keys are filtered out
+    # of the extension carry so a manifest cannot smuggle them past bounds.
+    $reservedTuningKeys = @('LLAMA_ARG_UBATCH', 'LLAMA_ARG_FIT_TARGET')
+    $carriedTuningLines = @(Get-ODSCarriedLlamaTuningLines `
+        -PreviousEnv $existingEnv `
+        -NewContent $envContent `
+        -CurrentGgufFile ([string]$TierConfig.GgufFile) `
+        -CurrentModelStore $preservedModelStore `
+        -CurrentGpuBackend $GpuBackend `
+        -CurrentOdsMode $effectiveODSMode `
+        -CurrentLlmBackend $llmBackend)
+    if ($carriedTuningLines.Count -gt 0) {
+        $nl = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
+        $envContent += "$nl$nl#=== llama.cpp tuning (kept from the previous .env) ===$nl" + ($carriedTuningLines -join $nl)
+    }
+
+    # Keep the settings installed extensions own (their manifest env_vars),
+    # as phase 06 does on Linux. New template values win, including empty.
+    $extensionKeys = @(Get-ODSExtensionEnvKeys -ManifestPaths @(Get-ODSExtensionManifestPaths -InstallDir $InstallDir) |
+        Where-Object { $reservedTuningKeys -cnotcontains $_ })
+    if ($extensionKeys.Count -gt 0) {
+        $extensionLines = @(Get-ODSCarriedEnvLines -PreviousLines $previousEnvLines `
+            -NewContent $envContent -Keys $extensionKeys)
+        if ($extensionLines.Count -gt 0) {
+            $nl = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
+            $envContent += "$nl$nl#=== Installed extensions (kept from the previous .env) ===$nl" + ($extensionLines -join $nl)
+        }
+    }
+
     $envPath = Join-Path $InstallDir ".env"
     if (Test-Path -LiteralPath $envPath -PathType Container) {
         Remove-Item -LiteralPath $envPath -Recurse -Force
         Write-AIWarn "Removed malformed .env directory from a previous partial install."
     }
+    # The template above replaces .env; keep the owner's public URLs
+    # (docs/ODS-PROXY.md) as the Linux installer does.
+    if (Test-Path -LiteralPath $envPath -PathType Leaf) {
+        $publicUrlLines = @(Get-ODSPublicUrlEnvLines -NewContent $envContent `
+            -PreviousLines @(Get-Content -LiteralPath $envPath -Encoding UTF8))
+        if ($publicUrlLines.Count -gt 0) {
+            $nl = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
+            $envContent += "$nl$nl#=== Public URLs (kept from the previous .env) ===$nl" + ($publicUrlLines -join $nl)
+        }
+    }
     Write-ODSPrivateEnvFile -Path $envPath -Content $envContent
+
+    # Compose prefers inherited process values, including empty strings, to
+    # --env-file. Carry this resolved owner choice into subsequent launches.
+    [Environment]::SetEnvironmentVariable('BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL', $webSearchEmbeddingBypass, 'Process')
 
     if ($effectiveODSMode -eq "local") {
         $litellmDir = Join-Path (Join-Path $InstallDir "config") "litellm"
@@ -934,6 +1199,34 @@ litellm_settings:
     return @{
         SearxngSecret  = $searxngSecret
     }
+}
+
+function Get-ODSPublicUrlEnvLines {
+    <# Return the owner's public-URL settings (docs/ODS-PROXY.md:
+       ODS_PUBLIC_URL, ODS_SERVICE_PUBLIC_URLS, <SERVICE>_PUBLIC_URL) from the
+       previous .env that the new content lacks, as Linux's
+       ods_carry_public_url_env_keys does: the last assignment of each key, in
+       first-seen order. #>
+    param(
+        [AllowEmptyCollection()][string[]]$PreviousLines,
+        [AllowEmptyString()][string]$NewContent
+    )
+    $order = [System.Collections.Generic.List[string]]::new()
+    $last = @{}
+    foreach ($line in $PreviousLines) {
+        $eq = $line.IndexOf('=')
+        if ($eq -lt 0) { continue }
+        $key = $line.Substring(0, $eq).Trim()
+        if ($key -cnotmatch '^[A-Z][A-Z0-9_]*_PUBLIC_URLS?$') { continue }
+        if (-not $last.ContainsKey($key)) { $order.Add($key) }
+        $last[$key] = $key + $line.Substring($eq)
+    }
+    $carried = @()
+    foreach ($key in $order) {
+        if ($NewContent -cmatch ("(?m)^\s*" + [regex]::Escape($key) + "\s*=")) { continue }
+        $carried += $last[$key]
+    }
+    return $carried
 }
 
 function Get-SearxngDefaultLanguage {

@@ -248,7 +248,8 @@ function Test-WindowsLlmModelReadiness {
     if (-not [string]::IsNullOrWhiteSpace($GgufFile)) {
         $modelPath = Join-Path (Join-Path (Join-Path $InstallDir "data") "models") $GgufFile
         $result.ModelFile = $modelPath
-        $result.FileExists = Test-Path $modelPath
+        # Test-Path $modelPath treats brackets as wildcards; evaluate -LiteralPath.
+        $result.FileExists = Test-Path -LiteralPath $modelPath -PathType Leaf
     } else {
         # No local GGUF configured (e.g. cloud/managed backend) -> file gate N/A.
         $result.FileExists = $true

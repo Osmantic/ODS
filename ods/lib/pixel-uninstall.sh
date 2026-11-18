@@ -692,8 +692,11 @@ ods_pixel_uninstall_managed() {
     # install. Root artifacts must still match the ODS/Pixel contract; drift
     # fails closed instead of deleting an ambient or operator-modified service.
     owner_uid="$(id -u)"
-    owner_gid="$(id -g)"
     owner_name="$(id -un)"
+    # The installer gives Pixel's files the account's primary group (pw_gid).
+    # Plain `id -g` is this shell's current group, which `newgrp docker` (the
+    # installer's own advice) or `sg docker` changes to docker.
+    owner_gid="$(id -g "$owner_name")"
     if [[ -e "$wsl_bridge_unit" || -L "$wsl_bridge_unit" \
         || -e "$wsl_bridge_program" || -L "$wsl_bridge_program" ]]; then
         [[ -f "$wsl_bridge_unit" && ! -L "$wsl_bridge_unit" \

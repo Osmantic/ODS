@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import uuid
+import time
 
 import pytest
 import yaml
@@ -17,6 +18,62 @@ PYTHON_IMAGE = 'python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc763258
 def docker(*args, timeout=60):
     return subprocess.run(['docker', *args], check=True, capture_output=True,
                           text=True, encoding='utf-8', timeout=timeout).stdout
+
+
+@pytest.mark.skipif(os.environ.get('ODS_RUN_DOCKER_SECURITY_TESTS') != '1',
+                    reason='Requires an explicitly selected disposable Docker test host')
+@pytest.mark.parametrize('service, assets', [
+    ('it-tools', ['/', '/ITTOOLS-SOURCE.txt', '/ITTOOLS-LICENSE.txt', '/source/csv-rfc4180.patch']),
+    ('redoc', ['/', '/ods-reader.js']),
+])
+def test_static_library_serves_private_build_context(tmp_path, service, assets):
+    # Extension materialization uses owner-private files. Build the real recipe
+    # with those modes, then check nginx as its declared non-root runtime user.
+    context = tmp_path / service
+    shutil.copytree(LIBRARY / service, context)
+    for source in context.rglob('*'):
+        if source.is_file():
+            source.chmod(0o600)
+    assert (context / 'nginx.conf').stat().st_mode & 0o777 == 0o600
+    identity = 'ods-private-static-' + uuid.uuid4().hex[:12]
+    image = identity + ':test'
+    try:
+        docker('build', '-t', image, str(context), timeout=600)
+        docker('run', '-d', '--name', identity, '--network', 'none',
+               '--read-only', '--cap-drop', 'ALL',
+               '--security-opt', 'no-new-privileges:true',
+               '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m',
+               '--entrypoint', 'nginx', image, '-g', 'daemon off;')
+        for _ in range(30):
+            state = json.loads(docker('inspect', identity))[0]
+            if not state['State']['Running']:
+                logs = subprocess.run(['docker', 'logs', identity], text=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                      timeout=30)
+                pytest.fail(logs.stdout)
+            ready = subprocess.run(
+                ['docker', 'exec', identity, 'wget', '--spider', '-q',
+                 'http://127.0.0.1:8080/'], capture_output=True, timeout=10)
+            if ready.returncode == 0:
+                break
+            time.sleep(0.2)
+        else:
+            pytest.fail('nginx did not serve the real extension')
+        assert state['Config']['User'] == '101:101'
+        for asset in assets:
+            body = docker('exec', identity, 'wget', '-qO-',
+                          'http://127.0.0.1:8080' + asset)
+            assert body.strip(), asset
+        if service == 'it-tools':
+            docker('exec', identity, 'wget', '-qO', '/tmp/upstream.tar.gz',
+                   'http://127.0.0.1:8080/source/upstream.tar.gz')
+            digest = docker('exec', identity, 'sha256sum', '/tmp/upstream.tar.gz').split()[0]
+            assert digest == '1829b78fdea40d9a4a9aaf0c6aa7131e33898351e713356af07941959d3407d4'
+        # The fix belongs in the image recipe, not by widening private inputs.
+        assert (context / 'nginx.conf').stat().st_mode & 0o777 == 0o600
+    finally:
+        subprocess.run(['docker', 'rm', '-f', identity], capture_output=True, timeout=30)
+        subprocess.run(['docker', 'image', 'rm', image], capture_output=True, timeout=30)
 
 
 @pytest.mark.skipif(shutil.which('docker') is None, reason='Docker Compose CLI required; no daemon needed')

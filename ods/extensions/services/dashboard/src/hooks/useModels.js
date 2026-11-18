@@ -191,6 +191,20 @@ function normalizeOdsMode(value) {
 
 const START_REFUSALS = new Set(['memory_refused', 'gpu_busy'])
 
+function normalizeActiveRuntime(value) {
+  // Models needs only display identity and context; route custody and provider
+  // capabilities remain validated by the server, outside this display state.
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const { source, model, contextLength } = value
+  if (!['local-switchboard', 'external-host', 'remote-provider'].includes(source)
+    || typeof model !== 'string' || !model.trim() || model.length > 256) return null
+  if (contextLength != null && (!Number.isInteger(contextLength) || contextLength < 1 || contextLength > 10000000)) return null
+  if (source === 'remote-provider' && (!Number.isInteger(contextLength) || contextLength < 4096
+    || !Number.isInteger(value.maxTokens) || value.maxTokens < 1 || value.maxTokens > contextLength
+    || typeof value.reasoning !== 'boolean')) return null
+  return { source, model, contextLength: contextLength ?? null }
+}
+
 function normalizeModelManagement(value) {
   const managed = typeof value?.managed === 'boolean' ? value.managed : null
   const running = managed === true && value.running === true
@@ -208,7 +222,7 @@ function normalizeModelManagement(value) {
   }
 }
 
-function modelActivationModeError(effectiveMode, configuredMode, llmBackend, hostRuntime, management, externalApi = null) {
+function modelActivationModeError(effectiveMode, configuredMode, llmBackend, hostRuntime, management, externalApi = null, activeRuntime = null) {
   if (llmBackend === 'external') {
     const via = externalApi?.host ? ` at ${externalApi.host}` : ''
     return `ODS uses a model API${via}. Models downloaded here stay on this computer but are not used while API mode is on; to run them, rerun the ODS installer and leave API mode.`
@@ -219,6 +233,9 @@ function modelActivationModeError(effectiveMode, configuredMode, llmBackend, hos
     return management?.managed === false
       ? 'The model server on this computer is not managed by this ODS installation. Change the model in that server, or rerun the ODS installer to manage it here.'
       : management?.reason || 'Model management is temporarily unavailable. Refresh the runtime status.'
+  }
+  if (activeRuntime?.source === 'remote-provider') {
+    return 'Switch back to a local model in Model connections to use local model activation controls.'
   }
   if (effectiveMode === 'unknown' || configuredMode === 'unknown') {
     return 'ODS could not verify the active runtime mode. Repair or restart ODS before running a local model.'
@@ -248,27 +265,72 @@ function waitForActivationPoll(delay, signal, wake = null) {
   })
 }
 
-export function useModels({observe=true} = {}) {
-  const [models, setModels] = useState(USE_MOCK_DATA ? getMockModels() : [])
-  const [gpu, setGpu] = useState(USE_MOCK_DATA ? MOCK_GPU : null)
-  const [currentModel, setCurrentModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
-  const [loadedModel, setLoadedModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
-  const [activationReadyModel, setActivationReadyModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
-  const [configuredModel, setConfiguredModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
-  const [modelLifecycle, setModelLifecycle] = useState(null)
-  const [modelActivation, setModelActivation] = useState(null)
-  const [modelRecoveryPending, setModelRecoveryPending] = useState(false)
-  const [odsMode, setOdsMode] = useState(USE_MOCK_DATA ? MOCK_MODES.odsMode : 'unknown')
-  const [configuredMode, setConfiguredMode] = useState(USE_MOCK_DATA ? MOCK_MODES.configuredMode : 'unknown')
-  const [llmBackend, setLlmBackend] = useState(USE_MOCK_DATA ? 'llama-server' : 'unknown')
-  const [hostRuntime, setHostRuntime] = useState(false)
-  const [externalApi, setExternalApi] = useState(null)
-  const [modelManagement, setModelManagement] = useState(() => normalizeModelManagement(null))
+// One /api/models answer as the hook's state.
+function catalogState(data) {
+  return {
+    models: data.models,
+    gpu: data.gpu,
+    currentModel: data.currentModel,
+    loadedModel: data.loadedModel ?? null,
+    activationReadyModel: data.activationReadyModel ?? null,
+    configuredModel: data.configuredModel ?? null,
+    modelLifecycle: normalizeModelLifecycle(data.modelLifecycle),
+    modelActivation: modelActivationStatus(data.modelActivation),
+    modelRecoveryPending: data.modelRecoveryPending === true,
+    odsMode: normalizeOdsMode(data.odsMode),
+    configuredMode: normalizeOdsMode(data.configuredMode ?? data.odsMode),
+    llmBackend: typeof data.llmBackend === 'string' ? data.llmBackend.trim().toLowerCase() : 'unknown',
+    // API mode: the model and host serving chat (never the key).
+    externalApi: String(data.llmBackend || '').trim().toLowerCase() === 'external'
+      ? {
+          model: typeof data.externalModel === 'string' && data.externalModel ? data.externalModel : null,
+          host: typeof data.externalHost === 'string' && data.externalHost ? data.externalHost : null,
+        }
+      : null,
+    hostRuntime: data.hostRuntime === true,
+    activeRuntime: normalizeActiveRuntime(data.activeRuntime),
+    modelManagement: normalizeModelManagement(data.modelManagement),
+    recommendationAlternatives: data.recommendationAlternatives ?? [],
+    hermesMinimumContext: Number(data.hermesMinimumContext || DEFAULT_HERMES_MIN_CONTEXT),
+    pixelMinimumContext: Number(data.pixelMinimumContext || DEFAULT_PIXEL_MIN_CONTEXT),
+  }
+}
+
+// The last catalog this page load read. The catalog can take seconds to
+// answer, so a Models page opened again starts from it instead of an empty
+// skeleton, holding its actions until its own first read lands.
+let lastCatalog = null
+
+export function forgetLastCatalog() {
+  lastCatalog = null
+}
+
+export function useModels({observe=true, reuseLastCatalog=false} = {}) {
+  // Never activation readback: confirmation waits for this mount's own reads.
+  const [seed] = useState(() => (reuseLastCatalog && observe && !USE_MOCK_DATA && lastCatalog
+    ? catalogState(lastCatalog) : null))
+  const [models, setModels] = useState(seed ? seed.models : USE_MOCK_DATA ? getMockModels() : [])
+  const [gpu, setGpu] = useState(seed ? seed.gpu : USE_MOCK_DATA ? MOCK_GPU : null)
+  const [currentModel, setCurrentModel] = useState(seed ? seed.currentModel : USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
+  const [loadedModel, setLoadedModel] = useState(seed ? seed.loadedModel : USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
+  const [activationReadyModel, setActivationReadyModel] = useState(seed ? seed.activationReadyModel : USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
+  const [configuredModel, setConfiguredModel] = useState(seed ? seed.configuredModel : USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
+  const [modelLifecycle, setModelLifecycle] = useState(seed ? seed.modelLifecycle : null)
+  const [modelActivation, setModelActivation] = useState(seed ? seed.modelActivation : null)
+  const [modelRecoveryPending, setModelRecoveryPending] = useState(seed ? seed.modelRecoveryPending : false)
+  const [odsMode, setOdsMode] = useState(seed ? seed.odsMode : USE_MOCK_DATA ? MOCK_MODES.odsMode : 'unknown')
+  const [configuredMode, setConfiguredMode] = useState(seed ? seed.configuredMode : USE_MOCK_DATA ? MOCK_MODES.configuredMode : 'unknown')
+  const [llmBackend, setLlmBackend] = useState(seed ? seed.llmBackend : USE_MOCK_DATA ? 'llama-server' : 'unknown')
+  const [hostRuntime, setHostRuntime] = useState(seed ? seed.hostRuntime : false)
+  const [externalApi, setExternalApi] = useState(seed ? seed.externalApi : null)
+  const [activeRuntime, setActiveRuntime] = useState(seed ? seed.activeRuntime : null)
+  const [modelManagement, setModelManagement] = useState(() => (seed ? seed.modelManagement : normalizeModelManagement(null)))
   const [runtimeActionLoading, setRuntimeActionLoading] = useState(null)
-  const [recommendationAlternatives, setRecommendationAlternatives] = useState([])
-  const [hermesMinimumContext, setHermesMinimumContext] = useState(DEFAULT_HERMES_MIN_CONTEXT)
-  const [pixelMinimumContext, setPixelMinimumContext] = useState(DEFAULT_PIXEL_MIN_CONTEXT)
-  const [loading, setLoading] = useState(USE_MOCK_DATA ? false : true)
+  const [recommendationAlternatives, setRecommendationAlternatives] = useState(seed ? seed.recommendationAlternatives : [])
+  const [hermesMinimumContext, setHermesMinimumContext] = useState(seed ? seed.hermesMinimumContext : DEFAULT_HERMES_MIN_CONTEXT)
+  const [pixelMinimumContext, setPixelMinimumContext] = useState(seed ? seed.pixelMinimumContext : DEFAULT_PIXEL_MIN_CONTEXT)
+  const [loading, setLoading] = useState(USE_MOCK_DATA ? false : !seed)
+  const [catalogConfirmed, setCatalogConfirmed] = useState(!seed)
   const [fetchError, setFetchError] = useState(null)
   const [mutationError, setMutationError] = useState(null)
   const clearMutationError = useCallback(() => setMutationError(null), [])
@@ -353,33 +415,30 @@ export function useModels({observe=true} = {}) {
       if (requestId < latestSettledModelsRequestRef.current) return data
       latestSettledModelsRequestRef.current = requestId
       latestModelsSnapshotRef.current = data
+      lastCatalog = data
 
-      setModels(data.models)
-      setGpu(data.gpu)
-      setCurrentModel(data.currentModel)
-      setLoadedModel(data.loadedModel ?? null)
-      setActivationReadyModel(data.activationReadyModel ?? null)
-      setConfiguredModel(data.configuredModel ?? null)
-      setModelLifecycle(normalizeModelLifecycle(data.modelLifecycle))
-      setModelActivation(modelActivationStatus(data.modelActivation))
-      setModelRecoveryPending(data.modelRecoveryPending === true)
-      const effectiveMode = normalizeOdsMode(data.odsMode)
-      setOdsMode(effectiveMode)
-      setConfiguredMode(normalizeOdsMode(data.configuredMode ?? data.odsMode))
-      setLlmBackend(typeof data.llmBackend === 'string' ? data.llmBackend.trim().toLowerCase() : 'unknown')
-      // API mode: the model and host serving chat (never the key).
-      setExternalApi(String(data.llmBackend || '').trim().toLowerCase() === 'external'
-        ? {
-            model: typeof data.externalModel === 'string' && data.externalModel ? data.externalModel : null,
-            host: typeof data.externalHost === 'string' && data.externalHost ? data.externalHost : null,
-          }
-        : null)
-      setHostRuntime(data.hostRuntime === true)
-      setModelManagement(normalizeModelManagement(data.modelManagement))
-      setRecommendationAlternatives(data.recommendationAlternatives ?? [])
-      setHermesMinimumContext(Number(data.hermesMinimumContext || DEFAULT_HERMES_MIN_CONTEXT))
-      setPixelMinimumContext(Number(data.pixelMinimumContext || DEFAULT_PIXEL_MIN_CONTEXT))
+      const next = catalogState(data)
+      setModels(next.models)
+      setGpu(next.gpu)
+      setCurrentModel(next.currentModel)
+      setLoadedModel(next.loadedModel)
+      setActivationReadyModel(next.activationReadyModel)
+      setConfiguredModel(next.configuredModel)
+      setModelLifecycle(next.modelLifecycle)
+      setModelActivation(next.modelActivation)
+      setModelRecoveryPending(next.modelRecoveryPending)
+      setOdsMode(next.odsMode)
+      setConfiguredMode(next.configuredMode)
+      setLlmBackend(next.llmBackend)
+      setExternalApi(next.externalApi)
+      setHostRuntime(next.hostRuntime)
+      setActiveRuntime(next.activeRuntime)
+      setModelManagement(next.modelManagement)
+      setRecommendationAlternatives(next.recommendationAlternatives)
+      setHermesMinimumContext(next.hermesMinimumContext)
+      setPixelMinimumContext(next.pixelMinimumContext)
       setFetchError(null)
+      setCatalogConfirmed(true)
       reconcilePendingActions(data.models)
       return data
     } catch (err) {
@@ -390,6 +449,7 @@ export function useModels({observe=true} = {}) {
           ? 'Could not refresh model status within 30 seconds. ODS may still be working; wait for status confirmation before retrying a model change.'
           : err.message)
         setModelActivation(null)
+        setActiveRuntime(null)
         setModelManagement(normalizeModelManagement(null))
       }
       // No silent fallback - let error propagate to UI
@@ -457,7 +517,7 @@ export function useModels({observe=true} = {}) {
   }
 
   const loadModel = async (modelId, options = {}) => {
-    const modeError = modelActivationModeError(odsMode, configuredMode, llmBackend, hostRuntime, modelManagement, externalApi)
+    const modeError = modelActivationModeError(odsMode, configuredMode, llmBackend, hostRuntime, modelManagement, externalApi, activeRuntime)
     if (modeError) {
       setMutationError(modeError)
       return
@@ -532,6 +592,10 @@ export function useModels({observe=true} = {}) {
 
         const body = await responseJson(response)
         if (response.status === 409) {
+          if (body?.detail?.code === 'runtime_architecture_unsupported') {
+            activationError = errorMessageFromPayload(body, 'This runtime does not support the model architecture.')
+            return
+          }
           if (body?.detail?.code === 'pixel_chat_active') {
             activationError = errorMessageFromPayload(
               body,
@@ -701,7 +765,7 @@ export function useModels({observe=true} = {}) {
     ].filter(Boolean)),
   ]
   const error = mutationError || fetchError
-  const activationModeError = modelActivationModeError(odsMode, configuredMode, llmBackend, hostRuntime, modelManagement, externalApi)
+  const activationModeError = modelActivationModeError(odsMode, configuredMode, llmBackend, hostRuntime, modelManagement, externalApi, activeRuntime)
 
   return {
     models,
@@ -718,6 +782,7 @@ export function useModels({observe=true} = {}) {
     llmBackend,
     hostRuntime,
     externalApi,
+    activeRuntime,
     modelManagement,
     runtimeActionLoading,
     stopRuntime: () => changeRuntime('stop'),
@@ -729,6 +794,7 @@ export function useModels({observe=true} = {}) {
     hermesMinimumContext,
     pixelMinimumContext,
     loading,
+    catalogConfirmed,
     error,
     actionLoading,
     actionLoadingModels,

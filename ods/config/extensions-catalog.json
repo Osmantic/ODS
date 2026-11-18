@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-06T14:59:46Z",
+  "generated_at": "2026-10-27T08:46:30Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1247,7 +1247,7 @@
     {
       "id": "comfyui",
       "name": "ComfyUI (Image Generation)",
-      "description": "Generate images with FLUX.1 via ComfyUI",
+      "description": "Generate images with SDXL Lightning via ComfyUI",
       "category": "optional",
       "gpu_backends": [
         "amd",
@@ -1264,19 +1264,19 @@
         {
           "id": "images",
           "name": "Image Generation",
-          "description": "Generate images with FLUX.1 via ComfyUI",
+          "description": "Generate images with SDXL Lightning via ComfyUI",
           "icon": "Image",
           "category": "creative",
           "requirements": {
             "services": [
               "comfyui"
             ],
-            "vram_gb": 0
+            "vram_gb": 8
           },
           "enabled_services_all": [
             "comfyui"
           ],
-          "setup_time": "Ready",
+          "setup_time": "Image build or download and a 6.9 GB model; see README",
           "priority": 5,
           "launch": {
             "type": "service",
@@ -2544,6 +2544,11 @@
           }
         }
       ],
+      "host_requirements": {
+        "architectures": [
+          "amd64"
+        ]
+      },
       "startup_check": true,
       "startup_timeout": 600,
       "catalog_source": "builtin",
@@ -5000,7 +5005,29 @@
       "port": 7860,
       "external_port_default": 7802,
       "health_endpoint": "/health",
-      "env_vars": [],
+      "env_vars": [
+        {
+          "key": "LANGFLOW_SUPERUSER_PASSWORD",
+          "required": true,
+          "description": "Password for the Langflow superuser; flows can run arbitrary Python.",
+          "min_length": 8,
+          "max_length": 128,
+          "generate": "password"
+        },
+        {
+          "key": "LANGFLOW_SECRET_KEY",
+          "required": true,
+          "description": "Stable key Langflow uses to encrypt stored credentials and sign sessions.",
+          "generate": "hex64",
+          "min_length": 32
+        },
+        {
+          "key": "LANGFLOW_SUPERUSER",
+          "required": false,
+          "default": "admin",
+          "description": "Langflow superuser username."
+        }
+      ],
       "tags": [
         "visual",
         "workflow",
@@ -8865,6 +8892,9 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "host_requirements": {
+        "max_page_size": 4096
+      },
       "ui_path": "/dashboard",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"

@@ -225,21 +225,27 @@ class Stores:
             raise ValueError("private-store-docker-" + args[0])
         return result.stdout.decode()
 
-    def consumers(self, *, stopped=False):
+    def consumers(self, *, stopped=False, stop=False):
         identities = set()
         for name in self.volumes.values():
             identities.update(self.docker("ps", "-a", "-q", "--no-trunc", "--filter", "volume=" + name).split())
         identities.update(self.docker("ps", "-a", "-q", "--no-trunc", "--filter",
                                      "label=" + PROJECT + "=" + self.project,
                                      "--filter", "label=" + SERVICE + "=dashboard-api").split())
+        inspected = []
         for identity in identities:
             row = json.loads(self.docker("inspect", identity))[0]
             labels = row.get("Config", {}).get("Labels") or {}
             if (labels.get(PROJECT) != self.project or labels.get(SERVICE) != "dashboard-api"
                     or labels.get("com.docker.compose.project.working_dir") != str(self.root)):
                 raise ValueError("private-store-foreign-consumer")
-            if stopped and (row.get("State", {}).get("Running") or row.get("State", {}).get("Restarting")):
-                raise ValueError("Private dashboard migration/restore needs stopped writers. Run ods stop, then ods start for migration; retry restore after stopping.")
+            inspected.append((identity, row))
+        for identity, row in inspected:
+            if row.get("State", {}).get("Running") or row.get("State", {}).get("Restarting"):
+                if stop:
+                    self.docker("stop", identity)
+                elif stopped:
+                    raise ValueError("Private dashboard migration/restore needs stopped writers. Run ods stop, then ods start for migration; retry restore after stopping.")
 
     def record(self, directory, kind):
         path = directory / (kind + ".json")
@@ -283,7 +289,7 @@ class Stores:
         if result.returncode:
             raise ValueError("private-store-transfer-" + action + "; staging retained, retry the same operation after checking stopped writers")
 
-    def prepare(self, directory):
+    def prepare(self, directory, *, stop=False):
         if (directory / "image-restore-active.json").exists():
             raise ValueError("private-store-restore-unfinished; finish or roll back the retained image restore before starting")
         self.consumers()
@@ -295,6 +301,8 @@ class Stores:
                     raise ValueError("private-store-completed-volume-missing; restore from backup, not stale legacy data")
                 self.transfer(kind, "check", record["token"])
                 continue
+            if stop:
+                self.consumers(stop=True)
             self.consumers(stopped=True)
             source = self.root / "data" / kind
             if record and record.get("initialized") and volume is not None:
@@ -437,7 +445,7 @@ def main():
                         frozen=frozen, service=args.service if args.action == "launch" else None, native=native)
         if args.action in {"prepare", "launch"}:
             if stores.requires_stores:
-                stores.prepare(directory)
+                stores.prepare(directory, stop=args.action == "launch")
             if args.action == "launch":
                 options = {"start": [], "update": ["--force-recreate"],
                            "restart": ["--force-recreate", "--no-build", "--pull", "never"],

@@ -8,6 +8,11 @@ to pinned unsloth revisions after ggml-org deleted their Q4_K_M files upstream.
 The same day, every other direct catalog URL that requested `main` was pinned
 to the revision listed here after its LFS sha256 at that revision matched the
 catalog `gguf_sha256`; the terms metadata in those rows is unchanged.
+The `qwen3.8-flash-next-nvfp4-vllm` and `glm-5.3-flash-nvfp4-vllm` rows were
+added on 2026-10-27 with their catalog entries, for 60 records. They are vLLM
+snapshots, not GGUFs: the catalog pins the whole repository revision and every
+file's digest. The Qwen model card names the NVIDIA Open Model License for the
+checkpoint and the Qwen Community License 1.0 for the base model.
 
 This is a documentation inventory of upstream repository metadata, not a license
 grant, legal-compatibility decision, or completed per-artifact clearance. A
@@ -15,9 +20,9 @@ quantizer's model-card tag can be incomplete or wrong and does not override the
 original model license. Each source link identifies the revision requested by
 the catalog; mutable refs need a separate immutable artifact receipt.
 
-Two catalog entries have a top-level `license`, none has a top-level
-`license_url`, and one additional entry has nested `source_evidence` license
-information. This page does not change that runtime schema or enforce acceptance.
+Four catalog entries have a top-level `license` (one of them also a
+`license_name`), none has a top-level `license_url`, and one additional entry
+has nested `source_evidence` license information. This page does not change that runtime schema or enforce acceptance.
 The separate Hugging Face browser does display upstream license metadata; that
 does not close the curated catalog's provenance and acceptance gaps.
 
@@ -86,6 +91,8 @@ A missing or `other` tag requires review, not an assumption of Apache-2.0.
 | `qwen3-coder-next-q4` | [unsloth/Qwen3-Coder-Next-GGUF @ ce09c67b53bc](https://huggingface.co/api/models/unsloth/Qwen3-Coder-Next-GGUF/revision/ce09c67b53bc8739eef83fe67b2f5d293c270632) (requested `ce09c67b53bc`) | apache-2.0 | ["Qwen/Qwen3-Coder-Next"] |
 | `llama4-scout-q4` | No direct GGUF source | No direct Hugging Face GGUF source in this record | Not declared |
 | `qwen3.5-122b-a10b-q4` | No direct GGUF source | No direct Hugging Face GGUF source in this record | Not declared |
+| `qwen3.8-flash-next-nvfp4-vllm` | [nvidia/Qwen3.8-Flash-Next-NVFP4 @ fc694b54fb01](https://huggingface.co/api/models/nvidia/Qwen3.8-Flash-Next-NVFP4/revision/fc694b54fb0174e0913e6adf86691ef85a4ead47) (requested `fc694b54fb01`; vLLM snapshot) | other (`nvidia-open-model-license`) | ["Qwen/Qwen3.8-Flash-Next"] |
+| `glm-5.3-flash-nvfp4-vllm` | [nvidia/GLM-5.3-Flash-NVFP4 @ da920bb0b9f4](https://huggingface.co/api/models/nvidia/GLM-5.3-Flash-NVFP4/revision/da920bb0b9f4a06727223a349e55468e38352348) (requested `da920bb0b9f4`; vLLM snapshot) | mit | ["zai-org/GLM-5.3-Flash"] |
 
 ## Maintenance
 

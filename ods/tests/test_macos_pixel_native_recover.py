@@ -167,6 +167,85 @@ def retained(tmp_path, monkeypatch):
     return preparation, receipt, activation
 
 
+@pytest.mark.parametrize('fault', [None, 'root-error', 'wrong-proof', 'health', 'changed-receipt'])
+def test_explicit_protected_completion_keeps_original_receipts_until_final_proof(retained, fault):
+    import fcntl
+    preparation, receipt, activation = retained
+    activation.update(status='activating', phase='protected-activation')
+    activation.pop('requiresRecovery')
+    (preparation / 'activation.json').write_text(json.dumps(activation))
+    originals = {name: (preparation / name).read_bytes() for name in ('preparation.json', 'activation.json')}
+    events = []
+    expected = {'status': 'active', 'runtimeDigest': 'a' * 64, 'serviceDigest': 'b' * 64}
+
+    def complete():
+        events.append('complete')
+        with (preparation / '.selection.lock').open('rb') as lock:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if fault == 'root-error':
+            raise ValueError('native-initial-recovery-proof-failed')
+        if fault == 'changed-receipt':
+            (preparation / 'activation.json').write_text(json.dumps(dict(activation, phase='changed')))
+        return dict(expected, runtimeDigest='d' * 64) if fault == 'wrong-proof' else expected
+
+    def verify():
+        assert events and events[0] == 'complete'
+        events.append('verify')
+        return expected
+
+    def health(run):
+        events.append('health')
+        if fault == 'health':
+            raise ValueError('fixture-health')
+
+    def finish():
+        return module.finish(preparation=preparation, receipt=receipt,
+            run=lambda *args, **kwargs: SimpleNamespace(returncode=0), verify=verify,
+            compose=SimpleNamespace(wait_ready=health), selected_services={'dashboard-api': {}},
+            complete_protected=complete)
+
+    if fault:
+        with pytest.raises(ValueError):
+            finish()
+        assert not (preparation / 'selection-update.json').exists()
+    else:
+        destination = finish()
+        assert json.loads(destination.read_text())['activation']['status'] == 'ready'
+        assert events[0:2] == ['complete', 'verify']
+        assert events[-1] == 'verify'
+    if fault != 'changed-receipt':
+        assert originals == {name: (preparation / name).read_bytes() for name in originals}
+
+
+def test_protected_selection_requires_explicit_completion(retained):
+    _, receipt, activation = retained
+    activation.update(status='activating', phase='protected-activation')
+    with pytest.raises(ValueError, match='retained-final-health-failure-required'):
+        module.selection(receipt, activation)
+    assert module.selection(receipt, activation, interrupted=True)['activation']['status'] == 'ready'
+    activation['phase'] = 'infrastructure'
+    with pytest.raises(ValueError, match='retained-protected-activation-required'):
+        module.selection(receipt, activation, interrupted=True)
+
+
+def test_cli_forwards_explicit_protected_completion(monkeypatch, capsys):
+    seen = []
+    monkeypatch.setattr(module.sys, 'argv', ['recover', '--install-dir', '/ods', '--complete-protected'])
+    monkeypatch.setattr(module, 'recover', lambda *args, **kwargs: seen.append(kwargs) or '/selection')
+    assert module.main() == 0
+    assert seen == [{'complete_protected': True}]
+    assert json.loads(capsys.readouterr().out)['installerComplete'] is False
+
+
+def test_readonly_continuation_cannot_complete_protected_activation(monkeypatch):
+    monkeypatch.setattr(module.sys, 'argv', ['recover', '--install-dir', '/ods',
+        '--complete-protected', '--inspect-continuation'])
+    with pytest.raises(SystemExit) as error:
+        module.main()
+    assert error.value.code == 2
+
+
 @pytest.mark.parametrize('fault', [None, 'proof', 'reproof', 'health', 'client', 'route',
     'changed', 'foreign-selection', 'legacy-host', 'lock-link', 'ingress-refresh'])
 def test_recovery_preserves_failed_attempt_and_never_reactivates(retained, monkeypatch, tmp_path, fault):

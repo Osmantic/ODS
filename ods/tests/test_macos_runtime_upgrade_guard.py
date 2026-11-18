@@ -14,7 +14,7 @@ def adapter(tmp_path, monkeypatch):
     value.state = tmp_path
     held = []
     @contextmanager
-    def locked(self):
+    def locked(self, *, wait_seconds=0):
         held.append(True)
         try: yield
         finally: held.pop()

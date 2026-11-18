@@ -11,6 +11,7 @@
 #           HOST_ARCH, HOST_PAGE_SIZE,
 #           GPU_TOPOLOGY_JSON, LLM_MODEL_SIZE_MB, SCRIPT_DIR, VERBOSE, DEBUG,
 #           GPU_INDICES, GPU_UUIDS (arrays from topology),
+#           LLM_BACKEND and VLLM_GPU_UUID (phase 02; vllm pins the LLM GPU),
 #           show_phase(), show_install_menu(), chapter(), bootline(),
 #           success(), log(), warn(), error(), signal()
 # Provides: ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_EMBEDDINGS,
@@ -194,8 +195,8 @@ fi
 #                            ODS Talk stays unavailable until a smaller model
 #                            is chosen (the Dashboard shows the same reason).
 # A context above the model's native maximum never "fits" (llama.cpp caps the
-# slot there). Without the selector (no Python) the raise is applied
-# unverified, as before.
+# slot there). Without the selector, only this run's own fresh pick may
+# use the legacy unverified raise; a retained model keeps its context.
 #
 # "This run's own pick": phase 02 records its fresh recommendation in
 # INSTALLER_RECOMMENDED_*; a rerun may then keep an older active model
@@ -218,15 +219,22 @@ if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]];
             . "$SCRIPT_DIR/installers/lib/model-selector.sh"
         fi
         _hermes_floor_action="raise-unverified"
+        # The catalog has no fit record for community imports. A missing or
+        # failed fit check must not inflate a retained model's proven context.
+        if ! _ods_model_is_current_pick; then
+            _hermes_floor_action="cap"
+        fi
         _hermes_python=""
         if declare -F ods_catalog_fit_check >/dev/null 2>&1 \
             && [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" ]] \
             && [[ -f "$SCRIPT_DIR/scripts/select-model.py" && -f "$SCRIPT_DIR/config/model-library.json" ]]; then
             _hermes_python="$(ods_model_selector_python)"
         fi
-        if ods_native_llm_requested; then
+        if ods_native_llm_requested || [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
             # llama-server on the Windows host loaded this model at this
-            # context; this run can neither pick another model nor resize it.
+            # context, and a vLLM model serves the context its --max-model-len
+            # (VLLM_ARGS) fixes; this run can neither pick another model nor
+            # resize it (the llama.cpp fit check does not apply).
             _hermes_floor_action="cap"
             _hermes_python=""
         fi
@@ -244,8 +252,9 @@ if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]];
                         _hermes_floor_action="cap"
                     fi
                     ;;
-                # Not a catalog model (an import) or the selector failed.
-                *) _hermes_floor_action="raise-unverified" ;;
+                # Keep the default: only a fresh installer pick can use the
+                # unverified fallback. Imports and other retained picks cap.
+                *) : ;;
             esac
         fi
         if [[ "$_hermes_floor_action" == "reselect" ]]; then
@@ -265,6 +274,7 @@ if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]];
                 unset LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V
                 unset LLAMA_ARG_N_CPU_MOE LLAMA_ARG_NO_CACHE_PROMPT LLAMA_ARG_CHECKPOINT_EVERY_NT
                 unset LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_RAM
+                unset LLAMA_ARG_UBATCH LLAMA_ARG_FIT_TARGET
                 unset LLAMA_ARG_MMPROJ MODEL_CHAT_TEMPLATE_OVERRIDE LLAMA_ARG_CHAT_TEMPLATE_FILE
                 load_model_selector_env_from_output <<< "$_hermes_env"
                 ai_warn "Hermes needs 64K context: ${_hermes_previous_model} (at ${_hermes_previous_context}) cannot serve 64K here, so ${LLM_MODEL} was selected at ${MAX_CONTEXT}."
@@ -291,10 +301,10 @@ if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]];
                 ;;
             cap)
                 HERMES_CONTEXT_BELOW_FLOOR=true
-                ai_warn "Hermes needs at least 64K context, but ${LLM_MODEL:-this model} runs at ${MAX_CONTEXT} here (64K does not fit or exceeds its native context)."
+                ai_warn "Hermes needs at least 64K context, but ${LLM_MODEL:-this model} keeps its ${MAX_CONTEXT} context (a safe 64K runtime was not established)."
                 ai_warn "ODS Talk stays unavailable (the Dashboard says why) until you choose a model that fits 64K in Models."
-                log "Hermes floor: kept ${LLM_MODEL:-model} at ${MAX_CONTEXT}; it cannot serve 64K here and it is not replaced (not this run's pick, or no installable model fits at 64K)"
-                MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON:-} Hermes requires 64K context, which does not fit here; ODS Talk is unavailable with this model."
+                log "Hermes floor: kept ${LLM_MODEL:-model} at ${MAX_CONTEXT}; no safe 64K runtime was established and the retained model was not replaced."
+                MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON:-} Hermes requires 64K context, but a safe 64K runtime was not established; ODS Talk is unavailable with this model."
                 ;;
         esac
         unset _hermes_floor_action _hermes_python _hermes_fit_status
@@ -487,11 +497,8 @@ if ! $DRY_RUN; then
                 ENABLE_QDRANT=false
             fi
         fi
-
-        if [[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]]; then
-            ai_warn "Embeddings (TEI): upstream image is amd64-only - disabled on aarch64."
-            ENABLE_EMBEDDINGS=false
-        fi
+        # Embeddings (TEI) runs here from its arm64 pin in
+        # extensions/services/embeddings/compose.arm64.yaml.
     fi
     unset _host_arch _host_page_size
 
@@ -501,6 +508,9 @@ if ! $DRY_RUN; then
     _pixel_support_services="${ENABLE_RECOMMENDED:-false}"
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && _pixel_support_services=true
     [[ -n "${EXTERNAL_LLM_URL:-}" ]] && _pixel_support_services=true
+    # Services reach the vLLM engine through LiteLLM and model-router, as on
+    # the host-native route (phase 06 sets LLM_API_URL to the gateway).
+    [[ "${LLM_BACKEND:-}" == "vllm" ]] && _pixel_support_services=true
     # With the default ODS_MODEL_SWITCHBOARD=enabled, phase 06 routes Open WebUI
     # through the gateway (OPEN_WEBUI_LLM_BASE_URL=http://litellm:4000), so it
     # must run even when recommended services are off. Resolve the mode as
@@ -640,6 +650,11 @@ fi
 if [[ "$GPU_COUNT" -le 1 ]]; then
     if [[ "${GPU_BACKEND:-}" == "nvidia" ]]; then
         _single_gpu_uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader,nounits 2>/dev/null | sed -n '1p' || true)
+        # The vLLM engine owns the GPU its selector sized the model for.
+        if [[ "${LLM_BACKEND:-}" == "vllm" && "$_single_gpu_uuid" != "${VLLM_GPU_UUID:-}" ]]; then
+            error "The vLLM engine was planned for GPU ${VLLM_GPU_UUID:-unknown}, but nvidia-smi lists ${_single_gpu_uuid:-no GPU}. Rerun the installer; if it happens again, rerun with --llm-backend llama-server. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+            return 1
+        fi
         if [[ -n "$_single_gpu_uuid" ]]; then
             GPU_ASSIGNMENT_JSON=$(jq -n \
                 --arg uuid "$_single_gpu_uuid" \
@@ -721,8 +736,13 @@ run_automatic() {
   echo ""
 
   local result
+  # The vLLM engine owns exactly the GPU its selector sized the model for
+  # (VLLM_GPU_UUID): a model that fits one GPU is never split across GPUs,
+  # and the other services take the remaining GPUs.
+  local -a pin_args=()
+  [[ "${LLM_BACKEND:-}" != "vllm" ]] || pin_args=(--pin-llm-gpu "$VLLM_GPU_UUID")
   result=$(python3 "$ASSIGN_GPUS_SCRIPT" \
-    --topology "$TOPOLOGY_FILE" --model-size "$LLM_MODEL_SIZE_MB" 2>&1) || {
+    --topology "$TOPOLOGY_FILE" --model-size "$LLM_MODEL_SIZE_MB" ${pin_args[@]+"${pin_args[@]}"} 2>&1) || {
     echo -e "  ${RED}Assignment failed:${NC}\n  $result"
     error "GPU assignment failed: $result"
   }
@@ -932,8 +952,20 @@ _load_existing_gpu_assignment_json() {
 # --- Multi-GPU Config TUI ---
 GPU_ASSIGNMENT_JSON=""
 
+if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+    # The vLLM engine's GPU is fixed, so there is nothing to choose. A saved
+    # assignment is reused only when it gives the LLM exactly that GPU.
+    if _existing_assignment=$(_load_existing_gpu_assignment_json) \
+        && jq -e --arg uuid "$VLLM_GPU_UUID" '.gpu_assignment.services.llama_server.gpus == [$uuid]' \
+            <<< "$_existing_assignment" >/dev/null; then
+        GPU_ASSIGNMENT_JSON="$_existing_assignment"
+        success "Reusing existing GPU assignment from .env"
+    else
+        log "vLLM runs on GPU ${VLLM_GPU_UUID}; the other services take the remaining GPUs."
+        run_automatic
+    fi
 # If it is not an interactive session, run automatic assignment with default values
-if ! $INTERACTIVE || $DRY_RUN; then
+elif ! $INTERACTIVE || $DRY_RUN; then
     if _existing_assignment=$(_load_existing_gpu_assignment_json); then
         GPU_ASSIGNMENT_JSON="$_existing_assignment"
         success "Reusing existing GPU assignment from .env"
@@ -970,6 +1002,13 @@ if [[ "$VENDOR" == "nvidia" ]]; then
     LLAMA_SERVER_GPU_UUIDS=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.llama_server.gpus // [] | join(",")')
     if [[ -z "$LLAMA_SERVER_GPU_UUIDS" ]]; then
         error "GPU assignment did not select any NVIDIA device for llama-server"
+    fi
+    # On the vLLM route the LLM role is the vLLM engine's one GPU. The
+    # multi-GPU overlay still needs LLAMA_SERVER_GPU_UUIDS for the profiled-out
+    # llama-server (Compose interpolates disabled services), so it names the
+    # same GPU.
+    if [[ "${LLM_BACKEND:-}" == "vllm" && "$LLAMA_SERVER_GPU_UUIDS" != "${VLLM_GPU_UUID:-}" ]]; then
+        error "GPU assignment gave the LLM ${LLAMA_SERVER_GPU_UUIDS}, but the vLLM engine owns GPU ${VLLM_GPU_UUID:-unknown}"
     fi
     WHISPER_GPU_UUID=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.whisper.gpus[0]?')
     COMFYUI_GPU_UUID=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.comfyui.gpus[0]?')

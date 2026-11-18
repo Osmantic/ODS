@@ -157,6 +157,57 @@ def test_shared_resolver_restores_native_selection_without_cache(tmp_path, mode)
         assert not (tmp_path / '.compose-flags').exists()
 
 
+@pytest.mark.parametrize('prior', ['none', 'matching', 'foreign', 'wrong-phase'])
+def test_compose_flags_require_explicit_protected_recovery_through_real_resolver(tmp_path, prior):
+    directory = installation(tmp_path)
+    directory.chmod(0o700)
+    prepared = json.loads((directory / 'preparation.json').read_text())
+    prepared.update(schemaVersion=1, requiresActivation=True, pixelSourceRef='c' * 40)
+    activation = dict(schemaVersion=1, status='activating', phase='protected-activation',
+        runtimeDigest=prepared['runtimeDigest'], serviceDigest=prepared['serviceDigest'])
+    if prior == 'wrong-phase':
+        activation['phase'] = 'infrastructure'
+    for name, value in [('preparation.json', prepared), ('activation.json', activation)]:
+        (directory / name).write_text(json.dumps(value))
+    originals = {name: (directory / name).read_bytes() for name in ('preparation.json', 'activation.json')}
+    updated = directory / module.UPDATE_SELECTION
+    update_before = None
+    if prior in ('matching', 'foreign'):
+        value = {'schemaVersion': 1, 'preparation': prepared, 'activation': dict(
+            activation, status='ready', phase='services-ready', requiresRecovery=False)}
+        if prior == 'foreign':
+            value['activation']['runtimeDigest'] = 'd' * 64
+        updated.write_text(json.dumps(value))
+        updated.chmod(0o600)
+        update_before = updated.read_bytes()
+    (tmp_path / 'docker-compose.base.yml').write_text('services: {}\n')
+    (tmp_path / '.env').write_text('GPU_BACKEND=apple\nTIER=1\nODS_MODE=local\nENABLE_OPEN_WEBUI=true\n')
+    (tmp_path / '.env').chmod(0o600)
+    spec = importlib.util.spec_from_file_location('finalize_protected_recovery',
+        ROOT / 'installers/macos/lib/pixel-native-finalize.py')
+    finalize = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(finalize)
+    environment = {**os.environ, 'PATH': str(Path(sys.executable).parent) + ':' + os.environ['PATH']}
+    with pytest.raises(ValueError, match='requires-explicit-recovery'):
+        finalize.compose_flags(tmp_path, environment, complete_protected=True)
+    with pytest.raises(subprocess.CalledProcessError):
+        finalize.compose_flags(tmp_path, environment, recovery=True)
+    if prior in ('foreign', 'wrong-phase'):
+        with pytest.raises(subprocess.CalledProcessError):
+            finalize.compose_flags(tmp_path, environment, recovery=True, complete_protected=True)
+        assert originals == {name: (directory / name).read_bytes() for name in originals}
+        assert (updated.read_bytes() if updated.exists() else None) == update_before
+        return
+    try:
+        flags = finalize.compose_flags(tmp_path, environment, recovery=True, complete_protected=True)
+    except subprocess.CalledProcessError as error:
+        pytest.fail(error.stderr)
+    assert flags[1::2][-len(module.installer.FRAGMENTS):] == list(module.installer.FRAGMENTS)
+    assert originals == {name: (directory / name).read_bytes() for name in originals}
+    assert (updated.read_bytes() if updated.exists() else None) == update_before
+    assert not (tmp_path / '.compose-flags').exists()
+
+
 @pytest.mark.parametrize('fault', ['none', 'missing-image', 'invalid-image', 'missing-service', 'config-error'])
 def test_cli_update_does_not_pull_a_local_ingress_image_id(tmp_path, fault):
     installation(tmp_path)

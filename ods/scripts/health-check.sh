@@ -43,13 +43,15 @@ if [[ -f "$SCRIPT_DIR/lib/service-registry.sh" ]]; then
 fi
 INSTALL_DIR="${INSTALL_DIR:-$HOME/ods}"
 LLM_HOST="${LLM_HOST:-localhost}"
-LLM_PORT="${LLM_PORT:-8080}"
 TIMEOUT="${TIMEOUT:-5}"
 
 # Safe .env loading for port overrides (no eval; use lib/safe-env.sh)
 [[ -f "$SCRIPT_DIR/lib/safe-env.sh" ]] && . "$SCRIPT_DIR/lib/safe-env.sh"
 load_env_file "${INSTALL_DIR}/.env"
 sr_resolve_ports
+# 8080 is llama-server's container port; compose publishes it on the host as
+# OLLAMA_PORT (default 11434), which sr_resolve_ports has just applied.
+LLM_PORT="${LLM_PORT:-${SERVICE_PORTS[llama-server]:-11434}}"
 
 # Colors (disabled for JSON/quiet)
 if $JSON_OUTPUT || $QUIET; then
@@ -171,6 +173,17 @@ test_service() {
     local port="$default_port"
     [[ -n "$port_env" ]] && port="${!port_env:-$default_port}"
 
+    if [[ "${SERVICE_HEALTH_SOURCES[$sid]:-http}" == "container" ]]; then
+        # A stopped container can retain its last healthy result. Require
+        # both current state and health; missing Docker/containers fail too.
+        local inspection state container_health
+        inspection=$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+            "${SERVICE_CONTAINERS[$sid]}" 2>/dev/null) || return 1
+        read -r state container_health <<< "$inspection"
+        [[ "$state" == "running" && "$container_health" == "healthy" ]]
+        return
+    fi
+
     [[ -z "$health" || "$port" == "0" ]] && return 1
 
     # Check container state first (if docker available)
@@ -282,6 +295,50 @@ check_service_async() {
     fi
 }
 
+# Read selected fragments without changing the installation. Disabled-named
+# fragments may be selected by native Pixel, even if their container is gone.
+declare -a SELECTED_FRAGMENTS=()
+resolve_health_selection() {
+    local selection fragments fragment
+    selection=$(bash "$SCRIPT_DIR/scripts/resolve-compose-stack.sh" \
+        --script-dir "$INSTALL_DIR" --tier "${TIER:-1}" \
+        --gpu-backend "${GPU_BACKEND:-nvidia}" --gpu-count "${GPU_COUNT:-1}" \
+        --ods-mode "${ODS_MODE:-local}" --selection-json) || return 1
+    fragments=$(printf '%s' "$selection" | python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+items = value.get("fragments") if isinstance(value, dict) else None
+if not isinstance(items, list) or not items or any(
+    not isinstance(item, str) or not item or "\n" in item or "\r" in item
+    for item in items
+):
+    raise SystemExit("Invalid selected Compose fragments")
+print("\n".join(items))
+') || return 1
+    while IFS= read -r fragment; do
+        [[ "$fragment" == /* ]] || fragment="$INSTALL_DIR/$fragment"
+        SELECTED_FRAGMENTS+=("$fragment")
+    done <<< "$fragments"
+}
+
+# This script probes host HTTP and declared container healthchecks, not the
+# socket-only/native agent surfaces. A missing selected service still fails.
+core_service_not_probed() {
+    local sid="$1" service_dir="$INSTALL_DIR/extensions/services/$1" fragment
+    [[ "$sid" == "open-webui" && "${ENABLE_OPEN_WEBUI:-true}" == "false" ]] && return 0
+    if [[ "${SERVICE_PORTS[$sid]}" == "0" && "${SERVICE_HEALTH_SOURCES[$sid]:-http}" != "container" ]]; then
+        return 0
+    fi
+    [[ -f "$service_dir/compose.yaml.disabled" && ! -f "$service_dir/compose.yaml" ]] || return 1
+    # Unknown selection is not permission to skip a potentially active core
+    # service. The caller also records the selection error as critical.
+    $HEALTH_SELECTION_OK || return 1
+    for fragment in "${SELECTED_FRAGMENTS[@]}"; do
+        [[ "$fragment" -ef "$service_dir/compose.yaml.disabled" ]] && return 1
+    done
+    return 0
+}
+
 # ── Run tests ───────────────────────────────────────────────────────────────
 
 # Create temp dir for parallel results
@@ -294,6 +351,16 @@ log "${CYAN}━━━━━━━━━━━━━━━━━━━━━━�
 log ""
 
 log "${CYAN}Core Services:${NC}"
+
+HEALTH_SELECTION_OK=false
+if resolve_health_selection; then
+    HEALTH_SELECTION_OK=true
+else
+    result_set "stack_selection" "fail"
+    CRITICAL_FAIL=true
+    ANY_FAIL=true
+    log "  ${RED}✗${NC} Could not determine the selected stack; repair the installation before trusting its health."
+fi
 
 # llama-server (critical — does inference test, not just health)
 if test_llm 2>/dev/null; then
@@ -308,6 +375,7 @@ declare -a CORE_SIDS=()
 for sid in "${SERVICE_IDS[@]}"; do
     [[ "$sid" == "llama-server" ]] && continue
     [[ "${SERVICE_CATEGORIES[$sid]}" != "core" ]] && continue
+    core_service_not_probed "$sid" && continue
     result_file="$TEMP_DIR/core_$sid"
     check_service_async "$sid" "$result_file" &
     CORE_PIDS+=($!)

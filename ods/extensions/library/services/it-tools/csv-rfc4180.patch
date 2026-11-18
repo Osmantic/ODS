@@ -1,0 +1,37 @@
+--- a/src/tools/json-to-csv/json-to-csv.service.ts
++++ b/src/tools/json-to-csv/json-to-csv.service.ts
+@@ -14,13 +14,13 @@
+   }
+ 
+   if (value === undefined) {
+-    return '';
++    return '""';
+   }
+ 
+-  const valueAsString = String(value).replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/"/g, '\\"');
++  const valueAsString = String(value);
+ 
+-  if (valueAsString.includes(',')) {
+-    return `"${valueAsString}"`;
++  if (valueAsString === '' || /[",\r\n]/.test(valueAsString)) {
++    return `"${valueAsString.replace(/"/g, '""')}"`;
+   }
+ 
+   return valueAsString;
+@@ -31,5 +31,5 @@
+ 
+   const rows = array.map(item => headers.map(header => serializeValue(item[header])));
+ 
+-  return [headers.join(','), ...rows].join('\n');
++  return [headers.map(serializeValue).join(','), ...rows].join('\n');
+ }
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "it-tools",
+-  "version": "2024.5.13-a0bc346",
++  "version": "2024.10.22-7ca5933",
+   "packageManager": "pnpm@8.15.3",
+   "description": "Collection of handy online tools for developers, with great UX. ",
+   "author": "Corentin Th <corentin.thomasset74+it-tools@gmail.com> (https://corentin.tech)",

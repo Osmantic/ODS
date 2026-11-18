@@ -534,7 +534,7 @@ else
         command -v git &> /dev/null || error "Please install git: https://git-scm.com"
     else
         if command -v apt-get &> /dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq git
+            sudo apt-get update -qq </dev/null && sudo apt-get install -y -qq git </dev/null
         elif command -v dnf &> /dev/null; then
             sudo dnf install -y -q git
         elif command -v yum &> /dev/null; then
@@ -557,7 +557,7 @@ if command -v curl &> /dev/null; then
 else
     log "Installing curl..."
     if command -v apt-get &> /dev/null; then
-        sudo apt-get install -y -qq curl
+        sudo apt-get install -y -qq curl </dev/null
     elif command -v dnf &> /dev/null; then
         sudo dnf install -y -q curl
     elif command -v yum &> /dev/null; then
@@ -741,6 +741,11 @@ if [[ "$BOOTSTRAP_REINSTALL" == "true" || "$BOOTSTRAP_RECOVER_STRANDED" == "true
     if [[ "$BOOTSTRAP_REINSTALL" == "true" ]]; then
         log "Removing the existing installation with the requested candidate uninstaller..."
         candidate_uninstall_args=(--install-dir "$INSTALL_DIR" --force)
+        # A pinned older candidate can still use its strict cleanup contract.
+        # New candidates retain unrecognized broker state in private custody.
+        if grep -q -- '--preserve-broker-state)' "$candidate_uninstaller"; then
+            candidate_uninstall_args+=(--preserve-broker-state)
+        fi
         if [[ "$BOOTSTRAP_KEEP_MODELS" == true ]]; then
             candidate_uninstall_args+=(--keep-models)
         fi

@@ -16,6 +16,18 @@ RESOLVER_LOG="$TMP_DIR/resolver.log"
 mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/installers/macos" "$MOCK_BIN"
 INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd -P)"
 python3 "$ROOT_DIR/tests/fixtures/macos-private-store-cli.py" "$INSTALL_DIR"
+# This suite tests route selection after the native manager supplies a stable
+# receipt. Real process ownership and changing receipts have separate coverage.
+mkdir -p "$INSTALL_DIR/installers/macos/lib"
+cat > "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" <<'NATIVE'
+#!/usr/bin/env bash
+[[ "$1" == status ]] || exit 1
+if grep -q '^ODS_MODE=cloud$' "$2/.env"; then
+    printf '%s\n' '{"identity":null}'
+else
+    printf '%s\n' '{"identity":[481,1,0,501,20,501,20,501,20,"/fixture/llama-server"]}'
+fi
+NATIVE
 touch "$INSTALL_DIR/docker-compose.base.yml"
 touch "$INSTALL_DIR/docker-compose.cloud.yml"
 touch "$INSTALL_DIR/installers/macos/docker-compose.macos.yml"

@@ -130,6 +130,12 @@ if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; t
         "$SANDBOX/extensions/services/fakeext" \
         "$SANDBOX/extensions/services/fakeoff"
     cp "$ROOT_DIR/scripts/health-check.sh" "$SANDBOX/scripts/"
+    # This fixture isolates result aggregation; selection failures have their
+    # own regression cases in test-health-check-core-services.sh.
+    cat > "$SANDBOX/scripts/resolve-compose-stack.sh" <<'SELECTION'
+#!/bin/bash
+printf '%s\n' '{"fragments":["docker-compose.base.yml"]}'
+SELECTION
     cp "$ROOT_DIR/lib/service-registry.sh" "$ROOT_DIR/lib/safe-env.sh" "$SANDBOX/lib/"
     if [[ -f "$ROOT_DIR/lib/python-cmd.sh" ]]; then
         cp "$ROOT_DIR/lib/python-cmd.sh" "$SANDBOX/lib/"
