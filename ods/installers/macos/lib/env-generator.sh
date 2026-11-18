@@ -381,6 +381,12 @@ generate_ods_env() {
         fi
         upsert_env_value "$env_path" "N_GPU_LAYERS" "$_n_gpu_layers"
 
+        # An existing owner value wins, including zero. Only fill an absent
+        # key from an explicit installer input; leave runtime defaults unset.
+        if ! env_key_exists "$env_path" "LLAMA_ARG_CACHE_RAM" && [[ -n "${LLAMA_ARG_CACHE_RAM:-}" ]]; then
+            upsert_env_value "$env_path" "LLAMA_ARG_CACHE_RAM" "$(dotenv_quote "$LLAMA_ARG_CACHE_RAM")"
+        fi
+
         local _existing_bind
         _existing_bind=$(read_env_value "$env_path" "BIND_ADDRESS")
 
@@ -644,6 +650,7 @@ LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
 # lower it, or set 0, to save memory.
 # LLAMA_ARG_CTX_CHECKPOINTS=32
 # LLAMA_ARG_CACHE_RAM=512
+$(if [[ -n "${LLAMA_ARG_CACHE_RAM:-}" ]]; then printf 'LLAMA_ARG_CACHE_RAM=%s\n' "$(dotenv_quote "$LLAMA_ARG_CACHE_RAM")"; fi)
 # Lossless n-gram speculation (--spec-type ngram-mod) is on by default when the
 # installed llama-server supports it (b8955+; ODS pins b9014). Turn it off with:
 # LLAMA_SPEC_TYPE=none
