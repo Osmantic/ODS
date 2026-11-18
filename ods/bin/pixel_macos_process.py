@@ -75,9 +75,12 @@ def process_identity(pid, *, uid, gid, executable, allow_root=False):
     lib = _library()
     before = _record(lib, pid)
     buffer = ctypes.create_string_buffer(4096)  # PROC_PIDPATHINFO_MAXSIZE
+    ctypes.set_errno(0)
     length = lib.proc_pidpath(pid, buffer, len(buffer))
+    path_errno = ctypes.get_errno()
     if not 0 < length < len(buffer) or buffer.raw[length] != 0:
-        raise ProcessIdentityError('gateway-process-path-unavailable')
+        raise ProcessIdentityError('gateway-process-path-unavailable',
+                                   errno=path_errno if length <= 0 else None)
     raw = buffer.raw[:length]
     if b'\0' in raw or os.fsdecode(raw) != executable:
         raise ProcessIdentityError('gateway-process-executable-mismatch')

@@ -24,7 +24,7 @@ import tempfile
 import time
 import uuid
 
-from pixel_macos_process import ProcessIdentityError, process_identity
+from pixel_macos_process import ProcessIdentityError, process_birth, process_identity
 
 
 class NativeServiceError(RuntimeError):
@@ -161,6 +161,21 @@ class NativeService:
                 "gateway-process-owner-mismatch", "gateway-process-changed",
             }:
                 return False
+            if str(exc) == "gateway-process-path-unavailable":
+                # The process may have exited or been reused between the
+                # identity snapshot and the path read. Diagnose with one
+                # fresh birth check; never signal an unverified live process.
+                try:
+                    birth = process_birth(identity[0])
+                except ProcessIdentityError as birth_exc:
+                    if birth_exc.errno == errno.ESRCH:
+                        return False
+                    raise NativeServiceError(
+                        "Could not verify native process liveness") from birth_exc
+                if birth != tuple(identity[1:3]):
+                    return False
+                raise NativeServiceError(
+                    "Could not verify native process liveness") from exc
             raise NativeServiceError("Could not verify native process liveness") from exc
         return current == tuple(identity)
 

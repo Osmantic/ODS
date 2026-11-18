@@ -11,7 +11,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
-from macos_native_service import NativeService, NativeServiceError
+import macos_native_service as mns  # noqa: E402
+import pixel_macos_process as pmp  # noqa: E402
+from macos_native_service import NativeService, NativeServiceError  # noqa: E402
 from pixel_macos_process import ProcessIdentityError  # noqa: E402
 
 
@@ -441,3 +443,218 @@ def test_journal_from_other_runtime_is_not_adopted(svc):
     svc.executable = svc.root / "different-runtime"
     with pytest.raises(NativeServiceError, match="different deployment"):
         svc.read_journal()
+
+
+class _FakeLib:
+    def __init__(self, path_result):
+        self.path_result = path_result
+        self.path_calls = 0
+
+    def proc_pidpath(self, pid, buffer, size):
+        self.path_calls += 1
+        length, err = self.path_result
+        if length > 0:
+            data = b"/usr/bin/true"
+            buffer.raw = data + b"\0" * (size - len(data))
+        if err is not None:
+            pmp.ctypes.set_errno(err)
+        return length
+
+
+def _make_service(monkeypatch, *, identity, birth):
+    service = object.__new__(mns.NativeService)
+    def fake_identity(pid):
+        if isinstance(identity, Exception):
+            raise identity
+        return identity
+
+    def fake_birth(pid):
+        if isinstance(birth, Exception):
+            raise birth
+        return birth
+
+    monkeypatch.setattr(service, "identity", fake_identity)
+    monkeypatch.setattr(mns, "process_birth", fake_birth, raising=False)
+    return service
+
+
+# --- pixel_macos_process helper tests -------------------------------------
+
+
+def _patch_library(monkeypatch, fake_lib):
+    monkeypatch.setattr(pmp, "_library", lambda: fake_lib)
+    monkeypatch.setattr(pmp, "_record", lambda lib, pid: (
+        pid, 100, 0, 501, 20, 501, 20, 501, 20))
+
+
+def test_helper_path_esrch_propagated(monkeypatch):
+    fake = _FakeLib((0, errno.ESRCH))
+    _patch_library(monkeypatch, fake)
+    with pytest.raises(pmp.ProcessIdentityError) as excinfo:
+        pmp.process_identity(1234, uid=501, gid=20, executable="/usr/bin/true")
+    assert str(excinfo.value) == "gateway-process-path-unavailable"
+    assert excinfo.value.errno == errno.ESRCH
+
+
+def test_helper_path_eperm_propagated(monkeypatch):
+    fake = _FakeLib((0, errno.EPERM))
+    _patch_library(monkeypatch, fake)
+    with pytest.raises(pmp.ProcessIdentityError) as excinfo:
+        pmp.process_identity(1234, uid=501, gid=20, executable="/usr/bin/true")
+    assert str(excinfo.value) == "gateway-process-path-unavailable"
+    assert excinfo.value.errno == errno.EPERM
+
+
+def test_helper_stale_errno_reset(monkeypatch):
+    fake = _FakeLib((0, None))
+    _patch_library(monkeypatch, fake)
+    pmp.ctypes.set_errno(errno.ESRCH)
+    with pytest.raises(pmp.ProcessIdentityError) as excinfo:
+        pmp.process_identity(1234, uid=501, gid=20, executable="/usr/bin/true")
+    assert excinfo.value.errno == 0
+
+
+@pytest.mark.parametrize("length", [4, 4096])
+def test_helper_malformed_positive_length_ambiguous(monkeypatch, length):
+    fake = _FakeLib((length, errno.ESRCH))
+    _patch_library(monkeypatch, fake)
+    with pytest.raises(pmp.ProcessIdentityError) as excinfo:
+        pmp.process_identity(1234, uid=501, gid=20, executable="/usr/bin/true")
+    assert str(excinfo.value) == "gateway-process-path-unavailable"
+    assert excinfo.value.errno is None
+
+
+# --- manager live() tests -------------------------------------------------
+
+
+def _identity(pid=1234, sec=100, usec=0):
+    return (pid, sec, usec, 501, 20, 501, 20, 501, 20, "/usr/bin/true")
+
+
+def test_manager_live_false_on_path_esrch(monkeypatch):
+    err = pmp.ProcessIdentityError("gateway-process-path-unavailable", errno=errno.ESRCH)
+    service = _make_service(monkeypatch, identity=err, birth=(100, 0))
+    assert service.live(_identity()) is False
+
+
+def test_manager_live_false_on_path_0_birth_esrch(monkeypatch):
+    err = pmp.ProcessIdentityError("gateway-process-path-unavailable", errno=0)
+    birth_err = pmp.ProcessIdentityError("gateway-process-unavailable", errno=errno.ESRCH)
+    service = _make_service(monkeypatch, identity=err, birth=birth_err)
+    assert service.live(_identity()) is False
+
+
+def test_manager_live_false_on_changed_birth(monkeypatch):
+    err = pmp.ProcessIdentityError("gateway-process-path-unavailable", errno=0)
+    service = _make_service(monkeypatch, identity=err, birth=(200, 0))
+    assert service.live(_identity()) is False
+
+
+def test_manager_raises_on_unchanged_birth_path_eperm(monkeypatch):
+    err = pmp.ProcessIdentityError("gateway-process-path-unavailable", errno=errno.EPERM)
+    service = _make_service(monkeypatch, identity=err, birth=(100, 0))
+    with pytest.raises(mns.NativeServiceError):
+        service.live(_identity())
+
+
+def test_manager_raises_on_unchanged_birth_path_0(monkeypatch):
+    err = pmp.ProcessIdentityError("gateway-process-path-unavailable", errno=0)
+    service = _make_service(monkeypatch, identity=err, birth=(100, 0))
+    with pytest.raises(mns.NativeServiceError):
+        service.live(_identity())
+
+
+def test_manager_raises_on_birth_eperm(monkeypatch):
+    err = pmp.ProcessIdentityError("gateway-process-path-unavailable", errno=0)
+    birth_err = pmp.ProcessIdentityError("gateway-process-unavailable", errno=errno.EPERM)
+    service = _make_service(monkeypatch, identity=err, birth=birth_err)
+    with pytest.raises(mns.NativeServiceError):
+        service.live(_identity())
+
+
+def test_manager_unrelated_error_does_not_call_birth(monkeypatch):
+    err = pmp.ProcessIdentityError("gateway-process-specification-invalid")
+    calls = []
+
+    def fake_birth(pid):
+        calls.append(pid)
+        return (100, 0)
+
+    service = _make_service(monkeypatch, identity=err, birth=(100, 0))
+    monkeypatch.setattr(mns, "process_birth", fake_birth, raising=False)
+    with pytest.raises(mns.NativeServiceError):
+        service.live(_identity())
+    assert calls == []
+
+
+# --- terminate() tests ----------------------------------------------------
+
+
+def test_terminate_first_identity_matches_then_path_failure_fresh_birth_esrch(monkeypatch):
+    identity = _identity()
+    path_err = pmp.ProcessIdentityError("gateway-process-path-unavailable", errno=0)
+    birth_err = pmp.ProcessIdentityError("gateway-process-unavailable", errno=errno.ESRCH)
+
+    state = {"calls": 0}
+
+    def fake_identity(pid):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            return identity
+        raise path_err
+
+    def fake_birth(pid):
+        raise birth_err
+
+    service = object.__new__(mns.NativeService)
+    monkeypatch.setattr(service, "identity", fake_identity)
+    monkeypatch.setattr(mns, "process_birth", fake_birth, raising=False)
+
+    signals = []
+    monkeypatch.setattr(mns.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+
+    service.terminate(identity)
+    assert signals == [(identity[0], 15)]
+
+
+def test_terminate_reused_birth_same_pid_no_signal(monkeypatch):
+    identity = _identity()
+    path_err = pmp.ProcessIdentityError("gateway-process-path-unavailable", errno=0)
+
+    def fake_identity(pid):
+        raise path_err
+
+    def fake_birth(pid):
+        return (999, 0)
+
+    service = object.__new__(mns.NativeService)
+    monkeypatch.setattr(service, "identity", fake_identity)
+    monkeypatch.setattr(mns, "process_birth", fake_birth, raising=False)
+
+    signals = []
+    monkeypatch.setattr(mns.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+
+    service.terminate(identity)
+    assert signals == []
+
+
+def test_terminate_ambiguous_same_birth_no_signal(monkeypatch):
+    identity = _identity()
+    path_err = pmp.ProcessIdentityError("gateway-process-path-unavailable", errno=errno.EPERM)
+
+    def fake_identity(pid):
+        raise path_err
+
+    def fake_birth(pid):
+        return (identity[1], identity[2])
+
+    service = object.__new__(mns.NativeService)
+    monkeypatch.setattr(service, "identity", fake_identity)
+    monkeypatch.setattr(mns, "process_birth", fake_birth, raising=False)
+
+    signals = []
+    monkeypatch.setattr(mns.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+
+    with pytest.raises(mns.NativeServiceError):
+        service.terminate(identity)
+    assert signals == []
