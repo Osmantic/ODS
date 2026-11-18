@@ -389,6 +389,8 @@ export default definePluginEntry({
       info: (message) => api.logger.info?.(message),
       exampleOwnerRun: context => delegationDelivery.ownerRunOf(context),
       goalRun: runId => goalProgress.active(runId),
+      // The run's own settled known calls, for a goal round's unfinished-work stop.
+      taskSettlement: (runId, owned) => taskActivity.settlement(runId, owned),
       // Only a remote API route carries a route fingerprint
       // (model-runtime-readback.mjs); its output limit is the owner's setting.
       remoteModelRoute: () => typeof (api.runtime?.config?.current?.() ?? api.config)
