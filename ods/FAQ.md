@@ -279,6 +279,20 @@ newer, and `Systran/faster-whisper-base` elsewhere. Change it with
 `AUDIO_STT_MODEL` in `.env`, then run `ods restart` and `ods stt download`.
 `ods stt status` shows what is installed.
 
+### Can speech-to-text run on another machine?
+Yes, on Linux. Point the installer at an OpenAI-compatible speech-to-text
+server, such as Speaches or faster-whisper-server on another computer:
+
+```bash
+./install.sh --voice --external-stt-url http://192.168.1.20:8000
+```
+
+The installer checks that the server answers `/v1/models`, turns the local
+Whisper service off, and points both Open WebUI and ODS Talk at that server.
+Kokoro text-to-speech still runs here. Add `--external-stt-model MODEL` when
+the server does not serve the model in `AUDIO_STT_MODEL`. Reruns keep the
+server; rerun with `--no-external-stt` to go back to the local Whisper service.
+
 ### Which text-to-speech voice is used?
 Kokoro's `af_heart` voice by default. Set `AUDIO_TTS_VOICE` in `.env` (for
 example `af_bella`, `am_adam` or `am_michael`) and run `ods restart` to change it.
