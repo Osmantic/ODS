@@ -181,15 +181,20 @@ connection settings. See the [Open WebUI service guide](../extensions/services/o
    lsof -i :3000
    ```
 
-2. Change port in `.env`:
+2. Change port in `.env` to one no other ODS service uses (the Dashboard
+   already uses 3001):
    ```bash
-   WEBUI_PORT=3001
+   WEBUI_PORT=3090
    ```
 
-3. Restart:
+3. Restart, which recreates the containers with the new port:
    ```bash
-   docker compose down && docker compose up -d
+   ods restart
    ```
+
+   Open WebUI is then at `http://localhost:3090`. Run `ods restart` rather
+   than bare `docker compose` commands: ODS has no top-level compose file, so
+   `docker compose down` fails with "no configuration file provided".
 
 ---
 
