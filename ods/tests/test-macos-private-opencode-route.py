@@ -5,6 +5,7 @@ connectivity. Colima bridge tests cover the separate container-to-host hop.
 """
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -61,6 +62,9 @@ def test_installer_keeps_host_model_reachable_across_lan_modes(tmp_path, endpoin
     install = tmp_path / 'ODS installation'
     config = tmp_path / 'OpenCode'
     install.mkdir()
+    (install / 'bin').mkdir()
+    for helper in ['configure-opencode.py', 'opencode_config.py']:
+        shutil.copy2(ODS / 'bin' / helper, install / 'bin' / helper)
     config.mkdir()
     # Simulate an upgrade from a LAN-bound route; unrelated owner settings stay.
     (config / 'opencode.json').write_text(json.dumps({
@@ -93,7 +97,7 @@ def test_installer_keeps_host_model_reachable_across_lan_modes(tmp_path, endpoin
     expected_model = {'switchboard': 'ods/current', 'cloud': 'default', 'native': 'fixture-local-model'}[mode]
     expected_key = 'no-key' if mode == 'native' else 'fixture-only-key'
     data = json.loads((config / 'opencode.json').read_text(encoding='utf-8'))
-    assert data == json.loads((config / 'config.json').read_text(encoding='utf-8'))
+    assert not (config / 'config.json').exists(), 'Do not mirror owner config files'
     assert data['custom'] == {'preserve': True}
     assert data['model'] == 'llama-server/' + expected_model
     options = data['provider']['llama-server']['options']

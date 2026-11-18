@@ -927,6 +927,9 @@ def test_optional_setup_real_shared_shell_preserves_selection_and_fails_closed(t
     preparation.mkdir(parents=True, mode=0o700)
     for path in (home, library, binaries, library.parent / 'lib'):
         path.mkdir(parents=True, exist_ok=True)
+    (installed / 'bin').mkdir()
+    for name in ('configure-opencode.py', 'opencode_config.py'):
+        (installed / 'bin' / name).write_bytes((ROOT / 'bin' / name).read_bytes())
     environment_file = installed / '.env'
     environment_file.write_text('ENABLE_OPENCODE=true\nODS_MODE=local\nLLM_MODEL=starter\n'
         'GGUF_FILE=starter.gguf\nMAX_CONTEXT=32768\nWHISPER_PORT=9100\n'

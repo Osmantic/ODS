@@ -183,6 +183,8 @@ fi
 pass "disabled Hermes routing patches through a safe image or fails closed"
 
 # OpenCode must update only its managed route across modes.
+mkdir -p "$INSTALL_DIR/bin"
+cp "$ROOT_DIR/bin/configure-opencode.py" "$ROOT_DIR/bin/opencode_config.py" "$INSTALL_DIR/bin/"
 eval "$(extract_installer_function _write_macos_opencode_config | sed "s|/usr/bin/python3|$python_cmd|g")"
 opencode_path="$TMP_DIR/opencode/opencode.json"
 mkdir -p "$(dirname "$opencode_path")"

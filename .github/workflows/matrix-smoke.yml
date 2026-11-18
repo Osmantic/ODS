@@ -34,6 +34,9 @@ jobs:
       - name: Package-manager CI helper contracts
         run: python3 -m unittest discover -s tests -p 'test_matrix_*.py' -v
 
+      - name: OpenCode config and installer preservation
+        run: python3 -m unittest discover -s tests -p 'test_opencode_*.py' -v
+
       - name: Pixel Execution Cancellation
         run: python3 tests/test_pixel_cancellable_exec.py
 

@@ -19650,7 +19650,8 @@ def _capture_opencode_config(assume_installed: bool = False) -> dict | None:
         text = str(snapshot["text"] or "")
         parsed = None
         try:
-            parsed = _parse_jsonc(text) if path.suffix.casefold() == ".jsonc" else json.loads(text)
+            # OpenCode parses every supported global filename as JSONC.
+            parsed = _parse_jsonc(text.removeprefix("\ufeff"))
             if not isinstance(parsed, dict):
                 raise ValueError("root value is not an object")
             parsed_sources.append((path, parsed))

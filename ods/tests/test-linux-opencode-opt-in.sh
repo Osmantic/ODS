@@ -41,12 +41,9 @@ grep -Fq -- '--no-opencode) ENABLE_OPENCODE=false' "$CORE" \
     || fail "--no-opencode does not disable the extension"
 grep -Fq 'ods_systemctl_user disable --now opencode-web.service' "$PHASE" \
     || fail "a disabling rerun cannot retire the ODS-managed OpenCode service"
-grep -Fq '_opencode_output_limit=$(( _opencode_context / 4 ))' "$PHASE" \
-    || fail "OpenCode output does not reserve prompt context"
-grep -Fq -- '--argjson output "$_opencode_output_limit"' "$PHASE" \
-    || fail "OpenCode reinstall does not refresh the output budget"
-if grep -Fq '"output": 32768' "$PHASE"; then
-    fail "OpenCode fresh install still exhausts a 32K context"
-fi
+# Exercise fresh and repeated real writers instead of matching the old jq text.
+python3 "$ROOT/tests/test_opencode_installer_paths.py" \
+    InstallerPreservation.test_context_and_output_budgets \
+    || fail "OpenCode fresh/reinstall context and output budgets are incorrect"
 
 printf '[PASS] Linux OpenCode is opt-in and reversibly managed\n'
