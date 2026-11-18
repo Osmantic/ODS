@@ -197,6 +197,7 @@ load_model_selector_env_from_output() {
         LLAMA_ARG_MMPROJ \
         MODEL_CHAT_TEMPLATE_OVERRIDE \
         LLAMA_ARG_CHAT_TEMPLATE_FILE \
+        LLAMA_LOG_VERBOSITY \
         LLM_BACKEND \
         VLLM_MODEL_DIR \
         VLLM_SERVED_MODEL \

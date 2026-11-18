@@ -426,6 +426,7 @@ def _empty_value_unsets_env_key(key: str, field: dict[str, Any]) -> bool:
     if key in _RETIRED_ENV_KEYS:
         return True
     return key.startswith("LLAMA_ARG_") or key in {
+        "LLAMA_LOG_VERBOSITY",
         "RAG_EMBEDDING_MODEL",
         "RAG_OPENAI_API_BASE_URL",
     }

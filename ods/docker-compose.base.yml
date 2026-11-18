@@ -113,6 +113,9 @@ services:
       # LLAMA_ARG_SPEC_DRAFT_TYPE_K/V instead and pass them as flags.
       - LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K
       - LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V
+      # Opt-in diagnostics normalized to --log-verbosity by the entrypoint.
+      # Bare pass-through: unset keeps the upstream default.
+      - LLAMA_LOG_VERBOSITY
     security_opt:
       - no-new-privileges:true
     logging: *default-logging
