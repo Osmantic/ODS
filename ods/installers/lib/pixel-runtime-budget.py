@@ -143,6 +143,24 @@ if updated_sandbox_ulimits is not None:
     updated_sandbox_ulimits.pop("nproc", None)
     if not updated_sandbox_ulimits:
         updated_sandbox_docker.pop("ulimits", None)
+# AppArmor 5 labels `docker exec` processes as a stack with unconfined, which
+# docker-default does not let signal each other, so the sandbox could not
+# cancel its own commands. The installer loads ODS's profile (the same rules
+# plus that stacked peer) where Docker uses AppArmor; use it when it is loaded
+# and the owner has not chosen a profile of their own.
+apparmor_enabled = pathlib.Path(os.environ.get(
+    "ODS_PIXEL_APPARMOR_ENABLED_FILE", "/sys/module/apparmor/parameters/enabled"))
+apparmor_profile = pathlib.Path(os.environ.get(
+    "ODS_PIXEL_SANDBOX_APPARMOR_FILE", "/etc/apparmor.d/ods-pixel-sandbox"))
+try:
+    use_apparmor_profile = (apparmor_enabled.read_text(encoding="ascii").strip() == "Y"
+                            and apparmor_profile.is_file())
+except OSError:
+    use_apparmor_profile = False
+if use_apparmor_profile:
+    updated_sandbox_docker.setdefault("apparmorProfile", "ods-pixel-sandbox")
+elif updated_sandbox_docker.get("apparmorProfile") == "ods-pixel-sandbox":
+    updated_sandbox_docker.pop("apparmorProfile")
 # Model budgets must preserve native web-search provider choices.
 # OpenClaw validates the complete candidate below; search provisioning and
 # readiness belong to bootstrap, not this context/sandbox budget overlay.
