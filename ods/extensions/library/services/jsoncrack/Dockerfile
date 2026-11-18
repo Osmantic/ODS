@@ -27,7 +27,7 @@ RUN curl -fsSL https://registry.npmjs.org/monaco-editor/-/monaco-editor-0.55.1.t
 FROM nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
 COPY --from=build /build/apps/www/out /usr/share/nginx/html
 COPY --from=source /src/LICENSE.md /usr/share/nginx/html/JSONCRACK-LICENSE.txt
-COPY nginx.conf /etc/nginx/nginx.conf
+COPY --chmod=0644 nginx.conf /etc/nginx/nginx.conf
 USER 101:101
 ENTRYPOINT ["nginx"]
 CMD ["-g", "daemon off;"]

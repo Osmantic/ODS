@@ -43,6 +43,22 @@ test("apps result states the count and first application without JSON parsing", 
   assert.ok(!text.startsWith("{"));
 });
 
+test("an application without a host port is described without a URL", () => {
+  // LLM_BACKEND=vllm: model-router reaches the vLLM engine on the ODS network.
+  const vllm = {
+    name: "ods-vllm-server",
+    status: "starting",
+    display_name: "vLLM",
+    purpose: "local model engine behind the model router",
+  };
+  for (const apps of [[vllm, projection.apps[0]], [projection.apps[0], vllm]]) {
+    const text = appsToolText({ ...projection, apps });
+    assert.match(text, /vLLM \[ods-vllm-server\] \(starting; local model engine behind the model router\)/);
+    assert.doesNotMatch(text, /undefined/);
+    assert.match(text, /Dashboard \[ods-dashboard\] \(healthy; ODS control center; http:\/\/localhost:3001\/\)/);
+  }
+});
+
 test("status result states each bounded host fact in natural language", () => {
   const text = statusToolText(projection);
   assert.match(text, /Pixel availability: available/);

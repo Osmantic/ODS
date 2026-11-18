@@ -385,7 +385,49 @@ try {
         throw "Matching loading process was not preserved"
     }
 
+    # Compose failure diagnostic report must succeed even when the installation
+    # directory contains square brackets (wildcard characters in PowerShell).
+    $bracketInstallDir = Join-Path $testRoot "install-[bracket-test]"
+    [System.IO.Directory]::CreateDirectory($bracketInstallDir) | Out-Null
+    Set-Content -LiteralPath (Join-Path $bracketInstallDir ".env") -Value "GPU_BACKEND=cpu`nODS_MODE=local"
+    # Exercise a fresh install; the earlier fixture deliberately precreates this directory.
+    $freshConfig = Initialize-ODSComposeDockerClientConfig -InstallDir $bracketInstallDir -UserDockerConfigDir $userDockerConfig
+    if (-not (Test-Path -LiteralPath (Join-Path $freshConfig 'config.json') -PathType Leaf)) { throw 'Fresh Docker config missing' }
+    $neighborDir = Join-Path $testRoot 'install-b'
+    [void][IO.Directory]::CreateDirectory($neighborDir)
+    $neighbor = Join-Path $neighborDir 'sentinel'
+    [IO.File]::WriteAllText($neighbor, 'retain')
+    $failureLog = Join-Path $bracketInstallDir 'compose-[failure].log'
+    [IO.File]::WriteAllText($failureLog, 'failed to pull ghcr.io/ods/llama-server:fixture')
+    $images = @(Get-ODSComposeFailedImages -ComposeLogPath $failureLog)
+    if ($images -notcontains 'ghcr.io/ods/llama-server:fixture') { throw 'Bracketed log lost failed image' }
+    function Write-Chapter { param([string]$Message) }
+    function docker {
+        $script:DiagnosticLocations += (Get-Location).Path
+        $global:LASTEXITCODE = 1
+        'fixture Docker unavailable'
+    }
+    $script:DiagnosticLocations = @()
+    $beforeLocation = (Get-Location).Path
+    $beforeDockerConfig = $env:DOCKER_CONFIG
+    $composeExit = Invoke-ODSDockerCompose -InstallDir $bracketInstallDir -ComposeFlags @() -ComposeArgs @('config')
+    if ($composeExit -ne 1) { throw 'Compose wrapper lost failure status' }
+    Write-ODSComposeDiagnostics -InstallDir $bracketInstallDir -ComposeFlags @() -ComposeLogPath $failureLog -SaveReport
+    if ((Get-Location).Path -cne $beforeLocation -or $env:DOCKER_CONFIG -cne $beforeDockerConfig) { throw 'Diagnostics changed caller state' }
+    if ($script:DiagnosticLocations.Count -ne 9 -or @($script:DiagnosticLocations | Where-Object { $_ -cne $bracketInstallDir }).Count) { throw 'Diagnostics ran outside literal install path' }
+    if ([IO.File]::ReadAllText($neighbor) -cne 'retain' -or @(Get-ChildItem -LiteralPath $neighborDir).Count -ne 1) { throw 'Diagnostics changed wildcard neighbor' }
+    $bracketReport = Write-ODSComposeFailureReport -InstallDir $bracketInstallDir -ComposeFlags @() -Phase "test"
+    if (-not (Test-Path -LiteralPath $bracketReport -PathType Leaf)) {
+        throw "Compose diagnostics report was not written to bracketed install directory: $bracketReport"
+    }
+    $reportContent = Get-Content -LiteralPath $bracketReport -Raw
+    if ($reportContent -notmatch "ODS install failure report" -or $reportContent -notmatch "GPU backend: cpu") {
+        throw "Compose diagnostics report content in bracketed path is incomplete"
+    }
+
     Write-Host "[PASS] Windows Compose plugin and native llama-server runtime recovery contracts"
 } finally {
     Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
+# An unavailable Docker daemon is expected fixture data, not the CI exit status.
+exit 0

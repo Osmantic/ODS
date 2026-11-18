@@ -24,7 +24,11 @@ function useModelFailureCause(content) {
   return cause
 }
 
+// Replies saved by older versions carry only this marker. Its cause was never
+// known, so it is not blamed on the connection.
+export const UNDELIVERED_REPLY='This reply did not arrive. Your conversation is preserved; send your message again if you still need it.'
+
 export default function PortalResponseError({content}) {
   const cause=useModelFailureCause(content)
-  return <div className="portal-response-error" role="status"><CircleAlert size={13}/><PortalStreamingText instant>{content==='Request failed'?'The response could not be received. Your conversation is preserved; check the connection before continuing.':content}</PortalStreamingText>{cause && <p className="portal-response-cause">{cause}</p>} <HelpLink label="Still stuck? Get help on Discord"/></div>
+  return <div className="portal-response-error" role="status"><CircleAlert size={13}/><PortalStreamingText instant>{content==='Request failed'?UNDELIVERED_REPLY:content}</PortalStreamingText>{cause && <p className="portal-response-cause">{cause}</p>} <HelpLink label="Still stuck? Get help on Discord"/></div>
 }

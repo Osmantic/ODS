@@ -89,7 +89,8 @@
 		route @owner_card_required {
 			forward_auth {$ODS_AUTH_UPSTREAM:ods-dashboard-api:3002} {
 				uri /api/auth/verify-session
-				copy_headers Cookie
+				# Preserve browser cookies for Hermes after ODS verification.
+				# copy_headers reads auth-response headers, not request cookies.
 				# Strip WebSocket upgrade headers from the auth sub-request.
 				# Hermes's in-browser chat opens WebSockets to /api/ws +
 				# /api/pty + /api/events. Without these strips, Caddy

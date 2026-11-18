@@ -555,11 +555,14 @@ test('actual authenticated projection settles exact continuation then rechecks c
   const f=fixture();f.spawn();f.yieldTurn();f.registry.observe({prompt:'Native child evidence'},continuation);f.final();
   let release,entered;
   const began=new Promise(resolve=>entered=resolve),hold=new Promise(resolve=>release=resolve);
-  const route=registeredRoute(f.registry,async runId=>{assert.equal(runId,continuation.runId);entered();await hold;});
+  let settled;
+  const route=registeredRoute(f.registry,async (runId,options)=>{assert.equal(runId,continuation.runId);settled=options;entered();await hold;});
   const pending=route({user,runId:id});await began;
   await f.registry.cancel(user);release();
   const result=await pending;assert.equal(result.status,200);assert.equal(result.value.status,'interrupted');
   assert.ok(!('text' in result.value));
+  // A bounded settle: the route's caller gives up after 5 s.
+  assert.equal(settled?.delegated,true);
 });
 
 test('actual projection rejects foreign owners, oversized bodies, extra fields and wrong methods',async()=>{

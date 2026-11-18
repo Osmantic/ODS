@@ -457,6 +457,36 @@ describe('ODSTalk', () => {
     expect(container.textContent).not.toContain('**')
   })
 
+  test.each([
+    ['what is 12 squared?', '144.', '144', ['']],
+    ['what is left?', 'Steps 1 and 2 are done.\n\n3. Run the tests\n4. Open the pull request', '3', ['Run the tests', 'Open the pull request']],
+  ])('keeps the ordered-list start number in the reply to %j', async (question, text, start, items) => {
+    // A reply of exactly "144." is an ordered list that starts at 144 with an
+    // empty item. Without its start number the bubble showed a bare "1.".
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/talk/status') return response({ capabilities: { text_chat: true } })
+      if (url === '/api/talk/message/stream' && options.method === 'POST') {
+        return sseResponse([
+          { type: 'session', session_id: 'sid' },
+          { type: 'complete', session_id: 'sid', text, status: 'ok' },
+          { type: 'done' },
+        ])
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { container } = render(<ODSTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), {
+      target: { value: question },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => expect(container.querySelector('ol')).toHaveAttribute('start', start))
+    expect([...container.querySelectorAll('ol li')].map(item => item.textContent)).toEqual(items)
+  })
+
   test('renders dynamic SSE status caption + detail while a tool is in flight', async () => {
     // Bridge emits `status` frames between session and the first delta —
     // the SPA should swap the default "Thinking…" caption for the friendly

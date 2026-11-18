@@ -1,0 +1,22 @@
+IT-Tools by Corentin Th and contributors, GNU GPL version 3.
+License: /ITTOOLS-LICENSE.txt
+
+This ODS build uses the same upstream source revision as release
+2024.10.22-7ca5933, with a CSV serialization correction:
+https://github.com/CorentinTh/it-tools/commit/7ca59331784bfe564cfbca2a5b1971ea7ae82735
+
+The complete upstream source is served at /source/upstream.tar.gz.
+SHA-256: 1829b78fdea40d9a4a9aaf0c6aa7131e33898351e713356af07941959d3407d4
+ODS changes are served at /source/csv-rfc4180.patch.
+Apply with: patch --fuzz=0 -p1 < csv-rfc4180.patch
+
+The patch preserves commas, quotes, CR/LF, backslashes and Unicode in CSV
+fields and headers. Embedded quotes are doubled. Empty fields are quoted
+so one-column empty records survive a round trip. Records retain LF
+separators. Null values remain the text null; missing values remain empty.
+Release version metadata matches the original published image's footer.
+
+Rebuild instructions and the independent CSV roundtrip test:
+https://github.com/Osmantic/ODS/tree/main/ods/extensions/library/services/it-tools
+Build toolchain: Node 24.16, pnpm 8.15.3, upstream frozen pnpm lockfile.
+The Dockerfile pins the source archive and both build/runtime image digests.

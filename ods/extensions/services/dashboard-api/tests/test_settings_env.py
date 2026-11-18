@@ -1,5 +1,6 @@
 """Security-focused tests for the Settings environment editor."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -108,7 +109,7 @@ def settings_env_fixture(tmp_path, monkeypatch):
             backup_path.write_bytes(env_path.read_bytes())
         payload = raw_text if raw_text.endswith("\n") else raw_text + "\n"
         env_path.write_text(payload, encoding="utf-8")
-        return {"backup_path": "data/config-backups/.env.backup.test"}
+        return {"backup_path": "data/config-backups/.env.backup.test", "env_revision": hashlib.sha256(env_path.read_bytes()).hexdigest()}
 
     monkeypatch.setattr("main._call_agent_env_update", fake_env_update)
 
@@ -140,8 +141,8 @@ def constrained_settings(settings_env_fixture):
     schema_path = settings_env_fixture["schema_path"]
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     shipped = json.loads((Path(__file__).resolve().parents[4] / ".env.schema.json").read_text())
-    for key in ("REMOTE_LLM_SSH_PORT", "LLAMA_ARG_N_CPU_MOE", "N8N_PASS",
-                "PIXEL_OPENWEBUI_KEY", "TS_HOSTNAME"):
+    for key in ("REMOTE_LLM_SSH_PORT", "LLAMA_ARG_N_CPU_MOE", "LLAMA_LOG_VERBOSITY", "LLAMA_PARALLEL",
+                "N8N_PASS", "PIXEL_OPENWEBUI_KEY", "TS_HOSTNAME"):
         schema["properties"][key] = shipped["properties"][key]
     schema_path.write_text(json.dumps(schema), encoding="utf-8")
     return settings_env_fixture
@@ -345,6 +346,48 @@ def test_api_settings_env_marks_runtime_mode_read_only(test_client, settings_env
     field = response.json()["fields"]["ODS_MODE"]
     assert field["readOnly"] is True
     assert "installer" in field["readOnlyReason"].lower()
+
+
+@pytest.mark.parametrize("initial,submitted", [(None, "2"), ("1", "2"), ("2", "1"), ("2", "")])
+def test_settings_rejects_independent_slot_changes_before_host_write(
+    test_client, constrained_settings, monkeypatch, initial, submitted,
+):
+    from unittest.mock import Mock
+    import main
+
+    env_path = constrained_settings["env_path"]
+    if initial is not None:
+        env_path.write_text(env_path.read_text(encoding="utf-8") + f"LLAMA_PARALLEL={initial}\n", encoding="utf-8")
+    original = env_path.read_bytes()
+    write = Mock(wraps=main._call_agent_env_update)
+    monkeypatch.setattr(main, "_call_agent_env_update", write)
+    field = test_client.get("/api/settings/env", headers=test_client.auth_headers).json()["fields"]["LLAMA_PARALLEL"]
+    response = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                               json={"mode": "form", "values": {"LLAMA_PARALLEL": submitted}})
+    assert response.status_code == 400, response.text
+    assert field["readOnly"] is True
+    assert "per-request context" in field["readOnlyReason"]
+    assert response.json()["detail"]["issues"] == [{"key": "LLAMA_PARALLEL", "message": field["readOnlyReason"]}]
+    write.assert_not_called()
+    assert env_path.read_bytes() == original
+    assert not (constrained_settings["data_root"] / "config-backups").exists()
+
+
+@pytest.mark.parametrize("include_unchanged", [False, True])
+def test_settings_preserves_existing_slots_when_other_tuning_changes(
+    test_client, constrained_settings, include_unchanged,
+):
+    env_path = constrained_settings["env_path"]
+    env_path.write_text(env_path.read_text(encoding="utf-8") + "LLAMA_PARALLEL=2\n", encoding="utf-8")
+    values = {"LLAMA_LOG_VERBOSITY": "4"}
+    if include_unchanged:
+        values["LLAMA_PARALLEL"] = "2"
+    response = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                               json={"mode": "form", "values": values})
+    assert response.status_code == 200, response.text
+    assert response.json()["values"]["LLAMA_PARALLEL"] == "2"
+    assert "LLAMA_PARALLEL=2\n" in env_path.read_text(encoding="utf-8")
+    assert response.json()["values"]["LLAMA_LOG_VERBOSITY"] == "4"
 
 
 def test_api_settings_env_marks_model_context_and_recommendation_read_only(
@@ -840,6 +883,73 @@ def test_api_settings_env_apply_allows_model_router(test_client, monkeypatch):
     assert captured["service_ids"] == ["model-router"]
 
 
+def test_api_settings_env_apply_returns_structured_409_for_model_lifecycle_busy(test_client, monkeypatch):
+    from host_agent_client import AgentHTTPError
+
+    def fake_call(service_ids):
+        raise AgentHTTPError(
+            409,
+            "model lifecycle busy",
+            json.dumps({"code": "model_lifecycle_busy", "message": "busy"}),
+        )
+
+    monkeypatch.setattr("main._call_agent_core_recreate", fake_call)
+
+    response = test_client.post(
+        "/api/settings/env/apply",
+        headers=test_client.auth_headers,
+        json={"service_ids": ["llama-server"]},
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "model_lifecycle_busy"
+    assert detail["message"] == (
+        "ODS is finishing another operation. Wait for it to finish, then choose Apply changes again. "
+        "If settings changed, ODS will ask you to review them."
+    )
+
+
+def test_api_settings_env_apply_keeps_503_for_unrelated_409(test_client, monkeypatch):
+    from host_agent_client import AgentHTTPError
+
+    def fake_call(service_ids):
+        raise AgentHTTPError(
+            409,
+            "conflict",
+            json.dumps({"code": "other_conflict", "message": "conflict"}),
+        )
+
+    monkeypatch.setattr("main._call_agent_core_recreate", fake_call)
+
+    response = test_client.post(
+        "/api/settings/env/apply",
+        headers=test_client.auth_headers,
+        json={"service_ids": ["llama-server"]},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["message"] == "conflict"
+
+
+def test_api_settings_env_apply_keeps_503_for_malformed_409(test_client, monkeypatch):
+    from host_agent_client import AgentHTTPError
+
+    def fake_call(service_ids):
+        raise AgentHTTPError(409, "not json", "not-json")
+
+    monkeypatch.setattr("main._call_agent_core_recreate", fake_call)
+
+    response = test_client.post(
+        "/api/settings/env/apply",
+        headers=test_client.auth_headers,
+        json={"service_ids": ["llama-server"]},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["message"] == "not json"
+
+
 def test_api_settings_env_apply_rejects_disallowed_service(test_client):
     response = test_client.post(
         "/api/settings/env/apply",
@@ -1246,6 +1356,40 @@ def test_settings_apply_plan_syncs_rag_credential_without_reindex():
     assert [action["id"] for action in plan["postApplyActions"]] == [
         "open-webui-rag-sync",
     ]
+
+
+def test_settings_apply_plan_web_search_bypass_recreates_only_webui():
+    from settings import _compute_env_apply_plan
+
+    key = "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL"
+    for before, after in [("false", "true"), ("true", "false")]:
+        plan = _compute_env_apply_plan(
+            {key: before}, {key: after}, active_services={"open-webui"},
+        )
+        assert plan["services"] == ["open-webui"]
+        assert plan["postApplyActions"] == []
+
+
+def test_settings_web_search_bypass_uses_shipped_boolean_and_persists(
+    test_client, settings_env_fixture,
+):
+    key = "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL"
+    schema = Path(__file__).resolve().parents[4] / ".env.schema.json"
+    fixture_schema = json.loads(settings_env_fixture["schema_path"].read_text())
+    fixture_schema["properties"][key] = json.loads(schema.read_text())["properties"][key]
+    settings_env_fixture["schema_path"].write_text(json.dumps(fixture_schema))
+    response = test_client.get("/api/settings/env", headers=test_client.auth_headers)
+    assert response.status_code == 200
+    assert response.json()["fields"][key]["type"] == "boolean"
+    for value in ("true", "false"):
+        response = test_client.put(
+            "/api/settings/env", headers=test_client.auth_headers,
+            json={"mode": "form", "values": {key: value}},
+        )
+        assert response.status_code == 200, response.text
+        assert f"{key}={value}\n" in settings_env_fixture["env_path"].read_text()
+        assert response.json()["applyPlan"]["services"] == ["open-webui"]
+        assert response.json()["applyPlan"]["postApplyActions"] == []
 
 
 def test_settings_validation_rejects_gguf_embedding_artifact():
@@ -1954,3 +2098,385 @@ def test_is_secret_field_name_heuristic(key, expected):
     from settings import _is_secret_field
 
     assert _is_secret_field(key) is expected
+
+
+def test_api_settings_env_save_binds_env_revision_to_apply_plan(test_client, settings_env_fixture, monkeypatch):
+    monkeypatch.setattr('main._active_settings_apply_services', lambda: {'open-webui'})
+    revision = 'a' * 64
+    monkeypatch.setattr('main._call_agent_env_update', lambda raw_text: {
+        'backup_path': 'data/config-backups/.env.backup.test',
+        'env_revision': revision,
+    })
+    response = test_client.put('/api/settings/env', headers=test_client.auth_headers,
+                               json={'mode': 'form', 'values': {'WEBUI_AUTH': False}})
+    assert response.status_code == 200
+    assert response.json()['applyPlan']['envRevision'] == revision
+
+
+def test_api_settings_env_save_marks_plan_unsupported_without_revision(test_client, settings_env_fixture, monkeypatch):
+    monkeypatch.setattr('main._active_settings_apply_services', lambda: {'open-webui'})
+    monkeypatch.setattr('main._call_agent_env_update', lambda raw_text: {
+        'backup_path': 'data/config-backups/.env.backup.test',
+    })
+    response = test_client.put('/api/settings/env', headers=test_client.auth_headers,
+                               json={'mode': 'form', 'values': {'WEBUI_AUTH': False}})
+    assert response.status_code == 200
+    plan = response.json()['applyPlan']
+    assert plan['supported'] is False
+    assert plan['envRevision'] is None
+    assert 'Update ODS' in plan['summary']
+
+
+def test_api_settings_env_apply_forwards_expected_revision(test_client, monkeypatch):
+    captured = {}
+    def fake_call(service_ids, expected_env_revision=None):
+        captured['service_ids'] = service_ids
+        captured['expected_env_revision'] = expected_env_revision
+        return {'status': 'ok'}
+    monkeypatch.setattr('main._call_agent_core_recreate', fake_call)
+    revision = 'b' * 64
+    response = test_client.post('/api/settings/env/apply', headers=test_client.auth_headers,
+                                json={'service_ids': ['llama-server'], 'expected_env_revision': revision})
+    assert response.status_code == 200
+    assert captured == {'service_ids': ['llama-server'], 'expected_env_revision': revision}
+
+
+def test_api_settings_env_apply_rejects_malformed_revision(test_client):
+    response = test_client.post('/api/settings/env/apply', headers=test_client.auth_headers,
+                                json={'service_ids': ['llama-server'], 'expected_env_revision': 'nope'})
+    assert response.status_code == 400
+
+
+def test_api_settings_env_apply_propagates_env_revision_mismatch(test_client, monkeypatch):
+    from host_agent_client import AgentHTTPError
+    def fake_call(service_ids, expected_env_revision=None):
+        raise AgentHTTPError(409, 'mismatch', json.dumps({
+            'code': 'env_revision_mismatch',
+            'error': 'Environment file changed since this plan was saved; reload Settings and re-save before applying.',
+        }))
+    monkeypatch.setattr('main._call_agent_core_recreate', fake_call)
+    response = test_client.post('/api/settings/env/apply', headers=test_client.auth_headers,
+                                json={'service_ids': ['llama-server'], 'expected_env_revision': 'c' * 64})
+    assert response.status_code == 409
+    detail = response.json()['detail']
+    assert detail['code'] == 'env_revision_mismatch'
+    assert 'reload' in detail['message'].lower()
+
+
+def test_core_recreate_client_sends_the_expected_revision(monkeypatch):
+    import main
+    captured: dict[str, object] = {}
+    def fake_request(method, path, *, payload, timeout):
+        captured.update(method=method, path=path, payload=payload, timeout=timeout)
+        return {'status': 'ok'}
+    monkeypatch.setattr(main, 'request_agent_json', fake_request)
+    main._call_agent_core_recreate(['llama-server'], 'd' * 64)
+    assert captured['payload'] == {'service_ids': ['llama-server'], 'expected_env_revision': 'd' * 64}
+    main._call_agent_core_recreate(['searxng'])
+    assert captured['payload'] == {'service_ids': ['searxng']}
+
+
+# ── Pixel runtime directory schema (installed Mac placeholders) ──────────────
+#
+# The official native activation on macOS writes PIXEL_INGRESS_RUNTIME_DIR and
+# PIXEL_PREVIEW_RUNTIME_DIR under <install>/data/pixel-native/home/unused-docker-*,
+# while legacy native preparation writes the same leaves without the /home
+# segment. Both layouts must be accepted so unrelated Settings saves are not
+# blocked by installed defaults, while Linux/WSL fixed paths keep working and
+# arbitrary paths, traversal, wrong leaves, and malformed components are
+# rejected before any host write.
+
+_PIXEL_RUNTIME_KEYS = ("PIXEL_INGRESS_RUNTIME_DIR", "PIXEL_PREVIEW_RUNTIME_DIR")
+
+
+def _pixel_runtime_schema(settings_env_fixture):
+    """Install the real shipped definitions for the two Pixel runtime keys."""
+    schema_path = settings_env_fixture["schema_path"]
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    shipped = json.loads(
+        (Path(__file__).resolve().parents[4] / ".env.schema.json").read_text()
+    )
+    for key in (*_PIXEL_RUNTIME_KEYS, "LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"):
+        schema["properties"][key] = shipped["properties"][key]
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    return settings_env_fixture
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        # Official native activation layout (with /home).
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-ingress"),
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-preview"),
+        # Legacy native preparation layout (without /home).
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users/michaelbradley/ods/data/pixel-native/unused-docker-ingress"),
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "/Users/michaelbradley/ods/data/pixel-native/unused-docker-preview"),
+        # Install prefix containing a space must still be accepted.
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users/michael bradley/ods/data/pixel-native/home/unused-docker-ingress"),
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "/Users/michael bradley/ods/data/pixel-native/unused-docker-preview"),
+        # Linux and WSL fixed paths remain valid.
+        ("PIXEL_INGRESS_RUNTIME_DIR", "/run/ods-pixel"),
+        ("PIXEL_PREVIEW_RUNTIME_DIR", "/run/ods-pixel-preview"),
+        ("PIXEL_INGRESS_RUNTIME_DIR", "/mnt/wsl/ods-portal-runtime/ingress"),
+        ("PIXEL_PREVIEW_RUNTIME_DIR", "/mnt/wsl/ods-portal-runtime/preview"),
+    ],
+)
+def test_settings_saves_installed_pixel_runtime_dirs_with_unrelated_tuning(
+    test_client, settings_env_fixture, key, value,
+):
+    """Public Settings PUT accepts installed Mac placeholders and Linux/WSL paths."""
+    fixture = _pixel_runtime_schema(settings_env_fixture)
+    env_path = fixture["env_path"]
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + f"{key}={value}\n",
+        encoding="utf-8",
+    )
+    original_secret = "sk-live-secret"
+    response = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={"mode": "form", "values": {"LLAMA_ARG_CACHE_TYPE_K": "q8_0", "LLAMA_ARG_CACHE_TYPE_V": "q8_0"}},
+    )
+    assert response.status_code == 200, response.text
+    from settings import _parse_env_text
+    persisted, issues = _parse_env_text(env_path.read_text(encoding="utf-8"))
+    assert issues == []
+    assert persisted[key] == value
+    assert persisted["LLAMA_ARG_CACHE_TYPE_K"] == "q8_0"
+    assert persisted["LLAMA_ARG_CACHE_TYPE_V"] == "q8_0"
+    assert persisted["OPENAI_API_KEY"] == original_secret
+    assert original_secret not in response.text
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        # Wrong leaf for the key.
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-preview"),
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-ingress"),
+        # Traversal in the install prefix.
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users/../ods/data/pixel-native/home/unused-docker-ingress"),
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "/Users/./ods/data/pixel-native/unused-docker-preview"),
+        # Double slash in the install prefix.
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users//ods/data/pixel-native/home/unused-docker-ingress"),
+        # Relative path.
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "Users/ods/data/pixel-native/unused-docker-preview"),
+        # Control character in the install prefix.
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users/ods\x01/data/pixel-native/home/unused-docker-ingress"),
+        # Backslash in the install prefix.
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "/Users/ods\\data/pixel-native/unused-docker-preview"),
+        # Trailing newline must not be silently accepted.
+        ("PIXEL_INGRESS_RUNTIME_DIR",
+         "/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-ingress\n"),
+        # Arbitrary root path with the right leaf but no install prefix.
+        ("PIXEL_PREVIEW_RUNTIME_DIR",
+         "/data/pixel-native/unused-docker-preview"),
+    ],
+)
+def test_settings_rejects_invalid_pixel_runtime_dirs_before_host_write(
+    test_client, settings_env_fixture, monkeypatch, key, value,
+):
+    """Public Settings PUT rejects malformed Pixel runtime dirs without writing."""
+    from unittest.mock import Mock
+
+    import main
+
+    fixture = _pixel_runtime_schema(settings_env_fixture)
+    write = Mock(wraps=main._call_agent_env_update)
+    monkeypatch.setattr("main._call_agent_env_update", write)
+    env_path = fixture["env_path"]
+    original = env_path.read_bytes()
+    response = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={"mode": "form", "values": {key: value}},
+    )
+    assert response.status_code == 400, response.text
+    assert key in json.dumps(response.json()["detail"])
+    write.assert_not_called()
+    assert env_path.read_bytes() == original
+    assert not (fixture["data_root"] / "config-backups").exists()
+
+
+@pytest.mark.parametrize("method", ["get", "put"])
+@pytest.mark.parametrize("failure", ["io", "missing", "permission", "encoding"])
+def test_settings_env_read_failure_never_uses_empty_configuration(
+    test_client, settings_env_fixture, monkeypatch, method, failure,
+):
+    from unittest.mock import Mock
+    import main
+
+    env_path = settings_env_fixture["env_path"]
+    original = env_path.read_bytes()
+    real_read = Path.read_text
+    errors = {
+        "io": OSError("private-path sk-live-secret"),
+        "missing": FileNotFoundError("private-path sk-live-secret"),
+        "permission": PermissionError("private-path sk-live-secret"),
+        "encoding": UnicodeDecodeError("utf-8", b"\xff", 0, 1, "private-path"),
+    }
+
+    def failed_read(path, *args, **kwargs):
+        if path == env_path:
+            raise errors[failure]
+        return real_read(path, *args, **kwargs)
+
+    write = Mock(wraps=main._call_agent_env_update)
+    monkeypatch.setattr(main, "_call_agent_env_update", write)
+    with monkeypatch.context() as fault:
+        fault.setattr(Path, "read_text", failed_read)
+        kwargs = {"headers": test_client.auth_headers}
+        if method == "put":
+            kwargs["json"] = {"mode": "form", "values": {"LLM_BACKEND": "cloud"}}
+        response = getattr(test_client, method)("/api/settings/env", **kwargs)
+
+    assert response.status_code == 503, response.text
+    assert "private-path" not in response.text
+    assert "sk-live-secret" not in response.text
+    assert str(env_path) not in response.text
+    write.assert_not_called()
+    assert env_path.read_bytes() == original
+    assert not (settings_env_fixture["data_root"] / "config-backups").exists()
+    assert main._cache.get("settings_env") is None
+    recovered = test_client.get("/api/settings/env", headers=test_client.auth_headers)
+    assert recovered.status_code == 200
+    assert recovered.json()["values"]["LLM_BACKEND"] == "local"
+
+
+@pytest.mark.parametrize("contents", ["", "# comment only\n", "OPENAI_API_KEY=sk-live-secret\nmalformed private-data\n"])
+def test_settings_save_rejects_incomplete_merge_base(
+    test_client, settings_env_fixture, monkeypatch, contents,
+):
+    from unittest.mock import Mock
+    import main
+
+    env_path = settings_env_fixture["env_path"]
+    env_path.write_text(contents, encoding="utf-8")
+    original = env_path.read_bytes()
+    write = Mock(wraps=main._call_agent_env_update)
+    monkeypatch.setattr(main, "_call_agent_env_update", write)
+    response = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                               json={"mode": "form", "values": {"LLM_BACKEND": "cloud"}})
+    assert response.status_code == 503, response.text
+    assert "sk-live-secret" not in response.text and "private-data" not in response.text
+    write.assert_not_called()
+    assert env_path.read_bytes() == original
+    assert not (settings_env_fixture["data_root"] / "config-backups").exists()
+
+
+def test_settings_transient_restore_read_failure_preserves_saved_values(
+    test_client, settings_env_fixture, monkeypatch,
+):
+    from unittest.mock import Mock
+    import main
+    from settings import _parse_env_text
+
+    env_path = settings_env_fixture["env_path"]
+    original, _ = _parse_env_text(env_path.read_text(encoding="utf-8"))
+    write = Mock(wraps=main._call_agent_env_update)
+    monkeypatch.setattr(main, "_call_agent_env_update", write)
+    first = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                           json={"mode": "form", "values": {"LLAMA_ARG_N_CPU_MOE": "25"}})
+    assert first.status_code == 200
+    saved = env_path.read_bytes()
+    backup_path = settings_env_fixture["data_root"] / "config-backups/.env.backup.test"
+    backup = backup_path.read_bytes()
+    real_read = Path.read_text
+
+    def failed_read(path, *args, **kwargs):
+        if path == env_path:
+            raise OSError("simulated transient file-sharing failure")
+        return real_read(path, *args, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(Path, "read_text", failed_read)
+        second = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                                json={"mode": "form", "values": {"LLAMA_ARG_N_CPU_MOE": ""}})
+    assert second.status_code == 503, second.text
+    assert write.call_count == 1
+    assert env_path.read_bytes() == saved
+    assert backup_path.read_bytes() == backup
+    third = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                           json={"mode": "form", "values": {"LLAMA_ARG_N_CPU_MOE": ""}})
+    assert third.status_code == 200
+    restored, issues = _parse_env_text(env_path.read_text(encoding="utf-8"))
+    assert not issues
+    assert "LLAMA_ARG_N_CPU_MOE" not in restored
+    assert all(restored[key] == value for key, value in original.items())
+
+
+@pytest.mark.parametrize("value", ["-1", "6", "1.5", "not-an-integer", True])
+def test_settings_rejects_invalid_llama_log_verbosity_before_write(
+    test_client, constrained_settings, monkeypatch, value,
+):
+    from unittest.mock import Mock
+
+    import main
+    write = Mock(wraps=main._call_agent_env_update)
+    monkeypatch.setattr(main, "_call_agent_env_update", write)
+    env_path = constrained_settings["env_path"]
+    original = env_path.read_bytes()
+    response = test_client.put(
+        "/api/settings/env", headers=test_client.auth_headers,
+        json={"mode": "form", "values": {"LLAMA_LOG_VERBOSITY": value}},
+    )
+    assert response.status_code == 400, response.text
+    write.assert_not_called()
+    assert env_path.read_bytes() == original
+
+
+@pytest.mark.parametrize("level", ["0", "4", "5"])
+def test_settings_log_verbosity_save_apply_and_clear(
+    test_client, constrained_settings, monkeypatch, level,
+):
+    from settings import _parse_env_text
+
+    applied = []
+    monkeypatch.setattr(
+        "main._call_agent_core_recreate",
+        lambda services, expected_env_revision=None: applied.append((services, expected_env_revision)),
+    )
+    env_path = constrained_settings["env_path"]
+    before, issues = _parse_env_text(env_path.read_text(encoding="utf-8"))
+    assert not issues
+    for value in (level, ""):
+        saved = test_client.put(
+            "/api/settings/env", headers=test_client.auth_headers,
+            json={"mode": "form", "values": {"LLAMA_LOG_VERBOSITY": value}},
+        )
+        assert saved.status_code == 200, saved.text
+        plan = saved.json()["applyPlan"]
+        assert plan["supported"] and plan["services"] == ["llama-server"]
+        revision = hashlib.sha256(env_path.read_bytes()).hexdigest()
+        assert plan["envRevision"] == revision
+        current, issues = _parse_env_text(env_path.read_text(encoding="utf-8"))
+        assert not issues
+        if value:
+            assert current.pop("LLAMA_LOG_VERBOSITY") == value
+        else:
+            assert "LLAMA_LOG_VERBOSITY" not in current
+        # The existing serializer adds blank optional schema fields. It must
+        # preserve every original value and introduce no unrelated setting.
+        assert all(current.get(key) == value for key, value in before.items())
+        assert all(value == "" for key, value in current.items() if key not in before)
+        response = test_client.post(
+            "/api/settings/env/apply", headers=test_client.auth_headers,
+            json={"service_ids": ["llama-server"], "expected_env_revision": revision},
+        )
+        assert response.status_code == 200, response.text
+        assert applied[-1] == (["llama-server"], revision)

@@ -695,7 +695,7 @@ def test_real_launchd_recovery_guard_accepts_journal_but_normal_lock_refuses(tmp
     upgrade.RecoveryJournal.create(path, value)
     held = []
     @contextmanager
-    def base_lock(self):
+    def base_lock(self, *, wait_seconds=0):
         held.append(True)
         try:
             yield

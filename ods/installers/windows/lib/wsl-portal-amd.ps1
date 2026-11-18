@@ -310,8 +310,30 @@ function Stop-ODSPortalDisarmedTaskTree {
         }
     }
     if (-not $root -and -not $recovered.Count) {
-        if ($Task.State -notin @('Ready', 'Disabled') -or @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue).Count) {
-            throw "Cannot prove ownership of the model runtime on port $Port. No process was stopped; close the previous ODS runtime explicitly before retrying."
+        $refusal = "Cannot prove ownership of the model runtime on port $Port. No process was stopped; close the previous ODS runtime explicitly before retrying."
+        if ($Task.State -notin @('Ready', 'Disabled')) { throw $refusal }
+        $listeners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+        if ($listeners.Count) {
+            # After a reboot another application may take the old port. A
+            # stopped ODS task needs no process teardown, but only when no
+            # matching server or task wrapper remains anywhere in the snapshot.
+            $actionCommands = foreach ($exe in @($ActionExe, [string]$Action.Execute) | Select-Object -Unique) {
+                '"' + $exe + '" ' + $Action.Arguments
+                $exe + ' ' + $Action.Arguments
+            }
+            if (@($nodes | Where-Object {
+                $_.ExecutablePath -ieq $ExecutablePath -or
+                ($_.ExecutablePath -ieq $ActionExe -and
+                    (-not $_.CommandLine -or $_.CommandLine -cin $actionCommands))
+            }).Count) { throw $refusal }
+            foreach ($listener in $listeners) {
+                $listenerPid = [int]$listener.OwningProcess
+                $owners = @($nodes | Where-Object { $_.ProcessId -eq $listenerPid })
+                if ($listenerPid -lt 1 -or $owners.Count -ne 1 -or
+                    -not [IO.Path]::IsPathRooted([string]$owners[0].ExecutablePath)) { throw $refusal }
+            }
+            # Every listener belongs to a different, identified executable.
+            # Leave it untouched; cutover still checks the requested new port.
         }
         return
     }

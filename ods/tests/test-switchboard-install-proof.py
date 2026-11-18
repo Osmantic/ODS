@@ -1,9 +1,14 @@
 """Exercise host route scheduling without starting a real host service."""
 import ast
 from pathlib import Path
+import sys
+import tempfile
 import threading
 import unittest
 from unittest.mock import Mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bin'))
+from model_switchboard import state as switchboard_state  # noqa: E402
 
 
 class InstallProof(unittest.TestCase):
@@ -81,6 +86,59 @@ class InstallProof(unittest.TestCase):
         ns['_wait_for_model_readiness'] = proof
         self.assertFalse(ns['_publish_verified_initial_switchboard_route'](reason='startup'))
         state.record_verified_route.assert_not_called()
+
+    def test_vllm_install_route_reconstructs_then_publishes_through_the_state_module(self):
+        tree = ast.parse((Path(__file__).parents[1] / 'bin/ods-host-agent.py').read_text(encoding='utf-8'))
+        names = {'_prepare_initial_switchboard_verification', '_publish_verified_initial_switchboard_route'}
+        module = ast.Module(body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names], type_ignores=[])
+        env = {'LLM_BACKEND': 'vllm', 'VLLM_SERVED_MODEL': 'GLM-5.3-Flash-NVFP4',
+               'LLM_MODEL': 'glm-5.3-flash-nvfp4', 'MAX_CONTEXT': '131072'}
+        vllm_backend = {'kind': 'vllm', 'endpointId': 'vllm-default', 'nativeRoute': None}
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / 'model-state.json'
+            # Startup reconstruction from .env, as the host agent runs it.
+            reconstructed = switchboard_state.initialize_if_missing(state_path, env)
+            self.assertEqual(reconstructed['active']['backend'], vllm_backend)
+            self.assertIs(reconstructed['active']['reconstructed'], True)
+            ns = dict(
+                _switchboard_state=switchboard_state,
+                _switchboard_initial_verify_cancel=threading.Event(),
+                _model_lifecycle_state_lock=threading.Lock(),
+                _model_lifecycle_operation=None,
+                _pixel_model_transition_pending_for_route_proof=lambda: False,
+                _switchboard_state_path=lambda: state_path,
+                _switchboard_state_needs_current_env_verification=lambda path, env=None: True,
+                # What the host agent serves without a GGUF_FILE: the identity.
+                _current_runtime_model_inputs=lambda env, identity: (
+                    identity['runtimeModelId'], identity['catalogId']),
+                _catalog_model_for_current_env=lambda env: ('glm-5.3-flash-nvfp4', {'tools': True}),
+                # Stubbed: the route the host agent publishes for LLM_BACKEND=vllm.
+                _initial_switchboard_backend=lambda env: (
+                    'vllm', switchboard_state.default_endpoint_id('vllm'), None),
+                _wait_for_model_readiness=lambda *args, **kwargs: {
+                    'identity': 'GLM-5.3-Flash-NVFP4', 'contextLength': 131072},
+                _initial_switchboard_route_env_matches=lambda env: True,
+                _runtime_model_identity_matches=lambda *args, **kwargs: True,
+                _model_agent_viable=lambda model, context: True,
+                _model_profiles_mode=lambda env: 'observe',
+                _SWITCHBOARD_ROUTE_ENV_KEYS=(),
+                load_env=lambda path: dict(env),
+                INSTALL_DIR=Path(tmp),
+                logger=Mock(),
+            )
+            exec(compile(module, '<host proof functions>', 'exec'), ns)
+            self.assertTrue(ns['_publish_verified_initial_switchboard_route'](reason='install'))
+            doc, errors = switchboard_state.read_state(state_path)
+        self.assertEqual(errors, [])
+        active = doc['active']
+        self.assertEqual(active['backend'], vllm_backend)
+        self.assertEqual(active['catalogId'], 'glm-5.3-flash-nvfp4')
+        self.assertEqual(active['runtimeModelId'], 'GLM-5.3-Flash-NVFP4')
+        self.assertEqual(active['contextLength'], 131072)
+        self.assertEqual(active['proof'], {'identity': 'GLM-5.3-Flash-NVFP4', 'completion': True})
+        self.assertNotIn('reconstructed', active)
+        # Proving the reconstructed route keeps it: no new route, no history.
+        self.assertEqual((doc['seq'], doc['routeSeq'], doc['history']), (2, 1, []))
 
 
 if __name__ == '__main__':

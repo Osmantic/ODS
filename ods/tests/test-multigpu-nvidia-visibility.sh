@@ -25,7 +25,9 @@ fi
 grep -q 'LLAMA_SERVER_GPU_UUIDS must be set' "$tmp_dir/missing.err" \
     || { cat "$tmp_dir/missing.err" >&2; exit 1; }
 
+# NVIDIA_VISIBLE_DEVICES alone is overridden by the base overlay's `count: all`
+# reservation; CUDA_VISIBLE_DEVICES is what actually limits llama.cpp.
 WEBUI_SECRET=test LLAMA_SERVER_GPU_UUIDS=GPU-a,GPU-b "${compose[@]}" \
-    | python3 -c 'import json, sys; config=json.load(sys.stdin); visible=config["services"]["llama-server"]["environment"]["NVIDIA_VISIBLE_DEVICES"]; assert visible == "GPU-a,GPU-b", visible'
+    | python3 -c 'import json, sys; env=json.load(sys.stdin)["services"]["llama-server"]["environment"]; assert env["NVIDIA_VISIBLE_DEVICES"] == "GPU-a,GPU-b", env; assert env["CUDA_VISIBLE_DEVICES"] == "GPU-a,GPU-b", env'
 
 echo "test-multigpu-nvidia-visibility: ok"
