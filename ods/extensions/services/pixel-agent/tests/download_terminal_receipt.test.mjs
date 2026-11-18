@@ -40,9 +40,12 @@ function harness(wrapped, expectedDigest = true) {
     mutate(details);
     finish('pixel_ops_job_wait', {jobId}, {details});
     const params = {command: 'node --test'};
-    guard.beforeToolCall({toolName: 'exec', params}, {...ctx, toolName: 'exec'}, 'pixel');
-    guard.afterToolCall({toolName: 'exec', params, result: {details: {status: 'completed', exitCode: 0},
-      content: [{type: 'text', text: '# tests 6\n# pass 6\n# fail 0\n'}]}}, {...ctx, toolName: 'exec'}, 'pixel');
+    const execContext = {...ctx, toolName: 'exec', toolCallId: 'local-node-tests'};
+    const decision = guard.beforeToolCall({toolName: 'exec', params}, execContext, 'pixel');
+    assert.notEqual(decision?.block, true, decision?.blockReason);
+    guard.afterToolCall({toolName: 'exec', params: decision?.params ?? params,
+      result: {details: {status: 'completed', exitCode: 0},
+      content: [{type: 'text', text: '# tests 6\n# pass 6\n# fail 0\n'}]}}, execContext, 'pixel');
     return guard.verificationForRun(ctx.runId);
   }
   function deliver() {

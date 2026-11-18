@@ -116,7 +116,14 @@ def retire(install_dir: Path, *, validate_only: bool = False) -> dict:
     startup = wsl_lemonade.disable_startup(root, values, retire_relay=True)
     if managed and managed['managed']:
         wsl_lemonade.stop(root, runtime_values, managed['planDigest'])
-    return {'state': 'retired', 'startup': startup['state']}
+    result = {'state': 'retired', 'startup': startup['state']}
+    failures = startup.get('shortcutCleanupFailures') if isinstance(startup, dict) else None
+    if failures:
+        result['shortcutCleanupFailures'] = failures
+        print('Warning: ODS shortcut cleanup was incomplete. Close applications '
+              'using them and remove the remaining shortcuts manually. '
+              'The shortcut ownership record has been retained.', file=sys.stderr)
+    return result
 
 
 def main() -> int:

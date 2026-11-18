@@ -52,7 +52,8 @@ def library_runtime(tmp_path, monkeypatch, shipped_agent):
 
     def docker(command, **kwargs):
         if command[:2] == ["docker", "ps"]:
-            service_id = command[3].rsplit("=", 1)[-1]
+            label = next(arg for arg in command if arg.startswith("label=com.docker.compose.service="))
+            service_id = label.rsplit("=", 1)[-1]
             return subprocess.CompletedProcess(command, 0, stdout=f"ods-{service_id}\n", stderr="")
         assert command[:2] == ["docker", "restart"]
         failure["docker_calls"].append(command)

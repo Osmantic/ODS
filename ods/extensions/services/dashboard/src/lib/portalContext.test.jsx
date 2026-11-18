@@ -1,5 +1,5 @@
 import {act,renderHook,waitFor} from '@testing-library/react'
-import {compactCommand,historySnapshot,parseConversationContext,usePortalContext} from './portalContext'
+import {compactCommand,historySnapshot,parseConversationContext,STOP_UNCONFIRMED,usePortalContext} from './portalContext'
 
 const context=(used=1200)=>({schemaVersion:1,status:'ready',sessionRevision:null,model:{id:'small',provider:'local',contextWindow:4096},
   context:{used,window:4096,measuredAt:'2026-09-16T12:00:00.000Z'},compaction:{status:'idle',count:0},history:{revision:null,acknowledgedMessages:2}})
@@ -129,6 +129,152 @@ it('never cancels from inspection and requires unknown history plus an explicit 
   await act(async()=>expect(await result.current.resolveInterrupted()).toBe(true))
   expect(fetch.mock.calls.filter(([url])=>url.endsWith('/cancel')).map(([,options])=>JSON.parse(options.body))).toEqual([{chat_id:'a'}])
   expect(result.current.historyUnknown).toBe(false)
+})
+
+it('settles an unconfirmed last turn through the server by itself, on a growing interval and without a stop',async()=>{
+  vi.useFakeTimers()
+  try {
+    let history='unknown',checks=0
+    globalThis.fetch=vi.fn().mockImplementation(async url=>{
+      if(url.endsWith('/activity')){checks+=1;if(checks===2)history='ready';return response({state:checks===2?'terminal':'unknown'})}
+      return response({...context(),status:history==='unknown'?'unavailable':'ready',history:{...context().history,status:history}})
+    })
+    const {result}=renderHook(()=>usePortalContext({chatId:'a',runtimeKey:'small',capacity:4096,onPendingChange:vi.fn()}))
+    await act(async()=>{})
+    expect(result.current.historyUnknown).toBe(true)
+    // Until a check fails to prove the turn is over, the owner is not asked.
+    expect(result.current.historyChecking).toBe(true)
+    await act(async()=>vi.advanceTimersByTimeAsync(1000))
+    expect(checks).toBe(1)
+    expect(result.current.historyChecking).toBe(false)
+    expect(result.current.canResolve).toBe(true)
+    await act(async()=>vi.advanceTimersByTimeAsync(1999))
+    expect(checks).toBe(1)
+    await act(async()=>vi.advanceTimersByTimeAsync(1))
+    expect(checks).toBe(2)
+    expect(result.current.historyUnknown).toBe(false)
+    const calls=fetch.mock.calls.length
+    await act(async()=>vi.advanceTimersByTimeAsync(10*60_000))
+    expect(fetch).toHaveBeenCalledTimes(calls)
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/cancel'))).toHaveLength(0)
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/activity')).map(([,options])=>JSON.parse(options.body))).toEqual([{chat_id:'a'},{chat_id:'a'}])
+  }finally {vi.useRealTimers()}
+})
+
+it('checks an unprovable last turn at most every minute instead of every two seconds',async()=>{
+  vi.useFakeTimers()
+  try {
+    globalThis.fetch=vi.fn().mockImplementation(async url=>response(url.endsWith('/activity')?{state:'unknown'}:{...context(),status:'unavailable',history:{...context().history,status:'unknown'}}))
+    renderHook(()=>usePortalContext({chatId:'a',runtimeKey:'small',capacity:4096,onPendingChange:vi.fn()}))
+    // Step the clock so each check's re-render schedules the next one.
+    for(let second=0;second<10*60;second++)await act(async()=>vi.advanceTimersByTimeAsync(1000))
+    // 1, 2, 4, 8, 15, 30 s, then once a minute: 15 checks in ten minutes, not 300.
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/activity')).length).toBeLessThanOrEqual(16)
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/context')).length).toBeLessThanOrEqual(17)
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/cancel'))).toHaveLength(0)
+  }finally {vi.useRealTimers()}
+})
+
+it('waits for work the server still runs, never offers Continue for it, and frees the chat when it ends',async()=>{
+  vi.useFakeTimers()
+  try {
+    let history='unknown',state='active'
+    globalThis.fetch=vi.fn().mockImplementation(async url=>{
+      if(url.endsWith('/activity')){if(state==='terminal')history='ready';return response({state})}
+      return response({...context(),status:history==='unknown'?'busy':'ready',history:{...context().history,status:history}})
+    })
+    const {result}=renderHook(()=>usePortalContext({chatId:'a',runtimeKey:'small',capacity:4096,onPendingChange:vi.fn()}))
+    await act(async()=>{})
+    expect(result.current.historyActive).toBe(false)
+    await act(async()=>vi.advanceTimersByTimeAsync(1000))
+    expect(result.current.historyUnknown).toBe(true)
+    expect(result.current.historyActive).toBe(true)
+    // Continue stops whatever is left over, so it is neither offered nor sent.
+    expect(result.current.canResolve).toBe(false)
+    await act(async()=>expect(await result.current.resolveInterrupted()).toBe(false))
+    // Running work is checked at least every 15 s, not once a minute.
+    for(let second=0;second<5*60;second++)await act(async()=>vi.advanceTimersByTimeAsync(1000))
+    const checks=fetch.mock.calls.filter(([url])=>url.endsWith('/activity')).length
+    expect(checks).toBeGreaterThanOrEqual(20)
+    expect(checks).toBeLessThanOrEqual(26)
+    expect(result.current.historyActive).toBe(true)
+    state='terminal'
+    for(let second=0;second<15;second++)await act(async()=>vi.advanceTimersByTimeAsync(1000))
+    expect(result.current.historyUnknown).toBe(false)
+    expect(result.current.historyActive).toBe(false)
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/cancel'))).toHaveLength(0)
+  }finally {vi.useRealTimers()}
+})
+
+it('stops work the server still runs only on the owner’s Stop, and frees the chat once that is confirmed',async()=>{
+  vi.useFakeTimers()
+  try {
+    let history='unknown',aborted=false
+    globalThis.fetch=vi.fn().mockImplementation(async url=>{
+      if(url.endsWith('/activity'))return response({state:'active'})
+      if(url.endsWith('/cancel')){if(aborted)history='ready';return response({aborted})}
+      return response({...context(),status:history==='unknown'?'busy':'ready',history:{...context().history,status:history}})
+    })
+    const {result}=renderHook(()=>usePortalContext({chatId:'a',runtimeKey:'small',capacity:4096,onPendingChange:vi.fn()}))
+    await act(async()=>{})
+    await act(async()=>vi.advanceTimersByTimeAsync(1000))
+    expect(result.current.historyActive).toBe(true)
+    expect(result.current.canStop).toBe(true)
+    expect(result.current.canResolve).toBe(false)
+    // Nothing is stopped without the owner.
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/cancel'))).toHaveLength(0)
+    await act(async()=>expect(await result.current.stopHistory()).toBe(false))
+    expect(result.current.recoveryFailed).toBe(true)
+    expect(result.current.recoveryNotice).toBe(STOP_UNCONFIRMED)
+    expect(STOP_UNCONFIRMED).toBe('Portal could not confirm the stop yet. Try Stop again in a moment.')
+    aborted=true
+    await act(async()=>expect(await result.current.stopHistory()).toBe(true))
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/cancel')).map(([,options])=>JSON.parse(options.body))).toEqual([{chat_id:'a'},{chat_id:'a'}])
+    expect(result.current.historyUnknown).toBe(false)
+    expect(result.current.historyActive).toBe(false)
+  }finally {vi.useRealTimers()}
+})
+
+it('offers Continue when nothing runs but an older Portal could not record that',async()=>{
+  vi.useFakeTimers()
+  try {
+    // An older pixel edge remembers the chat ended but cannot settle its history.
+    globalThis.fetch=vi.fn().mockImplementation(async url=>response(url.endsWith('/activity')?{state:'terminal'}:{...context(),status:'unavailable',history:{...context().history,status:'unknown'}}))
+    const {result}=renderHook(()=>usePortalContext({chatId:'a',runtimeKey:'small',capacity:4096,onPendingChange:vi.fn()}))
+    await act(async()=>{})
+    expect(result.current.historyChecking).toBe(true)
+    await act(async()=>vi.advanceTimersByTimeAsync(1000))
+    expect(result.current.historyUnknown).toBe(true)
+    expect(result.current.historyChecking).toBe(false)
+    expect(result.current.historyActive).toBe(false)
+    expect(result.current.canResolve).toBe(true)
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/cancel'))).toHaveLength(0)
+  }finally {vi.useRealTimers()}
+})
+
+it('waits for the page to settle its own turn, but never blocks the owner’s Continue',async()=>{
+  vi.useFakeTimers()
+  try {
+    let history='unknown'
+    globalThis.fetch=vi.fn().mockImplementation(async url=>{
+      if(url.endsWith('/cancel')){history='ready';return response({aborted:true})}
+      return response(url.endsWith('/activity')?{state:'unknown'}:{...context(),status:'unavailable',history:{...context().history,status:history}})
+    })
+    const props={chatId:'a',runtimeKey:'small',capacity:4096,onPendingChange:vi.fn(),held:true}
+    const {result,rerender}=renderHook(value=>usePortalContext(value),{initialProps:props})
+    await act(async()=>vi.advanceTimersByTimeAsync(5*60_000))
+    expect(result.current.historyUnknown).toBe(true)
+    // The page checks its interrupted turn itself; nothing here doubles it.
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/activity'))).toHaveLength(0)
+    expect(await result.current.compact()).toBe(false)
+    // The explicit action is exactly what an unconfirmed turn needs.
+    expect(result.current.canResolve).toBe(true)
+    await act(async()=>expect(await result.current.resolveInterrupted()).toBe(true))
+    expect(fetch.mock.calls.filter(([url])=>url.endsWith('/cancel')).map(([,options])=>JSON.parse(options.body))).toEqual([{chat_id:'a'}])
+    expect(result.current.historyUnknown).toBe(false)
+    rerender({...props,held:false,blocked:true})
+    expect(result.current.canResolve).toBe(false)
+  }finally {vi.useRealTimers()}
 })
 
 it.each(['runtime-restarted','result-unconfirmed'])('distinguishes a stopped runtime from an unconfirmed running compaction (%s)',async reason=>{

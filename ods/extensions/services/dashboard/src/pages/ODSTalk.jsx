@@ -13,7 +13,9 @@ import HelpLink from '../components/HelpLink'
 const MARKDOWN_COMPONENTS = {
   p: ({ children }) => <p className="break-words [&:not(:first-child)]:mt-3">{children}</p>,
   ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
-  ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
+  // Keep the list's start number: a reply of exactly "144." is a list that
+  // starts at 144 with an empty item, and dropping it showed a bare "1.".
+  ol: ({ children, start }) => <ol start={start} className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
   li: ({ children }) => <li className="break-words">{children}</li>,
   strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
   em: ({ children }) => <em className="italic">{children}</em>,
@@ -98,6 +100,16 @@ function makeId(prefix) {
 async function parseError(resp, fallback) {
   const body = await resp.json().catch(() => ({}))
   return body.detail || fallback || `Request failed: ${resp.status}`
+}
+
+// Hermes ends failed and interrupted turns with the same terminal reply as
+// answers; its status tells them apart. No status keeps the legacy
+// successful-completion contract. Returns the error text, or null on success.
+function failedOutcomeMessage(status) {
+  if (status == null || status === '' || status === 'ok' || status === 'complete') return null
+  if (status === 'interrupted') return 'The response was interrupted before it finished.'
+  if (status === 'error') return 'Hermes reported an error before finishing the response.'
+  return 'The response ended with an unrecognized outcome.'
 }
 
 export default function ODSTalk() {
@@ -518,6 +530,9 @@ export default function ODSTalk() {
     let assembled = ''
     let finalWarning = null
     let errorDetail = null
+    let completed = false
+    let streamDone = false
+    let reader
 
     // AbortController so navigating away / re-sending mid-flight cancels the
     // in-flight stream. Server-side the bridge stops pulling from llama-server
@@ -563,14 +578,14 @@ export default function ODSTalk() {
         throw new Error(await parseError(resp, 'Hermes did not answer.'))
       }
 
-      const reader = resp.body.getReader()
+      reader = resp.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
       // SSE frames are separated by a blank line (\n\n). Buffer partial frames
       // across reads — chunked transport can split mid-frame. Lines starting
       // with ``:`` are SSE comments (keepalives); we discard them by filtering
       // for ``data:`` only below.
-      while (true) {
+      while (!streamDone) {
         const { value, done } = await reader.read()
         if (done) break
         buffer += decoder.decode(value, { stream: true })
@@ -611,9 +626,22 @@ export default function ODSTalk() {
                 ? { ...item, statusLabel: label, statusTool: tool, statusDetail: detail }
                 : item,
             ))
+          } else if (payload.type === 'done') {
+            streamDone = true
+            break
           } else if (payload.type === 'complete') {
-            if (typeof payload.text === 'string' && payload.text) assembled = payload.text
+            // Hermes uses this terminal event for failed/interrupted turns too.
+            const failure = failedOutcomeMessage(payload.status)
+            if (typeof payload.text === 'string' && payload.text && (!failure || !assembled)) {
+              assembled = payload.text
+            }
             finalWarning = payload.warning || null
+            if (failure) {
+              // Terminal cancellation metadata must not replace useful deltas.
+              errorDetail = failure
+            } else {
+              completed = true
+            }
           } else if (payload.type === 'error') {
             errorDetail = payload.detail || 'Hermes did not finish the response.'
           } else if (payload.type === 'approval') {
@@ -637,6 +665,9 @@ export default function ODSTalk() {
       }
 
       if (errorDetail) throw new Error(errorDetail)
+      // A closed connection is not a completion receipt. Keep received text
+      // for recovery, but never announce or speak an interrupted answer.
+      if (!completed) throw new Error('The response ended before it was complete. Retry the message when the connection is available.')
       const reply = assembled || 'I did not get a response back.'
       setMessages(items => items.map(item =>
         item.id === assistantId
@@ -651,11 +682,17 @@ export default function ODSTalk() {
       } else {
         setMessages(items => items.map(item =>
           item.id === assistantId
-            ? { ...item, text: err.message || 'Something went wrong.', status: 'error', approval: null }
+            ? { ...item, text: assembled, errorDetail: err.message || 'Something went wrong.', status: 'error', approval: null }
             : item,
         ))
       }
     } finally {
+      // `done` is the protocol boundary even if the HTTP socket stays open.
+      // Cancel unread bytes and release the lock on success and failure.
+      if (reader) {
+        void reader.cancel?.().catch(() => {})
+        reader.releaseLock?.()
+      }
       if (streamControllerRef.current === controller) {
         streamControllerRef.current = null
       }
@@ -692,9 +729,22 @@ export default function ODSTalk() {
         throw new Error(await parseError(resp, 'Voice message could not be sent.'))
       }
       const data = await resp.json()
+      const transcript = data.transcript || 'Voice message'
+      // The bridge passes Hermes' turn status through, as on the text path.
+      // A failed or interrupted turn keeps what Hermes returned, is never
+      // spoken, and offers Retry, which resends the transcript as text.
+      const failure = failedOutcomeMessage(data.status)
+      if (failure) {
+        setMessages(items => items.map(item => {
+          if (item.id === userId) return { ...item, text: transcript, status: 'done' }
+          if (item.id === assistantId) return { ...item, text: data.text || '', errorDetail: failure, status: 'error' }
+          return item
+        }))
+        return
+      }
       const reply = data.text || 'I did not get a response back.'
       setMessages(items => items.map(item => {
-        if (item.id === userId) return { ...item, text: data.transcript || 'Voice message', status: 'done' }
+        if (item.id === userId) return { ...item, text: transcript, status: 'done' }
         if (item.id === assistantId) return { ...item, text: reply, status: 'done', warning: data.warning || null }
         return item
       }))
@@ -1106,6 +1156,11 @@ function MessageBubble({ message, onApproval }) {
           <div className="space-y-0 text-[15px] leading-6">
             <ReactMarkdown components={MARKDOWN_COMPONENTS}>{message.text}</ReactMarkdown>
           </div>
+        )}
+        {message.errorDetail && (
+          <p className="mt-2 whitespace-pre-wrap break-words" role="alert">
+            {message.errorDetail} <HelpLink className="text-xs" />
+          </p>
         )}
         {message.warning && (
           <p className="mt-2 text-xs text-theme-text-secondary">{message.warning}</p>

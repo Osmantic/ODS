@@ -1,92 +1,32 @@
 #!/bin/bash
-# Shared launchd bridge management for the macOS installer and CLI.
+# Shared, ownership-bound launchd bridge management for the installer and CLI.
 
 macos_configure_port_bridge() {
     local enabled="$1" label="$2" plist="$3" log_path="$4" description="$5"
     local listen_host="$6" listen_port="$7" target_port="$8" allowed_peer="$9"
     local install_dir="${10}"
     local bridge_python="${MACOS_BRIDGE_PYTHON:-/usr/bin/python3}"
-
-    launchctl bootout "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
-    rm -f "$plist" 2>/dev/null || true
-    [[ "$enabled" == "true" ]] || return 0
-
-    local bridge_script="${install_dir}/bin/ods-macos-llm-bridge.py"
-    if [[ ! -f "$bridge_script" ]]; then
-        ai_err "Colima host bridge is missing: ${bridge_script}"
+    local manager="${install_dir}/bin/macos_bridge_service.py"
+    if [[ ! -f "$manager" ]]; then
+        ai_err "Colima bridge manager is missing: ${manager}"
         return 1
     fi
-    if [[ -z "$listen_host" || -z "$allowed_peer" ]]; then
-        ai_err "Colima private bridge addresses are missing; re-run with Colima --network-address."
+    local action=stop
+    local bridge_args=()
+    if [[ "$enabled" == true ]]; then
+        action=configure
+        bridge_args=("${install_dir}/bin/ods-macos-llm-bridge.py"
+            --listen-host "$listen_host" --listen-port "$listen_port"
+            --target-port "$target_port" --allow-peer "$allowed_peer")
+    fi
+    if ! "${ODS_PYTHON_CMD:-python3}" "$manager" "$action" "$install_dir" \
+        "$bridge_python" "$label" "$plist" "$log_path" "${bridge_args[@]}"; then
+        ai_err "${description} could not complete its owned ${action} operation"
         return 1
     fi
-
-    chmod +x "$bridge_script"
-    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/ODS"
-    cat > "$plist" <<BRIDGE_PLIST_EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>${label}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>${bridge_python}</string>
-        <string>${bridge_script}</string>
-        <string>--listen-host</string>
-        <string>${listen_host}</string>
-        <string>--listen-port</string>
-        <string>${listen_port}</string>
-        <string>--target-port</string>
-        <string>${target_port}</string>
-        <string>--allow-peer</string>
-        <string>${allowed_peer}</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>${install_dir}</string>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>ThrottleInterval</key>
-    <integer>5</integer>
-    <key>StandardOutPath</key>
-    <string>${log_path}</string>
-    <key>StandardErrorPath</key>
-    <string>${log_path}</string>
-</dict>
-</plist>
-BRIDGE_PLIST_EOF
-
-    # bootout is asynchronous: on a forced reinstall launchd can still be
-    # tearing down the prior service when bootstrap reaches the new plist.
-    # macOS reports that short-lived collision as rc=5. Retry only that code;
-    # a malformed plist or another error must still fail the install.
-    local bootstrap_err bootstrap_rc bootstrap_attempt
-    for bootstrap_attempt in 1 2 3 4 5 6; do
-        bootstrap_err="$(launchctl bootstrap "gui/$(id -u)" "$plist" 2>&1)" \
-            && bootstrap_rc=0 || bootstrap_rc=$?
-        [[ "$bootstrap_rc" -eq 0 ]] && break
-        [[ "$bootstrap_rc" -eq 5 && "$bootstrap_attempt" -lt 6 ]] || break
-        sleep 1
-    done
-    if [[ "$bootstrap_rc" -ne 0 ]]; then
-        ai_err "${description} LaunchAgent failed (rc=${bootstrap_rc}): ${bootstrap_err}"
-        return 1
+    if [[ "$enabled" == true ]]; then
+        ai_ok "${description} listening on ${listen_host}:${listen_port} -> 127.0.0.1:${target_port}"
     fi
-    launchctl kickstart -k "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
-    for _ in $(seq 1 30); do
-        if "$bridge_python" -c \
-            'import socket, sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), 1).close()' \
-            "$listen_host" "$listen_port" >/dev/null 2>&1; then
-            ai_ok "${description} listening on ${listen_host}:${listen_port} -> 127.0.0.1:${target_port}"
-            return 0
-        fi
-        sleep 0.2
-    done
-    ai_err "${description} did not open ${listen_host}:${listen_port}; inspect ${log_path}"
-    return 1
 }
 
 macos_configure_llm_bridge_from_env() {

@@ -1,7 +1,7 @@
 import {useState} from 'react'
 import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react'
 import PortalSubagents from './PortalSubagents'
-import {EMBED_NOTE,EMBED_ONLY_NOTE} from '../lib/embedDisplay'
+import {EMBED_ONLY_NOTE} from '../lib/embedDisplay'
 
 const first = 'a'.repeat(32), second = 'b'.repeat(32)
 const worker = (id,name,status,extra={}) => ({id,name,status,turn:0,task:`${name} assignment`,conversation:[],...extra})
@@ -120,7 +120,7 @@ it('renders safe Markdown, copies exact response text, places approvals with the
   expect(screen.getByRole('button',{name:'Review requested action'})).toBeVisible()
 })
 
-it('shows notes instead of embeds Portal cannot display and copies the original reply',async()=>{
+it('shows a note instead of a reply of embeds Portal cannot display, leaves other embeds out and copies the original reply',async()=>{
   const reply='[embed ref="cv_456e4732d60d4117b731214838589d22" height="320"]'
   const output='Status:\n[embed url="/__openclaw__/canvas/documents/cv_123/index.html" height="320" /]'
   const writeText=vi.fn().mockResolvedValue(undefined)
@@ -128,9 +128,9 @@ it('shows notes instead of embeds Portal cannot display and copies the original 
   const teams=[team(first,'One assignment','completed',[worker('0','Builder','completed',{conversation:[{role:'user',content:'One assignment'},{role:'assistant',content:reply}],output})])]
   render(<Fixture teams={teams}/>)
   expect(screen.getByText(EMBED_ONLY_NOTE).closest('p')).toHaveClass('portal-embed-note')
-  expect(screen.getByText(EMBED_NOTE).closest('p')).toHaveClass('portal-embed-note')
+  expect(screen.getAllByText(EMBED_ONLY_NOTE)).toHaveLength(1)
   expect(screen.getByText('Status:')).toBeVisible()
-  expect(screen.queryByText(/\[embed/)).toBeNull()
+  expect(screen.queryByText(/\[embed|can’t display it/)).toBeNull()
   fireEvent.click(screen.getAllByRole('button',{name:'Copy response'})[0])
   await waitFor(()=>expect(writeText).toHaveBeenCalledExactlyOnceWith(reply))
 })

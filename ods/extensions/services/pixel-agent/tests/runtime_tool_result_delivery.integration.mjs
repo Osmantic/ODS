@@ -37,9 +37,11 @@ if (installed) {
 }
 after(() => { if (runtimeCopy) rmSync(runtimeCopy, {recursive: true, force: true}); });
 
-// ODS's 16k per-result cap makes the live aggregate 64k chars. Eight 12k
-// outputs exceed it at the sixth result.
-const ROUNDS = 8, CHARS = 12000;
+// ODS's 16k per-result cap makes the live aggregate 64k chars, and twice that
+// (128k) while a response is under way on this 131k model. Twelve 12k outputs
+// exceed the pinned projection's budget at the sixth result and the wider view
+// at the eleventh.
+const ROUNDS = 12, CHARS = 12000;
 test('every tool result reaches the next real provider request', {skip: !pkg || process.platform === 'win32', timeout: 120000}, async () => {
   assert.equal(JSON.parse(readFileSync(join(pkg, 'package.json'))).version, '2026.6.33');
   const root = mkdtempSync(join(tmpdir(), 'ods-tool-result-delivery-'));
@@ -82,7 +84,7 @@ test('every tool result reaches the next real provider request', {skip: !pkg || 
     assert.ok(ready, log);
     const response = await fetch('http://127.0.0.1:' + port + '/v1/chat/completions', {method: 'POST',
       headers: {'Content-Type': 'application/json', Authorization: 'Bearer fixture-only-0123456789abcdef'},
-      body: JSON.stringify({model: 'openclaw:pixel', stream: true, user: 'tool-result-fixture', messages: [{role: 'user', content: 'Run the eight diagnostics.'}]}),
+      body: JSON.stringify({model: 'openclaw:pixel', stream: true, user: 'tool-result-fixture', messages: [{role: 'user', content: 'Run the twelve diagnostics.'}]}),
       signal: AbortSignal.timeout(90000)});
     const body = await response.text();
     assert.equal(response.status, 200, body + '\n' + log);

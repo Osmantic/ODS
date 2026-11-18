@@ -76,20 +76,43 @@ switch_mode() {
 
     local configured_backend
     configured_backend=$(grep -m1 "^LLM_BACKEND=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
-    if [[ "${configured_backend,,}" == "external" ]]; then
+    configured_backend=$(printf '%s' "$configured_backend" | tr '[:upper:]' '[:lower:]')
+    if [[ "$configured_backend" == "external" ]]; then
         error "External LLM routing is installer-managed. Run './install.sh --no-external-llm' first, then retry the mode switch."
+    fi
+    if [[ "$configured_backend" == "vllm" && "$mode" != "local" ]]; then
+        # Cloud mode has no local model server, and the resolver refuses the
+        # vLLM engine with it; hybrid mode was never proven with vLLM.
+        error "ODS runs this model on the vLLM engine, which works only in local mode. Nothing was changed. To use $mode mode, run the ODS installer again without the vLLM engine. Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC"
     fi
 
     # Update .env
     env_set "ODS_MODE" "$mode"
 
     if [[ "$mode" == "local" ]]; then
-        env_set "LLM_API_URL" "http://llama-server:8080"
-        local switchboard_mode
+        local switchboard_mode native_llm llama_off="false"
         switchboard_mode=$(grep -m1 "^ODS_MODEL_SWITCHBOARD=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
-        if [[ "${switchboard_mode,,}" == "enabled" ]]; then
+        native_llm=$(grep -m1 "^NATIVE_LLM_BASE_URL=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+        # A host-native llama-server install and a vLLM install keep the
+        # in-stack llama-server off; LiteLLM is what reaches the model
+        # (06-directories.sh), through model-router for vLLM.
+        if [[ -n "$native_llm" || "$configured_backend" == "vllm" ]]; then
+            llama_off="true"
+        fi
+        if [[ "$llama_off" == "true" ]]; then
+            env_set "LLM_API_URL" "http://litellm:4000"
+        else
+            env_set "LLM_API_URL" "http://llama-server:8080"
+        fi
+        switchboard_mode=$(printf '%s' "$switchboard_mode" | tr '[:upper:]' '[:lower:]')
+        if [[ "$switchboard_mode" == "enabled" ]]; then
             env_set "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
             env_set "HERMES_LLM_API_KEY" "no-key"
+        elif [[ "$llama_off" == "true" ]]; then
+            env_set "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
+            local litellm_key
+            litellm_key=$(grep -m1 "^LITELLM_KEY=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+            [[ -z "$litellm_key" ]] || env_set "HERMES_LLM_API_KEY" "$litellm_key"
         else
             env_set "HERMES_LLM_BASE_URL" "http://llama-server:8080/v1"
             env_set "HERMES_LLM_API_KEY" "sk-ods-hermes-local"
