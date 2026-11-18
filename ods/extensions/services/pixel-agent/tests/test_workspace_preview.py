@@ -24,6 +24,19 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
 
+@pytest.fixture(autouse=True)
+def installer_umask():
+    # The snapshotter refuses group-writable directories, and mkdir(parents=True)
+    # gives intermediate directories the default mode. Create every fixture as
+    # the gateway would (its unit sets a private umask), whatever the host's
+    # umask (Ubuntu's default 0002 would otherwise make them unsafe).
+    original_umask = os.umask(0o022)
+    try:
+        yield
+    finally:
+        os.umask(original_umask)
+
+
 def test_framework_export_underscore_assets_keep_reserved_routes_private(tmp_path):
     site = tmp_path / "export"
     site.mkdir(mode=0o700)

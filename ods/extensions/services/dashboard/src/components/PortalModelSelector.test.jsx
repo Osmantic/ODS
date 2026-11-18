@@ -20,6 +20,30 @@ beforeEach(()=>{
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals()})
 const posts=()=>fetch.mock.calls.filter(([,options])=>options?.method==='POST')
 
+it.each([
+  '/Users/Owner Name/models/Qwen3.5-9B-Q4_K_M.gguf',
+  String.raw`C:\My Models\Qwen3.5-9B-Q4_K_M.GGUF`,
+  'C:/My Models/Qwen3.5-9B-Q4_K_M.gguf',
+  String.raw`\\server\model share\Qwen3.5-9B-Q4_K_M.gguf`,
+])('shows a native GGUF basename without changing its identity: %s',id=>{
+  const model=Object.freeze({id})
+  expect(modelDisplayName(model,true)).toBe('Qwen 3.5 9B')
+  expect(modelDisplayName(id,false)).toBe('Qwen 3.5 9B')
+  expect(modelDisplayName({id,name:'My preferred model'},true)).toBe('My preferred model')
+  expect(model.id).toBe(id)
+  render(view({activeModel:id}))
+  expect(screen.getByRole('button',{name:'Choose model: Qwen 3.5 9B'})).toBeVisible()
+  expect(posts()).toHaveLength(0)
+})
+
+it.each([
+  ['provider/model.gguf','provider/model'],
+  ['https://models.example/model.gguf','https://models.example/model'],
+  ['//models.example/model.gguf','//models.example/model'],
+])('retains the provider or URL portion of a model label: %s',(id,expected)=>{
+  expect(modelDisplayName(id,false)).toBe(expected)
+})
+
 it.each([false,true])('keeps a cloud label diagnostic when available status loses runtime proof (opened: %s)',async opened=>{
  vi.useFakeTimers()
  const cloud={availability:'available',displayScope:'chat-a',runtimeSource:'remote-provider',activeModel:'cloud-model',runtimeFingerprint:'a'.repeat(64)}

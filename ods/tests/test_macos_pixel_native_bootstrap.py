@@ -313,7 +313,7 @@ def test_download_preserves_existing_destination_even_when_transport_is_down(
     assert calls == []
 
 
-@pytest.mark.parametrize('fault', [None, 'root', 'arch', 'npm', 'version', 'probe', 'plugin-version', 'plugin-id'])
+@pytest.mark.parametrize('fault', [None, 'root', 'arch', 'npm', 'version', 'probe', 'plugin-version', 'plugin-id', 'plugin-runtime'])
 def test_staging_is_nonroot_and_publishes_only_verified_runtime(tmp_path, release, monkeypatch, fault):
     for directory, plugin_id in bootstrap.PIXEL_PLUGINS:
         path = tmp_path / directory
@@ -338,8 +338,9 @@ def test_staging_is_nonroot_and_publishes_only_verified_runtime(tmp_path, releas
             return json.dumps({'platform': 'darwin', 'arch': 'x64' if fault == 'arch' else 'arm64', 'major': 22})
         if 'plugins' in args:
             config = json.loads(Path(kwargs['env']['OPENCLAW_CONFIG_PATH']).read_text())
-            return json.dumps({'plugins': [{'id': plugin_id, 'rootDir': path, 'status': 'loaded'}
-                for plugin_id, path in zip(config['plugins']['allow'], config['plugins']['load']['paths'])]})
+            return json.dumps([{'plugin': {'id': plugin_id, 'rootDir': path, 'imported': True,
+                'status': 'error' if fault == 'plugin-runtime' else 'loaded'}}
+                for plugin_id, path in zip(config['plugins']['allow'], config['plugins']['load']['paths'])])
         if 'ci' in args:
             return ''
         if 'install' in args:
@@ -379,23 +380,34 @@ def test_staging_is_nonroot_and_publishes_only_verified_runtime(tmp_path, releas
     if fault == 'root': assert not calls
 
 
-@pytest.mark.parametrize('fault', [None, 'missing', 'failed', 'wrong-path', 'duplicate'])
+@pytest.mark.parametrize('fault', [None, 'missing', 'failed', 'wrong-path', 'duplicate',
+    'duplicate-failed', 'manifest-only', 'malformed-json', 'malformed-report', 'malformed-plugin',
+    'not-imported', 'missing-imported', 'string-imported'])
 def test_plugin_probe_checks_loaded_identity_and_isolated_state(tmp_path, monkeypatch, fault):
     plugins = [{'id': 'searxng', 'path': 'plugins/0'}]
     runtime = tmp_path / 'bundle'
     runtime.mkdir()
     def command(args, **kwargs):
         assert args[1] == str(runtime / 'runtime/openclaw.mjs')
+        assert args[2:] == ['plugins', 'inspect', '--all', '--runtime', '--json']
         assert kwargs['env']['HOME'] == str(tmp_path / 'probe-home')
         assert kwargs['env']['OPENCLAW_STATE_DIR'] == str(tmp_path / 'probe-home/state')
         config = Path(kwargs['env']['OPENCLAW_CONFIG_PATH'])
         assert config.stat().st_mode & 0o777 == 0o600
-        result = [{'id': 'searxng', 'rootDir': str(runtime / 'plugins/0'), 'status': 'loaded'}]
+        result = [{'id': 'searxng', 'rootDir': str(runtime / 'plugins/0'), 'status': 'loaded', 'imported': True}]
         if fault == 'missing': result = []
         if fault == 'failed': result[0]['status'] = 'error'
         if fault == 'wrong-path': result[0]['rootDir'] = '/other/plugin'
         if fault == 'duplicate': result += result
-        return json.dumps({'plugins': result})
+        if fault == 'duplicate-failed': result.append({**result[0], 'status': 'error'})
+        if fault == 'not-imported': result[0]['imported'] = False
+        if fault == 'missing-imported': del result[0]['imported']
+        if fault == 'string-imported': result[0]['imported'] = 'true'
+        if fault == 'manifest-only': return json.dumps({'plugins': result})
+        if fault == 'malformed-json': return 'not JSON'
+        if fault == 'malformed-report': return json.dumps([None])
+        if fault == 'malformed-plugin': return json.dumps([{'plugin': []}])
+        return json.dumps([{'plugin': item} for item in result])
     monkeypatch.setattr(bootstrap, 'command', command)
     def run():
         bootstrap.probe_plugins(Path('/node'), runtime, plugins, tmp_path, {}, entrypoint='runtime/openclaw.mjs')

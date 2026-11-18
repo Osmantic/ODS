@@ -11,7 +11,7 @@
 #           ENABLE_RAG, ENABLE_HERMES (all used by fix_nvidia_secure_boot),
 #           log/warn/ai/ai_ok/ai_warn/ai_bad helpers
 # Provides: detect_gpu(), load_capability_profile(), ods_is_wsl_host(),
-#           ods_windows_host_port_in_use(),
+#           ods_windows_host_port_in_use(), ods_gpu_memory_in_use_report(),
 #           normalize_profile_tier(), tier_rank(), load_backend_contract(),
 #           fix_nvidia_secure_boot(), MIN_DRIVER_VERSION
 #           Side-effect var on Jetson: JETSON_L4T_RELEASE (e.g. "R36.4.0")
@@ -24,6 +24,22 @@
 
 # Safe env loading (no eval) for script output KEY="value" lines
 [[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "${SCRIPT_DIR}/lib/safe-env.sh"
+
+# ods_gpu_memory_in_use_report
+# Reads `nvidia-smi --query-gpu=index,memory.total,memory.used
+# --format=csv,noheader,nounits` rows on stdin and prints one line per GPU
+# where programs already hold more than max(4 GiB, 10% of the card), such as
+# another model server: "GPU <index>: <used> of <total> GiB in use". A desktop
+# session stays under that floor; rows without numbers ([N/A] on
+# unified-memory GPUs) are skipped.
+ods_gpu_memory_in_use_report() {
+    awk -F', *' '
+        $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $2 > 0 {
+            floor = $2 * 0.10
+            if (floor < 4096) floor = 4096
+            if ($3 + 0 > floor) printf "GPU %s: %.0f of %.0f GiB in use\n", $1, $3 / 1024, $2 / 1024
+        }'
+}
 
 # WSL2 forwards Docker-published ports through the Windows host. A port can
 # therefore look free to lsof/ss inside Linux while Docker Desktop still
@@ -394,10 +410,25 @@ detect_gpu() {
     for _v in "$_drm_sys"/card*/device/vendor; do
         [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] && _nvidia_hw=true && break
     done
+    # Headless servers without nvidia-drm.ko have no DRM card for the GPU, but
+    # the PCI device still exists. Accept vendor 0x10de with a display class
+    # (0x03xxxx: VGA 0x0300, 3D controller 0x0302 for datacenter GPUs).
+    # ODS_PCI_SYS can be overridden in tests to point at a mock sysfs tree.
+    local _pci_sys="${ODS_PCI_SYS:-/sys/bus/pci/devices}"
+    if ! $_nvidia_hw; then
+        for _v in "$_pci_sys"/*/vendor; do
+            [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] || continue
+            [[ "$(cat "${_v%/vendor}/class" 2>/dev/null)" == 0x03* ]] && _nvidia_hw=true && break
+        done
+    fi
     # WSL2: /sys/class/drm/ only contains a 'version' file — no card* entries exist.
     # Fall back to nvidia-smi as the sole hardware witness on WSL2.
-    if ! $_nvidia_hw && grep -qiE "microsoft|wsl" /proc/sys/kernel/osrelease 2>/dev/null; then
+    # ODS_OSRELEASE_FILE can be overridden in tests to simulate native Linux.
+    if ! $_nvidia_hw && grep -qiE "microsoft|wsl" "${ODS_OSRELEASE_FILE:-/proc/sys/kernel/osrelease}" 2>/dev/null; then
         command -v nvidia-smi &>/dev/null && _nvidia_hw=true
+    fi
+    if ! $_nvidia_hw && command -v nvidia-smi &>/dev/null         && nvidia-smi -L 2>/dev/null | grep -q '^GPU '; then
+        warn "nvidia-smi lists GPUs but no NVIDIA PCI/DRM device was found in sysfs; ignoring nvidia-smi"
     fi
     if $_nvidia_hw && command -v nvidia-smi &> /dev/null; then
         local raw
@@ -631,8 +662,18 @@ ods_wsl_nvidia_driver_too_old() {
 ods_whisper_cuda_supported() {
     local backend="${1:-${GPU_BACKEND:-cpu}}"
     local driver_major="${2:-${DRIVER_VERSION:-0}}"
+    # The pinned Speaches CUDA image has CUDA on amd64 only: its arm64 variant
+    # ships a CTranslate2 "not compiled with CUDA support". A GB300 then ran
+    # large-v3-turbo on 4 CPU cores, 17 s per 4 s clip; the CPU image's base
+    # model took 1.2 s (Workstation06, 2026-10-27).
+    ods_host_is_arm64 && return 1
     [[ "$backend" == "nvidia" && "$driver_major" =~ ^[0-9]+$ \
         && "$driver_major" -ge "$MIN_WHISPER_CUDA_DRIVER_VERSION" ]]
+}
+
+# HOST_ARCH is detect_host_arch's value (amd64/arm64) once Phase 02 has run.
+ods_host_is_arm64() {
+    [[ "${HOST_ARCH:-$(uname -m 2>/dev/null || echo unknown)}" =~ ^(arm64|aarch64)$ ]]
 }
 
 _ods_csv_add_unique() {
@@ -803,10 +844,10 @@ fix_nvidia_secure_boot() {
     if [[ -z "$installed_driver" ]]; then
         ai "No NVIDIA driver package found. Installing recommended driver..."
         if command -v ubuntu-drivers &>/dev/null; then
-            ods_sudo ubuntu-drivers install 2>>"$LOG_FILE" || \
-            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
+            ods_sudo ubuntu-drivers install </dev/null 2>>"$LOG_FILE" || \
+            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" </dev/null 2>>"$LOG_FILE" || true
         else
-            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
+            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" </dev/null 2>>"$LOG_FILE" || true
         fi
         installed_driver=$(dpkg-query -W -f='${Package}\n' 'nvidia-driver-*' 2>/dev/null \
                            | sed -n 's/.*nvidia-driver-\([0-9][0-9]*\).*/\1/p' | sort -n | tail -1 || true)
@@ -851,7 +892,7 @@ fix_nvidia_secure_boot() {
     # Ensure linux-headers are present (needed for sign-file)
     if [[ ! -d "/usr/src/linux-headers-${kver}" ]]; then
         ai "Installing kernel headers for ${kver}..."
-        ods_sudo apt-get install -y "linux-headers-${kver}" 2>>"$LOG_FILE" || true
+        ods_sudo apt-get install -y "linux-headers-${kver}" </dev/null 2>>"$LOG_FILE" || true
     fi
 
     # Generate MOK keypair if not already present
@@ -943,6 +984,7 @@ fix_nvidia_secure_boot() {
     [[ -n "$TIER" ]] && resume_args="$resume_args --tier $TIER"
     [[ "$OFFLINE_MODE" == "true" ]] && resume_args="$resume_args --offline"
     [[ "${ODS_RESELECT_MODEL:-false}" == "true" ]] && resume_args="$resume_args --reselect-model"
+    [[ -n "${LLM_BACKEND_REQUESTED:-}" ]] && resume_args="$resume_args --llm-backend $LLM_BACKEND_REQUESTED"
     local resume_command="cd \"${SCRIPT_DIR}\" && ./install.sh${resume_args}"
     log "Secure Boot key enrollment pending; resume with: $resume_command"
 

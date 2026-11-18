@@ -21,12 +21,21 @@ _ods_dashboard_lock_helper_image() {
 }
 
 ods_prepare_dashboard_data() {
-    local install_dir="$1" rootless="$2" target private_store metadata group mode lock lock_helper use_docker_repair=false
+    local install_dir="$1" rootless="$2" target private_store models metadata group mode lock lock_helper use_docker_repair=false
     lock_helper="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}/installers/lib/dashboard-lock.py"
     target="$install_dir/data"
     if [[ ! -d "$target" || -L "$target" ]]; then
         echo "[error] Dashboard data must be a real directory: $target" >&2
         return 1
+    fi
+    # The API inventories weights through this bind mount. Grant only its
+    # runtime group directory access; model file permissions stay untouched.
+    models="$target/models"
+    if [[ -e "$models" || -L "$models" ]]; then
+        [[ -d "$models" && ! -L "$models" ]] || {
+            echo "[error] Model data must be a real directory: $models" >&2
+            return 1
+        }
     fi
     # Create as the installer, without sudo. An existing unreadable lock can be
     # inspected with O_PATH; neither creation nor repair follows a replacement
@@ -51,6 +60,11 @@ ods_prepare_dashboard_data() {
                 [[ "$metadata" == 1000:1000 ]] || use_docker_repair=true
             fi
         done
+        if [[ -d "$models" ]]; then
+            metadata=$(stat -c '%g:%a' "$models") || return 1
+            IFS=: read -r group mode <<< "$metadata"
+            [[ "$group" == 1000 ]] && (( (8#$mode & 8#050) == 8#050 )) || use_docker_repair=true
+        fi
     fi
     if "$use_docker_repair"; then
         # Host chgrp 1000 is not container GID 1000 in a rootless namespace.
@@ -61,6 +75,9 @@ ods_prepare_dashboard_data() {
         docker_run run --rm --network none --user 0:0 \
             --mount "type=bind,src=$target,dst=/data" \
             "$ODS_ROOTLESS_HELPER_IMAGE" sh -ec '
+                if test -e /data/models || test -L /data/models; then
+                    test -d /data/models && test ! -L /data/models || exit 1
+                fi
                 chgrp 1000 /data
                 chmod g+rwx /data
                 test "$(stat -c %g /data)" = 1000
@@ -75,6 +92,13 @@ ods_prepare_dashboard_data() {
                         test "$(stat -c %u:%g "$private_store")" = 1000:1000
                     fi
                 done
+                if test -d /data/models; then
+                    chgrp -h 1000 /data/models
+                    chmod g+rx /data/models
+                    test "$(stat -c %g /data/models)" = 1000
+                    mode=$(stat -c %a /data/models)
+                    test "$((0$mode & 050))" = 40
+                fi
             ' || return 1
         docker_run run --rm -i --network none --user 0:0 --read-only \
             --security-opt no-new-privileges \
@@ -93,6 +117,20 @@ ods_prepare_dashboard_data() {
     metadata=$(stat -c '%g:%a' "$target") || return 1
     IFS=: read -r group mode <<< "$metadata"
     [[ "$group" == 1000 ]] && (( (8#$mode & 8#070) == 8#070 )) || return 1
+    if [[ -e "$models" || -L "$models" ]]; then
+        [[ -d "$models" && ! -L "$models" ]] || return 1
+        metadata=$(stat -c '%g:%a' "$models") || return 1
+        IFS=: read -r group mode <<< "$metadata"
+        if [[ "$group" != 1000 ]]; then
+            _ods_dashboard_mutate chgrp -h 1000 "$models" || return 1
+        fi
+        if (( (8#$mode & 8#050) != 8#050 )); then
+            _ods_dashboard_mutate chmod g+rx "$models" || return 1
+        fi
+        metadata=$(stat -c '%g:%a' "$models") || return 1
+        IFS=: read -r group mode <<< "$metadata"
+        [[ "$group" == 1000 ]] && (( (8#$mode & 8#050) == 8#050 )) || return 1
+    fi
     for private_store in "$target/pixel-chat-results" "$target/pixel-images"; do
         if [[ -e "$private_store" || -L "$private_store" ]]; then
             [[ -d "$private_store" && ! -L "$private_store" ]] || return 1

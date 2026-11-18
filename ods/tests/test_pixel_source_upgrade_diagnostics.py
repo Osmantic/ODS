@@ -149,8 +149,15 @@ def snapshot(root):
 def private_root():
     # Real ancestor-custody checks reject /tmp. The test runner supplies a
     # private HOME; no installed owner state is read, modified, or removed.
-    with tempfile.TemporaryDirectory(prefix='.source-diagnostics-', dir=Path.home()) as directory:
-        yield Path(directory)
+    # The custody checks also reject group-writable trees, so create the
+    # fixtures with the modes the installer uses, whatever the host's umask
+    # (Ubuntu's default 0002 would otherwise make them unsafe).
+    original_umask = os.umask(0o022)
+    try:
+        with tempfile.TemporaryDirectory(prefix='.source-diagnostics-', dir=Path.home()) as directory:
+            yield Path(directory)
+    finally:
+        os.umask(original_umask)
 
 
 @pytest.mark.parametrize('marker_state', ['installing', 'ready'])

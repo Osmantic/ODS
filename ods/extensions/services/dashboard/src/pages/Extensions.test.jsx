@@ -63,9 +63,14 @@ it.each([false, true])('shows LiteLLM as an API service without an unsupported A
   expect(gateway.queryByRole('link')).toBeNull()
   expect(gateway.getByRole('button', { name: 'Logs' })).toBeEnabled()
 
-  // Actual web applications retain their published launch port.
+  // Actual web applications open on their published launch port. The link
+  // says Open; the port is only in its tooltip.
   const webApp = within(screen.getByText('IT-Tools').closest('article'))
-  expect(webApp.getByRole('link', { name: ':8089' })).toHaveAttribute('href', 'http://localhost:8089')
+  const launch = webApp.getByRole('link', { name: 'Open IT-Tools' })
+  expect(launch).toHaveAttribute('href', 'http://localhost:8089')
+  expect(launch).toHaveTextContent(/^Open$/)
+  expect(launch).toHaveAttribute('title', 'Open IT-Tools on port 8089')
+  expect(webApp.queryByText(':8089')).toBeNull()
   expect(webApp.getByRole('button', { name: 'Logs' })).toBeEnabled()
 
   fireEvent.click(gateway.getByRole('button', { name: 'Details for LiteLLM (API Gateway)' }))
@@ -334,6 +339,37 @@ it('does not offer WebUI add-back when the host does not support it', async () =
   render(<Extensions compact />)
   expect(await screen.findByText('Open WebUI')).toBeVisible()
   expect(screen.queryByRole('button', { name: 'Add Open WebUI' })).toBeNull()
+})
+
+it.each([false, true])('search normalizes hyphens, underscores, and whitespace for extensions and collections (compact=%s)', async compact => {
+  const fetchMock = installFetchMock({agent_available:true,extensions:[
+    {id:'it-tools',name:'IT-Tools',description:'A collection of handy online tools',status:'not_installed',features:[baseFeature]},
+    {id:'other',name:'Other app',description:'Unrelated utility',status:'enabled',features:[baseFeature]},
+  ],summary:baseSummary({total:2,installed:1,not_installed:1})}, [
+    {id:'it-tools-collection',name:'IT_Tools Starter',description:'Handy developer utilities',services:['it-tools']},
+  ])
+  render(<Extensions compact={compact}/>)
+  expect(await screen.findByRole('heading',{name:'IT-Tools'})).toBeVisible()
+  const search = screen.getByRole('textbox')
+  fireEvent.change(search,{target:{value:'IT Tools'}})
+  expect(screen.getByText('IT-Tools')).toBeVisible()
+  expect(screen.queryByText('Other app')).toBeNull()
+  fireEvent.change(search,{target:{value:'  it_TOOLS  '}})
+  expect(screen.getByText('IT-Tools')).toBeVisible()
+  expect(screen.queryByText('Other app')).toBeNull()
+  fireEvent.change(search,{target:{value:'handy online'}})
+  expect(screen.getByText('IT-Tools')).toBeVisible()
+  expect(screen.queryByText('Other app')).toBeNull()
+  fireEvent.change(search,{target:{value:'unrelated'}})
+  expect(screen.queryByText('IT-Tools')).toBeNull()
+  expect(screen.getByText('Other app')).toBeVisible()
+  fireEvent.change(search,{target:{value:'it tools'}})
+  fireEvent.click(screen.getByRole('button',{name:'Starter collections 1'}))
+  expect(screen.getByText('IT_Tools Starter')).toBeVisible()
+  fireEvent.change(search,{target:{value:'unrelated'}})
+  expect(screen.queryByText('IT_Tools Starter')).toBeNull()
+  expect(screen.getByText('No collections match')).toBeVisible()
+  expect(fetchMock.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
 })
 
 it('hides collections that require unsupported services while retaining usable collections', async () => {
@@ -1000,8 +1036,10 @@ it('opens enabled Hermes through its ODS authenticated proxy entry', async () =>
   ],summary:baseSummary({total:2,installed:2})})
   render(<Extensions compact />)
   const agentCard = (await screen.findByRole('heading',{name:'Hermes Agent'})).closest('article')
-  expect(within(agentCard).getByRole('link',{name:':9120'})).toHaveAttribute(
-    'href','http://localhost:9120/auth/ods')
+  const launch = within(agentCard).getByRole('link',{name:'Open Hermes Agent'})
+  expect(launch).toHaveAttribute('href','http://localhost:9120/auth/ods')
+  expect(launch).toHaveTextContent(/^Open$/)
+  expect(launch).toHaveAttribute('title','Open Hermes Agent on port 9120')
 })
 
 it('re-checks the ODS session before opening Hermes from its card', async () => {
@@ -1021,7 +1059,7 @@ it('re-checks the ODS session before opening Hermes from its card', async () => 
   vi.spyOn(window, 'open').mockReturnValue(tab)
   render(<Extensions compact />)
   const agentCard = (await screen.findByRole('heading',{name:'Hermes Agent'})).closest('article')
-  expect(fireEvent.click(within(agentCard).getByRole('link',{name:':9120'}))).toBe(false)
+  expect(fireEvent.click(within(agentCard).getByRole('link',{name:'Open Hermes Agent'}))).toBe(false)
   expect(window.open).toHaveBeenCalledWith('', '_blank')
   await waitFor(() => expect(tab.location.replace).toHaveBeenCalledWith('http://localhost:9120/auth/ods'))
   expect(fetchMock).toHaveBeenCalledWith('/api/auth/admin-session', expect.objectContaining({method:'POST'}))

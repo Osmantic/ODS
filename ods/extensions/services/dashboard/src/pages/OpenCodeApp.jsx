@@ -78,12 +78,16 @@ export default function OpenCodeApp() {
   const [actionError, setActionError] = useState('')
   const [busy, setBusy] = useState('')
   const mounted = useRef(true)
+  const statusRevision = useRef(0)
+  const actionPending = useRef(false)
 
   const load = useCallback(async () => {
+    if (actionPending.current) return
+    const revision = ++statusRevision.current
     try {
       const response = await fetch('/api/apps/opencode', { cache: 'no-store', signal: AbortSignal.timeout(15000) })
       const body = await readJson(response)
-      if (!mounted.current) return
+      if (!mounted.current || revision !== statusRevision.current) return
       if (!response.ok) {
         setLoadError(typeof body.detail === 'string' ? body.detail : 'OpenCode status is unavailable right now.')
         return
@@ -91,14 +95,14 @@ export default function OpenCodeApp() {
       setLoadError('')
       setApp(body)
     } catch {
-      if (mounted.current) setLoadError('OpenCode status is unavailable right now.')
+      if (mounted.current && revision === statusRevision.current) setLoadError('OpenCode status is unavailable right now.')
     }
   }, [])
 
   useEffect(() => {
     mounted.current = true
     load()
-    return () => { mounted.current = false }
+    return () => { mounted.current = false; statusRevision.current += 1 }
   }, [load])
 
   const state = app?.state
@@ -110,6 +114,11 @@ export default function OpenCodeApp() {
   }, [state, load])
 
   const act = async (action) => {
+    if (actionPending.current) return
+    actionPending.current = true
+    // A status request started before this action describes the old lifecycle.
+    // Do not let its delayed receipt replace the action's newer state.
+    statusRevision.current += 1
     setBusy(action)
     setActionError('')
     try {
@@ -126,8 +135,9 @@ export default function OpenCodeApp() {
     } catch {
       if (mounted.current) setActionError(`Could not ${action === 'setup' ? 'set up' : 'start'} OpenCode. Check that the ODS host agent is running.`)
     } finally {
+      actionPending.current = false
       if (mounted.current) setBusy('')
-      load()
+      if (mounted.current) load()
     }
   }
 

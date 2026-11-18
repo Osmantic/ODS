@@ -21,10 +21,13 @@ Best for consistent, high-quality image generation with prompt engineering.
 
 - `LLM_HOST` - LLM server host (default: localhost)
 - `LLM_PORT` - LLM port (default: 8080)
-- `COMFYUI_HOST` - ComfyUI host (default: localhost)
+- `COMFYUI_HOST` - ComfyUI host (default: comfyui, the bundled service on the ODS network)
 - `COMFYUI_PORT` - ComfyUI port (default: 8188)
-- `COMFYUI_MODEL_NAME` - ComfyUI model name (default: flux1-dev.safetensors)
+- `COMFYUI_MODEL_NAME` - ComfyUI checkpoint (default: sdxl_lightning_4step.safetensors, the model ODS downloads)
 - `LLM_TO_IMAGE_API_KEY` - Optional API key for webhook authentication
+
+The built-in sampler settings (4 steps, CFG 1.5, `euler` with `sgm_uniform`) are tuned for SDXL Lightning 4-step.
+Change them in the "Queue Image Generation" node if you point `COMFYUI_MODEL_NAME` at a different checkpoint.
 
 #### Usage
 
@@ -54,7 +57,7 @@ Best when you want the LLM to adapt the ComfyUI workflow structure based on the 
 
 - `LLM_HOST` - LLM server host (default: localhost)
 - `LLM_API_PORT` - LLM API port (default: 8080)
-- `COMFYUI_HOST` - ComfyUI host (default: localhost)
+- `COMFYUI_HOST` - ComfyUI host (default: comfyui, the bundled service on the ODS network)
 - `COMFYUI_PORT` - ComfyUI port (default: 8188)
 - `COMFYUI_DYNAMIC_API_KEY` - Optional API key for webhook authentication
 

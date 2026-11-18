@@ -6,6 +6,7 @@ if sys.platform == "win32":
     raise SkipTest("Requires POSIX host ownership, file locks, or Unix sockets; run under Linux/WSL")
 
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -344,6 +345,77 @@ class OnboardingUpgradeTests(unittest.TestCase):
         self.invoke("_ods_pixel_update_onboarding_model", self.answers,
                     "test-model", 65536, 16384, "false", "https://secret.invalid", success=False)
         self.assertEqual(self.answers.read_bytes(), before)
+
+    def test_installer_reuse_requires_live_route_and_owned_configuration(self):
+        self.prepare_snapshot()
+        live_path = self.home / ".openclaw/openclaw.json"
+        marker_path = self.home / ".config/ods/pixel-managed.json"
+        live = json.loads(live_path.read_text())
+        model = live["models"]["providers"]["ods-gateway"]["models"][0]
+        model["input"] = ["text", "image"]
+        live["plugins"] = {"entries": {"pixel-ods": {"config": {
+            "modelImageInput": "unknown"}}}}
+        contract = "e" * 64
+        env = dict(self.env, PIXEL_SOURCE_REF="a" * 40)
+
+        def bind(value, state):
+            canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+            marker = {
+                "schema_version": 2, "manager": "ods", "state": state,
+                "initial_active_state": "absent", "install_dir": str(self.home),
+                "pixel_source_ref": env["PIXEL_SOURCE_REF"], "contract_sha256": contract,
+                "configuration_sha256": hashlib.sha256(
+                    b"ods-pixel-openclaw-v1\0" + canonical).hexdigest(),
+                "release_identity_sha256": "b" * 64,
+                "install_manifest_sha256": "c" * 64,
+                "active_release_version": "test", "sandbox_image": "test-image",
+                "sandbox_image_id": "sha256:" + "d" * 64,
+            }
+            marker_path.write_text(json.dumps(marker))
+
+        # Execute the installer's real decision block, not a test copy of its
+        # conditions. Only the surrounding host installation is omitted.
+        source = LIBRARY.read_text()
+        assignment = source.index("        reuse_active=true")
+        start = source.rfind("\n    if ", 0, assignment) + 1
+        end = source.index("\n    fi", assignment) + len("\n    fi")
+        gate = source[start:end]
+        command = ('set -euo pipefail; source "$1"; '
+                   'owner="$2"; home="$3"; answers="$4"; contract_sha256="$5"; '
+                   'ods_sudo_available() { return 1; }; reuse_active=false;\n'
+                   + gate + '\nprintf "%s\\n" "$reuse_active"')
+
+        cases = [("unchanged", live, True, True)]
+        for field, changed in (("name", "ODS Current (deepseek-v4.1-flash)"),
+                               ("contextWindow", 409600), ("maxTokens", 8192),
+                               ("reasoning", True), ("input", ["text"])):
+            value = copy.deepcopy(live)
+            value["models"]["providers"]["ods-gateway"]["models"][0][field] = changed
+            cases.append((field, value, True, False))
+        for field, changed in (("modelImageInput", "unsupported"),
+                               ("modelRouteFingerprint", "f" * 64)):
+            value = copy.deepcopy(live)
+            value["plugins"]["entries"]["pixel-ods"]["config"][field] = changed
+            cases.append((field, value, True, False))
+        drift = copy.deepcopy(live)
+        drift["unprovedChange"] = True
+        cases.append(("unproved configuration drift", drift, False, False))
+
+        for state in ("ready", "installing"):
+            for name, value, approved, expected in cases:
+                with self.subTest(state=state, change=name):
+                    live_path.write_text(json.dumps(value))
+                    bind(value if approved else live, state)
+                    # Model coordination legitimately rebinds only the config
+                    # digest; the install contract stays unchanged in these cases.
+                    self.invoke("_ods_pixel_managed_contract_matches", contract,
+                                env=env, success=approved)
+                    result = subprocess.run(
+                        ["bash", "-c", command, "installer-reuse-test", str(LIBRARY),
+                         self.owner, str(self.home), str(self.answers), contract],
+                        env=env, text=True, capture_output=True, timeout=15)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), str(expected).lower())
 
     def test_upgrade_preserves_valid_route_identity_only_for_same_model(self):
         self.save(dict(self.original, modelRouteFingerprint="a" * 64))

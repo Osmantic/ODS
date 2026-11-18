@@ -134,7 +134,17 @@ export default function PixelAccessCard({ showHeading = true, active = true }) {
       setStale(true)
       const response = await fetch('/api/pixel/access-mode', {method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({mode, revision: current.revision, confirmed: mode === 'full-access' && confirmed})})
-      if (!response.ok) throw new Error()
+      if (!response.ok) {
+        // The host refuses with this code before acting: nothing was changed.
+        const body = await Promise.resolve().then(() => response.json()).catch(() => null)
+        if (response.status === 409 && body?.detail?.code === 'model_lifecycle_busy') {
+          if (!mounted.current) return
+          setStale(false)
+          setError('ODS is busy with a model or Portal change. No change was requested; try again in a moment.')
+          return
+        }
+        throw new Error()
+      }
       const value = await response.json()
       if (!mounted.current || activationVersion !== activation.current) return
       setStatus(value); setStale(false); setConfirming(false); setConfirmed(false)
@@ -161,7 +171,7 @@ export default function PixelAccessCard({ showHeading = true, active = true }) {
       <button type="button" onClick={() => { setError(''); void refresh() }} disabled={changing} className="text-sm underline">Refresh status</button>
     </div>
     <p>Sandbox keeps tools inside their configured sandbox. Full Access uses the owner account’s permissions on the host running the agent, including outside its workspace.</p>
-    <p className="text-sm text-theme-text-muted">The control follows the agent runtime, even when the Portal runs on a different device. Access switching currently requires Linux or WSL with systemd; native Windows and macOS adapters remain unavailable.</p>
+    <p className="text-sm text-theme-text-muted">The control follows the agent runtime, even when the Portal runs on a different device. ODS checks the runtime's access controller before enabling permission changes.</p>
     {status ? <dl className="grid grid-cols-2 gap-2 text-sm">
       <dt>{stale ? 'Last known configuration' : 'Configured'}</dt><dd>{modeName(status.configured_mode)}</dd>
       <dt>Effective</dt><dd>{!stale && verifiedMode(status) ? modeName(status.effective_mode) : 'Not verified'}</dd>

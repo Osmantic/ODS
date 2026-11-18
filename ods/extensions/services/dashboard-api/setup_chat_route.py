@@ -7,8 +7,10 @@ KEYS = (
     "LLM_API_URL", "OLLAMA_URL", "LLM_API_BASE_PATH", "LLM_MODEL", "LLM_BACKEND",
     "GGUF_FILE", "ODS_MODEL_SWITCHBOARD", "LITELLM_KEY", "LITELLM_MASTER_KEY",
     "OPEN_WEBUI_LLM_BASE_URL", "OPEN_WEBUI_LLM_API_KEY", "OPEN_WEBUI_TASK_MODEL",
-    "AMD_INFERENCE_LOCATION",
+    "AMD_INFERENCE_LOCATION", "VLLM_SERVED_MODEL",
 )
+LLAMA_SERVER_HOSTS = ("llama-server", "ods-llama-server")
+VLLM_HOSTS = ("vllm-server", "ods-vllm-server")
 
 
 def api_base(raw: str, path: str = "/v1") -> str:
@@ -45,6 +47,10 @@ def resolve_chat_route(default_url: str) -> tuple[str, str, dict[str, str]]:
         # A Windows-hosted llama-server requires its key, which only LiteLLM
         # holds; setup chat reaches it through the gateway.
         raw = "http://litellm:4000"
+    if backend == "vllm" and urlsplit(raw).hostname in LLAMA_SERVER_HOSTS:
+        # LLM_BACKEND=vllm turns the in-stack llama-server off; the vLLM
+        # engine answers through the gateway (LiteLLM, then model-router).
+        raw = "http://litellm:4000"
     base = api_base(raw, env["LLM_API_BASE_PATH"] or "/v1")
     target = urlsplit(base)
     local_gateway = target.scheme == "http" and target.hostname in ("litellm", "ods-litellm") and target.port == 4000
@@ -63,7 +69,10 @@ def resolve_chat_route(default_url: str) -> tuple[str, str, dict[str, str]]:
     elif paired_webui:
         key = env["OPEN_WEBUI_LLM_API_KEY"]
         model = env["OPEN_WEBUI_TASK_MODEL"] or model
-    elif target.hostname in ("llama-server", "ods-llama-server", "host.docker.internal") and backend != "external":
+    elif target.hostname in VLLM_HOSTS and backend == "vllm":
+        # vLLM serves exactly --served-model-name and refuses any other id.
+        model = env["VLLM_SERVED_MODEL"] or model
+    elif target.hostname in (*LLAMA_SERVER_HOSTS, "host.docker.internal") and backend != "external":
         # Every managed llama-server serves its model as --alias <GGUF_FILE>.
         model = env["GGUF_FILE"] or model
     headers = {"Content-Type": "application/json"}

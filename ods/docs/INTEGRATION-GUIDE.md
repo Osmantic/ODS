@@ -8,6 +8,12 @@ You've got ODS running. Now what? This guide shows how to connect your apps.
 
 ODS exposes an OpenAI-compatible API. Just point your SDK at localhost.
 
+On Linux, WSL2 and Windows Docker installs, llama-server listens on the host
+port set by `OLLAMA_PORT` (default `11434`); 8080 is its port inside the
+container. Native macOS installs serve the model on the host at 8080, and native Windows
+AMD installs at `AMD_INFERENCE_PORT` from `.env` (normally 8080); use that port
+in the examples below instead.
+
 ### Python
 
 ```bash
@@ -18,7 +24,7 @@ pip install openai
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:8080/v1",  # ODS llama-server
+    base_url="http://localhost:11434/v1",  # ODS llama-server
     api_key="not-needed"  # Local, no auth required
 )
 
@@ -41,7 +47,7 @@ npm install openai
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-  baseURL: 'http://localhost:8080/v1',
+  baseURL: 'http://localhost:11434/v1',
   apiKey: 'not-needed',
 });
 
@@ -56,7 +62,7 @@ console.log(response.choices[0].message.content);
 ### curl
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen2.5-32b-instruct",
@@ -76,7 +82,7 @@ pip install langchain langchain-openai
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(
-    base_url="http://localhost:8080/v1",
+    base_url="http://localhost:11434/v1",
     api_key="not-needed",
     model="qwen2.5-32b-instruct",
     temperature=0.7,
@@ -124,7 +130,7 @@ Continue is an open-source AI code assistant that works in VS Code.
       "title": "ODS",
       "provider": "openai",
       "model": "qwen2.5-32b-instruct",
-      "apiBase": "http://localhost:8080/v1",
+      "apiBase": "http://localhost:11434/v1",
       "apiKey": "not-needed"
     }
   ]
@@ -141,7 +147,7 @@ Cursor supports custom API endpoints.
 
 1. Open Cursor Settings → Models
 2. Add custom model:
-   - **API Base:** `http://localhost:8080/v1`
+   - **API Base:** `http://localhost:11434/v1`
    - **API Key:** `not-needed`
    - **Model:** `qwen2.5-32b-instruct`
 
@@ -187,7 +193,7 @@ ODS includes n8n for workflow automation. Access at `http://localhost:5678`.
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="x")
+client = OpenAI(base_url="http://localhost:11434/v1", api_key="x")
 
 stream = client.chat.completions.create(
     model="qwen2.5-32b-instruct",
@@ -233,7 +239,7 @@ LLM_API_KEY=your-secret-key
 Then include in requests:
 ```python
 client = OpenAI(
-    base_url="http://localhost:8080/v1",
+    base_url="http://localhost:11434/v1",
     api_key="your-secret-key"
 )
 ```
@@ -255,7 +261,7 @@ has built-in user management:
 
 Check running model name:
 ```bash
-curl http://localhost:8080/v1/models
+curl http://localhost:11434/v1/models
 ```
 
 Use the exact model name in your requests.

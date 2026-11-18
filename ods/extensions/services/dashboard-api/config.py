@@ -101,16 +101,65 @@ def normalize_llm_contract(value: Any) -> dict[str, Any] | None:
 ODS_MODE_EFFECTIVE = normalize_ods_mode(os.environ.get("ODS_MODE"))
 
 
+_ENV_FILE_PERMISSION_ERROR: str | None = None
+_ENV_FILE_PERMISSION_ERROR_LOGGED: bool = False
+
+
+def get_env_file_read_error() -> str | None:
+    """Return the last permission error encountered when reading .env, if any."""
+    return _ENV_FILE_PERMISSION_ERROR
+
+
+def _reset_env_permission_state() -> None:
+    global _ENV_FILE_PERMISSION_ERROR, _ENV_FILE_PERMISSION_ERROR_LOGGED
+    _ENV_FILE_PERMISSION_ERROR = None
+    _ENV_FILE_PERMISSION_ERROR_LOGGED = False
+
+
+def _handle_env_permission_error(
+    env_path: Path, key_or_keys: Any, exc: PermissionError
+) -> None:
+    global _ENV_FILE_PERMISSION_ERROR, _ENV_FILE_PERMISSION_ERROR_LOGGED
+    _ENV_FILE_PERMISSION_ERROR = (
+        f"Permission denied reading {env_path}; live settings may be unavailable"
+    )
+    if not _ENV_FILE_PERMISSION_ERROR_LOGGED:
+        logger.warning(
+            "Permission denied reading environment file %s for %s: %s",
+            env_path,
+            key_or_keys,
+            exc,
+        )
+        _ENV_FILE_PERMISSION_ERROR_LOGGED = True
+
+
+def _handle_env_read_success(env_path: Path) -> None:
+    global _ENV_FILE_PERMISSION_ERROR, _ENV_FILE_PERMISSION_ERROR_LOGGED
+    if _ENV_FILE_PERMISSION_ERROR_LOGGED or _ENV_FILE_PERMISSION_ERROR is not None:
+        logger.info(
+            "Successfully read environment file %s; cleared previous permission error",
+            env_path,
+        )
+    _ENV_FILE_PERMISSION_ERROR = None
+    _ENV_FILE_PERMISSION_ERROR_LOGGED = False
+
+
 def _find_env_file_value(key: str) -> tuple[bool, str]:
     """Return the last persisted value and distinguish missing from empty."""
     env_path = Path(INSTALL_DIR) / ".env"
     found = False
     value = ""
     try:
-        for line in env_path.read_text(encoding="utf-8").splitlines():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+        _handle_env_read_success(env_path)
+        for line in lines:
             if line.startswith(f"{key}="):
                 found = True
                 value = parse_env_value(line.split("=", 1)[1])
+    except PermissionError as exc:
+        _handle_env_permission_error(env_path, f"key {key}", exc)
+    except FileNotFoundError:
+        _reset_env_permission_state()
     except (OSError, UnicodeError):
         pass
     return found, value
@@ -132,8 +181,16 @@ def read_live_env_value(key: str, default: str = "") -> str:
 def read_live_env_values(keys: tuple[str, ...]) -> dict[str, str]:
     """Read one persisted snapshot so a route and its credential cannot diverge."""
     values = {key: os.environ.get(key, "") for key in keys}
+    env_path = Path(INSTALL_DIR) / ".env"
     try:
-        text = (Path(INSTALL_DIR) / ".env").read_text(encoding="utf-8")
+        text = env_path.read_text(encoding="utf-8")
+        _handle_env_read_success(env_path)
+    except PermissionError as exc:
+        _handle_env_permission_error(env_path, f"keys {keys}", exc)
+        return values
+    except FileNotFoundError:
+        _reset_env_permission_state()
+        return values
     except (OSError, UnicodeError):
         return values
     for line in text.splitlines():
@@ -207,6 +264,8 @@ def _apply_host_native_llm_service_override(
 
     service["host"] = parsed.hostname
     service["port"] = port
+    # The in-stack container is off on this route; its sidebar link (OLLAMA_PORT, 11434) opened an error page.
+    service["external_link"] = False
     logger.info("Host-native llama-server detected; routing LLM probes to %s:%d", parsed.hostname, port)
 
 
@@ -260,6 +319,40 @@ def _apply_external_llm_service_override(
         port,
         service["health"],
     )
+
+
+VLLM_SERVICE_HOST = "vllm-server"
+VLLM_SERVICE_PORT = 8000
+VLLM_CONTAINER = "ods-vllm-server"
+
+
+def _apply_vllm_service_override(
+    services: dict[str, dict[str, Any]],
+    environment: Mapping[str, str] | None = None,
+) -> None:
+    """Route the LLM row's probes to the vLLM engine (LLM_BACKEND=vllm).
+
+    docker-compose.vllm.yml profiles the in-stack llama-server out and runs
+    vllm-server on the ODS network: /health answers 200 with an empty body once
+    the model is loaded, /v1/models lists the served id. As for a host-native
+    or external route, the row keeps the llama-server id that chat, readiness
+    and features key on; its container is ods-vllm-server, which the host
+    agent's Docker health snapshot reports (a cold start reads as starting),
+    and it publishes no host port to link to.
+    """
+    env = environment if environment is not None else os.environ
+    if str(env.get("LLM_BACKEND", "")).strip().lower() != "vllm":
+        return
+    service = services.get("llama-server")
+    if not service:
+        return
+    service["host"] = VLLM_SERVICE_HOST
+    service["port"] = VLLM_SERVICE_PORT
+    service["health"] = "/health"
+    service["container_name"] = VLLM_CONTAINER
+    service["name"] = "vLLM (LLM Inference)"
+    service["external_link"] = False
+    logger.info("vLLM engine selected; routing LLM probes to %s:%d", VLLM_SERVICE_HOST, VLLM_SERVICE_PORT)
 
 
 def _read_env_value(key: str) -> str:
@@ -596,6 +689,7 @@ if not SERVICES:
 LLM_BACKEND = normalize_llm_backend(os.environ.get("LLM_BACKEND", ""))
 _apply_host_native_llm_service_override(SERVICES, GPU_BACKEND)
 _apply_external_llm_service_override(SERVICES)
+_apply_vllm_service_override(SERVICES)
 
 # --- Features ---
 
@@ -612,7 +706,13 @@ def resolve_workflow_dir() -> Path:
     if env_dir:
         return Path(env_dir)
     canonical = Path(INSTALL_DIR) / "config" / "n8n"
-    if canonical.exists():
+    try:
+        if canonical.exists():
+            return canonical
+    except PermissionError:
+        # Optional host configuration may belong to a different UID. Keep
+        # the canonical path so the workflow endpoint can report unavailable
+        # access, rather than crashing startup or selecting an empty fallback.
         return canonical
     return Path(INSTALL_DIR) / "workflows"
 

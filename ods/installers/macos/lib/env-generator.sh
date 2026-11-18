@@ -381,6 +381,12 @@ generate_ods_env() {
         fi
         upsert_env_value "$env_path" "N_GPU_LAYERS" "$_n_gpu_layers"
 
+        # An existing owner value wins, including zero. Only fill an absent
+        # key from an explicit installer input; leave runtime defaults unset.
+        if ! env_key_exists "$env_path" "LLAMA_ARG_CACHE_RAM" && [[ -n "${LLAMA_ARG_CACHE_RAM:-}" ]]; then
+            upsert_env_value "$env_path" "LLAMA_ARG_CACHE_RAM" "$(dotenv_quote "$LLAMA_ARG_CACHE_RAM")"
+        fi
+
         local _existing_bind
         _existing_bind=$(read_env_value "$env_path" "BIND_ADDRESS")
 
@@ -609,6 +615,7 @@ ODS_MACOS_HOST_AGENT_BRIDGE_ENABLED=${macos_host_agent_bridge_enabled}
 ODS_MACOS_HOST_GATEWAY=${macos_host_gateway}
 ODS_MACOS_VM_IP=${macos_vm_ip}
 ODS_NATIVE_LLAMA_PORT=${native_llama_port}
+TIER=${tier}
 MODEL_PROFILE=${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}
 # Effective model profile for this hardware: ${MODEL_PROFILE_EFFECTIVE:-qwen}
 LLM_MODEL=${LLM_MODEL}
@@ -643,6 +650,7 @@ LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
 # lower it, or set 0, to save memory.
 # LLAMA_ARG_CTX_CHECKPOINTS=32
 # LLAMA_ARG_CACHE_RAM=512
+$(if [[ -n "${LLAMA_ARG_CACHE_RAM:-}" ]]; then printf 'LLAMA_ARG_CACHE_RAM=%s\n' "$(dotenv_quote "$LLAMA_ARG_CACHE_RAM")"; fi)
 # Lossless n-gram speculation (--spec-type ngram-mod) is on by default when the
 # installed llama-server supports it (b8955+; ODS pins b9014). Turn it off with:
 # LLAMA_SPEC_TYPE=none

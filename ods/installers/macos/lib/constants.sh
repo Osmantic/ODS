@@ -41,7 +41,19 @@ fi
 unset _constants_dir _path_utils _candidate
 
 # Logging
-ODS_LOG_FILE="/tmp/ods-install-macos.log"
+# /tmp is shared by every account on this Mac. Another account, or one earlier
+# `sudo ods ...`, can own this path or leave a symlink there; appending to it
+# would then abort every command under `set -e`, or write through the link.
+# Keep the shared name while it is this user's own file, else log privately.
+macos_private_log_file() {
+    local path="$1"
+    if [[ -L "$path" ]] || { [[ -e "$path" ]] && [[ ! -f "$path" || ! -O "$path" || ! -w "$path" ]]; }; then
+        mktemp "${TMPDIR:-/tmp}/ods-install-macos.XXXXXX"
+        return
+    fi
+    printf '%s\n' "$path"
+}
+ODS_LOG_FILE="$(macos_private_log_file /tmp/ods-install-macos.log)"
 
 # Native llama-server paths (Metal acceleration on Apple Silicon)
 LLAMA_SERVER_DIR="${ODS_INSTALL_DIR}/bin"
