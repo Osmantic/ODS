@@ -16,7 +16,12 @@ those migrations cannot be undone. This step:
 2. refuses to start Open WebUI for other devices (--published-on-network)
    while its built-in administrator, admin@localhost, still has the password
    "admin". Open WebUI creates that account when it runs without sign-in, and
-   it keeps working after sign-in is turned on;
+   it keeps working after sign-in is turned on. It also refuses while Open
+   WebUI has no accounts and WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD are not
+   both set: Open WebUI makes the first account to sign up its administrator,
+   even with signup closed, so the first device on the network to reach it
+   would own it. With both set, Open WebUI creates that administrator itself
+   before it serves anyone (open_webui/main.py, create_admin_user);
 3. when the Open WebUI version differs from the one recorded beside the
    database, copies the database to ods-backups/ first, keeping the two newest
    copies, and records the new version.
@@ -236,6 +241,35 @@ def refuse_default_administrator(data_dir: Path) -> None:
             f"ODS: see {LAN_DOCS}")
 
 
+def has_accounts(database: Path) -> bool:
+    """Whether Open WebUI has any account yet; read-only."""
+    if not database.exists():
+        return False
+    with closing(read_only(database)) as connection:
+        return any(
+            has(connection, "table", table)
+            and connection.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone() is not None
+            for table in ("user", "auth"))
+
+
+def refuse_unclaimed_administrator(data_dir: Path, environ: dict[str, str]) -> None:
+    """Refuse a start for other devices while the first signup would become administrator."""
+    if environ.get("WEBUI_ADMIN_EMAIL") and environ.get("WEBUI_ADMIN_PASSWORD"):
+        return
+    if has_accounts(data_dir / DATABASE):
+        return
+    raise SystemExit(
+        "ODS: Open WebUI was not started. Other devices can reach it, but it has no accounts "
+        "yet, and Open WebUI makes the first account to sign up its administrator, so anyone "
+        "on your network could take it over.\n"
+        "ODS: To fix it, set WEBUI_ADMIN_EMAIL and WEBUI_ADMIN_PASSWORD in .env (Open WebUI "
+        "creates that administrator when it starts), then run `ods restart`. Or make Open WebUI "
+        "local-only (BIND_ADDRESS=127.0.0.1 in .env, and turn off the ODS proxy if you use it), "
+        "create your administrator on this computer, then turn network access back on. "
+        "Nothing was changed.\n"
+        f"ODS: see {LAN_DOCS}")
+
+
 def remove_set(base: Path) -> None:
     for suffix in ("",) + LOGS + (SHARED_MEMORY,):
         Path(f"{base}{suffix}").unlink(missing_ok=True)
@@ -312,6 +346,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     preflight(data_dir, app_dir, installed, recorded)
     if args.published_on_network:
         refuse_default_administrator(data_dir)
+        refuse_unclaimed_administrator(data_dir, dict(os.environ))
     if recorded == installed:
         return 0
     saved = backup_database(data_dir, recorded, now or datetime.now(timezone.utc))
