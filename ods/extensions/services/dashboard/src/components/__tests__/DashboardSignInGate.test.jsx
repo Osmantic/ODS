@@ -202,6 +202,13 @@ describe('local access without lockouts', () => {
     expect(screen.queryByText('Dashboard content')).not.toBeInTheDocument()
   })
 
+  it('does not ask a loopback-only Windows Desktop owner to choose a password', async () => {
+    window.fetch = vi.fn().mockResolvedValue(json({signedIn:true, session:false, passwordConfigured:false, remoteAccess:false}))
+    renderGate()
+    expect(await screen.findByText('Dashboard content')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', {name:'Choose your password'})).not.toBeInTheDocument()
+  })
+
   it('returns to sign-in if authorization expires while saving a password', async () => {
     window.fetch = vi.fn().mockResolvedValueOnce(json({signedIn:true, session:false, passwordConfigured:false}))
       .mockResolvedValueOnce(signInRequired())
