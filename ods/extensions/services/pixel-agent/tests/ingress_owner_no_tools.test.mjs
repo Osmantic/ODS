@@ -92,6 +92,99 @@ test('qualified no-tools directives do not trigger', () => {
   }
 });
 
+test('standalone shorthand "No tools." / "No tool calls." triggers', () => {
+  for (const text of [
+    'No tools.',
+    'Reply with JSON only, no markdown, no tools. Compute 17*23 and sort [9,2,4] ascending.',
+    'No tools please.',
+    'No tool calls.',
+    'Please no tools.',
+    'Summarize the file. No tools.',
+    'Answer briefly; no tools.',
+    'Be concise and no tools.',
+    'no tools',
+    'NO TOOLS.',
+    'No tools!',
+  ]) {
+    const out = outgoing([u(text)]);
+    assert.equal(out.tool_choice, 'none', text);
+    assert.deepEqual(out.tools, [], text);
+  }
+});
+
+test('standalone shorthand false positives do not trigger', () => {
+  for (const text of [
+    'No tools are installed.',
+    'The build failed and no tools were logged.',
+    'Q: What did the audit find? A: No tools.',
+    'Without tools, the answer is 42.',
+    'No tools?',
+    'No tools, please, except read.',
+    'No tools, unless needed.',
+    'No tools were used.',
+    'Explain why no tools were used.',
+    'Are there no tools?',
+    'If no tools are available, say so.',
+    'No tools that modify files.',
+    'No tools except read.',
+    'No tools, except read.',
+    'No tools unless needed.',
+    'No tools for file writing.',
+    'No tools to change files.',
+    'No tool calls failed.',
+    'There are no tools.',
+    'Without tools available, answer.',
+    'Without tools that modify files, answer.',
+  ]) {
+    const out = outgoing([u(text)]);
+    assert.equal(out.tool_choice, 'auto', text);
+    assert.deepEqual(out.tools, tools, text);
+  }
+});
+
+test('quoted, fenced, and blockquoted shorthand does not trigger', () => {
+  for (const text of [
+    'The user said "No tools." earlier.',
+    'Explain what `No tools.` means.',
+    '```\nNo tools.\n```',
+    '> No tools.',
+    '> No tool calls.',
+    'He wrote “No tools.” in the doc.',
+  ]) {
+    const out = outgoing([u(text)]);
+    assert.equal(out.tool_choice, 'auto', text);
+    assert.deepEqual(out.tools, tools, text);
+  }
+});
+
+test('standalone shorthand in an older turn does not affect a new user turn', () => {
+  const out = outgoing([
+    u('No tools.'),
+    a('Understood.'),
+    u('Now run the tests.'),
+  ]);
+  assert.equal(out.tool_choice, 'auto');
+  assert.deepEqual(out.tools, tools);
+});
+
+test('standalone shorthand in a tool-result continuation does not trigger', () => {
+  const out = outgoing([
+    u('No tools.'),
+    a(''),
+    {role: 'tool', tool_call_id: 'call-1', content: 'result'},
+  ]);
+  assert.equal(out.tool_choice, 'auto');
+  assert.deepEqual(out.tools, tools);
+});
+
+test('guard blocks tools after standalone shorthand directive', () => {
+  const guard = createToolLoopGuard();
+  const context = {trigger: 'user', sessionKey: 'agent:pixel:openai-user:ods-' + 'a'.repeat(64), agentId: 'pixel', runId: 'chatcmpl_11111111-2222-4333-8444-555555555555', sessionId: 'no-tools-shorthand'};
+  guard.observeRun(context, 'pixel', {prompt: 'No tools. Summarize.'});
+  const blocked = guard.beforeToolCall({toolName: 'exec', params: {command: 'echo hi'}}, {...context, toolCallId: 'call-1'});
+  assert.equal(blocked?.block, true);
+});
+
 test('an older user no-tools directive does not affect a new user turn', () => {
   const out = outgoing([
     u('Do not use any tools.'),
