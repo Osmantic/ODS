@@ -35,7 +35,10 @@ SCHEMA_VERSION = 1
 MAX_TOTAL_REQUESTS = 1000
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_LINE_BYTES = 1024 * 1024
-ALLOWED_SAMPLING_KEYS = {"temperature", "top_p", "max_tokens", "seed", "chat_template_kwargs", "thinking_budget_tokens"}
+ALLOWED_SAMPLING_KEYS = {
+    "temperature", "top_p", "max_tokens", "seed", "chat_template_kwargs", "thinking_budget_tokens",
+    "top_k", "min_p", "presence_penalty", "repeat_penalty", "repetition_penalty",
+}
 RESERVED_SAMPLING_KEYS = {"model", "messages", "stream", "stream_options", "tools"}
 ALLOWED_ROLES = {"system", "user", "assistant"}
 ALLOWED_VALIDATOR_KINDS = {"exact", "json_equal"}
@@ -157,6 +160,24 @@ def _validate_sampling(sampling: Any) -> dict:
                  "sampling.thinking_budget_tokens must be int")
         _require(0 <= tb < out["max_tokens"],
                  "sampling.thinking_budget_tokens must be 0 <= budget < max_tokens")
+    if "top_k" in out:
+        tk = out["top_k"]
+        _require(isinstance(tk, int) and not isinstance(tk, bool) and 0 <= tk <= 2147483647,
+                 "sampling.top_k must be int 0..2147483647")
+    if "min_p" in out:
+        mp = out["min_p"]
+        _require(_is_number(mp) and 0 <= mp <= 1, "sampling.min_p must be number 0..1")
+    if "presence_penalty" in out:
+        pp = out["presence_penalty"]
+        _require(_is_number(pp) and -2 <= pp <= 2, "sampling.presence_penalty must be number -2..2")
+    _require(not ("repeat_penalty" in out and "repetition_penalty" in out),
+             "sampling.repeat_penalty and sampling.repetition_penalty are mutually exclusive")
+    if "repeat_penalty" in out:
+        rp = out["repeat_penalty"]
+        _require(_is_number(rp) and rp > 0, "sampling.repeat_penalty must be number > 0")
+    if "repetition_penalty" in out:
+        rp = out["repetition_penalty"]
+        _require(_is_number(rp) and rp > 0, "sampling.repetition_penalty must be number > 0")
     return out
 
 
