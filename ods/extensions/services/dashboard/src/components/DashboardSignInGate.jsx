@@ -93,7 +93,9 @@ export default function DashboardSignInGate({ children }) {
           const body = await response.json().catch(() => ({}))
           if (!cancelled) {
             setSession(body.session === true)
-            if (body.passwordConfigured === false) {
+            // A loopback-only install (Windows Desktop) has no other device to
+            // sign in from, so there is no password to choose.
+            if (body.passwordConfigured === false && body.remoteAccess !== false) {
               let dismissed = false
               try { dismissed = localStorage.getItem('ods-password-setup-dismissed') === 'true' } catch { /* Optional preference. */ }
               if (!dismissed) { setSetupOptional(body.session !== true); setState('password'); return }
