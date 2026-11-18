@@ -312,6 +312,15 @@ jobs:
         shell: powershell
         run: ./tests/test-windows-model-readiness-literalpath.ps1
 
+      - name: Windows Installer Bracketed Paths Contract (PowerShell 7)
+        shell: pwsh
+        run: ./tests/test-windows-installer-bracketed-paths.ps1
+
+      - name: Windows Installer Bracketed Paths Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-installer-bracketed-paths.ps1
+
       - name: Windows Owner Public URL Carry Contract
         shell: pwsh
         run: ./tests/test-windows-public-url-carry.ps1
