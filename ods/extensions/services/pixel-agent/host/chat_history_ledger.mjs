@@ -9,6 +9,15 @@ export const HISTORY_MESSAGES = 2000;
 const FILE_BYTES = 12 * 1024 * 1024;
 const USER = /^ods-[a-f0-9]{64}$/;
 const REQUEST = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+// No live holder needs longer than this to write its one small lock record.
+const LOCK_WRITE_GRACE_MS = 10000;
+// The largest PID process.kill accepts; anything else in a lock is torn.
+const MAX_PID = 2147483647;
+// Lock files held by this process, across ledger instances for one directory.
+// One ingress process owns a state directory; that is what makes a lock's
+// PID, boot and start time enough to tell a live holder from a leftover.
+const heldLocks = new Set();
+const PROC = fs.existsSync('/proc/self/stat');
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export class HistoryError extends Error {
   constructor(code,status=409) { super(code.replaceAll('_','-')); this.code=this.message; this.status=status; }
@@ -62,11 +71,51 @@ function atomicWrite(file,value) {
   }
 }
 
+// Linux names each boot. PIDs repeat after a reboot (a WSL restart replays the
+// same start order), so a lock from an earlier boot has no live owner.
+function bootIdentity() {
+  try {
+    const bootId=fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim();
+    const bootTime=Number(/^btime (\d+)$/m.exec(fs.readFileSync('/proc/stat','utf8'))?.[1])*1000;
+    return /^[a-f0-9-]{36}$/.test(bootId) && Number.isSafeInteger(bootTime) && bootTime>0 ? {bootId,bootTime} : null;
+  } catch(error) {if(['ENOENT','EACCES','EPERM'].includes(error.code)) return null;throw error}
+}
+// Linux: when a process started, in clock ticks since boot (immune to clock
+// jumps). Restarting Ubuntu alone keeps the boot but reuses PIDs.
+function processStart(pid) {
+  const text=fs.readFileSync(`/proc/${pid}/stat`,'utf8');
+  return Number(text.slice(text.lastIndexOf(')')+2).split(' ')[19]);
+}
+const SELF_START = PROC ? processStart('self') : undefined;
+// 'alive', 'gone' or 'reused' for a lock's owner. Its file passed the uid
+// check, so the holder runs as us: a process we may not see or signal is not it.
+function ownerProcess(owner) {
+  if(PROC) {
+    let start;
+    try {start=processStart(owner.pid)}
+    catch(error) {if(['ENOENT','ESRCH','EACCES','EPERM'].includes(error.code)) return 'gone';throw error}
+    return Number.isSafeInteger(owner.start) && owner.start!==start ? 'reused' : 'alive';
+  }
+  try {process.kill(owner.pid,0);return 'alive'}
+  catch(probe) {return probe.code==='EPERM' && (process.platform==='win32' || process.getuid?.()===0) ? 'alive' : 'gone'}
+}
+// A crash between creating a lock and writing it leaves an empty or torn file;
+// a crash while holding one leaves a PID that a later process may reuse.
+// Neither may hold a conversation closed forever.
+export function staleLock(file,stat,raw,boot,now=Date.now(),processOf=ownerProcess) {
+  let owner=null;
+  try {owner=raw?JSON.parse(raw):null} catch(error) {if(!(error instanceof SyntaxError)) throw error}
+  if(!owner || !Number.isSafeInteger(owner.pid) || owner.pid<1 || owner.pid>MAX_PID) return Math.abs(now-stat.mtimeMs)>LOCK_WRITE_GRACE_MS;
+  if(boot && (typeof owner.boot==='string' ? owner.boot!==boot.bootId : stat.mtimeMs<boot.bootTime-2000)) return true;
+  if(processOf(owner)!=='alive') return true;
+  return owner.pid===process.pid && !heldLocks.has(file);
+}
+
 export function createChatHistoryLedger(directory) {
   if (typeof directory !== 'string' || !path.isAbsolute(directory)) throw new HistoryError('history_storage_unavailable',503);
   fs.mkdirSync(directory,{recursive:true,mode:0o700});
   privateStat(directory,true);
-  const active=new Set(), inflight=new Set();
+  const active=new Set(), inflight=new Set(), boot=bootIdentity();
   function filename(user) {if(typeof user!=='string' || user.length!==68 || !USER.test(user)) throw new HistoryError('invalid_history_user',400);return path.join(directory,`${user}.json`)}
   function read(user) {
     const file=filename(user);
@@ -98,31 +147,40 @@ export function createChatHistoryLedger(directory) {
     const file=path.join(directory,`${user}.lock`);
     let fd;
     for(let attempt=0;attempt<2;attempt++) {
-      try {fd=fs.openSync(file,'wx',0o600);fs.writeFileSync(fd,JSON.stringify({pid:process.pid}));break;}
+      try {fd=fs.openSync(file,'wx',0o600)}
       catch(error) {
         if(error.code!=='EEXIST') throw new HistoryError('history_storage_unavailable',503);
-        const stat=privateStat(file);
+        let stat,raw;
+        try {stat=privateStat(file);raw=fs.readFileSync(file,'utf8')}
+        catch(probe) {if(probe.code==='ENOENT') continue;throw new HistoryError('history_storage_unavailable',503)}
         if(stat.size>128) throw new HistoryError('history_storage_unavailable',503);
-        let owner;try {owner=JSON.parse(fs.readFileSync(file,'utf8'))} catch {throw new HistoryError('history_storage_unavailable',503)}
-        if(!Number.isInteger(owner.pid) || owner.pid<1) throw new HistoryError('history_storage_unavailable',503);
-        try {process.kill(owner.pid,0);throw new HistoryError('history_busy',409)}
-        catch(probe) {if(probe.code!=='ESRCH') throw new HistoryError('history_busy',409)}
-        const current=privateStat(file);
-        if(current.ino!==stat.ino || current.dev!==stat.dev) throw new HistoryError('history_busy',409);
-        fs.unlinkSync(file);
+        if(!staleLock(file,stat,raw,boot)) throw new HistoryError('history_busy',409);
+        try {
+          const current=privateStat(file);
+          if(current.ino!==stat.ino || current.dev!==stat.dev) throw new HistoryError('history_busy',409);
+          fs.unlinkSync(file);
+        } catch(reclaim) {if(reclaim.code==='ENOENT') continue;if(reclaim instanceof HistoryError && reclaim.status===409) throw reclaim;throw new HistoryError('history_storage_unavailable',503)}
+        continue;
+      }
+      try {fs.writeFileSync(fd,JSON.stringify({pid:process.pid,...boot?{boot:boot.bootId}:{},...SELF_START!==undefined?{start:SELF_START}:{}}));break;}
+      catch {
+        // A full disk must not leave an empty lock behind for later turns.
+        fs.closeSync(fd);fd=undefined;
+        try {fs.unlinkSync(file)} catch(cleanup) {if(cleanup.code!=='ENOENT') throw new HistoryError('history_storage_unavailable',503)}
+        throw new HistoryError('history_storage_unavailable',503);
       }
     }
     if(fd===undefined) throw new HistoryError('history_busy',409);
-    active.add(user);
+    active.add(user);heldLocks.add(file);
     let released=false;
-    return ()=>{if(released)return;released=true;active.delete(user);fs.closeSync(fd);try {fs.unlinkSync(file)} catch(error) {if(error.code!=='ENOENT') throw new HistoryError('history_storage_unavailable',503)}};
+    return ()=>{if(released)return;released=true;active.delete(user);heldLocks.delete(file);fs.closeSync(fd);try {fs.unlinkSync(file)} catch(error) {if(error.code!=='ENOENT') throw new HistoryError('history_storage_unavailable',503)}};
   }
   function projection(user) {
     const state=read(user);
     if(state?.status==='deleted') throw new HistoryError('conversation-deleted',410);
     return {revision:state?.revision || null,acknowledgedMessages:state?.acknowledgedMessages || 0,status:state?.status || 'ready',reason:state?.reason || null};
   }
-  function prepare(user,requestId,snapshot,native) {
+  function prepare(user,requestId,snapshot,native,deliveryCorrection=null) {
     if(!REQUEST.test(requestId || '')) throw new HistoryError('invalid_request_id',400);
     const messages=validateHistorySnapshot(snapshot), revision=digest(messages), previous=read(user);
     if(previous?.status==='deleted') throw new HistoryError('conversation-deleted',410);
@@ -150,17 +208,22 @@ export function createChatHistoryLedger(directory) {
     // our last acknowledged owner input. Other new local turns remain intact.
     if(previous && !hydrate && delta[0]?.role==='assistant') delta=delta.slice(1);
     if(!delta.length) throw new HistoryError('history_has_no_new_input',409);
+    // A preparation failure may have replaced lastResult with a pending input.
+    // Retain its host-derived correction until a later turn actually completes.
+    const correction=previous?.deliveryCorrection ?? deliveryCorrection;
+    if(correction && (!REQUEST.test(correction.requestId || '') || typeof correction.text!=='string')) throw new HistoryError('history_storage_unavailable',503);
     const state={schemaVersion:1,user,messages,revision,acknowledgedMessages:acknowledged,status:'pending',reason:null,
+      deliveryCorrection:correction,
       sessionRevision:native.sessionRevision,compactionCount:nativeCompactions,requestId,
       requests:[...(previous?.requests || []).slice(-15),{id:requestId,revision,status:'pending'}]};
     write(user,state);
     inflight.add(user);
-    return {state,delta,hydrate:hydrate && messages.length>1,archive:messages.slice(0,-1)};
+    return {state,delta,hydrate:hydrate && messages.length>1,archive:messages.slice(0,-1),deliveryCorrection:correction};
   }
   function complete(user,prepared,completion,verification,native) {
     const current=read(user);
     if(current?.requestId!==prepared.state.requestId || !['pending','unknown'].includes(current.status)) return null;
-    const state={...prepared.state,status:'ready',reason:null,acknowledgedMessages:prepared.state.messages.length,
+    const state={...prepared.state,status:'ready',reason:null,deliveryCorrection:null,acknowledgedMessages:prepared.state.messages.length,
       sessionRevision:native?.sessionRevision || prepared.state.sessionRevision,compactionCount:native?.compaction?.count ?? prepared.state.compactionCount,
       requests:prepared.state.requests.map(item=>item.id===prepared.state.requestId?{...item,status:'completed'}:item),
       lastResult:{requestId:prepared.state.requestId,revision:prepared.state.revision,completion,verification}};

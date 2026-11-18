@@ -193,7 +193,7 @@ llama-server exposes an OpenAI-compatible REST API:
 ### Example
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "default",
@@ -215,7 +215,7 @@ curl http://localhost:8080/v1/chat/completions \
                     │  llama-server   │
                     │  (llama.cpp)    │
                     │  :8080 (int)    │
-                    │  :8080 (ext)    │
+                    │  :11434 (ext)   │
                     └──────┬──────────┘
                            │  OpenAI-compatible API
           ┌────────────────┼──────────────────┐
@@ -252,8 +252,24 @@ docker compose logs llama-server
 
 **Check inference metrics:**
 ```bash
-curl http://localhost:8080/metrics
+curl http://localhost:11434/metrics
 ```
+
+### Temporary container diagnostics
+
+In Settings, set `LLAMA_LOG_VERBOSITY` and apply changes to `llama-server`.
+The container entrypoint translates this optional 0–5 setting to
+`--log-verbosity`, avoiding the different upstream environment names in
+b9014 (`LLAMA_LOG_VERBOSITY`) and b11429 (`LLAMA_ARG_LOG_VERBOSITY`).
+On b11429, level 4 exposes library allocation logs, including the effective
+microbatch size and GPU offload. Capture the logs for that exact container
+start before interpreting a tuning comparison; configured values alone do
+not prove effective allocation.
+
+Log levels differ across builds, and verbose logs can include request content.
+Clear the field and apply changes when finished to return to the upstream
+default. No diagnostic level is enabled by default. This setting applies to
+containers; native launchers are unchanged. Reinstallation may reset it.
 
 ## License
 

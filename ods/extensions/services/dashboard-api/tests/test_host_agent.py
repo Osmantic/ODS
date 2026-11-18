@@ -320,6 +320,47 @@ def test_host_selection_endpoint_requires_auth_and_preserves_batch(
         thread.join(timeout=2)
 
 
+def test_host_disable_clears_the_progress_record_it_wrote(
+    monkeypatch, tmp_path, host_agent_wire_client,
+):
+    """The host writes start records as the install owner; where that owner is
+    not UID 1000 only the host can remove them (Workstation06, 2026-10-27)."""
+    from http.server import HTTPServer
+
+    from fastapi import HTTPException
+
+    from routers import extensions as ext_router
+
+    monkeypatch.setattr(_mod, "AGENT_API_KEY", "selection-wire-secret")
+    monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+    outcomes = iter(["disabled", "already_disabled"])
+    monkeypatch.setattr(
+        _mod, "_apply_extension_selection",
+        lambda service_ids, activate, expected_sha256=None: next(outcomes),
+    )
+    record = tmp_path / "extension-progress" / "whisper.json"
+    record.parent.mkdir()
+    server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host_agent_wire_client(server.server_address[1], key="selection-wire-secret")
+        record.write_text('{"status": "started"}', encoding="utf-8")
+        assert ext_router._select_extensions_on_host("disable", ["whisper"])["action"] == "disabled"
+        assert not record.exists()
+
+        # Nothing was disabled, so the record stays.
+        record.write_text('{"status": "started"}', encoding="utf-8")
+        with pytest.raises(HTTPException) as refused:
+            ext_router._select_extensions_on_host("disable", ["whisper"])
+        assert refused.value.status_code == 409
+        assert record.exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 @pytest.mark.parametrize("model,settings,override", [
     ("Systran/faster-whisper-base", "AUDIO_STT_MODEL=Systran/faster-whisper-base\n", False),
     ("deepdml/faster-whisper-large-v3-turbo-ct2", "GPU_BACKEND=nvidia\n", False),
@@ -435,6 +476,34 @@ def test_core_recreation_excludes_unrelated_secrets_but_keeps_overlays_and_depen
     assert result == [value for value in flags[:6]] + sum(
         (['-f', name] for name in fragments if '/unrelated/' not in name), [])
     assert '${UNRELATED_SECRET:?Required}' in (tmp_path / next(iter(fragments))).read_text()
+
+
+@pytest.mark.parametrize("inherited,saved", [("true", "false"), ("false", "true")])
+def test_web_search_apply_uses_saved_choice_over_inherited_installer_value(tmp_path, monkeypatch, inherited, saved):
+    key = "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL"
+    monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+    monkeypatch.setattr(_mod, 'CORE_SERVICE_IDS', {'open-webui'})
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', lambda: ['-f', 'base.yaml'])
+    monkeypatch.setattr(_mod, '_core_recreate_compose_flags', lambda flags, services: flags)
+    monkeypatch.setenv(key, inherited)
+    monkeypatch.setenv('PATH', 'fixture-path')
+    env_path = tmp_path / '.env'
+    env_path.write_text(f'{key}={saved}\nBIND_ADDRESS=127.0.0.1\n')
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, '', '')
+
+    monkeypatch.setattr(_mod.subprocess, 'run', fake_run)
+    assert _mod.docker_compose_recreate(['open-webui']) == (True, '')
+    assert len(calls) == 1
+    cmd, kwargs = calls[0]
+    assert cmd[-1] == 'open-webui' and '--no-deps' in cmd
+    assert key not in kwargs['env']  # Compose now reads the saved .env value.
+    assert kwargs['env']['PATH'] == 'fixture-path'
+    assert os.environ[key] == inherited  # Never mutate the agent's global env.
+    assert _mod.load_env(env_path)[key] == saved
 
 
 def test_pixel_model_relay_recreation_selects_its_fragment_but_not_the_dashboard_allowlist(tmp_path, monkeypatch):
@@ -4415,6 +4484,7 @@ class TestRemoteProviderLifecycle:
         })
         (tmp_path / ".env").write_text("ODS_MODE=cloud\nLLM_API_URL=http://litellm:4000\n", encoding="utf-8")
         monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: runtime)
+        monkeypatch.setattr(_mod, "_remote_provider_vision_probe", lambda _env, _runtime: "unknown")
         return root / "routing-state.json"
 
     def test_provider_outage_on_an_active_route_is_reported_without_reactivation(
@@ -4732,6 +4802,8 @@ class TestRemoteProviderLifecycle:
         assert body["applied"] is True
         assert body["staged"] is False
         assert body["probe"]["ok"] is True
+        assert body["route"]["enabled"] is True
+        assert body["route"]["provider"]["model"] == "qwen/remote:latest"
         assert state["enabled"] is True
         assert state["provider"]["model"] == "qwen/remote:latest"
         assert state["status"]["proven"] is True
@@ -4773,6 +4845,8 @@ class TestRemoteProviderLifecycle:
         assert body["applied"] is False
         assert body["staged"] is True
         assert body["proof"]["reason"] == "pending-ssh-tunnel-proof"
+        assert body["route"]["enabled"] is True
+        assert body["route"]["provider"]["model"] == "qwen/remote:latest"
         assert state["enabled"] is True
         assert state["provider"]["transport"] == "ssh"
         assert state["status"]["proven"] is False
@@ -5349,6 +5423,8 @@ class TestRemoteProviderLifecycle:
 
         monkeypatch.setattr(_mod, "_render_remote_provider_cloud_config", fake_render)
         monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", fake_reconcile)
+        # No route state here: the routes keep no vision receipt (unknown).
+        monkeypatch.setattr(_mod, "_record_remote_provider_vision", lambda route, _env: route)
         private_writes = []
         real_private_write = _mod._write_remote_provider_activation_state
         real_public_write = _mod._write_remote_provider_activation_public
@@ -5566,6 +5642,7 @@ class TestRemoteProviderLifecycle:
         monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: current_pixel["value"])
         monkeypatch.setattr(_mod, "_managed_pixel_thinking_control", lambda: None)
         monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", reconcile)
+        monkeypatch.setattr(_mod, "_record_remote_provider_vision", lambda route, _env: route)
         route = _mod._plan_remote_provider_lifecycle_operation(self._configure_payload())["route"]
 
         _mod._activate_remote_provider_route(route)
@@ -7230,6 +7307,13 @@ class TestModelActivationModeAndMacosBridge:
         monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
         monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        identity_calls = []
+
+        def native_identity(pid, executable):
+            identity_calls.append((pid, executable))
+            return (pid, 1, 2, 501, 20, 501, 20, 501, 20, str(executable))
+
+        monkeypatch.setattr(_mod, "_macos_native_llama_identity", native_identity)
         monkeypatch.setattr(
             _mod.subprocess,
             "Popen",
@@ -7239,12 +7323,14 @@ class TestModelActivationModeAndMacosBridge:
         )
 
         _mod._stop_macos_native_llama_server(pid_file)
-        _mod._launch_native_llama_server(
+        receipt = _mod._launch_native_llama_server(
             env_path,
             llama_bin,
             install_dir / "data" / "llama.log",
             pid_file,
         )
+        assert identity_calls == [(4321, llama_bin)]
+        assert receipt[0] == 4321
 
         assert calls[0][0] == [
             "/bin/bash",
@@ -7697,6 +7783,36 @@ class TestPrecreateDataDirs:
         assert (install_dir / "upload").is_dir()
         assert (install_dir / "data" / "state").is_dir()
 
+    def test_leaves_a_bind_mounted_file_alone(self, tmp_path, monkeypatch, caplog):
+        """Whisper bind-mounts its docker-entrypoint.sh; mkdir on that file logged
+        "Failed to pre-create ... File exists" on every start (Workstation06)."""
+        pytest.importorskip("yaml")
+        user_root = tmp_path / "user"
+        builtin_root = tmp_path / "builtin"
+        install_dir = tmp_path / "install"
+        user_root.mkdir()
+        builtin_root.mkdir()
+        install_dir.mkdir()
+        ext_dir = builtin_root / "svc-f"
+        self._write_compose(ext_dir, [
+            "./extensions/services/svc-f/docker-entrypoint.sh:/app/docker-entrypoint.sh:ro",
+            "./data/svc-f:/cache",
+        ])
+        entrypoint = install_dir / "extensions" / "services" / "svc-f" / "docker-entrypoint.sh"
+        entrypoint.parent.mkdir(parents=True)
+        entrypoint.write_text("#!/bin/sh\n", encoding="utf-8")
+
+        monkeypatch.setattr(_mod, "EXTENSIONS_DIR", builtin_root)
+        monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", user_root)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+
+        with caplog.at_level("WARNING"):
+            _mod._precreate_data_dirs("svc-f")
+
+        assert entrypoint.read_text(encoding="utf-8") == "#!/bin/sh\n"
+        assert (install_dir / "data" / "svc-f").is_dir()
+        assert "Failed to pre-create" not in caplog.text
+
     def test_manifest_container_uid_fallback_chowns_when_root(
         self, tmp_path, monkeypatch,
     ):
@@ -7768,6 +7884,39 @@ class TestPrecreateDataDirs:
         data_dir = install_dir / "data" / "gaia"
         assert data_dir.is_dir()
         assert chowns == [(data_dir, 12345, 12345)]
+
+    @pytest.mark.parametrize("trigger", ["compose-user", "manifest-uid"])
+    def test_windows_creates_dirs_without_posix_uid(self, tmp_path, monkeypatch, trigger):
+        """The agent runs on native Windows Python, which has no os.getuid.
+
+        A numeric compose ``user:`` or a manifest ``container_uid`` on a
+        service with a relative bind mount raised AttributeError there before
+        the data dirs were created: an existing GAIA install keeps uid 10001
+        and ./data/gaia (#6896), as can owner-written extensions.
+        """
+        pytest.importorskip("yaml")
+        user_root = tmp_path / "user"
+        builtin_root = tmp_path / "builtin"
+        install_dir = tmp_path / "install"
+        user_root.mkdir()
+        builtin_root.mkdir()
+        install_dir.mkdir()
+        ext_dir = user_root / "svc-w"
+        if trigger == "compose-user":
+            self._write_compose_with_user(ext_dir, ["./data/gaia:/home/gaia/.gaia"], "10001:10001")
+        else:
+            self._write_compose(ext_dir, ["./data/gaia:/home/gaia/.gaia"])
+            self._write_manifest(ext_dir, "svc-w", 10001)
+
+        monkeypatch.setattr(_mod, "EXTENSIONS_DIR", builtin_root)
+        monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", user_root)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.delattr(_mod.os, "getuid", raising=False)
+        monkeypatch.setattr(_mod.os, "chown", lambda *args: pytest.fail("chown on Windows"), raising=False)
+
+        _mod._precreate_data_dirs("svc-w")
+
+        assert (install_dir / "data" / "gaia").is_dir()
 
     def test_skips_named_volumes(self, tmp_path, monkeypatch):
         """Named volumes (no '/') must not trigger filesystem creation."""
@@ -7873,6 +8022,32 @@ class TestRootlessDataOwnershipRepair:
             "/bin/bash", "-c",
             'source "$1"; ods_prepare_service_state_ownership "$2" "$3"',
             "ods-service-state", str(helper), str(tmp_path), service_id,
+        ]]
+
+    def test_comfyui_uses_rootful_or_rootless_data_preparation(self, tmp_path, monkeypatch):
+        """A Dashboard add-back on Workstation06 (owner UID 1001) crash-looped on
+        mkdir /models/text_encoders: Phase 11 prepares these folders only at install."""
+        helper = tmp_path / "lib" / "rootless-ownership.sh"
+        helper.parent.mkdir()
+        helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        calls = []
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "GPU_BACKEND", "nvidia")
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+        _mod._repair_rootless_data_ownership("comfyui")
+
+        assert calls == [[
+            "/bin/bash", "-c",
+            'source "$1"; ods_prepare_comfyui_data_ownership "$2" "$3"',
+            "ods-comfyui-data", str(helper), str(tmp_path), "nvidia",
         ]]
 
     def test_runs_targeted_helper_for_builtin_linux_service(
@@ -8380,7 +8555,7 @@ class TestEnableRetry:
         # Hook failure must NOT proceed to compose start
         assert compose_calls == []
 
-    def test_no_progress_file_uses_sync_path_without_progress_write(self, retry_env, monkeypatch):
+    def test_no_progress_file_uses_sync_path_and_records_the_start(self, retry_env, monkeypatch):
         _, data_dir, builtin_root, _ = retry_env
         ext_dir = builtin_root / "fakesvc"
         self._write_manifest(ext_dir, with_hook=True)
@@ -8394,8 +8569,13 @@ class TestEnableRetry:
                                                stdout="", stderr="")
 
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
-        monkeypatch.setattr(_mod, "docker_compose_action",
-                            lambda sid, act: (True, ""))
+        during = []
+
+        def fake_compose(sid, act):
+            during.append(self._progress(data_dir, sid))
+            return True, ""
+
+        monkeypatch.setattr(_mod, "docker_compose_action", fake_compose)
 
         handler = _FakeHandler(self._body("fakesvc"))
         _mod.AgentHandler._handle_extension(handler, "start")
@@ -8408,7 +8588,75 @@ class TestEnableRetry:
             len(c) >= 2 and c[0] == "bash" and c[1].endswith("setup.sh")
             for c in hook_cmds
         )
-        # Sync path must not write a progress file
+        # The owner-side agent records the start: the Dashboard API (UID 1000)
+        # cannot write this record when the install owner is another user.
+        assert (during[0]["status"], during[0]["phase_label"]) == ("starting", "Starting container...")
+        progress = self._progress(data_dir, "fakesvc")
+        assert (progress["status"], progress["phase_label"]) == ("started", "Service started")
+
+    def test_sync_start_failure_records_the_hosts_reason(self, retry_env, monkeypatch):
+        """Workstation06 (2026-10-26): ComfyUI's first start timed out, and the
+        Dashboard API's PermissionError on the record left the card stopped."""
+        _, data_dir, builtin_root, _ = retry_env
+        self._write_manifest(builtin_root / "fakesvc", with_hook=False)
+        self._write_progress_file(data_dir, "fakesvc", "prepared")
+        monkeypatch.setattr(_mod, "docker_compose_action",
+                            lambda sid, act: (False, "Docker compose operation timed out (600s)"))
+
+        handler = _FakeHandler(self._body("fakesvc"))
+        _mod.AgentHandler._handle_extension(handler, "start")
+
+        assert handler.response_code == 503
+        progress = self._progress(data_dir, "fakesvc")
+        assert (progress["status"], progress["phase_label"]) == ("error", "Start failed")
+        assert progress["error"] == "Docker compose operation timed out (600s)"
+        assert not _mod._service_locks["fakesvc"].locked()
+
+    def test_sync_start_keeps_a_verified_one_shot_record(self, retry_env, monkeypatch):
+        _, data_dir, builtin_root, _ = retry_env
+        self._write_manifest(builtin_root / "fakesvc", with_hook=False)
+
+        def fake_compose(sid, act):
+            # docker_compose_action records a one-shot CLI's verified exit itself.
+            _mod._write_progress(sid, "started", "CLI verification complete", exit_verified=True)
+            return True, ""
+
+        monkeypatch.setattr(_mod, "docker_compose_action", fake_compose)
+
+        handler = _FakeHandler(self._body("fakesvc"))
+        _mod.AgentHandler._handle_extension(handler, "start")
+
+        assert handler.response_code == 200
+        progress = self._progress(data_dir, "fakesvc")
+        assert (progress["phase_label"], progress["exit_verified"]) == ("CLI verification complete", True)
+
+    def test_unexpected_start_error_is_recorded_released_and_raised(self, retry_env, monkeypatch):
+        _, data_dir, builtin_root, _ = retry_env
+        self._write_manifest(builtin_root / "fakesvc", with_hook=False)
+
+        def fake_compose(sid, act):
+            raise ValueError("Compose policy rejected the recipe")
+
+        monkeypatch.setattr(_mod, "docker_compose_action", fake_compose)
+
+        handler = _FakeHandler(self._body("fakesvc"))
+        with pytest.raises(ValueError, match="Compose policy rejected"):
+            _mod.AgentHandler._handle_extension(handler, "start")
+
+        progress = self._progress(data_dir, "fakesvc")
+        assert progress["status"] == "error"
+        assert progress["error"] == "The start stopped unexpectedly; see the host agent log."
+        assert not _mod._service_locks["fakesvc"].locked()
+
+    def test_stop_writes_no_progress(self, retry_env, monkeypatch):
+        _, data_dir, builtin_root, _ = retry_env
+        self._write_manifest(builtin_root / "fakesvc", with_hook=False)
+        monkeypatch.setattr(_mod, "docker_compose_action", lambda sid, act: (True, ""))
+
+        handler = _FakeHandler(self._body("fakesvc"))
+        _mod.AgentHandler._handle_extension(handler, "stop")
+
+        assert handler.response_code == 200
         assert self._progress(data_dir, "fakesvc") is None
 
     def test_progress_status_started_uses_sync_path(self, retry_env, monkeypatch):
@@ -9909,6 +10157,102 @@ class TestModelDeleteSafety:
 
 class TestModelDownloadFileIntegrity:
 
+    @pytest.mark.parametrize("failure", ["metadata-change", "read-error"])
+    def test_inconclusive_final_verification_retains_bytes_for_verified_retry(
+        self, tmp_path, monkeypatch, failure,
+    ):
+        payload = b"valid gguf bytes"
+        install_dir = self._setup_env(tmp_path, monkeypatch, expected_payload=payload)
+        target = install_dir / "data/models/test-model.gguf"
+        calls = self._patch_curl_download(monkeypatch, payload)
+        real_sha256 = hashlib.sha256
+        entered: list[bool] = []
+
+        class InterruptedDigest:
+            def __init__(self, *args, **kwargs):
+                self.digest = real_sha256(*args, **kwargs)
+
+            def update(self, chunk):
+                self.digest.update(chunk)
+                if entered:
+                    return
+                entered.append(True)
+                if failure == "read-error":
+                    raise OSError("Transient model read failure")
+                before = target.stat()
+                os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+            def hexdigest(self):
+                return self.digest.hexdigest()
+
+        monkeypatch.setattr(_mod.hashlib, "sha256", InterruptedDigest)
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+        assert handler.response_code == 200
+        _mod._model_download_thread.join(timeout=3)
+        assert not _mod._model_download_thread.is_alive()
+        assert entered == [True]
+        status_path = install_dir / "data/model-download-status.json"
+        status = json.loads(status_path.read_text())
+        assert status["status"] == "failed"
+        expected = "file changed during verification" if failure == "metadata-change" else "Transient model read failure"
+        assert expected in status["error"]
+        assert target.read_bytes() == payload
+        assert calls == ["test-model.gguf.part"]
+
+        monkeypatch.setattr(_mod.hashlib, "sha256", real_sha256)
+        monkeypatch.setattr(_mod.subprocess, "Popen", lambda *a, **kw: pytest.fail("retry must reuse verified bytes"))
+        retry = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(retry)
+        assert retry.response_code == 200
+        _mod._model_download_thread.join(timeout=3)
+        assert not _mod._model_download_thread.is_alive()
+        assert json.loads(status_path.read_text())["status"] == "complete"
+        assert target.read_bytes() == payload
+
+    def test_final_checksum_mismatch_still_removes_downloaded_bytes(self, tmp_path, monkeypatch):
+        payload = b"valid gguf bytes"
+        install_dir = self._setup_env(tmp_path, monkeypatch, expected_payload=payload)
+        self._patch_curl_download(monkeypatch, b"other gguf bytes")
+        assert len(payload) == len(b"other gguf bytes")
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+        _mod._model_download_thread.join(timeout=3)
+        assert not _mod._model_download_thread.is_alive()
+        status = json.loads((install_dir / "data/model-download-status.json").read_text())
+        assert status["status"] == "failed"
+        assert "SHA256 mismatch" in status["error"]
+        assert not (install_dir / "data/models/test-model.gguf").exists()
+
+    def test_cancel_final_verification_still_removes_downloaded_bytes(self, tmp_path, monkeypatch):
+        payload = b"valid gguf bytes"
+        install_dir = self._setup_env(tmp_path, monkeypatch, expected_payload=payload)
+        self._patch_curl_download(monkeypatch, payload)
+        cancel = threading.Event()
+        monkeypatch.setattr(_mod, "_model_download_cancel", cancel)
+        real_sha256 = hashlib.sha256
+
+        class CancelDigest:
+            def __init__(self, *args, **kwargs):
+                self.digest = real_sha256(*args, **kwargs)
+
+            def update(self, chunk):
+                self.digest.update(chunk)
+                cancel.set()
+
+            def hexdigest(self):
+                return self.digest.hexdigest()
+
+        monkeypatch.setattr(_mod.hashlib, "sha256", CancelDigest)
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+        _mod._model_download_thread.join(timeout=3)
+        assert not _mod._model_download_thread.is_alive()
+        status = json.loads((install_dir / "data/model-download-status.json").read_text())
+        assert status["status"] == "cancelled"
+        assert not (install_dir / "data/models/test-model.gguf").exists()
+        assert _mod._model_download_cancelable is False
+
     @pytest.mark.parametrize("sized", [False, True])
     def test_corrupt_existing_file_checks_space_before_any_network(self, tmp_path, monkeypatch, sized):
         payload = b"valid gguf bytes"
@@ -11058,8 +11402,31 @@ class TestDockerServiceHealthSnapshot:
             "container_name": "ods-dashboard",
             "state": "running",
             "health": "healthy",
+            "restart_count": 0,
         }]
         assert len(calls) == 2
+
+    @pytest.mark.parametrize(("restarts", "expected"), [(7, 7), (-1, 0), ("7", 0), (True, 0), (None, 0)])
+    def test_reports_restart_policy_restarts(self, monkeypatch, restarts, expected):
+        """A crash loop (Qdrant and TEI on Workstation06's ARM64, 2026-10-27)
+        restarts its health check each time; the restart count tells them apart."""
+        monkeypatch.setattr(_mod, "_service_health_cache", (0.0, None))
+
+        def run(cmd, **kwargs):
+            if cmd[1] == "ps":
+                return types.SimpleNamespace(returncode=0, stdout="ods-qdrant\n", stderr="")
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps([{
+                "Name": "/ods-qdrant", "RestartCount": restarts,
+                "State": {"Status": "restarting", "Health": {"Status": "starting"}},
+                "Config": {"Labels": {"com.docker.compose.service": "qdrant"}},
+            }]), stderr="")
+
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        assert _mod._docker_service_health_snapshot()["containers"][0]["restart_count"] == expected
+
+
+# .env values that name no model: the configured model's identities are all None.
+_NO_CONFIGURED_MODEL = {"llmModel": None, "ggufFile": None, "contextSize": None}
 
 
 class TestModelConfig:
@@ -11076,7 +11443,8 @@ class TestModelConfig:
         (tmp_path / ".env").write_text("ODS_MODE=local\nHF_TOKEN=private-fixture\n", encoding="utf-8")
         handler = _FakeHandler(b"")
         _mod.AgentHandler._handle_model_config(handler)
-        assert handler.parse_response() == {"configuredMode": "local", "effectiveMode": expected}
+        assert handler.parse_response() == {"configuredMode": "local", "effectiveMode": expected,
+                                            "configuredModel": _NO_CONFIGURED_MODEL}
 
     @pytest.mark.parametrize(("contents", "expected"), [
         (None, "unknown"), ("", "unknown"), ("ODS_MODE=\n", "unknown"),
@@ -11095,7 +11463,8 @@ class TestModelConfig:
         handler = _FakeHandler(b"")
         _mod.AgentHandler._handle_model_config(handler)
         assert handler.response_code == 200
-        assert handler.parse_response() == {"configuredMode": expected, "effectiveMode": "hybrid"}
+        assert handler.parse_response() == {"configuredMode": expected, "effectiveMode": "hybrid",
+                                            "configuredModel": _NO_CONFIGURED_MODEL}
         assert ("Cache-Control", "no-store") in handler.response_headers
 
     @pytest.mark.parametrize("failure", [PermissionError, UnicodeError])
@@ -11112,7 +11481,30 @@ class TestModelConfig:
         monkeypatch.setattr(_mod, "load_env", denied)
         handler = _FakeHandler(b"")
         _mod.AgentHandler._handle_model_config(handler)
-        assert handler.parse_response() == {"configuredMode": "unknown", "effectiveMode": "local"}
+        assert handler.parse_response() == {"configuredMode": "unknown", "effectiveMode": "local",
+                                            "configuredModel": None}
+
+    @pytest.mark.parametrize(("contents", "expected"), [
+        ("LLM_MODEL=qwen3.6-35b-a3b\nGGUF_FILE=Qwen3.6-35B-A3B-UD-Q4_K_M.gguf\nCTX_SIZE=131072\n",
+         {"llmModel": "qwen3.6-35b-a3b", "ggufFile": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", "contextSize": 131072}),
+        # The legacy context key counts when the canonical one is not a positive count.
+        ("LLM_MODEL=qwen3:30b-a3b\nCTX_SIZE=auto\nMAX_CONTEXT=65536\n",
+         {"llmModel": "qwen3:30b-a3b", "ggufFile": None, "contextSize": 65536}),
+        # A value that does not validate is reported as None, never echoed.
+        ("LLM_MODEL=$(reboot)\nGGUF_FILE=../models/x.gguf\nCTX_SIZE=0\n", _NO_CONFIGURED_MODEL),
+    ])
+    def test_configured_model_identity_is_bounded(self, tmp_path, monkeypatch, contents, expected):
+        """The Dashboard API reads this when the owner's private .env is not
+        readable by its UID (Workstation06: owner nvuser, UID 1001)."""
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "STARTUP_ODS_MODE", "local")
+        (tmp_path / ".env").write_text(contents + "HF_TOKEN=private-fixture\n", encoding="utf-8")
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_config(handler)
+        response = handler.parse_response()
+        assert response["configuredModel"] == expected
+        assert "private-fixture" not in json.dumps(response)
 
     def test_authenticated_fixed_route_reads_atomic_replacement(self, tmp_path, monkeypatch):
         import urllib.error
@@ -11145,7 +11537,8 @@ class TestModelConfig:
             headers = {"Authorization": "Bearer model-config-secret"}
             for mode in ("local", "cloud"):
                 with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2) as response:
-                    assert json.load(response) == {"configuredMode": mode, "effectiveMode": "hybrid"}
+                    assert json.load(response) == {"configuredMode": mode, "effectiveMode": "hybrid",
+                                                   "configuredModel": _NO_CONFIGURED_MODEL}
                     assert response.headers["Cache-Control"] == "no-store"
                 if mode == "local":
                     replacement = tmp_path / ".env-new"

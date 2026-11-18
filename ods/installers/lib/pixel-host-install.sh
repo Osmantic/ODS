@@ -2334,11 +2334,49 @@ _ods_pixel_verify_current_runtime() {
     return 1
 }
 
+# Reruns ask the access coordinator for pending state before anything else.
+# Only an uninstall stops it (disable --now, first), and a later fail-closed
+# uninstall step can return early and leave it stopped across reboots. Start
+# it again for a deployment that is still ready or installing; never for one
+# an uninstall is deactivating.
+_ods_pixel_start_stopped_access_service() {
+    local owner="$1" home="$2" requested_ref="$3" transition state attempt
+    local unit="${ODS_PIXEL_ACCESS_UNIT_PATH:-/etc/systemd/system/ods-pixel-access.service}"
+    local socket="${ODS_PIXEL_ACCESS_SOCKET_PATH:-/run/ods-pixel-access/control.sock}"
+    [[ -f "$unit" && ! -L "$unit" ]] || return 0
+    systemctl is-active --quiet ods-pixel-access.service && return 0
+    transition="$(_ods_pixel_source_transition_state "$owner" "$home" "$requested_ref")" || return 0
+    state="${transition%%|*}"
+    [[ "$state" == ready || "$state" == installing ]] || return 0
+    ods_sudo_available || return 0
+    ai "Starting the stopped Pixel access coordinator..."
+    ods_sudo systemctl enable --now ods-pixel-access.service || return 1
+    for ((attempt = 1; attempt <= 30; attempt++)); do
+        [[ -S "$socket" ]] && return 0
+        sleep 1
+    done
+    return 1
+}
+
 _ods_pixel_resume_completed_release() {
     local owner="$1" home="$2" pixel_root="$3" contract_sha="$4"
     local status resume transaction_id outcome config_sha observed
-    local helper=/usr/local/libexec/ods-pixel-access/pixel_model_transition.py
+    local helper="${ODS_PIXEL_ACCESS_HELPER:-/usr/local/libexec/ods-pixel-access/pixel_model_transition.py}"
+    local unit="${ODS_PIXEL_ACCESS_UNIT_PATH:-/etc/systemd/system/ods-pixel-access.service}"
+    local state_dir="${ODS_PIXEL_ACCESS_STATE_DIR:-/var/lib/ods-pixel-access}"
     [[ -f "$helper" && ! -L "$helper" ]] || return 0
+    # The coordinator's helpers are written before its unit. A first install
+    # that stopped between the two never ran a coordinator, so it recorded no
+    # transition and there is nothing to resume; the install continues and
+    # installs the coordinator. A recorded transition still needs recovery.
+    if [[ ! -e "$unit" && ! -L "$unit" ]] && ods_sudo_available \
+        && ! ods_sudo test -e "$state_dir/transition.json"; then
+        return 0
+    fi
+    if ! _ods_pixel_start_stopped_access_service "$owner" "$home" "${PIXEL_SOURCE_REF:?}"; then
+        printf '%s\n' 'error: the Pixel access coordinator is stopped and did not start; see journalctl -u ods-pixel-access.service' >&2
+        return 1
+    fi
     status="$(_ods_pixel_model_transition status "$owner" "$home")" || return 1
     if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
         _ods_pixel_check_source_transaction "$owner" || return 1
@@ -3660,11 +3698,34 @@ _ods_pixel_runtime_model_identity() {
     if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
         model="${EXTERNAL_LLM_MODEL:-}"
         [[ -n "$model" ]] || return 1
+    elif [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+        # The vLLM engine serves its --served-model-name, VLLM_SERVED_MODEL.
+        model="${VLLM_SERVED_MODEL:-}"
+        [[ -n "$model" ]] || return 1
     fi
-    # llama-server serves the GGUF file name (its --alias) on every runtime,
-    # the Windows Portal's host-native server included.
+    # llama-server serves the GGUF file name (its --alias) on every other
+    # runtime, the Windows Portal's host-native server included.
     [[ -n "$model" ]] || model="${GGUF_FILE:-${LLM_MODEL:-default}}"
     printf '%s\n' "$model"
+}
+
+# The onboarding renderer's unspecified reasoning setting for the vLLM model
+# LLM_MODEL: model-router gives it its catalog entry's thinking level
+# ("reasoning": off, low, medium or high) in its own template arguments, so
+# the Portal starts from the same default. "bootstrap" is the renderer's
+# default-on value and "default" its default-off one; both keep a validated
+# preference for the same route.
+_ods_pixel_vllm_reasoning_default() {
+    local level
+    level="$(jq -r --arg model "${LLM_MODEL:-}" '
+        [.models[]? | select(.runtime == "vllm" and (.llm_model_name == $model or .id == $model)) | .reasoning]
+        | if length == 1 and (.[0] | type) == "string" then .[0] else "" end' \
+        "${SCRIPT_DIR:?}/config/model-library.json")" || return 1
+    case "$level" in
+        off) printf '%s\n' default ;;
+        low|medium|high) printf '%s\n' bootstrap ;;
+        *) return 1 ;;
+    esac
 }
 
 _ods_pixel_wait_model_gateway() {
@@ -4806,9 +4867,17 @@ _ods_pixel_write_onboarding() {
     # a local built-in Qwen3.5-2B bootstrap route defaults to reasoning on so
     # the Portal can complete simple tasks without tool loops; every other
     # route keeps the historical no-think default. The renderer preserves a
-    # previously validated reasoning preference for the same model route.
-    if [[ -n "${LLAMA_REASONING+x}" ]]; then
-        if [[ "${LLAMA_REASONING:-off}" =~ ^(off|none|false|0)$ ]]; then
+    # previously validated reasoning preference for the same model route. On
+    # the vLLM engine the catalog entry's thinking default decides, which
+    # model-router applies; LLAMA_REASONING is llama-server's setting.
+    if [[ -z "${EXTERNAL_LLM_URL:-}" && "${LLM_BACKEND:-}" == "vllm" ]]; then
+        reasoning="$(_ods_pixel_vllm_reasoning_default)" || {
+            ai_bad "Pixel could not read the thinking default of ${LLM_MODEL:-the vLLM model} from config/model-library.json. The ODS files may be incomplete: download ODS again and rerun the installer. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+            return 1
+        }
+    elif [[ -n "${LLAMA_REASONING+x}" ]]; then
+        # Case-insensitive, as ods-host-agent.py reads LLAMA_REASONING.
+        if [[ "$(printf '%s' "${LLAMA_REASONING:-off}" | tr '[:upper:]' '[:lower:]')" =~ ^(off|none|false|0)$ ]]; then
             reasoning=false
         else
             reasoning=true
@@ -5098,6 +5167,7 @@ EOF
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/access_mode_relay.mjs" /usr/local/libexec/access_mode_relay.mjs
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/task_activity_schema.mjs" /usr/local/libexec/task_activity_schema.mjs
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/questions_schema.mjs" /usr/local/libexec/questions_schema.mjs
+    ods_sudo install -o root -g root -m 0644 "$plugin_root/host/owner_tool_policy.mjs" /usr/local/libexec/owner_tool_policy.mjs
     ods_sudo install -o root -g ods-pixel -m 0640 "$stage/pixel-agent.env" /etc/ods/pixel-agent.env
     ods_sudo install -o root -g root -m 0644 "$stage/pixel-ingress.service" /etc/systemd/system/pixel-ingress.service
     ods_sudo install -o root -g root -m 0644 "$rendered_extension_manager_unit" \
@@ -5420,6 +5490,7 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/access_mode_relay.mjs" \
         && -f "$plugin_root/host/task_activity_schema.mjs" \
         && -f "$plugin_root/host/questions_schema.mjs" \
+        && -f "$plugin_root/host/owner_tool_policy.mjs" \
         && -f "$plugin_root/host/extension_search.py" \
         && -f "$plugin_root/host/extension_manager.py" \
         && -f "$plugin_root/host/pixel-extension-manager.service" \
@@ -5448,8 +5519,10 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-tool-result-projection.json" \
         && -f "$plugin_root/host/openclaw-diagnostic-stream-writes.json" \
         && -f "$plugin_root/host/openclaw-command-attempt-warning.json" \
+        && -f "$plugin_root/host/openclaw-utf8-output.json" \
         && -f "$plugin_root/host/openclaw-image-envelope.json" \
         && -f "$plugin_root/host/openclaw-context-usage.json" \
+        && -f "$plugin_root/host/openclaw-no-tools-ingress.json" \
         && -f "$plugin_root/host/openclaw-yield-usage.json" \
         && -f "$plugin_root/host/openclaw-compaction-empty.json" \
         && -f "$plugin_root/host/openclaw-compaction-no-work.json" \
@@ -5554,7 +5627,9 @@ ods_pixel_install_default_agent() {
         && _ods_pixel_initial_unconfigured_marker "$owner" "$home" "$pixel_root" >>"$pixel_log" 2>&1; then
         initial_access_reproved=true
     fi
-    if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" bootstrap --apply >>"$pixel_log" 2>&1; then
+    # This fixed, noninteractive file entrypoint needs no terminal input.
+    # Nested sudo/NodeSource/apt must inherit EOF without changing sudoers.
+    if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" bootstrap --apply </dev/null >>"$pixel_log" 2>&1; then
         # Phase 11 can stop here without reaching the installer's help trap,
         # so these messages carry the cause, recovery and help link themselves.
         # A failed check of an existing candidate is not a download problem.
@@ -5626,7 +5701,15 @@ ods_pixel_install_default_agent() {
             return 1
         fi
     fi
-    if _ods_pixel_managed_contract_matches "$owner" "$home" "$contract_sha256"; then
+    # A completed model transaction rebinds the live configuration digest but
+    # can leave the install contract describing the previous model. Reuse is
+    # safe only when the live route also agrees with the new onboarding record.
+    if _ods_pixel_managed_contract_matches "$owner" "$home" "$contract_sha256" \
+        && _ods_pixel_stable_alias_matches_promoted_model "$owner" "$home" "$answers" \
+            "$(_ods_pixel_runtime_model_identity)" "" "" "" \
+            "$(jq -r '.modelRouteFingerprint // ""' "$answers")" \
+            "$(jq -r '.modelImageInput // "unknown"' "$answers")" \
+            "$(jq -r '.modelThinkingControl // ""' "$answers")"; then
         reuse_active=true
     fi
     if _ods_pixel_verified_source_matches "$owner" "$home"; then
@@ -5887,7 +5970,7 @@ ods_pixel_install_default_agent() {
         --restore-foreign "$home/.openclaw/ods-runtime-patches" \
         --known tool-recovery completion-recovery image-envelope compaction-export \
             compaction-idle compaction-resume read-range tool-result-projection \
-            diagnostic-stream-writes command-attempt-warning compaction-budget context-usage yield-usage compaction-empty compaction-no-work subagent-admission subagent-session hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
+            diagnostic-stream-writes command-attempt-warning utf8-output compaction-budget context-usage no-tools-ingress yield-usage compaction-empty compaction-no-work subagent-admission subagent-session hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel could not restore OpenClaw runtime patches left by another ODS build. See $pixel_log."
         return 1
@@ -6011,6 +6094,16 @@ ods_pixel_install_default_agent() {
         ai_bad "Pixel's command attempt warning repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
+    # Preserve UTF-8 characters split across subprocess stdout/stderr events.
+    # The runtime keeps each stream's pending bytes until its final flush.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --utf8-output \
+        --state-dir "$home/.openclaw/ods-runtime-patches/utf8-output" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's UTF-8 output repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
     # Honor the configured compaction budget on slow local providers.
     if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
         "$plugin_root/host/openclaw_tool_recovery.py" \
@@ -6063,6 +6156,16 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/context-usage" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's context-usage repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # An explicit no-tools turn must reach the provider with no callable tools
+    # while the next normal turn in the same session regains them.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --no-tools-ingress \
+        --state-dir "$home/.openclaw/ods-runtime-patches/no-tools-ingress" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's no-tools ingress repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
     if ! ods_pixel_run_as_owner "$owner" "$home" python3 \

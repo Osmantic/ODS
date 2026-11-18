@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import runpy
 import shlex
 import shutil
 import subprocess
@@ -13,8 +14,13 @@ import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import patch
 
 
+# The code under test refuses group-writable state. Create every fixture with
+# the installer's modes, whatever the host's umask (Ubuntu's default 0002
+# would otherwise make them unsafe).
+os.umask(0o022)
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "preserve-active-model.py"
 
@@ -368,6 +374,71 @@ def test_cpu_profile_host_ram_caps_are_preserved() -> None:
         assert "LLAMA_ARG_CTX_CHECKPOINTS" not in run_helper(env, catalog, imports, models_dir)
 
 
+def test_container_performance_tuning_survives_actual_installer_rerun() -> None:
+    def prepare(install: Path, source: Path) -> Path:
+        env, catalog, _, _ = write_model_fixture(install)
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("GPU_BACKEND=nvidia\nLLAMA_ARG_UBATCH=128\nLLAMA_ARG_FIT_TARGET=512\n")
+        return catalog
+
+    kept = installer_rerun(prepare)
+    assert kept["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+    assert kept["LLAMA_ARG_UBATCH"] == "128"
+    assert kept["LLAMA_ARG_FIT_TARGET"] == "512"
+    changed = installer_rerun(prepare, "amd")
+    assert "LLAMA_ARG_UBATCH" not in changed
+    assert "LLAMA_ARG_FIT_TARGET" not in changed
+    reselected = installer_rerun(prepare, reselect=True)
+    assert "LLAMA_ARG_UBATCH" not in reselected
+    assert "LLAMA_ARG_FIT_TARGET" not in reselected
+
+
+def test_helper_omitted_container_tuning_drops_stale_caller_values() -> None:
+    # A successful helper returns the active model but intentionally omits
+    # disallowed knobs (e.g. after a backend change). The preservation
+    # branches must clear the caller's stale values before loading the helper
+    # output, so phase 06 cannot resurrect them from the caller environment.
+    def prepare(install: Path, source: Path) -> Path:
+        env, catalog, _, _ = write_model_fixture(install)
+        replace_env(env, "MODEL_RUNTIME_PROFILE=nvidia-8gb-64k", "MODEL_RUNTIME_PROFILE=")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("GPU_BACKEND=nvidia\nLLAMA_ARG_UBATCH=128\nLLAMA_ARG_FIT_TARGET=512\n")
+        return catalog
+
+    caller = {"LLAMA_ARG_UBATCH": "256", "LLAMA_ARG_FIT_TARGET": "1024"}
+    kept = installer_rerun(prepare, caller_env=caller)
+    assert kept["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+    assert kept["LLAMA_ARG_UBATCH"] == "128"
+    assert kept["LLAMA_ARG_FIT_TARGET"] == "512"
+    changed = installer_rerun(prepare, "amd", caller_env=caller)
+    assert changed["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+    assert "LLAMA_ARG_UBATCH" not in changed
+    assert "LLAMA_ARG_FIT_TARGET" not in changed
+
+
+def test_invalid_container_tuning_does_not_discard_active_model() -> None:
+    for key, bad in (("LLAMA_ARG_UBATCH", "513"), ("LLAMA_ARG_FIT_TARGET", "511")):
+        with tempfile.TemporaryDirectory() as tmp:
+            env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+            with env.open("a", encoding="utf-8") as handle:
+                handle.write(f"GPU_BACKEND=nvidia\n{key}={bad}\n")
+            values = run_helper(env, catalog, imports, models_dir)
+            assert values["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+            assert key not in values
+
+
+def test_container_tuning_numeric_boundaries() -> None:
+    valid = runpy.run_path(str(HELPER))["valid_runtime_value"]
+    for key, good, bad in (
+        ("LLAMA_ARG_UBATCH", ("1", "128", "512"), ("0", "513")),
+        ("LLAMA_ARG_FIT_TARGET", ("512", "1024", "65536"), ("511", "65537")),
+    ):
+        for value in good:
+            assert valid(key, value), (key, value)
+        for value in (*bad, "", "-1", "+512", " 512", "0512", "5_12", "512,512", "ï¼‘ï¼’ï¼˜", "$(touch marker)"):
+            assert not valid(key, value), (key, value)
+
+
 def test_preserved_context_is_clamped_to_the_declared_native_context() -> None:
     # The fixture declares max_context_length 131072. A recorded context above
     # it (the old 131072 auto-picks of a 40960-token Qwen3-30B-A3B) is never
@@ -381,6 +452,56 @@ def test_preserved_context_is_clamped_to_the_declared_native_context() -> None:
         replace_env(env, "MAX_CONTEXT=262144", "MAX_CONTEXT=98304")
         replace_env(env, "CTX_SIZE=262144", "CTX_SIZE=98304")
         assert run_helper(env, catalog, imports, models_dir)["MAX_CONTEXT"] == "98304"
+
+
+def test_an_import_the_catalog_now_ships_does_not_drop_the_active_model() -> None:
+    # An owner imported a model from the Hub before the catalog added the same
+    # file (Qwen3.6 27B, after v3.0.0). The rerun must keep the active model.
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        record = json.loads(catalog.read_text(encoding="utf-8"))["models"][0]
+        stale_import = dict(record, id="hf-osmantic-agent-test-0123456789ab", source="huggingface")
+        imports.write_text(json.dumps({"models": [stale_import]}), encoding="utf-8")
+        values = run_helper(env, catalog, imports, models_dir)
+        assert values.get("LLM_MODEL") == "agent-test", values
+        assert values.get("GGUF_FILE") == "Agent-Test-Q4_K_M.gguf", values
+
+
+def test_an_unreadable_import_registry_does_not_drop_a_catalog_model() -> None:
+    for content in ("{not json", '{"models": {"bad": true}}', '{"models": ["not-a-record"]}'):
+        with tempfile.TemporaryDirectory() as tmp:
+            env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+            imports.write_text(content, encoding="utf-8")
+            values = run_helper(env, catalog, imports, models_dir)
+            assert values.get("GGUF_FILE") == "Agent-Test-Q4_K_M.gguf", (content, values)
+
+
+def test_import_permission_error_keeps_catalog_records() -> None:
+    helper = runpy.run_path(str(HELPER))
+    with tempfile.TemporaryDirectory() as tmp:
+        _, catalog, imports, _ = write_model_fixture(Path(tmp))
+        imports.write_text('{"models": []}', encoding="utf-8")
+        expected = json.loads(catalog.read_text(encoding="utf-8"))["models"]
+        original_read = Path.read_text
+
+        def read_with_denied_import(path: Path, *args, **kwargs):
+            if path == imports:
+                raise PermissionError("fixture import registry is private")
+            return original_read(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", read_with_denied_import):
+            assert helper["load_records"](catalog, imports) == expected
+
+
+def test_corrupt_import_registry_does_not_select_an_unrelated_catalog_model() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp), imported=True)
+        record = json.loads(imports.read_text(encoding="utf-8"))["models"][0]
+        other = dict(record, id="other-model", gguf_file="Other-Model.gguf")
+        other.pop("source")
+        catalog.write_text(json.dumps({"models": [other]}), encoding="utf-8")
+        imports.write_text("{broken", encoding="utf-8")
+        assert run_helper(env, catalog, imports, models_dir) == {}
 
 
 def test_valid_dashboard_import_is_preserved() -> None:
@@ -1514,6 +1635,10 @@ def main() -> int:
         test_invalid_saved_image_is_not_emitted_or_executed,
         test_valid_curated_model_is_preserved,
         test_cpu_profile_host_ram_caps_are_preserved,
+        test_container_performance_tuning_survives_actual_installer_rerun,
+        test_helper_omitted_container_tuning_drops_stale_caller_values,
+        test_invalid_container_tuning_does_not_discard_active_model,
+        test_container_tuning_numeric_boundaries,
         test_preserved_context_is_clamped_to_the_declared_native_context,
         test_external_registered_model_store_is_preserved,
         test_commented_model_contract_survives_rerun,
@@ -1560,6 +1685,10 @@ def main() -> int:
         test_fixed_chat_template_is_dropped_unless_this_release_ships_it,
         test_a_linked_chat_template_is_not_kept,
         test_vision_projector_and_fixed_template_survive_the_actual_installer_phases,
+        test_an_import_the_catalog_now_ships_does_not_drop_the_active_model,
+        test_an_unreadable_import_registry_does_not_drop_a_catalog_model,
+        test_import_permission_error_keeps_catalog_records,
+        test_corrupt_import_registry_does_not_select_an_unrelated_catalog_model,
     ]
     for test in tests:
         test()

@@ -193,6 +193,7 @@ type_errors=()
 enum_errors=()
 range_errors=()
 length_errors=()
+pattern_errors=()
 contract_errors=()
 duplicate_errors=()
 
@@ -267,6 +268,16 @@ for key in "${schema_keys[@]}"; do
           enum_errors+=("$key: invalid value (allowed: $allowed) (line ${ENV_LINE[$key]:-?})")
         fi
       fi
+    fi
+
+    # Enforce string formats without exposing values (which can be secrets).
+    # jq also fails closed if a schema supplies an invalid regex.
+    if [[ "$expected_type" == "string" ]] &&
+        jq -e --arg k "$key" '.properties[$k].pattern? != null' "$SCHEMA_FILE" >/dev/null 2>&1; then
+        if ! printf '%s' "$val" | jq -Rse --arg k "$key" --slurpfile schema "$SCHEMA_FILE" \
+            '$schema[0].properties[$k].pattern as $p | test($p)' >/dev/null 2>&1; then
+            pattern_errors+=("$key: value does not match required pattern (line ${ENV_LINE[$key]:-?})")
+        fi
     fi
 
     # Range validation (minimum/maximum) for numbers/integers
@@ -566,6 +577,14 @@ if (( ${#length_errors[@]} > 0 )); then
     had_errors=true
     log_error "Length validation errors (replace placeholder/default values):"
     for err in "${length_errors[@]}"; do
+        echo "  - $err"
+    done
+fi
+
+if (( ${#pattern_errors[@]} > 0 )); then
+    had_errors=true
+    log_error "Pattern validation errors:"
+    for err in "${pattern_errors[@]}"; do
         echo "  - $err"
     done
 fi

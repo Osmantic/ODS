@@ -293,6 +293,55 @@ def test_missing_cache_resolves_saved_selection_fail_closed(tmp_path, monkeypatc
     if fault == 'corrupt-cache': assert cache.read_text() == '--bad'
 
 
+@pytest.mark.parametrize('scenario', [
+    'absent', 'added', 'relative', 'absolute', 'lookalike', 'malformed',
+])
+def test_native_lifecycle_discovers_override_added_after_cache(tmp_path, monkeypatch, scenario):
+    override = tmp_path / 'docker-compose.override.yml'
+    if scenario != 'absent':
+        override.write_text('services: {}\n')
+    cached = '-f base.yaml'
+    if scenario == 'relative':
+        cached += ' -f docker-compose.override.yml'
+    elif scenario == 'absolute':
+        cached += ' -f ' + str(override)
+    elif scenario == 'lookalike':
+        cached += ' -f custom-docker-compose.override.yml'
+    elif scenario == 'malformed':
+        cached = '--bad'
+    cache = tmp_path / '.compose-flags'
+    cache.write_text(cached)
+    env_file = tmp_path / '.env'
+    env_file.write_text('GPU_BACKEND=apple\nTIER=1\nENABLE_OPEN_WEBUI=false\n')
+    env_file.chmod(0o600)
+    resolver = tmp_path / 'scripts/resolve-compose-stack.sh'
+    resolver.parent.mkdir()
+    resolver.write_text('# test resolver')
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert command[:2] == ['/bin/bash', str(resolver)]
+        assert kwargs['env']['ENABLE_OPEN_WEBUI'] == 'false'
+        return SimpleNamespace(stdout='-f base.yaml -f docker-compose.override.yml')
+
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    if scenario == 'malformed':
+        with pytest.raises(ValueError):
+            module.compose_flags(tmp_path, {})
+        assert not calls
+    else:
+        flags = module.compose_flags(tmp_path, {'ENABLE_OPEN_WEBUI': 'true'})
+        if scenario in ('added', 'lookalike'):
+            assert flags == ['-f', 'base.yaml', '-f', 'docker-compose.override.yml']
+            assert len(calls) == 1
+        else:
+            assert flags == cached.split()
+            assert not calls
+    assert cache.read_text() == cached
+    assert env_file.read_text() == 'GPU_BACKEND=apple\nTIER=1\nENABLE_OPEN_WEBUI=false\n'
+
+
 @pytest.mark.parametrize('saved,expected', [
     ('false', 'false'), ('true', 'true'), ('"false"', 'false'),
     (' FALSE ', 'false'), (None, 'true'), ('', None), ('maybe', None),

@@ -173,6 +173,10 @@ else
     pass "PowerShell runtime behavior skipped (pwsh unavailable)"
 fi
 
+if command -v pwsh >/dev/null 2>&1; then
+    pwsh -NoProfile -File "$ROOT_DIR/tests/test-windows-required-model-gateway.ps1"
+fi
+
 echo ""
 echo "Result: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

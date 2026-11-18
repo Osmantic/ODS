@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "run_label": "instrumentation-pilot",
+  "target": "REPLACE_WITH_VERIFIED_TARGET",
+  "layer": "engine",
+  "endpoint": "http://127.0.0.1:9/v1/chat/completions",
+  "model": "REPLACE_WITH_EXACT_SERVED_MODEL_ID",
+  "provenance": {
+    "engine": null,
+    "engine_version": null,
+    "backend": null,
+    "model_revision": null,
+    "quantization": null,
+    "tokenizer_revision": null,
+    "ods_commit": null
+  },
+  "cache_condition": "uncontrolled",
+  "sampling": {"temperature": 0, "max_tokens": 256},
+  "concurrency": 1,
+  "repetitions": 3,
+  "timeout_s": 60,
+  "slo_ms": 10000,
+  "schedule_seed": 17,
+  "tasks": [
+    {
+      "id": "integer-arithmetic",
+      "messages": [{"role": "user", "content": "Calculate 17 * 23. Reply with only the integer, no explanation."}],
+      "validator": {"kind": "exact", "expected": "391"}
+    },
+    {
+      "id": "typed-json",
+      "messages": [{"role": "user", "content": "Sort the integers 9, 2, 5 ascending. Return only a JSON object with key ids holding the sorted array, key count holding its integer length, and key valid set to boolean true. No Markdown."}],
+      "validator": {"kind": "json_equal", "expected": {"ids": [2, 5, 9], "count": 3, "valid": true}}
+    },
+    {
+      "id": "unicode-extraction",
+      "messages": [{"role": "user", "content": "Record: name=Zoë; city=Montréal; obsolete_city=Paris. Return only a JSON object with the current name and city fields exactly as written. No Markdown."}],
+      "validator": {"kind": "json_equal", "expected": {"name": "Zoë", "city": "Montréal"}}
+    },
+    {
+      "id": "history-correction",
+      "messages": [
+        {"role": "user", "content": "For this fictional task, the delivery code is ALPHA."},
+        {"role": "assistant", "content": "The delivery code is ALPHA."},
+        {"role": "user", "content": "Correction: replace that delivery code with BRAVO. Reply with only the current code, no explanation."}
+      ],
+      "validator": {"kind": "exact", "expected": "BRAVO"}
+    }
+  ]
+}

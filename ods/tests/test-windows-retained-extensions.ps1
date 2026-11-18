@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $InstallerPath) { $InstallerPath = Join-Path $root 'installers/windows/install-windows.ps1' }
 . (Join-Path $root 'installers/windows/lib/service-plan.ps1')
+. (Join-Path $root 'installers/windows/lib/llm-endpoint.ps1')
 . (Join-Path $root 'installers/windows/lib/retained-extensions.ps1')
 $pythonFile = (Get-Command python -ErrorAction Stop).Source
 function Resolve-ODSHostAgentPython { @{ FilePath = $pythonFile; PrefixArgs = @() } }

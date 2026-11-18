@@ -8,7 +8,10 @@
 #
 # Expects: SCRIPT_DIR, TIER, GPU_BACKEND, CAP_COMPOSE_OVERLAYS, LOG_FILE,
 #          GPU_COUNT, log(), warn()
-# Provides: resolve_compose_config() → sets COMPOSE_FILE, COMPOSE_FLAGS
+# Provides: resolve_compose_config() → sets COMPOSE_FILE, COMPOSE_FLAGS;
+#           the service-set checks ods_gateway_assert_no_managed_inference(),
+#           ods_host_native_assert_no_managed_llama(),
+#           ods_vllm_assert_engine_stack() and ods_compose_assert_no_webui()
 #
 # Modder notes:
 #   Add new compose overlay mappings or backends here.
@@ -142,6 +145,23 @@ ods_host_native_assert_no_managed_llama() {
     return 0
 }
 
+# The vLLM engine (LLM_BACKEND=vllm) serves the model in vllm-server, and the
+# in-stack llama-server must stay off: both would claim the same GPU. Check the
+# effective service set, because inherited profiles can override an overlay.
+ods_vllm_assert_engine_stack() {
+    local services compose_root="${INSTALL_DIR:-$PWD}"
+    services="$(cd "$compose_root" && $DOCKER_COMPOSE_CMD "$@" config --services)" || return 1
+    if ! grep -qx 'vllm-server' <<< "$services"; then
+        printf 'The vLLM Compose stack has no vllm-server service; docker-compose.vllm.yml is not selected.\n' >&2
+        return 1
+    fi
+    if grep -qx 'llama-server' <<< "$services"; then
+        printf 'The vLLM Compose stack also starts the in-stack llama-server. Clear COMPOSE_PROFILES and retry.\n' >&2
+        return 1
+    fi
+    return 0
+}
+
 # Supply the early checks' placeholder GID to Compose. On a fresh install Phase
 # 05 selects "sudo docker compose" because the new docker group does not apply
 # to the running session yet, and sudo does not pass exported variables, so
@@ -162,6 +182,11 @@ _ods_compose_placeholder_pixel_gid() {
 ods_host_native_assert_no_managed_llama_before_pixel_identity() (
     _ods_compose_placeholder_pixel_gid || return 1
     ods_host_native_assert_no_managed_llama "$@"
+)
+
+ods_vllm_assert_engine_stack_before_pixel_identity() (
+    _ods_compose_placeholder_pixel_gid || return 1
+    ods_vllm_assert_engine_stack "$@"
 )
 
 # A caller can inherit COMPOSE_PROFILES=gateway-webui. Check the effective

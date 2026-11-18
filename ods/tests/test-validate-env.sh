@@ -668,5 +668,82 @@ else
     fail "Library port was rejected for the wrong reason: $out"
 fi
 
+# 25. Pixel runtime directory pattern validation. The two keys accept the
+# exact Linux/WSL fixed paths or a canonical absolute POSIX path ending in
+# data/pixel-native/(optional home/)unused-docker-{ingress,preview}. The
+# validator must enforce the schema pattern generically, reject malformed
+# values closed, and never echo the value or the pattern in diagnostics.
+PIXEL_INGRESS_MAC_HOME='/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-ingress'
+PIXEL_PREVIEW_MAC_HOME='/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-preview'
+PIXEL_INGRESS_MAC_LEGACY='/Users/michaelbradley/ods/data/pixel-native/unused-docker-ingress'
+PIXEL_PREVIEW_MAC_LEGACY='/Users/michaelbradley/ods/data/pixel-native/unused-docker-preview'
+PIXEL_INGRESS_MAC_SPACE='/Users/michael bradley/ods/data/pixel-native/home/unused-docker-ingress'
+PIXEL_PREVIEW_MAC_SPACE='/Users/michael bradley/ods/data/pixel-native/unused-docker-preview'
+
+for pixel_pair in \
+    "PIXEL_INGRESS_RUNTIME_DIR=$PIXEL_INGRESS_MAC_HOME" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=$PIXEL_PREVIEW_MAC_HOME" \
+    "PIXEL_INGRESS_RUNTIME_DIR=$PIXEL_INGRESS_MAC_LEGACY" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=$PIXEL_PREVIEW_MAC_LEGACY" \
+    "PIXEL_INGRESS_RUNTIME_DIR=$PIXEL_INGRESS_MAC_SPACE" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=$PIXEL_PREVIEW_MAC_SPACE" \
+    "PIXEL_INGRESS_RUNTIME_DIR=/run/ods-pixel" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=/run/ods-pixel-preview" \
+    "PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/ingress" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/preview"; do
+    cp "$TMP_DIR/valid.env" "$TMP_DIR/pixel-valid.env"
+    printf '%s\n' "$pixel_pair" >> "$TMP_DIR/pixel-valid.env"
+    if out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" \
+        "$TMP_DIR/pixel-valid.env" "$ROOT_DIR/.env.schema.json" 2>&1); then
+        pass "Pixel runtime dir accepted: ${pixel_pair%%=*}"
+    else
+        fail "Pixel runtime dir should be accepted: ${pixel_pair%%=*} (exit $?): $out"
+    fi
+done
+
+for pixel_pair in \
+    "PIXEL_INGRESS_RUNTIME_DIR=/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-preview" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-ingress" \
+    "PIXEL_INGRESS_RUNTIME_DIR=/Users/../ods/data/pixel-native/home/unused-docker-ingress" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=/Users/./ods/data/pixel-native/unused-docker-preview" \
+    "PIXEL_INGRESS_RUNTIME_DIR=/Users//ods/data/pixel-native/home/unused-docker-ingress" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=Users/ods/data/pixel-native/unused-docker-preview" \
+    "PIXEL_INGRESS_RUNTIME_DIR=/Users/ods\\data/pixel-native/home/unused-docker-ingress" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=/data/pixel-native/unused-docker-preview"; do
+    cp "$TMP_DIR/valid.env" "$TMP_DIR/pixel-invalid.env"
+    printf '%s\n' "$pixel_pair" >> "$TMP_DIR/pixel-invalid.env"
+    set +e
+    out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" \
+        "$TMP_DIR/pixel-invalid.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+    r=$?
+    set -e
+    pixel_key="${pixel_pair%%=*}"
+    pixel_value="${pixel_pair#*=}"
+    if [[ $r -eq 2 ]] && echo "$out" | grep -q "$pixel_key"; then
+        if echo "$out" | grep -qF -- "$pixel_value"; then
+            fail "Pixel runtime dir diagnostic leaked the value for $pixel_key"
+        else
+            pass "Pixel runtime dir rejected without leaking value: $pixel_key"
+        fi
+    else
+        fail "Pixel runtime dir should be rejected: $pixel_key (exit $r)"
+    fi
+done
+
+# Pattern errors must fail closed and keep values out of diagnostics.
+for expression in '^allowed$' '['; do
+    jq -n --arg pattern "$expression" '{type:"object",properties:{PRIVATE_TOKEN:{type:"string",pattern:$pattern}}}' > "$TMP_DIR/pattern-schema.json"
+    printf 'PRIVATE_TOKEN=private-pattern-sentinel-8454\n' > "$TMP_DIR/pattern-secret.env"
+    set +e
+    out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/pattern-secret.env" "$TMP_DIR/pattern-schema.json" 2>&1)
+    r=$?
+    set -e
+    if [[ $r -eq 2 && "$out" == *"PRIVATE_TOKEN: value does not match required pattern"* && "$out" != *"private-pattern-sentinel-8454"* ]]; then
+        pass "String pattern rejects mismatch or malformed regex without exposing values"
+    else
+        fail "String pattern mismatch or malformed regex was not safely rejected"
+    fi
+done
+
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

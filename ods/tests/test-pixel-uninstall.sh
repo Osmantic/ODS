@@ -272,7 +272,7 @@ import pathlib
 import sys
 
 text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-assert 'owner_gid="$(id -g)"' in text
+assert 'owner_gid="$(id -g "$owner_name")"' in text
 assert '"$root_uid" "$root_gid" "$owner_uid" "$owner_gid"' in text
 assert "info.st_gid != owner_gid" in text
 assert "info.st_gid != os.getgid()" not in text
@@ -1248,6 +1248,45 @@ else
     fail "source rebind could not resume after custody"
 fi
 
+# Stock DGX skeleton desktop entries are not ordinary private broker state.
+# Strict uninstall refuses them before mutation. Forced reinstall uses the
+# existing custody mode and must retain all their bytes and modes.
+write_ops_fixture
+mkdir -p "$OPS_STATE/.config/autostart" "$OPS_STATE/Desktop"
+chmod 0755 "$OPS_STATE/.config" "$OPS_STATE/.config/autostart" "$OPS_STATE/Desktop"
+printf '%s\n' '[Desktop Entry]' >"$OPS_STATE/.config/autostart/dgx-desktop-init.desktop"
+printf '%s\n' 'DGX documentation shortcut' >"$OPS_STATE/Desktop/dgx-userguide.desktop"
+chmod 0755 "$OPS_STATE/.config/autostart/dgx-desktop-init.desktop" "$OPS_STATE/Desktop/dgx-userguide.desktop"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    fail "strict uninstall accepted world-readable DGX skeleton state"
+elif [[ -f "$OPS_STATE/.config/autostart/dgx-desktop-init.desktop" && ! -s "$SYSTEMCTL_LOG" && ! -s "$DOCKER_LOG" ]]; then
+    pass "strict uninstall refuses DGX skeleton state before any service mutation"
+else
+    fail "strict DGX refusal changed the installation"
+fi
+if ODS_PIXEL_UNINSTALL_VALIDATE_ONLY=true ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" source-transition \
+    && [[ -f "$OPS_STATE/.config/autostart/dgx-desktop-init.desktop" && ! -s "$SYSTEMCTL_LOG" ]] \
+    && ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" source-transition; then
+    if python3 - "$OPS_STATE" <<'PY'
+import pathlib, stat, sys
+root = pathlib.Path(sys.argv[1])
+assert not root.exists()
+holders = [p for p in root.parent.glob('.pixel-ops-broker-custody-*')
+           if (p / 'state/.config/autostart/dgx-desktop-init.desktop').exists()]
+assert len(holders) == 1
+assert stat.S_IMODE(holders[0].stat().st_mode) == 0o700
+saved = holders[0] / 'state'
+desktop = saved / '.config/autostart/dgx-desktop-init.desktop'
+assert desktop.read_text() == '[Desktop Entry]\n'
+assert stat.S_IMODE(desktop.stat().st_mode) == 0o755
+assert (saved / 'Desktop/dgx-userguide.desktop').read_text() == 'DGX documentation shortcut\n'
+PY
+    then pass "reinstall custody retains DGX skeleton bytes and modes after read-only validation"
+    else fail "reinstall custody lost DGX skeleton state"; fi
+else
+    fail "reinstall custody could not retain DGX skeleton state"
+fi
+
 write_inspection_contract_fixture() {
     write_ops_fixture
     local file digest
@@ -2141,6 +2180,24 @@ else
         && pass "root artifact drift fails before any mutation" \
         || fail "root artifact drift caused partial cleanup"
 fi
+
+# After `newgrp docker` (which the installer suggests) or `sg docker`, the
+# shell's current group is docker, not the account's primary group that the
+# installer gave Pixel's files. Validation must still accept them.
+write_access_fixture
+id() {
+    if [[ $# -eq 1 && "$1" == "-g" ]]; then
+        echo 4242
+    else
+        command id "$@"
+    fi
+}
+if ODS_PIXEL_UNINSTALL_VALIDATE_ONLY=true ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    pass "Pixel access validation accepts the owner's files under another current group"
+else
+    fail "Pixel access validation refused the owner's files after newgrp/sg docker"
+fi
+unset -f id
 
 write_access_fixture
 printf '%s\n' '[Service]' 'Environment=OPERATOR_OWNED=1' \
