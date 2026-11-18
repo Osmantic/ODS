@@ -26,6 +26,7 @@ DELIVERY_NOTE = ("\n\n[ODS Portal delivery requirement: Answer the owner's compl
 TOOL_OK_STATUS = {"completed", "succeeded", "success"}
 GENERIC_TOOLS = {"read", "write", "edit"}
 PIXEL_TOOL = "pixel_ods_readonly_exec"
+EXEC_TOOL = "exec"
 
 
 def _sha(text):
@@ -255,6 +256,24 @@ def _tool_success(name, result):
         code = details.get("exitCode")
         if type(code) is not int or code != 0:
             return False
+        return True
+    if name == EXEC_TOOL:
+        if not isinstance(details, dict):
+            return False
+        if "error" in details:
+            return False
+        if details.get("status") != "completed":
+            return False
+        code = details.get("exitCode")
+        if type(code) is not int or code != 0:
+            return False
+        aggregated = details.get("aggregated")
+        if not isinstance(aggregated, str):
+            return False
+        for key in ("sessionId", "session_id", "background", "backgroundId",
+                    "background_id", "jobId", "job_id"):
+            if key in details:
+                return False
         return True
     if name in GENERIC_TOOLS:
         if isinstance(details, dict) and "error" in details:
@@ -622,7 +641,7 @@ class NativeReceiptWitness:
         if required:
             tool_proven = True
             for name in required:
-                if name not in GENERIC_TOOLS and name != PIXEL_TOOL:
+                if name not in GENERIC_TOOLS and name not in (PIXEL_TOOL, EXEC_TOOL):
                     errors.append("unsupported_tool_receipt")
                 ok = False
                 for cid, call in calls.items():
