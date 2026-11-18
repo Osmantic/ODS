@@ -478,6 +478,34 @@ def test_core_recreation_excludes_unrelated_secrets_but_keeps_overlays_and_depen
     assert '${UNRELATED_SECRET:?Required}' in (tmp_path / next(iter(fragments))).read_text()
 
 
+@pytest.mark.parametrize("inherited,saved", [("true", "false"), ("false", "true")])
+def test_web_search_apply_uses_saved_choice_over_inherited_installer_value(tmp_path, monkeypatch, inherited, saved):
+    key = "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL"
+    monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+    monkeypatch.setattr(_mod, 'CORE_SERVICE_IDS', {'open-webui'})
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', lambda: ['-f', 'base.yaml'])
+    monkeypatch.setattr(_mod, '_core_recreate_compose_flags', lambda flags, services: flags)
+    monkeypatch.setenv(key, inherited)
+    monkeypatch.setenv('PATH', 'fixture-path')
+    env_path = tmp_path / '.env'
+    env_path.write_text(f'{key}={saved}\nBIND_ADDRESS=127.0.0.1\n')
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, '', '')
+
+    monkeypatch.setattr(_mod.subprocess, 'run', fake_run)
+    assert _mod.docker_compose_recreate(['open-webui']) == (True, '')
+    assert len(calls) == 1
+    cmd, kwargs = calls[0]
+    assert cmd[-1] == 'open-webui' and '--no-deps' in cmd
+    assert key not in kwargs['env']  # Compose now reads the saved .env value.
+    assert kwargs['env']['PATH'] == 'fixture-path'
+    assert os.environ[key] == inherited  # Never mutate the agent's global env.
+    assert _mod.load_env(env_path)[key] == saved
+
+
 def test_pixel_model_relay_recreation_selects_its_fragment_but_not_the_dashboard_allowlist(tmp_path, monkeypatch):
     monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
     monkeypatch.setattr(_mod, 'EXTENSIONS_DIR', tmp_path / 'extensions')

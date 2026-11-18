@@ -8053,6 +8053,10 @@ def docker_compose_recreate(service_ids: list[str], *, force_recreate: bool = Tr
     # rewritten the route keys (remote-provider activation).
     for key in ("GGUF_FILE", "LLM_MODEL", "MAX_CONTEXT", "CTX_SIZE", "ODS_MODE", "LLM_API_URL", "EXTERNAL_LLM_URL"):
         compose_env.pop(key, None)
+    if "open-webui" in service_ids:
+        # Settings has saved this choice in .env. An installer override
+        # inherited by this long-running agent must not pin the old value.
+        compose_env.pop("BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL", None)
     if "open-webui" in service_ids and _network_auth_required(load_env(INSTALL_DIR / ".env")):
         compose_env["WEBUI_AUTH"] = "true"
     try:
