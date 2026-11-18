@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { ArrowRight } from 'lucide-react'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
 import ODSLogo from './ODSLogo'
 import WallpaperVideo from './WallpaperVideo'
 import './dashboard-sign-in.css'
@@ -19,7 +21,7 @@ const DashboardSessionContext = createContext({ session: false, signOut: async (
 
 export const useDashboardSession = () => useContext(DashboardSessionContext)
 
-const LOGIN_FRAGMENT = /(?:^#|&)ods-login=([A-Za-z0-9_-]{16,128})(?:&|$)/
+const LOGIN_TOKEN = /^[A-Za-z0-9_-]{16,128}$/
 
 export function signInRequired(response) {
   return response?.status === 401 && response.headers?.get?.('x-ods-sign-in') === 'required'
@@ -40,10 +42,22 @@ export default function DashboardSignInGate({ children }) {
   const [session, setSession] = useState(false)
   const [message, setMessage] = useState('')
   const [setupOptional, setSetupOptional] = useState(false)
-  // One link sign-in per page load, shared across StrictMode's re-run.
-  const linkAttempt = useRef(null)
+  // Keep fingerprints, not credentials, to deduplicate tokens across hash events
+  // and StrictMode's re-run without retaining owner links for the page lifetime.
+  const linkAttempts = useRef(new Set())
+  const auth = useRef({ version: 0, pending: false, mounted: false })
+  const beginAuth = useCallback(() => {
+    auth.current.pending = true
+    return ++auth.current.version
+  }, [])
+  const finishAuth = useCallback(version => {
+    if (!auth.current.mounted || auth.current.version !== version) return false
+    auth.current.pending = false
+    return true
+  }, [])
 
   const signIn = useCallback(async (credential) => {
+    const version = beginAuth()
     let response
     try {
       response = await fetch('/api/auth/dashboard-session/login', {
@@ -53,45 +67,70 @@ export default function DashboardSignInGate({ children }) {
         body: JSON.stringify(credential),
       })
     } catch {
+      if (!finishAuth(version)) return
+      setSession(false)
       setMessage('Could not reach ODS. Check the connection and try again.')
       setState('sign-in')
       return
     }
     if (response.ok) {
+      const body = await response.json().catch(() => ({}))
+      if (!finishAuth(version)) return
       setSession(true)
       setMessage('')
-      const body = await response.json().catch(() => ({}))
+      setSetupOptional(false)
       setState(body.passwordSetup ? 'password' : 'ready')
       return
     }
-    setMessage(await detailOf(response, 'Sign-in failed. Try again.'))
+    const detail = await detailOf(response, 'Sign-in failed. Try again.')
+    if (!finishAuth(version)) return
+    setSession(false)
+    setMessage(detail)
     setState('sign-in')
-  }, [])
+  }, [beginAuth, finishAuth])
 
   useEffect(() => {
-    if (bypass) return undefined
+    auth.current.mounted = true
+    if (bypass) return () => { auth.current.mounted = false }
     let cancelled = false
+    const consumeLink = () => {
+      const fragments = window.location.hash.slice(1).split('&')
+      const links = fragments.filter(part => part.startsWith('ods-login='))
+      if (!links.length) return false
+      // Scrub even malformed credentials before any asynchronous work.
+      const remaining = fragments.filter(part => !part.startsWith('ods-login=')).join('&')
+      window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search + (remaining ? `#${remaining}` : ''))
+      const token = links[0].slice('ods-login='.length)
+      if (links.length !== 1 || !LOGIN_TOKEN.test(token)) {
+        ++auth.current.version
+        auth.current.pending = false
+        setSession(false)
+        setMessage('That sign-in link is invalid. Open a new one-time link.')
+        setState('sign-in')
+        return true
+      }
+      const fingerprint = bytesToHex(sha256(new TextEncoder().encode(token)))
+      if (!linkAttempts.current.has(fingerprint)) {
+        linkAttempts.current.add(fingerprint)
+        setMessage('')
+        setState('checking')
+        void signIn({ token })
+      }
+      return true
+    }
     const check = async () => {
-      const link = window.location.hash.match(LOGIN_FRAGMENT)
-      if (link && !linkAttempt.current) {
-        // Drop the one-time token from the address bar and history first.
-        window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search)
-        linkAttempt.current = signIn({ token: link[1] })
-      }
-      if (linkAttempt.current) {
-        await linkAttempt.current
-        return
-      }
+      const version = auth.current.version
+      const current = () => !cancelled && auth.current.version === version
       try {
         const response = await fetch('/api/auth/dashboard-session', { credentials: 'same-origin' })
-        if (cancelled) return
+        if (!current()) return
         if (signInRequired(response)) {
           setState('sign-in')
           return
         }
         if (response.ok) {
           const body = await response.json().catch(() => ({}))
-          if (!cancelled) {
+          if (current()) {
             setSession(body.session === true)
             if (body.passwordConfigured === false) {
               let dismissed = false
@@ -103,10 +142,17 @@ export default function DashboardSignInGate({ children }) {
       } catch {
         // Unreachable API: let the dashboard show its usual service status.
       }
-      if (!cancelled) setState('ready')
+      if (current()) setState('ready')
     }
-    check()
-    return () => { cancelled = true }
+    window.addEventListener('hashchange', consumeLink)
+    // StrictMode may re-run after the fragment was removed while login is still
+    // pending. The original attempt owns that result; do not start a check.
+    if (!consumeLink() && auth.current.version === 0) void check()
+    return () => {
+      cancelled = true
+      auth.current.mounted = false
+      window.removeEventListener('hashchange', consumeLink)
+    }
   }, [bypass, signIn])
 
   // An expired or cleared session returns the user to sign-in instead of
@@ -115,8 +161,10 @@ export default function DashboardSignInGate({ children }) {
     if (bypass || state !== 'ready') return undefined
     const original = window.fetch
     const guarded = async (...args) => {
+      const version = auth.current.version
       const response = await original(...args)
-      if (signInRequired(response)) {
+      if (auth.current.mounted && auth.current.version === version && !auth.current.pending && signInRequired(response)) {
+        ++auth.current.version
         setSession(false)
         setMessage('Your dashboard session ended. Sign in again to continue.')
         setState('sign-in')
@@ -130,30 +178,44 @@ export default function DashboardSignInGate({ children }) {
   }, [bypass, state])
 
   const signOut = useCallback(async () => {
+    const version = beginAuth()
     try {
       const response = await fetch('/api/auth/dashboard-session/logout', { method: 'POST', credentials: 'same-origin' })
       if (!response.ok) throw new Error('Sign-out rejected')
     } catch {
+      if (!finishAuth(version)) return
       setMessage('Could not sign out. Check the connection and try again.')
       return
     }
+    if (!finishAuth(version)) return
     setSession(false)
     setMessage('You signed out of this browser.')
     setState('sign-in')
-  }, [])
+  }, [beginAuth, finishAuth])
 
   const savePassword = async password => {
+    const version = beginAuth()
     try {
       const response = await fetch('/api/auth/dashboard-session/password', {
         method: 'POST', credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }),
       })
-      if (signInRequired(response)) { setSession(false); setMessage('Sign in again to save your password.'); setState('sign-in'); return }
-      if (!response.ok) { setMessage(await detailOf(response, 'Could not save the password. Try again.')); return }
+      if (signInRequired(response)) {
+        if (!finishAuth(version)) return
+        setSession(false); setMessage('Sign in again to save your password.'); setState('sign-in'); return
+      }
+      if (!response.ok) {
+        const detail = await detailOf(response, 'Could not save the password. Try again.')
+        if (finishAuth(version)) setMessage(detail)
+        return
+      }
+      if (!finishAuth(version)) return
       setSession(true)
       setMessage('')
       setState('ready')
-    } catch { setMessage('Could not reach ODS. Check the connection and try again.') }
+    } catch {
+      if (finishAuth(version)) setMessage('Could not reach ODS. Check the connection and try again.')
+    }
   }
   const changePassword = () => { setMessage(''); setSetupOptional(true); setState('password') }
   const skipSetup = () => {
