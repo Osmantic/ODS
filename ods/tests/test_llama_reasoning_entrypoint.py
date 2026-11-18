@@ -23,6 +23,7 @@ print(json.dumps({{
     "pid": os.getpid(),
     "reasoning_present": "LLAMA_ARG_REASONING" in os.environ,
     "reasoning_value": os.environ.get("LLAMA_ARG_REASONING"),
+    "log_verbosity_present": "LLAMA_LOG_VERBOSITY" in os.environ,
 }}), flush=True)
 mode = os.environ.get("FAKE_MODE", "exit")
 if mode == "wait":
@@ -51,7 +52,7 @@ class LlamaReasoningEntrypointTest(unittest.TestCase):
         self.fake = fake
 
     def _env(self, reasoning=..., extra=None):
-        env = {k: v for k, v in os.environ.items() if k not in ("LLAMA_ARG_REASONING", "FAKE_MODE", "FAKE_EXIT")}
+        env = {k: v for k, v in os.environ.items() if k not in ("LLAMA_ARG_REASONING", "LLAMA_LOG_VERBOSITY", "FAKE_MODE", "FAKE_EXIT")}
         env["PATH"] = f"{self.bindir}{os.pathsep}{env.get('PATH', '')}"
         if reasoning is not ...:
             env["LLAMA_ARG_REASONING"] = reasoning
@@ -150,6 +151,35 @@ class LlamaReasoningEntrypointTest(unittest.TestCase):
         # sys.argv[0] is the resolved fake executable path, not literal "llama-server".
         self.assertEqual(data["argv"][0], str(self.fake))
         self.assertEqual(data["argv"][1:], args)
+
+    def test_log_verbosity_unset_leaves_args(self):
+        data = self._run_json(["--foo", "bar"], reasoning="on")
+        self.assertEqual(data["argv"][1:], ["--foo", "bar"])
+
+    def test_log_verbosity_empty_leaves_args(self):
+        data = self._run_json(["--foo", "bar"], reasoning="on", extra={"LLAMA_LOG_VERBOSITY": ""})
+        self.assertEqual(data["argv"][1:], ["--foo", "bar"])
+        self.assertFalse(data["log_verbosity_present"])
+
+    def test_log_verbosity_valid_values_appended(self):
+        for value in ("0", "4", "5"):
+            with self.subTest(value=value):
+                data = self._run_json(["--foo", "bar"], reasoning="on", extra={"LLAMA_LOG_VERBOSITY": value})
+                self.assertEqual(data["argv"][1:], ["--foo", "bar", "--log-verbosity", value])
+                self.assertFalse(data["log_verbosity_present"])
+
+    def test_log_verbosity_invalid_fails_before_launch(self):
+        for value in ("-1", "6", "1.5", "4;echo hi", "$(echo hi)", "`echo hi`", " 4"):
+            with self.subTest(value=value):
+                proc = self._run([], reasoning="on", extra={"LLAMA_LOG_VERBOSITY": value})
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("LLAMA_LOG_VERBOSITY", proc.stderr)
+                self.assertEqual(proc.stdout, "")
+
+    def test_log_verbosity_preserves_reasoning_normalization(self):
+        data = self._run_json([], reasoning="OFF", extra={"LLAMA_LOG_VERBOSITY": "4"})
+        self.assertEqual(data["reasoning_value"], "off")
+        self.assertEqual(data["argv"][1:], ["--log-verbosity", "4"])
 
     def test_child_exit_code_propagates(self):
         proc = self._run([], reasoning="on", extra={"FAKE_EXIT": "42"})

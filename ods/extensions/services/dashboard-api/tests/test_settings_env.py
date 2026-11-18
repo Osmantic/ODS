@@ -141,8 +141,8 @@ def constrained_settings(settings_env_fixture):
     schema_path = settings_env_fixture["schema_path"]
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     shipped = json.loads((Path(__file__).resolve().parents[4] / ".env.schema.json").read_text())
-    for key in ("REMOTE_LLM_SSH_PORT", "LLAMA_ARG_N_CPU_MOE", "N8N_PASS",
-                "PIXEL_OPENWEBUI_KEY", "TS_HOSTNAME"):
+    for key in ("REMOTE_LLM_SSH_PORT", "LLAMA_ARG_N_CPU_MOE", "LLAMA_LOG_VERBOSITY",
+                "N8N_PASS", "PIXEL_OPENWEBUI_KEY", "TS_HOSTNAME"):
         schema["properties"][key] = shipped["properties"][key]
     schema_path.write_text(json.dumps(schema), encoding="utf-8")
     return settings_env_fixture
@@ -2376,3 +2376,65 @@ def test_settings_transient_restore_read_failure_preserves_saved_values(
     assert not issues
     assert "LLAMA_ARG_N_CPU_MOE" not in restored
     assert all(restored[key] == value for key, value in original.items())
+
+
+@pytest.mark.parametrize("value", ["-1", "6", "1.5", "not-an-integer", True])
+def test_settings_rejects_invalid_llama_log_verbosity_before_write(
+    test_client, constrained_settings, monkeypatch, value,
+):
+    from unittest.mock import Mock
+
+    import main
+    write = Mock(wraps=main._call_agent_env_update)
+    monkeypatch.setattr(main, "_call_agent_env_update", write)
+    env_path = constrained_settings["env_path"]
+    original = env_path.read_bytes()
+    response = test_client.put(
+        "/api/settings/env", headers=test_client.auth_headers,
+        json={"mode": "form", "values": {"LLAMA_LOG_VERBOSITY": value}},
+    )
+    assert response.status_code == 400, response.text
+    write.assert_not_called()
+    assert env_path.read_bytes() == original
+
+
+@pytest.mark.parametrize("level", ["0", "4", "5"])
+def test_settings_log_verbosity_save_apply_and_clear(
+    test_client, constrained_settings, monkeypatch, level,
+):
+    from settings import _parse_env_text
+
+    applied = []
+    monkeypatch.setattr(
+        "main._call_agent_core_recreate",
+        lambda services, expected_env_revision=None: applied.append((services, expected_env_revision)),
+    )
+    env_path = constrained_settings["env_path"]
+    before, issues = _parse_env_text(env_path.read_text(encoding="utf-8"))
+    assert not issues
+    for value in (level, ""):
+        saved = test_client.put(
+            "/api/settings/env", headers=test_client.auth_headers,
+            json={"mode": "form", "values": {"LLAMA_LOG_VERBOSITY": value}},
+        )
+        assert saved.status_code == 200, saved.text
+        plan = saved.json()["applyPlan"]
+        assert plan["supported"] and plan["services"] == ["llama-server"]
+        revision = hashlib.sha256(env_path.read_bytes()).hexdigest()
+        assert plan["envRevision"] == revision
+        current, issues = _parse_env_text(env_path.read_text(encoding="utf-8"))
+        assert not issues
+        if value:
+            assert current.pop("LLAMA_LOG_VERBOSITY") == value
+        else:
+            assert "LLAMA_LOG_VERBOSITY" not in current
+        # The existing serializer adds blank optional schema fields. It must
+        # preserve every original value and introduce no unrelated setting.
+        assert all(current.get(key) == value for key, value in before.items())
+        assert all(value == "" for key, value in current.items() if key not in before)
+        response = test_client.post(
+            "/api/settings/env/apply", headers=test_client.auth_headers,
+            json={"service_ids": ["llama-server"], "expected_env_revision": revision},
+        )
+        assert response.status_code == 200, response.text
+        assert applied[-1] == (["llama-server"], revision)
