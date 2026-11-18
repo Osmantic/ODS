@@ -1130,6 +1130,10 @@ LANGFUSE_INIT_USER_PASSWORD=$langfuseInitUserPassword
     }
     Write-ODSPrivateEnvFile -Path $envPath -Content $envContent
 
+    # Compose prefers inherited process values, including empty strings, to
+    # --env-file. Carry this resolved owner choice into subsequent launches.
+    [Environment]::SetEnvironmentVariable('BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL', $webSearchEmbeddingBypass, 'Process')
+
     if ($effectiveODSMode -eq "local") {
         $litellmDir = Join-Path (Join-Path $InstallDir "config") "litellm"
         $localModel = $(if ($TierConfig.GgufFile) { $TierConfig.GgufFile } else { $TierConfig.LlmModel })
