@@ -43,11 +43,11 @@ class InstallerPreservation(unittest.TestCase):
                     limits = CORE.read_effective(directory)['provider']['llama-server']['models']['new-model']['limit']
                     self.assertEqual(limits, {'context': context, 'output': output})
 
-    def run_writer(self, directory, surface, context=32768):
+    def run_writer(self, directory, surface, context=32768, model='new-model'):
         env = dict(os.environ, INSTALL_DIR=str(ODS), OPENCODE_CONFIG_DIR=str(directory),
-                   ODS_OPENCODE_MODEL='new-model', ODS_OPENCODE_BASE_URL='http://127.0.0.1:9/v1',
+                   ODS_OPENCODE_MODEL=model, ODS_OPENCODE_BASE_URL='http://127.0.0.1:9/v1',
                    ODS_OPENCODE_API_KEY=KEY, ODS_OPENCODE_CONTEXT=str(context),
-                   _opencode_model_id='new-model', _opencode_model_name='New model',
+                   _opencode_model_id=model, _opencode_model_name='New model',
                    _opencode_provider_name='ODS inference', _opencode_url='http://127.0.0.1:9/v1',
                    _opencode_key=KEY, _opencode_context=str(context))
         if surface == 'macos':
@@ -123,10 +123,61 @@ _write_macos_opencode_config "$OPENCODE_CONFIG_DIR/opencode.json" "$ODS_OPENCODE
                 self.assertEqual(after['$schema'],'owner-schema')
                 self.assertEqual(after['agent']['plan']['model'],'custom/plan')
                 self.assertEqual(after['agent']['build']['temperature'],0.25)
-                self.assertEqual(after['agent']['build']['model'],'llama-server/new-model' if surface=='linux' else 'llama-server/old')
+                self.assertEqual(after['agent']['build']['model'],'llama-server/new-model')
                 self.assertEqual(after['small_model'],'llama-server/new-model' if surface=='linux' else 'owner/small')
                 self.assertEqual(after['provider']['llama-server']['options']['timeout'],123)
                 self.assertEqual(after['provider']['llama-server']['models']['owner'],{'name':'keep'})
+
+    def test_fresh_macos_routes_build_plan_and_small_model_locally(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp).resolve()
+            result = self.run_writer(directory, 'macos', model='ods/current')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            after = CORE.read_effective(directory)
+            self.assertEqual(after['model'], 'llama-server/ods/current')
+            self.assertEqual(after['small_model'], after['model'])
+            for role in ['build', 'plan']:
+                self.assertEqual(after['agent'][role]['model'], after['model'])
+            self.assertIn('ods/current', after['provider']['llama-server']['models'])
+
+    def test_macos_only_refreshes_unset_or_previous_ods_selections(self):
+        cases = [
+            ({}, None, 'llama-server/ods/current'),
+            ({'model': 'llama-server/old'}, 'llama-server/old', 'llama-server/ods/current'),
+            ({'model': 'llama-server/old'}, 'owner/custom', 'owner/custom'),
+            ({'model': 'llama-server/old'}, 'llama-server/owner-other', 'llama-server/owner-other'),
+            ({'model': 'owner/old'}, 'owner/old', 'owner/old'),
+            ({'model': 'owner/old'}, 'llama-server/old', 'llama-server/old'),
+        ]
+        for initial, current, expected in cases:
+            with self.subTest(current=current, initial=initial), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp).resolve()
+                initial = dict(initial, small_model=current,
+                               agent={'build': {'model': current, 'temperature': 0.25},
+                                      'plan': {'model': current, 'prompt': 'Owner instructions'}})
+                (directory/'config.json').write_text('// owner selections\n'+json.dumps(initial)+'\n')
+                result = self.run_writer(directory, 'macos', model='ods/current')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                after = CORE.read_effective(directory)
+                self.assertEqual(after['small_model'], expected)
+                self.assertEqual(after['agent']['build']['model'], expected)
+                self.assertEqual(after['agent']['plan']['model'], expected)
+                self.assertEqual(after['agent']['build']['temperature'], 0.25)
+                self.assertEqual(after['agent']['plan']['prompt'], 'Owner instructions')
+                self.assertTrue((directory/'config.json').read_text().startswith('// owner selections'))
+                saved = (directory/'config.json').read_bytes()
+                self.assertEqual(self.run_writer(directory, 'macos', model='ods/current').returncode, 0)
+                self.assertEqual((directory/'config.json').read_bytes(), saved)
+
+    def test_macos_invalid_agent_shapes_leave_config_untouched(self):
+        for agent in [None, [], {'build': None}, {'plan': []}]:
+            with self.subTest(agent=agent), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp).resolve()
+                path = directory/'opencode.jsonc'
+                original = '// owner content\n'+json.dumps({'agent': agent})+'\n'
+                path.write_text(original)
+                self.assertNotEqual(self.run_writer(directory, 'macos').returncode, 0)
+                self.assertEqual(path.read_text(), original)
 
 
 if __name__ == '__main__':
