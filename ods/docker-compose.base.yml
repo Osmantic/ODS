@@ -188,6 +188,7 @@ services:
       ODS_WEBUI_BIND_ADDRESS: "${BIND_ADDRESS:-127.0.0.1}"
       WEBUI_SECRET_KEY: "${WEBUI_SECRET:?WEBUI_SECRET must be set — run the installer or add it to .env}"
       ENABLE_WEB_SEARCH: "${ENABLE_WEB_SEARCH:-false}"
+      BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL: "${BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL:-false}"
       WEB_SEARCH_ENGINE: "searxng"
       SEARXNG_QUERY_URL: "http://searxng:8080/search?q=<query>&format=json"
       ENABLE_SEARCH_QUERY_GENERATION: "${ENABLE_WEB_SEARCH:-false}"

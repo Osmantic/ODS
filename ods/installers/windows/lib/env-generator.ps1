@@ -829,6 +829,29 @@ function New-ODSEnv {
     $ragEmbeddingModel = Get-EnvOrNewAllowEmpty "RAG_EMBEDDING_MODEL" ([Environment]::GetEnvironmentVariable("RAG_EMBEDDING_MODEL"))
     $ragOpenAiApiBaseUrl = Get-EnvOrNewAllowEmpty "RAG_OPENAI_API_BASE_URL" ([Environment]::GetEnvironmentVariable("RAG_OPENAI_API_BASE_URL"))
     $ragOpenAiApiKey = Get-EnvOrNewAllowEmpty "RAG_OPENAI_API_KEY" ([Environment]::GetEnvironmentVariable("RAG_OPENAI_API_KEY"))
+    # Keep this opt-in until full-page retrieval is qualified for each surface.
+    # An explicit owner setting survives reinstall; false must not be treated
+    # as an absent value. Blank means unspecified. Never evaluate dotenv input.
+    $webSearchEmbeddingBypass = "false"
+    $bypassCandidates = @(
+        [string]$existingEnv['BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL'],
+        [Environment]::GetEnvironmentVariable('BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL')
+    )
+    foreach ($candidate in $bypassCandidates) {
+        $rawBypass = ([string]$candidate).Trim()
+        if ($rawBypass.Length -ge 2 -and (
+            ($rawBypass[0] -eq "'" -and $rawBypass[$rawBypass.Length - 1] -eq "'") -or
+            ($rawBypass[0] -eq '"' -and $rawBypass[$rawBypass.Length - 1] -eq '"')
+        )) {
+            $rawBypass = $rawBypass.Substring(1, $rawBypass.Length - 2).Trim()
+        }
+        if ([string]::IsNullOrWhiteSpace($rawBypass)) { continue }
+        if ($rawBypass -notmatch '\A(?i:true|false)\z') {
+            throw 'BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL must be true or false.'
+        }
+        $webSearchEmbeddingBypass = $rawBypass.ToLowerInvariant()
+        break
+    }
     $embeddingsMemoryLimitDefault = [Environment]::GetEnvironmentVariable("EMBEDDINGS_MEMORY_LIMIT")
     if ([string]::IsNullOrWhiteSpace($embeddingsMemoryLimitDefault)) { $embeddingsMemoryLimitDefault = "4G" }
     $embeddingsMemoryLimit = Get-EnvOrNew "EMBEDDINGS_MEMORY_LIMIT" $embeddingsMemoryLimitDefault
@@ -1023,6 +1046,7 @@ EMBEDDINGS_MEMORY_LIMIT=$embeddingsMemoryLimit
 # Loopback installs open directly. LAN installs require a login by default.
 WEBUI_AUTH=$webuiAuth
 ENABLE_WEB_SEARCH=$enableWebSearchValue
+BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL=$webSearchEmbeddingBypass
 WEB_SEARCH_ENGINE=searxng
 
 #=== n8n Settings ===

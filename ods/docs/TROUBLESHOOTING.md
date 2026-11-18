@@ -2,6 +2,23 @@
 
 Common issues and solutions.
 
+## Web Search Cannot Embed Retrieved Pages
+
+Open WebUI web search normally embeds retrieved pages. If the optional embeddings
+service is not installed and no external embedding provider is configured, search
+can fail with "Failed to embed and store the retrieved web pages."
+
+To use search without an embedding provider, enable
+`BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL` in ODS Settings and apply the change.
+This recreates Open WebUI and keeps the setting in the installation configuration;
+Windows installer reruns retain the explicit value. A change made only in Open
+WebUI's own Admin Settings is not a persistent ODS configuration change.
+
+This option passes full retrieved pages to the model instead of selecting embedded
+chunks. It can use more context and include irrelevant text. Check the answer and
+its citations, particularly with long pages or small-context models. The default
+remains off, and document retrieval still needs its configured embedding provider.
+
 ---
 
 ## Installation Issues
