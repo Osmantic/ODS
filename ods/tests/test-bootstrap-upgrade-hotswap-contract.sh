@@ -45,6 +45,8 @@ gate_acquire_block="$(function_block acquire_model_router_swap_gate | grep -v '^
 gate_release_block="$(function_block release_model_router_swap_gate | grep -v '^[[:space:]]*#')"
 grep -qF 'model_router_swap_gate_call begin "$token" 30' <<<"$gate_acquire_block" \
     || fail "model swap admission must use a short renewable router lease"
+grep -qF 'MODEL_ROUTER_SWAP_GATE_TOKEN="$token"' <<<"$gate_acquire_block" \
+    || fail "model swap admission must expose its active token to routed warm-up decisions"
 grep -qF 'model_router_swap_gate_health' <<<"$gate_acquire_block" \
     || fail "model swap admission must inspect authoritative router request counts"
 grep -qF 'consecutive_idle >= 2' <<<"$gate_acquire_block" \
@@ -166,6 +168,24 @@ grep -qF 'MSYS_NO_PATHCONV=1 $DOCKER_CMD exec ods-hermes timeout 90' <<<"$hermes
 grep -qF '/opt/hermes/.venv/bin/hermes -z "ping" --yolo' <<<"$hermes_prewarm_block" \
     || fail "Hermes pre-warm must preserve the exact container executable and argv"
 pass "Hermes pre-warm preserves its container-absolute executable on Windows"
+
+eval "$(function_block should_prewarm_hermes_prompt)"
+MODEL_ROUTER_SWAP_GATE_TOKEN=held
+if should_prewarm_hermes_prompt enabled; then
+    fail "routed Hermes warm-up must not call back into a closed model-router gate"
+fi
+should_prewarm_hermes_prompt observe \
+    || fail "direct Hermes warm-up must remain available without switchboard routing"
+MODEL_ROUTER_SWAP_GATE_TOKEN=""
+should_prewarm_hermes_prompt enabled \
+    || fail "routed Hermes warm-up must remain available after gate release"
+guard_line="$(grep -nF 'if should_prewarm_hermes_prompt "$_hermes_switchboard_mode"; then' "$TARGET" | tail -1 | cut -d: -f1)"
+ping_line="$(grep -nF '/opt/hermes/.venv/bin/hermes -z "ping" --yolo' "$TARGET" | tail -1 | cut -d: -f1)"
+grep -qF '_hermes_switchboard_mode="$(read_env_value ODS_MODEL_SWITCHBOARD' "$TARGET" \
+    || fail "Hermes warm-up must inspect the same switchboard mode as router admission"
+[[ -n "$guard_line" && -n "$ping_line" && "$guard_line" -lt "$ping_line" ]] \
+    || fail "Hermes ping must be guarded before it can wait on closed router admission"
+pass "Hermes warm-up skips a closed routed gate while retaining direct and released routes"
 
 compose_hermes_block="$(function_block compose_recreate_hermes | grep -v '^[[:space:]]*#')"
 windows_compose_loader_block="$(function_block load_windows_lemonade_compose_args | grep -v '^[[:space:]]*#')"
