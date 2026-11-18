@@ -55,15 +55,15 @@ RENAME_EXCL = 0x4
 # files are exactly the bytes published at https://odsspark.com/game/.
 EXAMPLES = {
     'elf-of-doom': {
-        'README.md': 'a7d4e1a0d6ac4e3477d17b4f3de4a42ff4f3da998e36d0c9450d57875abe8944',
-        'chars.js': '161b08c8a331fef5f09ac45e6ade2cff62e03316ba7c6ac197adf8147af629db',
+        'README.md': '8e46f14d7566c21328c7f9131b5028ffe826be7c2e6e3ca404074b95d1d178f6',
+        'chars.js': 'af03eef4d9ab9a6906cbb4357e68cff4b7efee515ffb1b1b31494b34289f6a63',
         'dungeon.js': '80dfc2e0517cb89bce4f445d75e6a85a4a9c2317893a6762d87666b5b136004c',
-        'engine.js': 'f50a91ae535f3d0f91e0f632f956babcfedaf3f423d351c31e12186fe13e3663',
-        'index.html': 'af1c8b2b0a9f4e3ec4f5c6389078cf0b3a187a53badd451006ce24b737fd9906',
-        'legacy.js': '0d33ded8670f4113f47baba1325ed52247305cbb9a0c92271aa7c8ef0c498165',
-        'style.css': 'e063614db72fbc5c607bd4c79d4e2e967a0e5deceb3962f0a50f045e55197ee9',
-        'ui.js': '5d0138ba4517d812359d4dd474f6febccf4dc703870412234a092cf8a04ef7f1',
-        'world.js': 'b783175e2514607383a1f70e7b444bad5448f0cfc6d70915e9f2bf07a2ece4a7',
+        'engine.js': 'cc56359be34c3204aa0e744f655d7ccbc7fc23188b03090244647bf18803aa86',
+        'index.html': 'c4491e65f40d66c29907d842048bcdccdf451774ed49cd09b84544e57080360b',
+        'legacy.js': '81e8f16fa20cd0961200fb0a78750ea7cd1365fbfda42ca2edbfac07410050eb',
+        'style.css': 'f2d39c8053267b0ed1ce98307e13c5331180871c95b0153bd701be9fa3b3474f',
+        'ui.js': 'ac765dac5795f678799d1f3be1fe84d9005b289479b2a256684bc9fb6049f775',
+        'world.js': 'fd725d752bd13d2fbb4b9bc0d2de2512506209b702c67a4e5eaf65b629426a2a',
     },
 }
 PINNED_NAMES = frozenset(name for files in EXAMPLES.values() for name in files)

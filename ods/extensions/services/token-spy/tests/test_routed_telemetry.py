@@ -142,3 +142,20 @@ def test_hipfire_backend_is_accounted_as_local_runtime():
 
     assert usage["provider_name"] == "local"
     assert usage["cost_source"] == "local_zero_cost"
+
+
+def test_vllm_backend_is_accounted_as_local_runtime():
+    telemetry = _load(
+        TOKEN_SPY_DIR / "routed_telemetry.py", "routed_telemetry"
+    )
+
+    # model-router reports a vllm route's backend kind as its provider.
+    usage = telemetry.routed_event_to_usage(
+        telemetry.validate_routed_event(
+            _event(provider_name="vllm", model="GLM-5.3-Flash-NVFP4")
+        )
+    )
+
+    assert usage["provider_name"] == "local"
+    assert usage["cost_source"] == "local_zero_cost"
+    assert usage["model"] == "GLM-5.3-Flash-NVFP4"

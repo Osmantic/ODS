@@ -351,8 +351,10 @@ jobs:
           TMPDIR: /private/tmp
         run: |
           python -m pip install pytest-subtests "PyYAML>=6.0,<7.0"
-          ODS_LIFECYCLE_TEST_BASH="$(brew --prefix)/bin/bash" python -m pytest -q tests/test_macos_pixel_*.py tests/test_macos_runtime_*.py tests/test_macos_upgrade_process_crash.py tests/test_macos_protected_replace.py tests/test_pixel_startup_reproof.py tests/test_pixel_native_compose.py
+          ODS_LIFECYCLE_TEST_BASH="$(brew --prefix)/bin/bash" python -m pytest -q tests/test_macos_pixel_*.py tests/test_macos_runtime_*.py tests/test_macos_upgrade_process_crash.py tests/test_macos_protected_replace.py tests/test_pixel_startup_reproof.py tests/test_pixel_native_compose.py tests/test_macos_first_chat_readiness.py
           python -m unittest discover -s tests -p 'test_pixel_*.py' -q
+          python tests/test_bootstrap_native_owner.py -v
+          python -m pytest -q tests/test_macos_native_service_manager.py tests/test_macos_native_service_cli.py tests/test_macos_bridge_service.py tests/test_macos_native_service_live.py tests/test_macos_bridge_service_live.py
 
       - name: Native macOS chat response exit contract
         run: |

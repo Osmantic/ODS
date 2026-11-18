@@ -37,6 +37,23 @@ export function requestsVisibilityInteraction(text) {
   });
 }
 
+// The owner wants the page's data to outlast a reload or a later visit. Portal
+// shows previews with an opaque origin, in its card and in a new tab alike
+// (the relay's CSP sandbox), so storage reads and writes throw and a guarded
+// page keeps its data only in memory. No check can establish it (Workstation06,
+// 2026-10-27: "make the ticks survive a page reload" ended "Everything checks out").
+const KEEPS = /\b(?:survives?|surviving|keeps?|kept|saves?|saved|stores?|stored|retains?|retained|remembers?|remembered|persists?|persisted)\b/i;
+const LATER = /\b(?:reloads?|reloading|refresh(?:es|ed|ing)?|restarts?|sessions?|visits?|re-?open(?:s|ed|ing)?|clos(?:e|es|ed|ing)|come\s+back|tomorrow|next\s+time)\b/i;
+export function requestsReloadPersistence(text) {
+  return String(text ?? '').split(/[!?;\n]+|\.(?=\s|$)/).some(clause => {
+    if (/^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|avoid|skip|explain|describe|example)\b/i.test(clause) ||
+        /\b(?:do\s+not|don['’]t|never|without|no)\s+(?:use\s+)?(?:any\s+)?(?:local\s*storage|session\s*storage|indexed\s*db|persistence)\b/i.test(clause)) return false;
+    return /\b(?:local|session)\s*storage\b|\bindexed\s*db\b|\bpersist(?:ent|ence)\b/i.test(clause) ||
+      /\bremembers?\s+(?:my|our|your|their|the|them|it|everything|all)\b/i.test(clause) ||
+      (KEEPS.test(clause) && LATER.test(clause));
+  });
+}
+
 // The owner's own wording of a requested show/hide change, used only to name
 // the likely affected element and control in an inspection's corrective steps
 // (laptop round 100: the model asserted the button and a post-click class,
@@ -134,11 +151,13 @@ export function boundInspectionPageErrors(params, result, preview) {
 // capsule receipt passed): they are observed before any step runs, so a
 // failed step or a missing transition does not void them. `controls` is
 // undefined when the receipt carries none (an older capsule or a transport
-// failure). Never interaction evidence.
+// failure). Never interaction evidence. Only the entry page's names count:
+// a receipt of another page (`page`) lists that page's buttons and links,
+// which can neither show nor rule out a control of the entry page.
 export function boundInspectionControls(params, result, preview) {
   try {
-    const {receipt} = boundReceipt(params, result, preview, {incomplete: true}) ?? {};
-    return receipt ? Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256,
+    const {request, receipt} = boundReceipt(params, result, preview, {incomplete: true}) ?? {};
+    return receipt && request.page === undefined ? Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256,
       controls: inspectionControls(receipt)}) : undefined;
   } catch { return undefined; }
 }
@@ -185,29 +204,46 @@ export function attemptedPreviewBehavior(params, preview) {
     ? Object.freeze({requiresInteraction: true}) : undefined;
 }
 
-export function boundPreviewBehavior(params, result, preview, attempted) {
-  if (!attempted) return undefined;
-  return boundInspection(params, result, preview, request => {
-    if (request.steps.some(step => step.action === 'download')) return false;
-    if (!request.steps.some(step => BEHAVIOR_ACTIONS.includes(step.action))) return false;
-    // Fill/select can prepare a click, but each click needs a postcondition
-    // before another action. A value change without a click needs one too.
-    // Key presses may chain (Space to start, then ArrowRight); the last
-    // action before the end still needs a postcondition.
-    let pending;
-    for (const step of request.steps) {
-      if (BEHAVIOR_ASSERTIONS.includes(step.action)) pending = undefined;
-      else if (BEHAVIOR_ACTIONS.includes(step.action)) {
-        if (pending === 'click') return false;
-        pending = step.action;
-      }
+// The step that keeps an action plan from counting as behavior evidence: the
+// first click followed directly by another action (that action is `next`),
+// else a last action with no assertion after it. Fill/select can prepare a
+// click, but each click needs a postcondition before another action. A value
+// change without a click needs one too. Key presses may chain (Space to start,
+// then ArrowRight); the last action before the end still needs a postcondition.
+export function unassertedBehaviorStep(steps) {
+  let pending;
+  for (const [index, step] of steps.entries()) {
+    if (BEHAVIOR_ASSERTIONS.includes(step.action)) pending = undefined;
+    else if (BEHAVIOR_ACTIONS.includes(step.action)) {
+      if (pending?.action === 'click') return Object.freeze({...pending, next: Object.freeze({index, action: step.action})});
+      pending = {index, action: step.action};
     }
-    return pending === undefined;
-  });
+  }
+  return pending ? Object.freeze(pending) : undefined;
 }
 
-export function previewBehaviorInstruction(preview, pageErrors) {
-  return pageErrorRepairInstruction(preview, pageErrors) ??
+export function boundPreviewBehavior(params, result, preview, attempted) {
+  if (!attempted) return undefined;
+  return boundInspection(params, result, preview, request =>
+    !request.steps.some(step => step.action === 'download') &&
+    request.steps.some(step => BEHAVIOR_ACTIONS.includes(step.action)) &&
+    !unassertedBehaviorStep(request.steps));
+}
+
+// `gap` is the unassertedBehaviorStep of this snapshot's latest passing
+// inspection. That inspection's own result says "passed", and the generic
+// instruction below usually went out already with the publication, so the
+// step to correct is named first. Never evidence.
+function unassertedStepLine(preview, gap) {
+  if (!visibilityInspectionMatches(gap, preview)) return '';
+  const lead = 'The latest inspection of this snapshot passed, but ';
+  return gap.next
+    ? `${lead}step ${gap.index + 1} (click) is followed directly by step ${gap.next.index + 1} (${gap.next.action}) with no assertion of the click's own result, so this plan does not count as interaction evidence. Insert an assertion of that click's visible result before step ${gap.next.index + 1} and retry the same published snapshot. `
+    : `${lead}no assertion follows its last action, step ${gap.index + 1} (${gap.action}), so this plan does not count as interaction evidence. Add an assertion of that action's visible result after it and retry the same published snapshot. `;
+}
+
+export function previewBehaviorInstruction(preview, pageErrors, gap) {
+  return pageErrorRepairInstruction(preview, pageErrors) ?? unassertedStepLine(preview, gap) +
     'The preview interaction check remains unverified. Test the actual controls and visible results needed for the owner\'s request. ' +
     `Read the actual controls and affected elements from the source; do not replace the behavior checks with a heading-only assertion. ` +
     `Call ${PREVIEW_INSPECTION_TOOL} with siteId ${JSON.stringify(preview.siteId)}, sha256 ${JSON.stringify(preview.sha256)}, viewport {width,height}, and valid steps. ` +

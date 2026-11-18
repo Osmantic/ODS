@@ -37,7 +37,7 @@ def payload(probe, stream=False, tools=False):
     return result
 
 
-@pytest.mark.parametrize("kind", ["stream", "buffered-tool", "repair"])
+@pytest.mark.parametrize("kind", ["stream", "buffered-tool", "buffered-json", "thinking", "repair"])
 def test_each_upstream_send_matches_wire_and_preserves_attempts(router, kind):
     mod, client, write_state, _ = router
     write_state()
@@ -67,19 +67,26 @@ def test_each_upstream_send_matches_wire_and_preserves_attempts(router, kind):
                            for frame in frames) + b"data: [DONE]\n\n"
             return httpx.Response(200, content=sse,
                                   headers={"content-type": "text/event-stream"})
-        if body["stream"]:
+        if kind == "buffered-json":
+            assert body["stream"] is True
+        elif body["stream"]:
             assert kind == "repair"
             return httpx.Response(500, json={"error": {
                 "message": "Invalid diff: now finding less tool calls!"}})
-        assert body["stream"] is False
+        else:
+            assert body["stream"] is False
         text = ("<tool_call>\n<function=missing_tool>\n<parameter=key>\nx\n</parameter>\n</function>\n</tool_call>"
                 if kind == "repair" and len(sent) == 2 else "ok")
-        return httpx.Response(200, json={"model": "Concrete.gguf", "choices": [
+        model = "Decision-other.gguf" if kind == "repair" and len(sent) == 2 else "Concrete.gguf"
+        return httpx.Response(200, json={"model": model, "choices": [
             {"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]})
 
     asyncio.run(mod.app.state.http.aclose())
     mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
-    response = client.post("/v1/chat/completions", json=payload(probe, True, kind != "stream"))
+    body = payload(probe, True, kind != "stream")
+    if kind == "thinking":
+        body["chat_template_kwargs"] = {"enable_thinking": True}
+    response = client.post("/v1/chat/completions", json=body)
     assert response.status_code == 200
     rows = observed(client, probe)["attempts"]
     assert len(rows) == len(sent) == (3 if kind == "repair" else 1)
@@ -91,6 +98,9 @@ def test_each_upstream_send_matches_wire_and_preserves_attempts(router, kind):
         expected_status = "stream-error" if kind == "repair" and row["attempt"] == 1 else "complete"
         expected_http = 500 if kind == "repair" and row["attempt"] == 1 else 200
         assert row["status"] == expected_status and row["httpStatus"] == expected_http
+        expected_model = (None if expected_http == 500 else
+            "Decision-other.gguf" if kind == "repair" and row["attempt"] == 2 else "Concrete.gguf")
+        assert row["responseModel"] == expected_model
         assert row["elapsedMs"] >= 0 and row["capturePrepareMs"] >= 0
         actual = json.loads(raw)
         for name in ["messages", "tools"]:
@@ -148,6 +158,7 @@ def test_expiry_limit_and_old_completion_cannot_revive_evidence(router):
     assert mod._probe_attempts.public(probe, "probe-secret") is None
     assert arm(client, probe).status_code == 201
     mod._probe_attempts.finish(stale_handle, "complete", 200)
+    mod._probe_attempts.observe_response_model(stale_handle, "Late-other.gguf")
     assert observed(client, probe)["attempts"] == []
 
 

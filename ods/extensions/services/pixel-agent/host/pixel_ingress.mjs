@@ -23,6 +23,7 @@ import {createChatHistoryLedger,HistoryError} from './chat_history_ledger.mjs';
 import {createChatImageStore,createChatImageReadHandler,ChatImageError} from './chat_image_store.mjs';
 import {currentImageNote,decodeChatImageTurn,nativeHistoryMessages,validateImageRoute} from './chat_image_transport.mjs';
 import {handleAccessMode, handleModelControl, publicModelControl, readAccessOwnerKey, requestAccessController} from './access_mode_relay.mjs';
+import {ownerForbidsTools} from './owner_tool_policy.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -41,6 +42,8 @@ const MAX_VERIFICATION_TEXT = 32 * 1024;
 // One host line for the owner after the delivered reply (the plugin's
 // shipped-example guard, plugin/example-guard.mjs).
 const MAX_VERIFICATION_NOTICE = 1024;
+// The limits that may stop a failed response (verification `stop`).
+const VERIFICATION_STOPS = new Set(['tool-limit', 'run-deadline']);
 const MAX_VERIFICATION_RESPONSE = 1024 * 1024;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMPTY_ASSISTANT_RESPONSE = "⚠️ Agent couldn't generate a response. Please try again.";
@@ -60,6 +63,9 @@ const GATEWAY_ABORT_MAX_ATTEMPTS = 30;
 const DOCKER_TIMEOUT_MS = 10000;
 const MAX_TOKEN_LEN = 4096;
 const MAX_CANCEL_BODY = 256;
+// Settle reads one native context under the history lock; keep it well inside
+// the edge's relay deadline so a slow gateway answers "unconfirmed", not a hang.
+const SETTLE_CONTEXT_TIMEOUT_MS = 5000;
 const MAX_STATUS_INTERVAL_MS = 86400000; // 1 day
 const STATUS_MODE = 0o640; // group-readable, service-owner-writable projection
 const ODS_VERSION_RE = /^(?:unknown|[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?)$/;
@@ -165,6 +171,8 @@ const ALLOWED_SERVICES = new Set([
   "dashboard-api",
   "ods-llama-server",
   "llama-server",
+  "ods-vllm-server",
+  "vllm-server",
   "ods-searxng",
   "searxng",
   "ods-langfuse",
@@ -633,6 +641,16 @@ function readBody(req, limit) {
 // Allowlisted request construction.
 // ---------------------------------------------------------------------------
 
+// Latest current user message raw text, restricted to type:text parts. Never
+// inspects images, system/assistant/tool messages, or older user turns.
+function userTextParts(message) {
+  const content = message?.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.filter(part => part?.type === 'text' && typeof part.text === 'string')
+    .map(part => part.text).join('\n');
+}
+
 export function buildOutgoing(parsed, sessionUser) {
   const out = { model: "openclaw/default" };
   for (const key of Object.keys(ALLOWED_FIELDS)) {
@@ -644,6 +662,16 @@ export function buildOutgoing(parsed, sessionUser) {
     out[key] = v;
   }
   if (sessionUser) out.user = sessionUser;
+  // An explicit owner no-tools directive in the latest current user message
+  // forces tool_choice:'none' and tools:[] for this attempt only. This is a
+  // restrictive hint for any authenticated gateway client; it grants no
+  // authority and is never persisted to history or config. A tool-result
+  // continuation (latest message not user) never infers from earlier turns.
+  const latest = Array.isArray(parsed.messages) ? parsed.messages[parsed.messages.length - 1] : undefined;
+  if (latest && latest.role === 'user' && ownerForbidsTools(userTextParts(latest))) {
+    out.tool_choice = 'none';
+    out.tools = [];
+  }
   return out;
 }
 
@@ -820,6 +848,10 @@ export function parseVerificationResponse(value, runId) {
   // A pending question card carries no notice.
   const hasNotice = status !== 'pending' && Object.hasOwn(value, 'notice');
   if (hasNotice) expectedKeys.push('notice');
+  // Which limit stopped a failed response (tool-loop-guard.mjs), for goal
+  // mode's controller: it continues a goal after these stops.
+  const hasStop = status === 'failed' && Object.hasOwn(value, 'stop');
+  if (hasStop) expectedKeys.push('stop');
   if (status === "passed" && carriesAuthoritativeText && value.deliveryMode === "append") {
     expectedKeys.push("deliveryMode");
   }
@@ -878,7 +910,8 @@ export function parseVerificationResponse(value, runId) {
     !previewValid || (hasTask && !parseTaskActivity(value.task, runId)) ||
     (hasQuestions && (status !== 'pending' || !parseQuestions(value.questions))) ||
     (hasNotice && (typeof value.notice !== 'string' || !value.notice.trim() ||
-      value.notice.length > MAX_VERIFICATION_NOTICE || /[\u0000-\u001f\u007f]/.test(value.notice)))
+      value.notice.length > MAX_VERIFICATION_NOTICE || /[\u0000-\u001f\u007f]/.test(value.notice))) ||
+    (hasStop && !VERIFICATION_STOPS.has(value.stop))
   ) {
     throw new HttpError(502, "verification state unavailable");
   }
@@ -1019,9 +1052,55 @@ function deliveryVerification(completion, verification) {
   };
 }
 
+// A model can append OpenClaw's reserved silent-turn marker to a useful answer.
+// Remove only bare trailing markers outside Markdown fences. Keep whole-silent
+// results for the existing incomplete-delivery handling, and preserve literals.
+function stripTrailingNoReply(content) {
+  if (typeof content !== 'string') return content;
+  const parts = content.split(/(\r?\n)/);
+  const lines = parts.filter((_, index) => index % 2 === 0);
+  const separators = parts.filter((_, index) => index % 2 === 1);
+  let fenceChar = '', fenceLength = 0;
+  const fenced = lines.map(line => {
+    const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (!fenceChar && marker) {
+      fenceChar = marker[1][0];
+      fenceLength = marker[1].length;
+      return true;
+    }
+    if (fenceChar && marker && marker[1][0] === fenceChar &&
+        marker[1].length >= fenceLength && /^ {0,3}(`{3,}|~{3,})[ \t]*$/.test(line)) {
+      fenceChar = '';
+      return true;
+    }
+    return Boolean(fenceChar);
+  });
+  const isToken = index => !fenced[index] && lines[index] === 'NO_REPLY';
+  const isBlank = index => /^\s*$/.test(lines[index]);
+  let end = lines.length;
+  while (end > 0 && isBlank(end - 1)) end--;
+  let removed = false;
+  while (end > 0 && isToken(end - 1)) {
+    end--;
+    removed = true;
+    while (end > 0 && isBlank(end - 1)) end--;
+  }
+  if (!removed || !lines.slice(0, end).some((_, index) => !isBlank(index) && !isToken(index))) return content;
+  return lines.slice(0, end).map((line, index) =>
+    line + (index < end - 1 ? separators[index] : '')).join('');
+}
+
 // Exported for tests of the exact delivery path.
 export function applyVerificationToCompletion(completion, verification) {
-  const result=withNotice(baseApplyVerificationToCompletion(completion,verification),verification.notice);
+  const choice = completion?.choices?.[0];
+  const content = choice?.message?.content;
+  const text = stripTrailingNoReply(content);
+  const normalized = text === content ? completion : {
+    ...completion,
+    choices: [{...choice, message:{...choice.message, content:text}}, ...completion.choices.slice(1)],
+  };
+  // Normalize model text before adding trusted receipts and owner notices.
+  const result=withNotice(baseApplyVerificationToCompletion(normalized,verification),verification.notice);
   const {pixel_artifacts: _untrustedArtifacts, ...clean}=result;
   return verification.artifacts?.length
     ? {...clean,pixel_artifacts:{schemaVersion:1,artifacts:verification.artifacts}} : clean;
@@ -1129,7 +1208,8 @@ function completionSse(completion, verification) {
     ...(terminal && verification?.artifacts?.length ? {pixel_artifacts:{schemaVersion:1,artifacts:verification.artifacts}} : {}),
     ...(terminal && verification?.task ? { pixel_task: verification.task } : {}),
     ...(terminal && verification?.questions ? { pixel_questions: {schemaVersion:1,questions:verification.questions} } : {}),
-    ...(terminal ? {pixel_outcome: {schemaVersion:1,status:verification?.status ?? 'none'}} : {}),
+    ...(terminal ? {pixel_outcome: {schemaVersion:1,status:verification?.status ?? 'none',
+      ...(verification?.stop ? {stop:verification.stop} : {})}} : {}),
   });
   return Buffer.from(
     `data: ${envelope({ role: "assistant" }, null)}\n\n` +
@@ -1301,7 +1381,98 @@ async function maybeContinueUnfinishedExtensionDecision(completion, outgoing, to
   return recovered;
 }
 
+const PIXEL_TIMING_STAGES = new Set([
+  "preparation", "gatewayHeaders", "gatewayBody", "readOnlyContinuation",
+  "decisionContinuation", "subagentDelivery", "verification", "completionHook", "delivery",
+]);
+const PIXEL_TIMING_DISABLED = Object.freeze({
+  wrap: (_name, operation) => operation(), markRunId() {}, terminal() {},
+});
+
+// Optional diagnostic receipt only: never changes response bytes or trust decisions.
+// These are host wrapper durations, not engine token, queue or browser timings.
+export function createPixelTiming(deps = {}, stream = false) {
+  if ((deps.env ?? process.env).ODS_PIXEL_TIMING !== "1") return PIXEL_TIMING_DISABLED;
+  const now = deps.pixelTimingClock ?? (() => Number(process.hrtime.bigint()) / 1e6);
+  const sink = deps.pixelTimingSink ?? ((line) => {
+    // Do not accumulate unbounded diagnostic writes behind a blocked log consumer.
+    if (process.stderr.writableLength < 65536) process.stderr.write(line + "\n");
+  });
+  let clockValid = true;
+  const clock = () => {
+    try {
+      const value = now();
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+    } catch { /* Diagnostic failures must not change a request. */ }
+    clockValid = false;
+    return null;
+  };
+  const duration = (start, end) => {
+    if (start === null || end === null || end < start) {
+      clockValid = false;
+      return null;
+    }
+    const result = Math.round((end - start) * 1000) / 1000;
+    if (!Number.isFinite(result)) { clockValid = false; return null; }
+    return result;
+  };
+  const started = clock();
+  const stages = new Map();
+  let ended = false;
+  let runId = null;
+  // Generated locally, never derived from a session, user field or request body.
+  let requestCorrelation;
+  try { requestCorrelation = randomBytes(16).toString("hex"); }
+  catch { return PIXEL_TIMING_DISABLED; }
+  const record = (name, start) => {
+    const ms = duration(start, clock());
+    if (PIXEL_TIMING_STAGES.has(name) && ms !== null) {
+      const sum = (stages.get(name) ?? 0) + ms;
+      if (Number.isFinite(sum)) stages.set(name, sum);
+      else clockValid = false;
+    }
+  };
+  return {
+    wrap(name, operation) {
+      const start = clock();
+      let value;
+      try { value = operation(); } catch (error) { record(name, start); throw error; }
+      if (value && typeof value.then === "function") {
+        return value.then(
+          (result) => { record(name, start); return result; },
+          (error) => { record(name, start); throw error; },
+        );
+      }
+      record(name, start);
+      return value;
+    },
+    markRunId(value) {
+      // A replacement completion without a valid ID must not inherit an older
+      // completion's identity. Unknown attribution is safer than a false join.
+      runId = typeof value === "string" && OPENAI_RUN_ID.test(value) ? value : null;
+    },
+    terminal(outcome) {
+      if (ended) return;
+      ended = true;
+      const totalMs = duration(started, clock());
+      try {
+        const line = JSON.stringify({
+          schemaVersion: 1, kind: "ods-pixel-agent-timing", requestCorrelation, runId,
+          stream: stream === true,
+          outcome: ["delivered", "error", "aborted"].includes(outcome) ? outcome : "error",
+          clockValid, totalMs: clockValid ? totalMs : null,
+          stageDurationsMs: clockValid ? Object.fromEntries(stages) : {},
+        });
+        if (Buffer.byteLength(line, "utf8") <= 4096) sink(line);
+      } catch { /* Never replace a chat result with a diagnostic failure. */ }
+    },
+  };
+}
+
+
 async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps, hooks = {}, activeGatewayTransports = new Map()) {
+  const timing = createPixelTiming(deps, outgoing.stream === true);
+  let timingOutcome = "error";
   const controller = new AbortController();
   const unregisterGatewayTransport = registerActiveGatewayTransport(activeGatewayTransports, outgoing.user, controller);
   hooks.onController?.(controller);
@@ -1337,11 +1508,13 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     stopActivity = streamTaskActivity(res, outgoing.user, token, gatewayPort, controller.signal, deps);
   }
   try {
-    await hooks.beforeRequest?.(controller.signal);
-    if(controller.signal.aborted) throw new HistoryError('history-preparation-interrupted',503);
-    hooks.onSubmitted?.();
+    await timing.wrap("preparation", async () => {
+      await hooks.beforeRequest?.(controller.signal);
+      if(controller.signal.aborted) throw new HistoryError('history-preparation-interrupted',503);
+      hooks.onSubmitted?.();
+    });
     gatewayResponsePending = true;
-    const upstream = await deps.fetch(
+    const upstream = await timing.wrap("gatewayHeaders", () => deps.fetch(
       `http://127.0.0.1:${gatewayPort}/v1/chat/completions`,
       {
         method: "POST",
@@ -1350,7 +1523,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
         redirect: "error",
         signal: controller.signal,
       }
-    );
+    ));
     gatewayResponsePending = false;
     if (upstream.status < 200 || upstream.status >= 300) {
       await drain(upstream.body);
@@ -1383,35 +1556,41 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       let deliveryStage = "completion";
       let completionRunId;
       try {
-        const body = await readBounded(upstream.body, MAX_STREAM_RESPONSE);
+        const body = await timing.wrap("gatewayBody", () => readBounded(upstream.body, MAX_STREAM_RESPONSE));
         let completion = JSON.parse(body.toString("utf8"));
         if (typeof completion?.id === "string" && OPENAI_RUN_ID.test(completion.id)) {
           completionRunId = completion.id;
+          timing.markRunId(completion.id);
         }
         deliveryStage = "read-only-continuation";
-        completion = await maybeContinueReadOnlyExtensionTurn(completion, gatewayOutgoing, token,
-          gatewayPort, controller.signal, deps);
+        completion = await timing.wrap("readOnlyContinuation", () => maybeContinueReadOnlyExtensionTurn(completion, gatewayOutgoing, token,
+          gatewayPort, controller.signal, deps));
         deliveryStage = "unfinished-extension-decision";
-        completion = await maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
-          gatewayPort, controller.signal, deps);
+        completion = await timing.wrap("decisionContinuation", () => maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
+          gatewayPort, controller.signal, deps));
         completionRunId = completion?.id;
+        if (typeof completionRunId === "string" && OPENAI_RUN_ID.test(completionRunId)) timing.markRunId(completionRunId);
         deliveryStage = "subagent-delivery";
-        const delegated = await awaitSubagentDelivery(completion,outgoing.user,token,gatewayPort,controller.signal,deps);
+        const delegated = await timing.wrap("subagentDelivery", () => awaitSubagentDelivery(completion,outgoing.user,token,gatewayPort,controller.signal,deps));
         completion = delegated.completion;
+        timing.markRunId(completion?.id);
         deliveryStage = "verification";
-        const verification = deliveryVerification(completion, delegated.verification ?? await verificationForRun(
+        const verification = await timing.wrap("verification", async () => deliveryVerification(completion, delegated.verification ?? await verificationForRun(
           completion?.id,
           token,
           gatewayPort,
           controller.signal,
           deps
-        ));
-        await hooks.onComplete?.(completion,verification);
+        )));
+        await timing.wrap("completionHook", () => hooks.onComplete?.(completion,verification));
         deliveryStage = "delivery";
-        res.end(completionSse(
-          applyVerificationToCompletion(completion, verification),
-          verification
-        ));
+        timing.wrap("delivery", () => {
+          res.end(completionSse(
+            applyVerificationToCompletion(completion, verification),
+            verification
+          ));
+          timingOutcome = "delivered";
+        });
       } catch {
         // Log only the fixed stage and validated opaque run ID. Never include
         // completion content, tool results, request bodies, or credentials.
@@ -1423,7 +1602,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       }
       return;
     }
-    const body = await readBounded(upstream.body, MAX_NONSTREAM_RESPONSE);
+    const body = await timing.wrap("gatewayBody", () => readBounded(upstream.body, MAX_NONSTREAM_RESPONSE));
     let completion;
     try {
       completion = JSON.parse(body.toString("utf8"));
@@ -1431,30 +1610,36 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       sendError(res, 502, "invalid upstream response");
       return;
     }
+    if (typeof completion?.id === "string" && OPENAI_RUN_ID.test(completion.id)) timing.markRunId(completion.id);
     const originalCompletion = completion;
-    completion = await maybeContinueReadOnlyExtensionTurn(completion, gatewayOutgoing, token,
-      gatewayPort, controller.signal, deps);
-    completion = await maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
-      gatewayPort, controller.signal, deps);
-    const delegated = await awaitSubagentDelivery(completion,outgoing.user,token,gatewayPort,controller.signal,deps);
+    completion = await timing.wrap("readOnlyContinuation", () => maybeContinueReadOnlyExtensionTurn(completion, gatewayOutgoing, token,
+      gatewayPort, controller.signal, deps));
+    completion = await timing.wrap("decisionContinuation", () => maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
+      gatewayPort, controller.signal, deps));
+    if (typeof completion?.id === "string" && OPENAI_RUN_ID.test(completion.id)) timing.markRunId(completion.id);
+    const delegated = await timing.wrap("subagentDelivery", () => awaitSubagentDelivery(completion,outgoing.user,token,gatewayPort,controller.signal,deps));
     completion = delegated.completion;
-    const verification = deliveryVerification(completion, delegated.verification ?? await verificationForRun(
+    timing.markRunId(completion?.id);
+    const verification = await timing.wrap("verification", async () => deliveryVerification(completion, delegated.verification ?? await verificationForRun(
       completion?.id,
       token,
       gatewayPort,
       controller.signal,
       deps
-    ));
-    await hooks.onComplete?.(completion,verification);
+    )));
+    await timing.wrap("completionHook", () => hooks.onComplete?.(completion,verification));
     const verifiedCompletion = applyVerificationToCompletion(completion, verification);
     const responseBody = verifiedCompletion === completion && completion === originalCompletion
       ? body
       : Buffer.from(JSON.stringify(verifiedCompletion), "utf8");
-    res.writeHead(200, {
-      "Content-Type": "application/json",
-      "Cache-Control": "no-store",
+    timing.wrap("delivery", () => {
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      res.end(responseBody);
+      timingOutcome = "delivered";
     });
-    res.end(responseBody);
   } catch (error) {
     // Only an actual refusal to connect to this exact loopback gateway proves
     // that its chat POST never arrived. Timeouts, resets, missing run IDs and
@@ -1482,6 +1667,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     res.off("close", abortOnDownstreamClose);
     deps.clearTimeout(totalTimer);
     unregisterGatewayTransport();
+    timing.terminal(controller.signal.aborted ? "aborted" : timingOutcome);
   }
 }
 
@@ -1636,6 +1822,170 @@ async function handleExampleProjects(req, res, token, gatewayPort, deps) {
   } finally { deps.clearTimeout(timer); }
 }
 
+// Portal's "Put back files": the gateway restores one Playground project to the
+// copy it kept before a turn touched it (plugin/project-snapshots.mjs). This
+// relay holds the chat's history lock, so no turn of this chat runs or starts
+// meanwhile, refuses while the last turn's outcome is unsettled or the native
+// session is busy, and returns only a validated receipt or a fixed refusal
+// code, never upstream text. The options relay asks which turns offer it.
+const RESTORE_PROJECT = /^Playground\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const RESTORE_UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const RESTORE_RUN = new RegExp(`^chatcmpl_${RESTORE_UUID}$`, 'i');
+const RESTORE_SNAPSHOT = new RegExp(`^(?:chatcmpl|restore)_${RESTORE_UUID}$`, 'i');
+const RESTORE_UNDO = new RegExp(`^restore_${RESTORE_UUID}$`);
+const RESTORE_TOKEN = /^[a-f0-9]{64}$/;
+const RESTORE_KEYS = ['schemaVersion', 'status', 'project', 'snapshot', 'written', 'removed', 'left', 'leftCount', 'failed',
+  'failedCount', 'failure', 'late', 'undo', 'confirm'];
+const RESTORE_CONFIRM_KEYS = ['token', 'overwrite', 'overwriteCount', 'remove', 'removeCount'];
+// The gateway's refusals this relay passes on, by status. Any other answer,
+// an unexpected code too, is an unknown outcome.
+const RESTORE_REFUSALS = {
+  404: ['project-snapshot-unavailable', 'project-snapshot-pruned'],
+  409: ['project-restore-busy'],
+  422: ['project-snapshot-damaged', 'project-folder-unusable'],
+  503: ['project-restore-unavailable', 'project-copies-unusable', 'project-restore-unsupported'],
+};
+const PROJECT_RESTORE_BODY = 512;
+const PROJECT_RESTORE_OPTIONS_BODY = 4096;
+const PROJECT_RESTORE_RESPONSE = 16384;
+// The gateway copies at most 32 MiB each way and runs no model.
+const PROJECT_RESTORE_TIMEOUT_MS = 30000;
+
+const sameKeys = (value, keys) => !!value && typeof value === 'object' && !Array.isArray(value)
+  && Object.keys(value).sort().join() === [...keys].sort().join();
+const restoreCount = item => Number.isSafeInteger(item) && item >= 0 && item <= 65536;
+// No C0, DEL or C1 control character in a file name, as dashboard-api refuses them.
+const restoreListed = (items, total) => Array.isArray(items) && items.length <= 8 && items.length <= total
+  && items.every(item => typeof item === 'string' && item.length >= 1 && item.length <= 512 && !/[\x00-\x1f\x7f-\x9f]/.test(item));
+
+export function projectRestoreReceipt(value, request) {
+  const confirm = value?.confirm;
+  if (!sameKeys(value, RESTORE_KEYS) || value.schemaVersion !== 2 || !['restored', 'unchanged', 'confirm'].includes(value.status)
+      || value.project !== request.project || value.snapshot !== request.snapshot
+      || ![value.written, value.removed, value.leftCount, value.failedCount].every(restoreCount)
+      || !restoreListed(value.left, value.leftCount) || !restoreListed(value.failed, value.failedCount)
+      || ![null, 'permission', 'in-use', 'changed', 'other'].includes(value.failure) || typeof value.late !== 'boolean'
+      || !(value.status === 'restored' ? typeof value.undo === 'string' && RESTORE_UNDO.test(value.undo) : value.undo === null)
+      || !(value.status === 'confirm' ? sameKeys(confirm, RESTORE_CONFIRM_KEYS) && typeof confirm.token === 'string'
+        && RESTORE_TOKEN.test(confirm.token) && restoreCount(confirm.overwriteCount) && restoreCount(confirm.removeCount)
+        && restoreListed(confirm.overwrite, confirm.overwriteCount) && restoreListed(confirm.remove, confirm.removeCount)
+        : confirm === null)) {
+    throw new Error('invalid project restore receipt');
+  }
+  return {...Object.fromEntries(RESTORE_KEYS.map(key => [key, value[key]])), left: [...value.left], failed: [...value.failed],
+    confirm: confirm && {...Object.fromEntries(RESTORE_CONFIRM_KEYS.map(key => [key, confirm[key]])),
+      overwrite: [...confirm.overwrite], remove: [...confirm.remove]}};
+}
+
+export function projectRestoreOptions(value, runs) {
+  const entries = value?.projects;
+  if (!sameKeys(value, ['schemaVersion', 'projects']) || value.schemaVersion !== 1 || !Array.isArray(entries) || entries.length > 32
+      || !entries.every(entry => sameKeys(entry, ['project', 'snapshot', 'late', 'restore']) && typeof entry.project === 'string'
+        && RESTORE_PROJECT.test(entry.project) && runs.includes(entry.snapshot) && typeof entry.late === 'boolean'
+        && (entry.restore === null || sameKeys(entry.restore, ['undo', 'side']) && typeof entry.restore.undo === 'string'
+          && RESTORE_UNDO.test(entry.restore.undo) && ['before', 'after'].includes(entry.restore.side)))) {
+    throw new Error('invalid project restore options');
+  }
+  return {schemaVersion: 1, projects: entries.map(entry => ({project: entry.project, snapshot: entry.snapshot, late: entry.late,
+    restore: entry.restore && {undo: entry.restore.undo, side: entry.restore.side}}))};
+}
+
+// The request body when valid(body) accepts it; otherwise the refusal is sent and null returned.
+async function restoreRequestBody(req, res, limit, valid) {
+  if (req.method !== 'POST') { sendError(res, 405, 'method not allowed'); return null; }
+  if (String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+    sendError(res, 415, 'content type must be application/json');
+    return null;
+  }
+  try {
+    const body = JSON.parse((await readBody(req, limit)).toString('utf8'));
+    if (!body || typeof body !== 'object' || Array.isArray(body) || !valid(body)) throw new Error('invalid');
+    return body;
+  } catch { sendError(res, 400, 'invalid project restore request'); return null; }
+}
+
+// The gateway's refusal when it is one of the fixed codes for its status, or null.
+async function restoreRefusal(response) {
+  const codes = RESTORE_REFUSALS[response.status];
+  if (!codes) return null;
+  let code;
+  try {
+    code = String(response.headers.get('content-type') || '').startsWith('application/json')
+      ? JSON.parse((await readBounded(response.body, 1024)).toString('utf8'))?.error : undefined;
+  } catch { code = undefined; }
+  await drain(response.body);
+  return codes.includes(code) ? code : null;
+}
+
+async function handleProjectRestore(req, res, token, gatewayPort, deps, ledger) {
+  if (req.url !== '/v1/project-restore') { sendError(res, 400, 'invalid request'); return; }
+  const request = await restoreRequestBody(req, res, PROJECT_RESTORE_BODY, body => {
+    const keys = Object.keys(body).sort().join();
+    return (keys === 'project,snapshot,user' || keys === 'confirm,project,snapshot,user'
+        && typeof body.confirm === 'string' && RESTORE_TOKEN.test(body.confirm))
+      && typeof body.user === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(body.user)
+      && typeof body.project === 'string' && RESTORE_PROJECT.test(body.project)
+      && typeof body.snapshot === 'string' && RESTORE_SNAPSHOT.test(body.snapshot);
+  });
+  if (!request) return;
+  if (!ledger) { sendJson(res, 503, {error: 'project-restore-unavailable'}); return; }
+  const user = computeSessionUser({user: request.user});
+  const busy = () => sendJson(res, 409, {error: 'project-restore-busy'});
+  const controller = new AbortController();
+  const timer = deps.setTimeout(() => controller.abort(), PROJECT_RESTORE_TIMEOUT_MS);
+  let release;
+  try {
+    try { release = ledger.lock(user); }
+    catch (error) { if (error instanceof HistoryError && error.status === 409) { busy(); return; } throw error; }
+    // A turn still pending, or cut off with its outcome unknown, counts as running.
+    if (['pending', 'unknown'].includes(ledger.read(user)?.status)) { busy(); return; }
+    const native = await nativeContextRequest('context', {user}, token, gatewayPort, deps, controller.signal);
+    if (native.status === 'busy') { busy(); return; }
+    const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/project-restore`, {
+      method: 'POST', headers: upstreamHeaders(false, token), redirect: 'error', signal: controller.signal,
+      body: JSON.stringify({user, project: request.project, snapshot: request.snapshot,
+        ...(request.confirm ? {confirm: request.confirm} : {})}),
+    });
+    const refusal = await restoreRefusal(response);
+    if (refusal) { sendJson(res, response.status, {error: refusal}); return; }
+    if (response.status !== 200 || !String(response.headers.get('content-type') || '').startsWith('application/json')) {
+      await drain(response.body);
+      throw new Error('unavailable');
+    }
+    const value = JSON.parse((await readBounded(response.body, PROJECT_RESTORE_RESPONSE)).toString('utf8'));
+    sendJson(res, 200, projectRestoreReceipt(value, request));
+  } catch {
+    sendJson(res, 503, {error: 'project-restore-unavailable'});
+  } finally {
+    deps.clearTimeout(timer);
+    try { release?.(); } catch { /* The next lock() reclaims a lock it could not remove, once removal works. */ }
+  }
+}
+
+async function handleProjectRestoreOptions(req, res, token, gatewayPort, deps) {
+  if (req.url !== '/v1/project-restore-options') { sendError(res, 400, 'invalid request'); return; }
+  const request = await restoreRequestBody(req, res, PROJECT_RESTORE_OPTIONS_BODY, body =>
+    Object.keys(body).join() === 'runs' && Array.isArray(body.runs) && body.runs.length <= 64
+      && body.runs.every(run => typeof run === 'string' && RESTORE_RUN.test(run)));
+  if (!request) return;
+  const controller = new AbortController();
+  const timer = deps.setTimeout(() => controller.abort(), PROJECT_RESTORE_TIMEOUT_MS);
+  try {
+    const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/project-restore-options`, {
+      method: 'POST', headers: upstreamHeaders(false, token), redirect: 'error', signal: controller.signal,
+      body: JSON.stringify({runs: request.runs}),
+    });
+    if (response.status !== 200 || !String(response.headers.get('content-type') || '').startsWith('application/json')) {
+      await drain(response.body);
+      throw new Error('unavailable');
+    }
+    const value = JSON.parse((await readBounded(response.body, PROJECT_RESTORE_RESPONSE)).toString('utf8'));
+    sendJson(res, 200, projectRestoreOptions(value, request.runs));
+  } catch {
+    sendJson(res, 503, {error: 'project-restore-unavailable'});
+  } finally { deps.clearTimeout(timer); }
+}
+
 async function handleRuntimeIdentity(res, token, gatewayPort, deps) {
   const controller = new AbortController();
   const timer = deps.setTimeout(() => controller.abort(), GATEWAY_PROBE_TIMEOUT_MS);
@@ -1762,6 +2112,46 @@ export async function dockerRuntime(deps = defaultDeps) {
   return { model, context_length: contextLength };
 }
 
+function commandFlag(command, flag) {
+  const index = command.indexOf(flag);
+  if (index >= 0) return command[index + 1];
+  const joined = command.find((item) => item.startsWith(`${flag}=`));
+  return joined === undefined ? undefined : joined.slice(flag.length + 1);
+}
+
+// LLM_BACKEND=vllm: ods-vllm-server serves --served-model-name with the
+// context its --max-model-len (catalog VLLM_ARGS) fixes; there is no
+// ods-llama-server, or only one an earlier install left stopped.
+export async function dockerVllmRuntime(deps = defaultDeps) {
+  const { stdout } = await execFilePromise(
+    deps.execFile,
+    "docker",
+    ["inspect", "ods-vllm-server", "--format", "{{json .Config.Cmd}}"],
+    { timeout: DOCKER_TIMEOUT_MS, maxBuffer: 64 * 1024, windowsHide: true }
+  );
+  let command;
+  try {
+    command = JSON.parse(String(stdout || ""));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(command) || !command.every((item) => typeof item === "string")) {
+    return null;
+  }
+  const model = commandFlag(command, "--served-model-name");
+  const contextLength = Number(commandFlag(command, "--max-model-len"));
+  if (
+    typeof model !== "string" ||
+    !MODEL_NAME_RE.test(model) ||
+    !Number.isInteger(contextLength) ||
+    contextLength < 4096 ||
+    contextLength > 10_000_000
+  ) {
+    return null;
+  }
+  return { model, context_length: contextLength };
+}
+
 export async function dockerRouterRuntime(deps = defaultDeps) {
   const { stdout } = await execFilePromise(
     deps.execFile,
@@ -1860,7 +2250,9 @@ export async function writeStatus(
   // to label that provider with an unrelated local llama model.
   if (configuredRuntime === undefined && runtime === null && docker === "ok") {
     try {
-      runtime = await dockerRuntime(deps);
+      runtime = apps.some(({ name }) => name === "ods-vllm-server")
+        ? await dockerVllmRuntime(deps)
+        : await dockerRuntime(deps);
     } catch {
       runtime = null;
     }
@@ -1943,6 +2335,16 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
       return;
     }
 
+    if (pathname === '/v1/project-restore') {
+      void handleProjectRestore(req, res, token, gatewayPort, deps, historyLedger);
+      return;
+    }
+
+    if (pathname === '/v1/project-restore-options') {
+      void handleProjectRestoreOptions(req, res, token, gatewayPort, deps);
+      return;
+    }
+
     if (pathname === "/v1/chat/completions") {
       if (req.method !== "POST") {
         sendError(res, 405, "method not allowed");
@@ -1981,6 +2383,24 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
         return;
       }
       void handleCancel(req, res, token, gatewayPort, deps, historyLedger, historyAborters, activeGatewayTransports);
+      return;
+    }
+
+    if (pathname === "/v1/chat/settle") {
+      if (req.method !== "POST") {
+        sendError(res, 405, "method not allowed");
+        return;
+      }
+      if (req.url !== pathname) {
+        sendError(res, 400, "invalid settle request");
+        return;
+      }
+      const contentType = String(req.headers["content-type"] || "").toLowerCase();
+      if (contentType.split(";", 1)[0].trim() !== "application/json") {
+        sendError(res, 415, "content type must be application/json");
+        return;
+      }
+      void handleSettle(req, res, token, gatewayPort, deps, historyLedger);
       return;
     }
 
@@ -2046,6 +2466,60 @@ async function handleCancel(req, res, token, gatewayPort, deps, ledger, historyA
   } catch {sendError(res,503,'cancellation-unconfirmed');}
 }
 
+// A restart can cut a turn off and leave its history outcome unknown while
+// nothing runs any more. Settle proves that without stopping anything: under
+// the history lock no turn of this ingress is in flight, and an idle native
+// session has no run of this chat. Only then is the unresolved turn recorded
+// as interrupted. A held lock or a busy session answers "active" and changes
+// nothing; Stop stays the only way to end work that may still be running.
+async function handleSettle(req, res, token, gatewayPort, deps, ledger) {
+  let parsed;
+  try {
+    parsed = JSON.parse((await readBody(req, MAX_CANCEL_BODY)).toString("utf8"));
+  } catch (error) {
+    sendError(res, error instanceof HttpError ? error.status : 400,
+      error instanceof HttpError ? error.message : "invalid settle request");
+    return;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.keys(parsed).length !== 1
+      || typeof parsed.user !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(parsed.user)) {
+    sendError(res, 400, "invalid settle request");
+    return;
+  }
+  if (!ledger) {
+    sendError(res, 503, "history-storage-unavailable");
+    return;
+  }
+  const user = computeSessionUser({ user: parsed.user });
+  let release;
+  try {
+    try {
+      release = ledger.lock(user);
+    } catch (error) {
+      if (error instanceof HistoryError && error.status === 409) {
+        sendJson(res, 200, { state: "active" });
+        return;
+      }
+      throw error;
+    }
+    const native = await nativeContextRequest("context", { user }, token, gatewayPort, deps, undefined, SETTLE_CONTEXT_TIMEOUT_MS);
+    if (native.status === "busy") {
+      sendJson(res, 200, { state: "active" });
+      return;
+    }
+    if (!["ready", "missing"].includes(native.status)) throw new HistoryError("context-unavailable", 503);
+    const current = ledger.read(user);
+    if (current && ["pending", "unknown"].includes(current.status) && !ledger.interrupt(user, current.requestId)) {
+      throw new HistoryError("history-settle-unconfirmed", 503);
+    }
+    sendJson(res, 200, { state: "settled" });
+  } catch {
+    sendError(res, 503, "settle-unconfirmed");
+  } finally {
+    try { release?.(); } catch { /* The next lock() reclaims a lock it could not remove, once removal works. */ }
+  }
+}
+
 async function handleImageDelete(req,res,{imageStore,historyLedger,imageRoutes,token,gatewayPort,deps}) {
   let release;
   try {
@@ -2070,7 +2544,7 @@ async function handleImageDelete(req,res,{imageStore,historyLedger,imageRoutes,t
     imageStore.deleteConversation(user);
     sendJson(res,200,{schemaVersion:1,deleted:true});
   } catch(error) {sendError(res,error instanceof HistoryError || error instanceof ChatImageError?error.status:400,error instanceof HistoryError || error instanceof ChatImageError?error.message:'invalid-image-deletion-request');}
-  finally {try {release?.();}catch{/* Keep failed lock custody closed. */}}
+  finally {try {release?.();}catch{/* The next lock() reclaims a lock it could not remove, once removal works. */}}
 }
 
 async function handleImageRead(req,res,{policyOnly,imageStore,historyLedger,imageRoutes,token,gatewayPort,deps}) {
@@ -2137,7 +2611,17 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     const native=await nativeContextRequest('context',{user},token,gatewayPort,deps);
     const hasImages=parsed.history_snapshot?.messages?.some(message=>message?.images?.length);
     if(hasImages) validateImageRoute(parsed.image_route,native.model);
-    prepared=historyLedger.prepare(user,parsed.request_id,parsed.history_snapshot,native);
+    // The native transcript holds the model's draft, which can differ from
+    // Portal's verified delivery. Derive this only from the host-owned receipt,
+    // never from a caller's assistant history or a supplied verification field.
+    const prior=historyLedger.read(user), priorResult=prior?.lastResult;
+    let deliveryCorrection=null;
+    if(priorResult?.requestId===prior?.requestId && priorResult?.revision===prior?.revision && priorResult?.verification) {
+      const delivered=applyVerificationToCompletion(priorResult.completion,priorResult.verification)?.choices?.[0]?.message?.content;
+      const draft=priorResult.completion?.choices?.[0]?.message?.content;
+      if(typeof delivered==='string' && delivered!==draft) deliveryCorrection={requestId:priorResult.requestId,text:delivered};
+    }
+    prepared=historyLedger.prepare(user,parsed.request_id,parsed.history_snapshot,native,deliveryCorrection);
     if(hasImages) {
       const binding=await nativeContextRequest('images-bind',{user},token,gatewayPort,deps);
       if(binding?.schemaVersion!==1 || binding.bound!==true)throw new HistoryError('image-custody-unavailable',503);
@@ -2167,9 +2651,18 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     await forwardChat(res,outgoing,token,gatewayPort,deps,{
       onController:controller=>historyAborters?.set(user,{requestId:parsed.request_id,controller}),
       beforeRequest:async signal=>{
-        if(!prepared.hydrate) return;
-        const seeded=await nativeContextRequest('history',{user,request_id:parsed.request_id,messages:nativeHistoryMessages(prepared.archive)},token,gatewayPort,deps,signal,30000);
+        if(!prepared.hydrate && !prepared.deliveryCorrection) return;
+        const reference=prepared.hydrate?nativeHistoryMessages(prepared.archive):[];
+        if(prepared.deliveryCorrection) reference.push({role:'assistant',content:
+          `Portal delivery record for completed request ${prepared.deliveryCorrection.requestId}. `+
+          'The reply below was shown to the owner instead of the model draft. That draft is superseded; existing tool receipts remain unchanged. '+
+          'This historical record is not a new request, authorization, or proof that an action succeeded.\n'+
+          JSON.stringify({reply:prepared.deliveryCorrection.text})});
+        // The existing hydrator appends inert, idempotent reference data. It
+        // neither rewrites the native transcript nor executes the prior task.
+        const seeded=await nativeContextRequest('history',{user,request_id:parsed.request_id,messages:reference},token,gatewayPort,deps,signal,30000);
         if(seeded?.hydrated!==true) throw new HistoryError('history-preparation-failed',503);
+        if(!prepared.hydrate) return;
         const request_id=`history-${createHash('sha256').update(`${parsed.request_id}:${prepared.state.revision}`).digest('hex')}`;
         let state=await nativeContextRequest('compact',{user,request_id},token,gatewayPort,deps,signal);
         while(state.compaction?.requestId===request_id && state.compaction.status==='running') {
@@ -2253,7 +2746,7 @@ async function handleContextControl(req,res,pathname,token,gatewayPort,deps,ledg
     const native=await nativeContextRequest(compact?'compact':'context',{user,...compact?{request_id:body.request_id}:{}},token,gatewayPort,deps);
     sendJson(res,200,publicContext(native,ledger.projection(user)));
   } catch(error) {sendError(res,error instanceof HistoryError?error.status:400,error instanceof HistoryError?error.message:'invalid-context-request')}
-  finally {try {release?.()} catch { /* Persistent lock keeps subsequent writes closed. */ }}
+  finally {try {release?.()} catch { /* The next lock() reclaims a lock it could not remove, once removal works. */ }}
 }
 
 function listenUnix(server, socketPath) {

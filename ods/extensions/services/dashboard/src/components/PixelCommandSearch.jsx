@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Search, X, MessageSquare, Plus, Settings, ListChecks, Globe2 } from 'lucide-react'
 import { readConversations, conversationTitle, SELECT_EVENT, LIBRARY_EVENT } from '../lib/pixelConversations'
 import { conversationExcerpt } from '../lib/pixelConversationSearch'
+import { useNewTaskBlocked } from '../lib/portalTaskState'
 
 export const OPEN_PIXEL_SEARCH = 'ods:pixel-search'
 export default function PixelCommandSearch({ onInsert, onNewTask }) {
@@ -13,6 +14,8 @@ export default function PixelCommandSearch({ onInsert, onNewTask }) {
   const [query, setQuery] = useState('')
   const [chats, setChats] = useState([])
   const [index, setIndex] = useState(0)
+  // Choosing it while Portal works shows the same reason beside the composer.
+  const newTaskBlocked = useNewTaskBlocked()
   useEffect(() => {
     const open = () => {
       if (dialog.current.open) return
@@ -39,7 +42,7 @@ export default function PixelCommandSearch({ onInsert, onNewTask }) {
     }
   }, [])
   const entries = [
-    { title: 'New task', detail: 'Start a fresh conversation', icon: Plus, run: onNewTask },
+    { title: 'New task', detail: newTaskBlocked || 'Start a fresh conversation', icon: Plus, run: onNewTask },
     { title: 'Portal settings', detail: 'Connections, access and sharing', icon: Settings, run: () => navigate('/pixel/settings') },
     { title: 'Plan deep work', detail: 'Draft milestones and completion checks', icon: ListChecks, run: () => onInsert('Build a durable plan for this goal, then show the milestones and exact completion criteria before work begins.') },
     { title: 'Research with evidence', detail: 'Draft a research request with citations', icon: Globe2, run: () => onInsert('Research this question using current sources, inline citations, and explicit evidence-versus-inference labels.') },

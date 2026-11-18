@@ -33,13 +33,23 @@ HISTORY_LIMIT = 10
 PUBLIC_MODEL_DEFAULT = "ods/current"
 STATE_FILE_MODE = 0o644
 
-_WRITABLE_BACKEND_KINDS = {"llama-server", "hipfire", "unknown"}
+DEFAULT_ENDPOINT_ID = "llama-server-default"
+VLLM_ENDPOINT_ID = "vllm-default"
+# Every writable backend kind and the model-router endpoint (endpoints.json
+# id) it routes to when the caller names none. hipfire and unknown routes
+# have always used the llama-server endpoint; vLLM serves from vllm-server.
+_DEFAULT_ENDPOINT_IDS = {
+    "llama-server": DEFAULT_ENDPOINT_ID,
+    "hipfire": DEFAULT_ENDPOINT_ID,
+    "unknown": DEFAULT_ENDPOINT_ID,
+    "vllm": VLLM_ENDPOINT_ID,
+}
+_WRITABLE_BACKEND_KINDS = set(_DEFAULT_ENDPOINT_IDS)
 # Readable for one release only: records written before round F carry the
 # retired Lemonade route until the host agent rewrites and re-proves them.
 _LEGACY_BACKEND_KINDS = {"lemonade"}
 _LEGACY_ENDPOINT_IDS = {"lemonade-default"}
 _BACKEND_KINDS = _WRITABLE_BACKEND_KINDS | _LEGACY_BACKEND_KINDS
-DEFAULT_ENDPOINT_ID = "llama-server-default"
 _OPERATION_PHASES = {
     "requested", "staging", "verifying", "publishing",
     "flipping", "serving", "failed", "rolling_back",
@@ -505,23 +515,24 @@ def is_legacy_route(active: Any) -> bool:
     )
 
 
+def default_endpoint_id(backend_kind: str) -> str:
+    """The router endpoint id a writable backend kind uses by default."""
+    return _DEFAULT_ENDPOINT_IDS[backend_kind]
+
+
 def migrate_env_identity(env: dict[str, str]) -> dict[str, Any] | None:
     """Derive a best-effort runtime identity from ``.env`` values.
 
-    Every managed runtime is upstream llama-server serving ``--alias
-    <GGUF_FILE>``, so the runtime identity is the GGUF filename (or the model
-    name when no file is recorded). A retired ``LEMONADE_MODEL`` line is never
-    read: a leftover key must not relabel the route. Returns ``None`` when the
-    environment carries no local model identity (e.g. cloud-only).
+    A llama-server runtime serves ``--alias <GGUF_FILE>``, so its identity is
+    the GGUF filename (or the model name when no file is recorded). A vLLM
+    runtime (``LLM_BACKEND=vllm``) serves ``--served-model-name
+    <VLLM_SERVED_MODEL>`` (or the model name when none is recorded); a
+    ``GGUF_FILE`` left by an earlier llama-server install never names it. A
+    retired ``LEMONADE_MODEL`` line is never read: a leftover key must not
+    relabel the route. Returns ``None`` when the environment carries no local
+    model identity (e.g. cloud-only).
     """
     if str(env.get("ODS_MODE") or "").strip().casefold() == "cloud":
-        return None
-
-    gguf = str(env.get("GGUF_FILE") or "").strip()
-    llm_model = str(env.get("LLM_MODEL") or "").strip()
-
-    runtime_id = gguf or llm_model
-    if not runtime_id:
         return None
 
     backend = str(env.get("LLM_BACKEND") or "").strip().lower()
@@ -531,6 +542,16 @@ def migrate_env_identity(env: dict[str, str]) -> dict[str, Any] | None:
         backend = "llama-server"
     if backend not in _WRITABLE_BACKEND_KINDS:
         backend = "unknown"
+
+    llm_model = str(env.get("LLM_MODEL") or "").strip()
+    if backend == "vllm":
+        served = str(env.get("VLLM_SERVED_MODEL") or "").strip()
+    else:
+        served = str(env.get("GGUF_FILE") or "").strip()
+
+    runtime_id = served or llm_model
+    if not runtime_id:
+        return None
 
     catalog_guess = llm_model
     if not catalog_guess:
@@ -565,8 +586,9 @@ def initialize_if_missing(
 ) -> dict[str, Any] | None:
     """One-time startup reconstruction when no v1 state was ever committed.
 
-    Existing files — valid or malformed — are never overwritten here. Returns
-    the written doc, or ``None`` when nothing was written.
+    Existing files — valid or malformed — are never overwritten here. Without
+    an ``endpoint_id`` the route uses its backend kind's default endpoint.
+    Returns the written doc, or ``None`` when nothing was written.
     """
     if Path(path).exists():
         return None
@@ -574,7 +596,7 @@ def initialize_if_missing(
     if identity is None:
         return None
     if endpoint_id is None:
-        endpoint_id = DEFAULT_ENDPOINT_ID
+        endpoint_id = default_endpoint_id(identity["backendKind"])
     return record_verified_route(
         path,
         catalog_id=identity["catalogId"],

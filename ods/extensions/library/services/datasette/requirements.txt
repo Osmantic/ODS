@@ -23,6 +23,6 @@ pip==26.2.1
 platformdirs==4.11.11
 pluggy==1.6.0
 python-multipart==0.0.32
-setuptools==84.0.0
+setuptools==84.1.0
 typing_extensions==4.16.0
 uvicorn==0.53.0

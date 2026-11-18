@@ -98,6 +98,8 @@ for tier in 1 CLOUD; do
         || fail "tier $tier macOS install must bound Kokoro threads"
     grep -qx 'HERMES_REQUIRE_OWNER_CARD=false' "$env_file" \
         || fail "tier $tier must open Hermes without an owner card by default"
+    grep -qx "TIER=$tier" "$env_file" \
+        || fail "tier $tier .env must persist TIER for ods-cli and the host agent"
     pass "tier $tier: generated .env assigns every key once"
 
     # validate-env.sh needs Bash 4+ (associative arrays); ods-cli runs it with
@@ -169,3 +171,63 @@ fi
 [[ "$(grep -c '^LANGFUSE_DB_PASSWORD=' "$langfuse_dir/.env" || true)" -eq 0 ]] \
     || fail 'rejected Langfuse credentials were overwritten'
 pass 'persisted Langfuse database fails closed on an incomplete prior .env'
+
+# Explicit cache limits must survive regeneration without changing the runtime
+# default for owners who did not set one. Exercise the real generator above.
+read_cache_value() {
+    python3 - "$1" "$ROOT_DIR/extensions/services/dashboard-api" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[2])
+from env_values import parse_env_value
+values = [parse_env_value(line.partition('=')[2])
+          for line in Path(sys.argv[1]).read_text().splitlines()
+          if line.startswith('LLAMA_ARG_CACHE_RAM=')]
+assert len(values) <= 1
+print(values[0] if values else '')
+PY
+}
+cache_unset_dir="$TMP_DIR/cache-unset"
+LLAMA_ARG_CACHE_RAM= generate_env 1 "$cache_unset_dir"
+if grep -q '^LLAMA_ARG_CACHE_RAM=' "$cache_unset_dir/.env"; then
+    fail 'unset cache RAM limit gained an invented default'
+fi
+for cache_value in 0 512; do
+    cache_dir="$TMP_DIR/cache-$cache_value"
+    LLAMA_ARG_CACHE_RAM="$cache_value" generate_env 1 "$cache_dir"
+    [[ "$(read_cache_value "$cache_dir/.env")" == "$cache_value" ]] \
+        || fail "explicit cache RAM $cache_value was not retained"
+    LLAMA_ARG_CACHE_RAM= generate_env 1 "$cache_dir" false
+    [[ "$(read_cache_value "$cache_dir/.env")" == "$cache_value" ]] \
+        || fail "existing cache RAM $cache_value was lost on rerun"
+    [[ "$(grep -c '^LLAMA_ARG_CACHE_RAM=' "$cache_dir/.env")" -eq 1 ]] \
+        || fail 'rerun duplicated the cache RAM setting'
+done
+LLAMA_ARG_CACHE_RAM=1024 generate_env 1 "$TMP_DIR/cache-0" false
+[[ "$(read_cache_value "$TMP_DIR/cache-0/.env")" == 0 ]] \
+    || fail 'process environment overrode the existing owner cache limit'
+LLAMA_ARG_CACHE_RAM=0 generate_env 1 "$cache_unset_dir" false
+[[ "$(read_cache_value "$cache_unset_dir/.env")" == 0 ]] \
+    || fail 'rerun failed to backfill an explicit cache limit'
+pass 'explicit cache RAM zero and nonzero survive generation and rerun'
+
+# Invalid text is left for the existing runtime validator, but it must remain
+# literal data for every dotenv consumer, including a shell reading the line.
+cache_literal_dir="$TMP_DIR/cache-literal"
+cache_marker="$TMP_DIR/cache-marker"
+cache_literal='$(touch '"$cache_marker"') # literal'
+LLAMA_ARG_CACHE_RAM="$cache_literal" generate_env 1 "$cache_literal_dir"
+cache_line="$(grep '^LLAMA_ARG_CACHE_RAM=' "$cache_literal_dir/.env")"
+[[ "$cache_line" == "LLAMA_ARG_CACHE_RAM='$cache_literal'" ]] \
+    || fail 'cache RAM literal was not dotenv-quoted'
+"$BASH" -c "$cache_line"
+[[ ! -e "$cache_marker" ]] || fail 'cache RAM text executed as shell code'
+cache_literal_backfill="$TMP_DIR/cache-literal-backfill"
+LLAMA_ARG_CACHE_RAM= generate_env 1 "$cache_literal_backfill"
+LLAMA_ARG_CACHE_RAM="$cache_literal" generate_env 1 "$cache_literal_backfill" false
+cache_line="$(grep '^LLAMA_ARG_CACHE_RAM=' "$cache_literal_backfill/.env")"
+[[ "$cache_line" == "LLAMA_ARG_CACHE_RAM='$cache_literal'" ]] \
+    || fail 'backfilled cache RAM literal was not dotenv-quoted'
+"$BASH" -c "$cache_line"
+[[ ! -e "$cache_marker" ]] || fail 'backfilled cache RAM text executed as shell code'
+pass 'cache RAM values remain quoted literal data'

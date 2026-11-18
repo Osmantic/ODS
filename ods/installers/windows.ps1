@@ -224,7 +224,7 @@ if ($lifetimeRequired) {
     try { $null = Start-ODSWslLifetime $lifetimeIdentity } finally { $lifetimeLock.Dispose() }
     Write-Host "ODS WSL lifetime is active independently of this installer window."
     $stateHint = if ($StateRoot) { " -StateRoot `"$StateRoot`"" } else { '' }
-    Write-Host "Lifecycle: powershell -File `"$PSScriptRoot\wsl-lifecycle.ps1`" -Action status|stop|start|restart -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`"$stateHint"
+    Write-Host "Lifecycle: powershell -NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\wsl-lifecycle.ps1`" -Action status|stop|start|restart -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`"$stateHint"
     # Record, before install-core creates it, whether this root already holds
     # an installation (every uninstall removes .env, even with --keep-data).
     & wsl.exe --distribution $Distro --exec /usr/bin/test -e "$($lifetimeIdentity.installRoot)/.env"

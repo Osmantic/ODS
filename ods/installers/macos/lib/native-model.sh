@@ -8,7 +8,7 @@ macos_resolve_checkpoint_args() {
     # $3 is the --reasoning-format the caller mapped from LLAMA_REASONING. When
     # given, the caller leaves reasoning to this function: --reasoning on
     # runtimes that have it (b9014), else that --reasoning-format.
-    local install_dir="$1" binary="$2" reasoning_format="${3:-}" interval checkpoints cache_mib idle_seconds min_spacing fields_file field
+    local install_dir="$1" binary="$2" reasoning_format="${3:-}" interval checkpoints cache_mib idle_seconds min_spacing ubatch fields_file field
     local spec_type spec_default draft_n_max draft_type_k draft_type_v reasoning helper
     local -a reasoning_args=()
     MACOS_NATIVE_CHECKPOINT_ARGS=()
@@ -17,6 +17,7 @@ macos_resolve_checkpoint_args() {
     cache_mib="$(read_env_value "${install_dir}/.env" LLAMA_ARG_CACHE_RAM)"
     idle_seconds="$(read_env_value "${install_dir}/.env" LLAMA_ARG_SLEEP_IDLE_SECONDS)"
     min_spacing="$(read_env_value "${install_dir}/.env" LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT)"
+    ubatch="$(read_env_value "${install_dir}/.env" LLAMA_ARG_UBATCH)"
     spec_type="$(read_env_value "${install_dir}/.env" LLAMA_ARG_SPEC_TYPE)"
     spec_default="$(read_env_value "${install_dir}/.env" LLAMA_SPEC_TYPE)"
     draft_n_max="$(read_env_value "${install_dir}/.env" LLAMA_ARG_SPEC_DRAFT_N_MAX)"
@@ -26,7 +27,7 @@ macos_resolve_checkpoint_args() {
     helper="${install_dir}/installers/macos/lib/native-checkpoint-args.py"
     if [[ ! -f "$helper" ]]; then
         # Defaults are best effort; explicit settings must be qualified.
-        if [[ -n "$interval$checkpoints$cache_mib$idle_seconds$min_spacing$draft_n_max$draft_type_k$draft_type_v" ]]; then
+        if [[ -n "$interval$checkpoints$cache_mib$idle_seconds$min_spacing$ubatch$draft_n_max$draft_type_k$draft_type_v" ]]; then
             echo "The native runtime tuning validator is missing. Repair the ODS installation." >&2
             return 1
         fi
@@ -37,7 +38,7 @@ macos_resolve_checkpoint_args() {
     fields_file="$(mktemp)" || return 1
     if ! "${ODS_PYTHON_CMD:-python3}" "$helper" \
         --binary "$binary" --interval="$interval" --checkpoints="$checkpoints" --cache-mib="$cache_mib" \
-        --idle-seconds="$idle_seconds" --min-spacing="$min_spacing" \
+        --idle-seconds="$idle_seconds" --min-spacing="$min_spacing" --ubatch="$ubatch" \
         --explicit-spec-type="$spec_type" --spec-default="$spec_default" --draft-n-max="$draft_n_max" \
         --draft-type-k="$draft_type_k" --draft-type-v="$draft_type_v" \
         ${reasoning_args[@]+"${reasoning_args[@]}"} --apply-defaults > "$fields_file"; then
@@ -160,6 +161,14 @@ except (ValueError, KeyError, TypeError, OSError) as error:
         MACOS_NATIVE_PROFILE_ARGS=("${fields[@]:4}")
         if ! MACOS_NATIVE_PROJECTOR_PATH="$(macos_selection_path "$selection" projectorPath)" \
                 || ! MACOS_NATIVE_CHAT_TEMPLATE_PATH="$(macos_selection_path "$selection" chatTemplatePath)"; then
+            return 1
+        fi
+    fi
+    if [[ "$MACOS_NATIVE_PROFILE" == true ]]; then
+        local profile_ubatch
+        profile_ubatch="$(read_env_value "${install_dir}/.env" LLAMA_ARG_UBATCH)"
+        if [[ -n "$profile_ubatch" ]]; then
+            echo "LLAMA_ARG_UBATCH is not supported with a registered native runtime profile. Remove it from .env or select the default runtime. The running model has not been stopped." >&2
             return 1
         fi
     fi

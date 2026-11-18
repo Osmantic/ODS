@@ -964,6 +964,155 @@ async def handle_example_projects(request: web.Request):
     return web.json_response(result, headers={"Cache-Control": "no-store"})
 
 
+_RESTORE_PROJECT = re.compile(r"Playground/[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_RESTORE_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_RESTORE_RUN = re.compile(rf"chatcmpl_{_RESTORE_UUID}", re.IGNORECASE)
+_RESTORE_SNAPSHOT = re.compile(rf"(?:chatcmpl|restore)_{_RESTORE_UUID}", re.IGNORECASE)
+_RESTORE_UNDO = re.compile(rf"restore_{_RESTORE_UUID}")
+_RESTORE_TOKEN = re.compile(r"[a-f0-9]{64}")
+# Control characters (C0, DEL and C1) in a file name, as dashboard-api refuses them.
+_RESTORE_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# The refusals this relay passes on, by status. Any other answer, an
+# unexpected code too, is an unknown outcome.
+_RESTORE_REFUSALS = {
+    404: ("project-snapshot-unavailable", "project-snapshot-pruned"),
+    409: ("project-restore-busy",),
+    422: ("project-snapshot-damaged", "project-folder-unusable"),
+    503: ("project-restore-unavailable", "project-copies-unusable", "project-restore-unsupported"),
+}
+_RESTORE_KEYS = ("schemaVersion", "status", "project", "snapshot", "written", "removed", "left", "leftCount", "failed",
+                 "failedCount", "failure", "late", "undo", "confirm")
+_RESTORE_CONFIRM_KEYS = ("token", "overwrite", "overwriteCount", "remove", "removeCount")
+_RESTORE_FAILURES = ("permission", "in-use", "changed", "other")
+
+
+def _restore_count(item) -> bool:
+    return type(item) is int and 0 <= item <= 65536
+
+
+def _restore_listed(items, total) -> bool:
+    return (isinstance(items, list) and len(items) <= 8 and len(items) <= total
+            and all(isinstance(item, str) and 1 <= len(item) <= 512 and not _RESTORE_CONTROL.search(item) for item in items))
+
+
+def _restore_confirm(value) -> bool:
+    return (isinstance(value, dict) and set(value) == set(_RESTORE_CONFIRM_KEYS)
+            and isinstance(value["token"], str) and _RESTORE_TOKEN.fullmatch(value["token"]) is not None
+            and _restore_count(value["overwriteCount"]) and _restore_count(value["removeCount"])
+            and _restore_listed(value["overwrite"], value["overwriteCount"])
+            and _restore_listed(value["remove"], value["removeCount"]))
+
+
+def _project_restore_receipt(value, request: dict) -> dict:
+    """The gateway's restore receipt for exactly this request, or ValueError."""
+    if (not isinstance(value, dict) or set(value) != set(_RESTORE_KEYS)
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 2
+            or value["status"] not in ("restored", "unchanged", "confirm")
+            or value["project"] != request["project"] or value["snapshot"] != request["snapshot"]
+            or not all(_restore_count(value[key]) for key in ("written", "removed", "leftCount", "failedCount"))
+            or not _restore_listed(value["left"], value["leftCount"])
+            or not _restore_listed(value["failed"], value["failedCount"])
+            or not (value["failure"] is None or value["failure"] in _RESTORE_FAILURES)
+            or type(value["late"]) is not bool
+            or not (isinstance(value["undo"], str) and _RESTORE_UNDO.fullmatch(value["undo"]) is not None
+                    if value["status"] == "restored" else value["undo"] is None)
+            or not (_restore_confirm(value["confirm"]) if value["status"] == "confirm" else value["confirm"] is None)):
+        raise ValueError("invalid project restore receipt")
+    return {key: value[key] for key in _RESTORE_KEYS}
+
+
+def _project_restore_options(value, runs: list) -> dict:
+    """The gateway's options for exactly these runs, or ValueError."""
+    entries = value.get("projects") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "projects"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or not isinstance(entries, list) or len(entries) > 32
+            or not all(isinstance(entry, dict) and set(entry) == {"project", "snapshot", "late", "restore"}
+                       and isinstance(entry["project"], str) and _RESTORE_PROJECT.fullmatch(entry["project"])
+                       and entry["snapshot"] in runs and type(entry["late"]) is bool
+                       and (entry["restore"] is None
+                            or isinstance(entry["restore"], dict) and set(entry["restore"]) == {"undo", "side"}
+                            and isinstance(entry["restore"]["undo"], str)
+                            and _RESTORE_UNDO.fullmatch(entry["restore"]["undo"]) is not None
+                            and entry["restore"]["side"] in ("before", "after"))
+                       for entry in entries)):
+        raise ValueError("invalid project restore options")
+    return {"schemaVersion": 1, "projects": [{key: entry[key] for key in ("project", "snapshot", "late", "restore")}
+                                             for entry in entries]}
+
+
+async def _restore_relay(request: web.Request, limit: int, valid, route: str, project):
+    """One exact JSON request to the ingress, and only project(answer) or a fixed refusal back."""
+    fail = _check_auth(request)
+    if fail is not None:
+        return fail
+    if request.query_string:
+        return web.json_response({"error": "invalid project restore request"}, status=400)
+    if request.content_type != "application/json":
+        return web.json_response({"error": "Content-Type must be application/json"}, status=415)
+    try:
+        data = strict_json(await _read_bounded(request.content, limit))
+        if not isinstance(data, dict) or not valid(data):
+            raise ValueError("invalid project restore request")
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        return web.json_response({"error": "invalid project restore request"}, status=400)
+    if isinstance(data.get("user"), str) and request.app[_CANCEL_EVENTS_KEY].get(data["user"]):
+        return web.json_response({"error": "project-restore-busy"}, status=409, headers={"Cache-Control": "no-store"})
+    try:
+        timeout = ClientTimeout(total=38, sock_connect=2)
+        async with ClientSession(connector=UnixConnector(path=_SOCKET_PATH), timeout=timeout) as session:
+            async with session.post(f"http://pixel-upstream{route}", json=data,
+                                    headers={"Accept": "application/json"}, allow_redirects=False) as upstream:
+                codes = _RESTORE_REFUSALS.get(upstream.status) if route == "/v1/project-restore" else None
+                if codes is not None:
+                    try:
+                        code = strict_json(await _read_bounded(upstream.content, 1024)).get("error")
+                    except (ValueError, TypeError, UnicodeError, RecursionError, AttributeError):
+                        code = None
+                    if code not in codes:
+                        raise ValueError("unknown project restore refusal")
+                    return web.json_response({"error": code}, status=upstream.status, headers={"Cache-Control": "no-store"})
+                if upstream.status != 200 or upstream.content_type != "application/json":
+                    raise ValueError("unavailable")
+                value = strict_json(await _read_bounded(upstream.content, 16384))
+        result = project(value, data)
+    except (ValueError, TypeError, UnicodeError, RecursionError, OSError, asyncio.TimeoutError, ClientError):
+        return web.json_response({"error": "project-restore-unavailable"}, status=503, headers={"Cache-Control": "no-store"})
+    return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+
+def _valid_restore_request(data: dict) -> bool:
+    keys = set(data)
+    return ((keys == {"user", "project", "snapshot"} or keys == {"user", "project", "snapshot", "confirm"}
+             and isinstance(data["confirm"], str) and _RESTORE_TOKEN.fullmatch(data["confirm"]) is not None)
+            and all(isinstance(item, str) for item in data.values())
+            and _SAFE_CHAT_ID.fullmatch(data["user"]) is not None and _RESTORE_PROJECT.fullmatch(data["project"]) is not None
+            and _RESTORE_SNAPSHOT.fullmatch(data["snapshot"]) is not None)
+
+
+async def handle_project_restore(request: web.Request):
+    """Put one Playground project back to the copy kept before a Portal turn touched it.
+
+    Portal's "Put back files". The ingress holds the chat's history lock and
+    the gateway refuses while any Portal run, tool or background command is
+    alive; a stream of this chat still passing through this edge is refused
+    here first. When files changed after the turn, the gateway first answers
+    with what the restore would overwrite or remove, and the owner's yes comes
+    back as confirm. Only the validated receipt or a fixed refusal code is
+    returned.
+    """
+    return await _restore_relay(request, 512, _valid_restore_request, "/v1/project-restore", _project_restore_receipt)
+
+
+async def handle_project_restore_options(request: web.Request):
+    """Which of these Portal turns offer "Put back files", and an undo still in reach for each project."""
+    return await _restore_relay(
+        request, 4096,
+        lambda data: (set(data) == {"runs"} and isinstance(data["runs"], list) and len(data["runs"]) <= 64
+                      and all(isinstance(run, str) and _RESTORE_RUN.fullmatch(run) for run in data["runs"])),
+        "/v1/project-restore-options", lambda value, data: _project_restore_options(value, data["runs"]))
+
+
 async def handle_activity(request: web.Request):
     """Return only the number of in-flight turns for safe model coordination."""
     fail = _check_auth(request)
@@ -995,6 +1144,58 @@ async def handle_chat_activity(request: web.Request):
     chat_id = data["user"]
     state = "active" if request.app[_CANCEL_EVENTS_KEY].get(chat_id) else request.app[_CHAT_ACTIVITY_KEY].get(chat_id, "unknown")
     return web.json_response({"state": state}, headers={"Cache-Control": "no-store"})
+
+
+async def handle_chat_settle(request: web.Request):
+    """Ask the ingress to settle a chat it proves idle; never stop a run.
+
+    A restart can leave a turn's outcome unknown while nothing runs any more.
+    The ingress proves that under its history lock and records the turn as
+    interrupted. A stream still passing through this edge, a held lock or a
+    busy native session answers "active" and nothing changes.
+    """
+    fail = _check_auth(request)
+    if fail is not None:
+        return fail
+    if request.content_type != "application/json":
+        return web.json_response({"error": "Content-Type must be application/json"}, status=415)
+    if request.query_string or (request.content_length and request.content_length > _MAX_CANCEL_BODY):
+        return web.json_response({"error": "invalid settle request"}, status=400)
+    try:
+        raw = await request.read()
+        if len(raw) > _MAX_CANCEL_BODY:
+            raise ValueError("request too large")
+        data = strict_json(raw)
+        if (not isinstance(data, dict) or set(data) != {"user"}
+                or not isinstance(data["user"], str) or not _SAFE_CHAT_ID.fullmatch(data["user"])):
+            raise ValueError("invalid settle request")
+    except (ValueError, UnicodeDecodeError, TypeError):
+        return web.json_response({"error": "invalid settle request"}, status=400)
+    chat_id = data["user"]
+    if request.app[_CANCEL_EVENTS_KEY].get(chat_id):
+        return web.json_response({"state": "active"}, headers={"Cache-Control": "no-store"})
+    try:
+        connector = UnixConnector(path=_SOCKET_PATH)
+        # The ingress bounds its own native read at 5 s under the history lock.
+        timeout = ClientTimeout(total=8, sock_connect=2, sock_read=7)
+        async with ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.post(
+                "http://pixel-upstream/v1/chat/settle",
+                json={"user": chat_id},
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+            ) as resp:
+                if resp.status != 200 or "application/json" not in resp.headers.get("Content-Type", "").lower():
+                    raise ValueError("settle unconfirmed")
+                result = strict_json(await _read_bounded(resp.content, _MAX_CANCEL_RESPONSE_BYTES))
+        if (not isinstance(result, dict) or set(result) != {"state"}
+                or result["state"] not in ("settled", "active")):
+            raise ValueError("invalid settle receipt")
+    except (ConnectionError, OSError, asyncio.TimeoutError, ClientError, ValueError, TypeError,
+            UnicodeError, RecursionError):
+        return web.json_response({"error": "Portal settle unconfirmed"}, status=502)
+    if result["state"] == "settled" and not request.app[_CANCEL_EVENTS_KEY].get(chat_id):
+        _remember_chat_activity(request.app, chat_id, "terminal")
+    return web.json_response({"state": result["state"]}, headers={"Cache-Control": "no-store"})
 
 
 async def _context_upstream(data, *, compact=False):
@@ -1961,6 +2162,8 @@ def create_app() -> web.Application:
     app.router.add_get("/v1/runtime-identity", handle_runtime_identity, allow_head=False)
     app.router.add_get("/v1/example-projects", handle_example_projects, allow_head=False)
     app.router.add_post("/v1/example-projects", handle_example_projects)
+    app.router.add_post("/v1/project-restore", handle_project_restore)
+    app.router.add_post("/v1/project-restore-options", handle_project_restore_options)
     app.router.add_get("/v1/activity", handle_activity)
     app.router.add_get('/v1/access-mode', handle_access_mode, allow_head=False)
     app.router.add_post('/v1/access-mode', handle_access_mode)
@@ -1970,6 +2173,7 @@ def create_app() -> web.Application:
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_post("/v1/chat/cancel", handle_chat_cancel)
     app.router.add_post("/v1/chat/activity", handle_chat_activity)
+    app.router.add_post("/v1/chat/settle", handle_chat_settle)
     app.router.add_post("/v1/chat/context", handle_chat_context)
     app.router.add_post("/v1/chat/images-delete", handle_chat_images_delete)
     app.router.add_post("/v1/chat/compact", handle_chat_context)
