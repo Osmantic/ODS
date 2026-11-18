@@ -112,7 +112,7 @@ def make_intent(*, current, candidate, owner, snapshots, identities):
     if (any(type(value) is not str or not re.fullmatch('[a-f0-9]{64}', value)
             for value in (current, candidate)) or current == candidate
             or type(owner) is not dict or set(owner) != {'name', 'uid', 'gid'}
-            or type(owner['name']) is not str or not re.fullmatch('[A-Za-z_][A-Za-z0-9_-]{0,127}', owner['name'])
+            or type(owner['name']) is not str or not re.fullmatch('[A-Za-z_][A-Za-z0-9_.-]{0,127}', owner['name'])
             or type(owner['uid']) is not int or owner['uid'] <= 0
             or type(owner['gid']) is not int or owner['gid'] < 0
             or type(snapshots) is not dict or set(snapshots) != {'archive', 'context', 'service', 'hold'}

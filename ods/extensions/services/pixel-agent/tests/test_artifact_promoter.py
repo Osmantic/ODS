@@ -131,6 +131,29 @@ class ArtifactPromoterTests(unittest.TestCase):
                 with self.assertRaises(promoter.PromotionError):
                     self.request(relativePath=relative_path)
 
+    def serve_as(self, owner: str) -> None:
+        promoter.serve(
+            promoter.SOCKET_PATH,
+            promoter.RESULTS_ROOT,
+            promoter.ARTIFACTS_ROOT,
+            pathlib.Path("/workspace"),
+            owner,
+        )
+
+    def test_service_owner_accepts_dotted_short_name(self) -> None:
+        with mock.patch.object(promoter.pwd, "getpwnam", side_effect=KeyError("account lookup")) as lookup:
+            with self.assertRaises(KeyError):
+                self.serve_as("first.last")
+        lookup.assert_called_once_with("first.last")
+
+    def test_service_owner_rejects_unsafe_names_before_account_lookup(self) -> None:
+        for owner in ("", ".", "..", ".first", "-first", "first/last", "../first",
+                      "first last", "first\nlast", 'first"last', "first'last"):
+            with self.subTest(owner=owner), mock.patch.object(promoter.pwd, "getpwnam") as lookup:
+                with self.assertRaises(promoter.PromotionError):
+                    self.serve_as(owner)
+                lookup.assert_not_called()
+
     def test_mode_is_sealed_before_owner_custody_transfer(self) -> None:
         calls = []
         with (

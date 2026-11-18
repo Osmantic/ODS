@@ -54,6 +54,19 @@ def test_unsafe_profiles_are_refused(arguments, fault):
     with pytest.raises(ValueError): promoter.render(**arguments)
 
 
+def test_dotted_macos_short_name_is_the_promotion_owner(arguments):
+    arguments['owner'] = 'first.last'
+    document = plistlib.loads(promoter.render(**arguments)['plist'])
+    assert document['UserName'] == 'root'
+    assert document['ProgramArguments'][-1] == 'first.last'
+
+
+@pytest.mark.parametrize('owner', ['', 'root', '.', '..', '.first', '-first', 'first/last', '../first', 'first last', 'first\tlast', 'first\nlast', 'first"last', "first'last", None])
+def test_unsafe_promoter_owner_is_refused(arguments, owner):
+    arguments['owner'] = owner
+    with pytest.raises(ValueError, match='invalid-native-promoter-identity'): promoter.render(**arguments)
+
+
 @pytest.fixture
 def publication(arguments, monkeypatch):
     args = dict(arguments, sources={'artifact_promoter.py': b'"""fixture"""\n', 'unix_peer.py': b'"""peer"""\n',

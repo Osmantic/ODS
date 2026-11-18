@@ -1694,7 +1694,7 @@ def preview_owner_uid(owner: str) -> int:
         if uid != os.getuid() or uid != os.geteuid():
             raise PreviewError("preview must run as its configured owner")
         return uid
-    if re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", owner) is None:
+    if re.fullmatch(r"[a-z_][a-z0-9_.-]{0,31}", owner) is None:
         raise PreviewError("invalid preview service configuration")
     uid = pwd.getpwnam(owner).pw_uid
     if PROFILE_ID is not None and uid != os.getuid():

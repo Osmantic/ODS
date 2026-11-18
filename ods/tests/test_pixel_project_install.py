@@ -8,6 +8,7 @@ import subprocess
 import stat
 import sys
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -166,6 +167,25 @@ def test_previous_format_cannot_hide_changed_identity_or_directives(previous_ins
 def test_invalid_deployment_is_rejected(change):
     with pytest.raises(ValueError):
         installer.unit_bytes({**config(), **change})
+
+
+def owner_named(monkeypatch, name):
+    owner = pwd.getpwuid(os.getuid())
+    monkeypatch.setattr(installer.pwd, 'getpwuid', lambda uid: SimpleNamespace(
+        pw_name=name, pw_uid=owner.pw_uid, pw_dir=owner.pw_dir))
+
+
+def test_dotted_owner_name_runs_project_unit(monkeypatch):
+    owner_named(monkeypatch, 'first.last')
+    assert 'User=first.last\n' in installer.unit_bytes(config()).decode()
+
+
+@pytest.mark.parametrize('name', ['', '.', '..', '.first', '-first', 'first/last', '../first',
+                                  'first last', 'first\nlast', 'first"last', "first'last"])
+def test_unsafe_owner_name_is_rejected(monkeypatch, name):
+    owner_named(monkeypatch, name)
+    with pytest.raises(ValueError, match='invalid project owner workspace'):
+        installer.unit_bytes(config())
 
 
 def test_upgrade_keeps_legacy_unit_identity_and_adds_configured_python_image():

@@ -32,7 +32,7 @@ def render(*, python, program_root, workspace, owner,
            runtime='/private/var/lib/ods-pixel-artifact-promoter',
            logs='/private/var/log/ods-pixel-promoter',
            label='com.ods.pixel-native-promoter'):
-    if (not isinstance(owner, str) or not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', owner)
+    if (not isinstance(owner, str) or not re.fullmatch(r'[a-z_][a-z0-9_.-]{0,31}', owner)
             or owner == 'root' or not re.fullmatch(r'com\.ods\.pixel-native-promoter(?:\.[a-z0-9-]+)?', label)):
         raise ValueError('invalid-native-promoter-identity')
     python, program_root, workspace, state, runtime, logs = [Path(policy._path(str(value)))
