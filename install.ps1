@@ -44,7 +44,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # Delegate to Windows installer
 $ODSInstaller = Join-Path (Join-Path $ScriptDir "ods") "installers/windows-portal.ps1"
-if (-not (Test-Path $ODSInstaller)) {
+if (-not (Test-Path -LiteralPath $ODSInstaller -PathType Leaf)) {
     Write-Host "Error: Windows installer not found" -ForegroundColor Red
     Write-Host "Expected: $ODSInstaller" -ForegroundColor Red
     exit 1
