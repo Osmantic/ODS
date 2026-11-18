@@ -3,74 +3,25 @@
 
 _write_macos_opencode_config() {
     local config_path="$1" model_name="$2" base_url="$3" api_key="$4" context_length="$5"
-    # OpenCode reads config.json, not opencode.json, so the same document has
-    # to land in both files — matching installers/phases/07-devtools.sh on
-    # Linux and installers/windows/lib/opencode-config.ps1 on Windows.
-    local compat_path
-    compat_path="$(dirname "$config_path")/config.json"
-    mkdir -p "$(dirname "$config_path")"
+    # Delegate to the shared JSONC-preserving core via the thin wrapper.
+    # The wrapper validates all three JSONC files and writes only the highest
+    # existing one; it never mirrors opencode.json <-> config.json. Model
+    # policy: only the top-level `model` and the ODS provider fields are
+    # updated; other providers, models, and names are preserved.
+    local config_dir helper
+    config_dir="$(dirname "$config_path")"
+    helper="${INSTALL_DIR:-}/bin/configure-opencode.py"
+    if [[ -z "${INSTALL_DIR:-}" || ! -f "$helper" ]]; then
+        ai_err "OpenCode helper missing at ${helper:-<unset>}; refusing to write config."
+        return 1
+    fi
     ODS_OPENCODE_MODEL="$model_name" \
+    ODS_OPENCODE_DISPLAY_NAME="$model_name" \
+    ODS_OPENCODE_PROVIDER_NAME="ODS inference" \
     ODS_OPENCODE_BASE_URL="$base_url" \
     ODS_OPENCODE_API_KEY="$api_key" \
     ODS_OPENCODE_CONTEXT="$context_length" \
-        /usr/bin/python3 - "$config_path" "$compat_path" <<'OPENCODE_CONFIG_PY'
-import json
-import os
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-compat_path = Path(sys.argv[2])
-try:
-    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-except (OSError, ValueError):
-    data = {}
-if not isinstance(data, dict):
-    data = {}
-
-model_name = os.environ["ODS_OPENCODE_MODEL"]
-base_url = os.environ["ODS_OPENCODE_BASE_URL"]
-api_key = os.environ["ODS_OPENCODE_API_KEY"]
-context = int(os.environ["ODS_OPENCODE_CONTEXT"])
-if context < 1024:
-    raise SystemExit("OpenCode requires at least 1024 context tokens")
-output_limit = min(32768, context // 4)
-provider_id = "llama-server"
-provider = data.setdefault("provider", {}).setdefault(provider_id, {})
-provider.update({
-    "npm": "@ai-sdk/openai-compatible",
-    "name": "ODS inference",
-    "options": {"baseURL": base_url, "apiKey": api_key},
-    "models": {
-        model_name: {
-            "name": model_name,
-            "limit": {"context": context, "output": output_limit},
-        }
-    },
-})
-data["model"] = f"{provider_id}/{model_name}"
-data.setdefault("$schema", "https://opencode.ai/config.json")
-
-payload = json.dumps(data, indent=2) + "\n"
-
-
-def write_atomic(target):
-    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
-    tmp.write_text(payload, encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, target)
-
-
-for target in (path, compat_path):
-    write_atomic(target)
-
-    check = json.loads(target.read_text(encoding="utf-8"))
-    check_provider = check["provider"][provider_id]
-    if check.get("model") != f"{provider_id}/{model_name}":
-        raise SystemExit(f"OpenCode model verification failed for {target.name}")
-    if check_provider["options"] != {"baseURL": base_url, "apiKey": api_key}:
-        raise SystemExit(f"OpenCode route verification failed for {target.name}")
-OPENCODE_CONFIG_PY
+        /usr/bin/python3 "$helper" "$config_dir" macos
 }
 
 _opencode_candidate_is_file() {
@@ -160,7 +111,6 @@ ods_macos_install_opencode() {
     # OpenCode is native, so cloud mode uses LiteLLM's published host port while
     # local mode follows the actual native llama bind and port.
     if [[ -n "$OPENCODE_BIN" && -x "$OPENCODE_BIN" ]]; then
-        mkdir -p "$OPENCODE_CONFIG_DIR"
         _opencode_switchboard_mode="$(read_env_value "$INSTALL_DIR/.env" "ODS_MODEL_SWITCHBOARD")"
         if [[ "${_opencode_switchboard_mode:-enabled}" == "enabled" ]]; then
             _opencode_model="ods/current"

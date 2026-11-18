@@ -181,7 +181,6 @@ else
     # Configure OpenCode to use local llama-server
     if [[ -n "$OPENCODE_BIN" && -x "$OPENCODE_BIN" ]]; then
         OPENCODE_CONFIG_DIR="$HOME/.config/opencode"
-        mkdir -p "$OPENCODE_CONFIG_DIR"
         # Read OLLAMA_PORT and ODS_MODE from .env generated in phase 06
         if [[ -f "$INSTALL_DIR/.env" ]]; then
             [[ -z "${OLLAMA_PORT:-}" ]] && OLLAMA_PORT=$(grep -m1 '^OLLAMA_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2-)
@@ -258,106 +257,32 @@ else
         _opencode_output_limit=$(( _opencode_context / 4 ))
         (( _opencode_output_limit <= 32768 )) || _opencode_output_limit=32768
 
-        # Writes a fresh opencode.json from the template. Used for first-install
-        # and as deterministic recovery when the jq rewrite path finds an
-        # existing malformed file it cannot parse (issue #332).
-        _opencode_write_fresh() {
-            cat > "$1" <<OPENCODE_EOF
-{
-  "\$schema": "https://opencode.ai/config.json",
-  "model": "llama-server/${_opencode_model_id}",
-  "small_model": "llama-server/${_opencode_model_id}",
-  "agent": {
-    "build": {"model": "llama-server/${_opencode_model_id}"},
-    "plan": {"model": "llama-server/${_opencode_model_id}"}
-  },
-  "provider": {
-    "llama-server": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "${_opencode_provider_name}",
-      "options": {
-        "baseURL": "${_opencode_url}",
-        "apiKey": "${_opencode_key}"
-      },
-      "models": {
-        "${_opencode_model_id}": {
-          "name": "${_opencode_model_name}",
-          "limit": {
-            "context": ${_opencode_context},
-            "output": ${_opencode_output_limit}
-          }
-        }
-      }
-    }
-  }
-}
-OPENCODE_EOF
-        }
-
-        if [[ ! -f "$OPENCODE_CONFIG_DIR/opencode.json" ]]; then
-            _opencode_write_fresh "$OPENCODE_CONFIG_DIR/opencode.json"
-            ai_ok "OpenCode configured for local llama-server (model: ${_opencode_model_id})"
-        else
-            # Reinstall: update API key and URL in existing config (key may have changed)
-            _opencode_updated=false
-            if command -v jq >/dev/null 2>&1; then
-                _opencode_tmp="$OPENCODE_CONFIG_DIR/opencode.json.tmp.$$"
-                if jq --arg url "$_opencode_url" --arg key "$_opencode_key" \
-                    --arg model_id "$_opencode_model_id" \
-                    --arg model_name "$_opencode_model_name" \
-                    --arg provider_name "$_opencode_provider_name" \
-                    --argjson context "$_opencode_context" \
-                    --argjson output "$_opencode_output_limit" \
-                    '. as $previous
-                      | ($previous.model | if type == "string" then startswith("llama-server/") else false end) as $ods_previous
-                      | .["$schema"] = "https://opencode.ai/config.json"
-                      | .model = ("llama-server/" + $model_id)
-                      | .small_model = ("llama-server/" + $model_id)
-                      | .agent = (if .agent == null then {} else .agent end)
-                      | if (.agent | type) == "object" then
-                          .agent.build = (if .agent.build == null then {} else .agent.build end)
-                          | .agent.plan = (if .agent.plan == null then {} else .agent.plan end)
-                          | if (.agent.build | type) == "object" then
-                              .agent.build.model = (if .agent.build.model == null or ($ods_previous and .agent.build.model == $previous.model) then ("llama-server/" + $model_id) else .agent.build.model end)
-                            else . end
-                          | if (.agent.plan | type) == "object" then
-                              .agent.plan.model = (if .agent.plan.model == null or ($ods_previous and .agent.plan.model == $previous.model) then ("llama-server/" + $model_id) else .agent.plan.model end)
-                            else . end
-                        else . end
-                      | .provider = (.provider // {})
-                      | .provider["llama-server"] = (.provider["llama-server"] // {})
-                      | .provider["llama-server"].npm = "@ai-sdk/openai-compatible"
-                      | .provider["llama-server"].name = $provider_name
-                      | .provider["llama-server"].options = {"baseURL": $url, "apiKey": $key}
-                      | .provider["llama-server"].models = {
-                         ($model_id): {
-                           "name": $model_name,
-                           "limit": {"context": $context, "output": $output}
-                         }
-                       }' \
-                    "$OPENCODE_CONFIG_DIR/opencode.json" > "$_opencode_tmp" 2>/dev/null; then
-                    mv "$_opencode_tmp" "$OPENCODE_CONFIG_DIR/opencode.json"
-                    ai_ok "OpenCode config updated (model, API key, and URL refreshed)"
-                    _opencode_updated=true
-                else
-                    rm -f "$_opencode_tmp"
-                    ai_warn "OpenCode config jq rewrite failed (existing file unparseable) — regenerating from template"
-                fi
-            else
-                _opencode_write_fresh "$OPENCODE_CONFIG_DIR/opencode.json"
-                ai_ok "OpenCode config regenerated (jq unavailable; model route refreshed)"
-                _opencode_updated=true
-            fi
-            # Recovery path (issue #332): if the update branch above failed to
-            # produce a valid file (jq parse error on pre-existing corruption),
-            # regenerate deterministically from the template.
-            if [[ "$_opencode_updated" != "true" ]]; then
-                _opencode_write_fresh "$OPENCODE_CONFIG_DIR/opencode.json"
-                ai_ok "OpenCode config regenerated from template (recovered from corruption)"
-            fi
+        # Delegate to the shared JSONC-preserving core via the thin wrapper.
+        # The wrapper validates all three JSONC files and writes only the
+        # highest existing one; it never mirrors opencode.json <-> config.json.
+        # Model policy: top-level `model` and `small_model` are updated; the
+        # `agent.build`/`agent.plan` models are updated only when missing or
+        # when they match the previous llama-server model (matching the prior
+        # jq behavior); explicit custom agent models are preserved. Wrong
+        # type shapes are refused rather than wiped. Other providers, models,
+        # and names are preserved.
+        _opencode_helper="${INSTALL_DIR:-}/bin/configure-opencode.py"
+        if [[ -z "${INSTALL_DIR:-}" || ! -f "$_opencode_helper" ]]; then
+            ai_bad "OpenCode helper missing at ${_opencode_helper:-<unset>}; refusing to write config."
+            exit 1
         fi
-        # OpenCode reads config.json, not opencode.json — always sync
-        cp "$OPENCODE_CONFIG_DIR/opencode.json" "$OPENCODE_CONFIG_DIR/config.json"
+        if ! ODS_OPENCODE_MODEL="$_opencode_model_id" \
+             ODS_OPENCODE_DISPLAY_NAME="$_opencode_model_name" \
+             ODS_OPENCODE_PROVIDER_NAME="$_opencode_provider_name" \
+             ODS_OPENCODE_BASE_URL="$_opencode_url" \
+             ODS_OPENCODE_API_KEY="$_opencode_key" \
+             ODS_OPENCODE_CONTEXT="$_opencode_context" \
+                python3 "$_opencode_helper" "$OPENCODE_CONFIG_DIR" linux; then
+            ai_bad "OpenCode config update failed; existing configuration preserved."
+            exit 1
+        fi
+        ai_ok "OpenCode config updated (model, API key, and URL refreshed)"
+        unset _opencode_helper
 
         # Install OpenCode Web UI as user-level systemd service (no sudo required)
         if [[ -f "$INSTALL_DIR/opencode/opencode-web.service" ]]; then

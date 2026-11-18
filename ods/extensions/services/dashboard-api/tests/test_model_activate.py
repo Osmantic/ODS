@@ -7765,12 +7765,14 @@ class TestModelActivateRollback:
         assert env_path.read_text(encoding="utf-8") == env_text
         assert not models_ini.exists()
 
+    @pytest.mark.parametrize("filename", ["config.json", "opencode.json", "opencode.jsonc"])
+    @pytest.mark.parametrize("prefix", ["", "\ufeff"])
     def test_jsonc_opencode_update_preserves_settings_and_removes_stale_model(
-        self, tmp_path, monkeypatch,
+        self, tmp_path, monkeypatch, filename, prefix,
     ):
-        config_path = tmp_path / "opencode.jsonc"
+        config_path = tmp_path / filename
         config_path.write_text(
-            """{
+            prefix + """{
               // User preference must survive.
               "theme": "system",
               "model": "llama-server/old-model",

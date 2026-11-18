@@ -431,26 +431,28 @@ grep -q '^  max_tokens: 2048$' "$tmp_hermes_custom" \
 pass "Hermes patcher preserves a custom model output cap"
 
 # ---------------------------------------------------------------------------
-# OpenCode reads config.json, not opencode.json. Every platform writer has to
-# produce both files or the native OpenCode install starts with no ODS
-# provider configured at all.
+# OpenCode merges all three global JSONC files. POSIX installation updates
+# one file without mirroring over an owner's distinct compatibility config.
 # ---------------------------------------------------------------------------
 
 assert_grep "installers/phases/07-devtools.sh" \
-    'cp "\$OPENCODE_CONFIG_DIR/opencode\.json" "\$OPENCODE_CONFIG_DIR/config\.json"' \
-    "Linux OpenCode writer syncs config.json"
+    'bin/configure-opencode.py' \
+    "Linux OpenCode writer uses preservation helper"
 
 assert_grep "installers/windows/lib/opencode-config.ps1" \
     'WriteAllText\(\$_ocCompatConfigFile' \
     "Windows OpenCode writer syncs config.json"
 
 assert_grep "installers/macos/lib/post-pixel-install.sh" \
-    'compat_path="\$\(dirname "\$config_path"\)/config\.json"' \
-    "macOS OpenCode writer syncs config.json"
+    'bin/configure-opencode.py' \
+    "macOS OpenCode writer uses preservation helper"
 
 if [[ -n "$python_cmd" ]]; then
     tmp_opencode_dir="$(mktemp -d)"
     trap 'rm -rf "$tmp_opencode_dir"' EXIT
+    INSTALL_DIR="$tmp_opencode_dir/install"
+    mkdir -p "$INSTALL_DIR/bin"
+    cp "$ROOT_DIR/bin/configure-opencode.py" "$ROOT_DIR/bin/opencode_config.py" "$INSTALL_DIR/bin/"
 
     # Run the real macOS writer: lift the function out of the installer and
     # point its interpreter at whatever python3 this runner has.
@@ -469,15 +471,11 @@ if [[ -n "$python_cmd" ]]; then
         "Modern-Model.gguf" "http://127.0.0.1:8080/v1" "no-key" 32768 \
         || fail "macOS OpenCode writer failed"
 
-    [[ -f "$tmp_opencode_dir/config/config.json" ]] \
-        || fail "macOS OpenCode writer must also write config.json"
-    pass "macOS OpenCode writer produces config.json"
+    [[ ! -e "$tmp_opencode_dir/config/config.json" ]] \
+        || fail "macOS OpenCode writer must not mirror config.json"
+    pass "macOS OpenCode writer leaves absent compatibility config absent"
 
-    cmp -s "$tmp_opencode_dir/config/opencode.json" "$tmp_opencode_dir/config/config.json" \
-        || fail "macOS OpenCode config.json must match opencode.json"
-    pass "macOS OpenCode config.json matches opencode.json"
-
-    "$python_cmd" - "$tmp_opencode_dir/config/config.json" <<'OPENCODE_COMPAT_PY'
+    "$python_cmd" - "$tmp_opencode_dir/config/opencode.json" <<'OPENCODE_COMPAT_PY'
 import json
 import sys
 
@@ -489,7 +487,7 @@ assert provider["options"] == {
     "apiKey": "no-key",
 }, provider["options"]
 OPENCODE_COMPAT_PY
-    pass "macOS OpenCode config.json carries the active route"
+    pass "macOS OpenCode opencode.json carries the active route"
 else
     echo "  SKIP: python3 unavailable - macOS OpenCode writer behaviour not exercised"
 fi
