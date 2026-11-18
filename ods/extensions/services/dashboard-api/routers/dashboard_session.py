@@ -36,6 +36,7 @@ import dashboard_password
 import security
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from runtime_profile import RUNTIME_PROFILE
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,9 @@ def dashboard_session_status(request: Request) -> dict:
         "signedIn": True,
         "session": session_is_valid(request.cookies.get(SESSION_COOKIE_NAME, "")),
         "passwordConfigured": dashboard_password.record() is not None,
+        # Windows Desktop listens on loopback only: no other device can reach
+        # it, so a sign-in password has nothing to protect and is not offered.
+        "remoteAccess": not RUNTIME_PROFILE.is_desktop,
     }
 
 
