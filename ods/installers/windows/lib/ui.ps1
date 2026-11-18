@@ -200,7 +200,7 @@ function Get-ODSHuggingFaceDownloadHelper {
 
     foreach ($root in $roots) {
         $candidate = Join-Path $root "scripts\download-hf-artifact.py"
-        if (Test-Path $candidate) {
+        if (Test-Path -LiteralPath $candidate) {
             return $candidate
         }
     }
@@ -392,7 +392,7 @@ function Invoke-ODSHuggingFaceDownloadFallback {
     Write-AI "Retrying with Hugging Face client..."
     $downloadArgs = @($python.PrefixArgs) + @($helper, $Url, $Destination)
     & $python.FilePath @downloadArgs
-    if ($LASTEXITCODE -eq 0 -and (Test-Path $Destination) -and ((Get-Item $Destination).Length -gt 0)) {
+    if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $Destination) -and ((Get-Item -LiteralPath $Destination).Length -gt 0)) {
         return $true
     }
     return $false
@@ -423,13 +423,13 @@ function Show-ProgressDownload {
     $curlArgs += @("-o", $partFile, $Url)
     & curl.exe @curlArgs
     $curlExit = $LASTEXITCODE
-    if ($curlExit -eq 0 -and (Test-Path $partFile)) {
-        Move-Item -Path $partFile -Destination $Destination -Force
+    if ($curlExit -eq 0 -and (Test-Path -LiteralPath $partFile)) {
+        Move-Item -LiteralPath $partFile -Destination $Destination -Force
         Write-AISuccess "$Label complete"
         return $true
     } else {
         if (Invoke-ODSHuggingFaceDownloadFallback -Url $Url -Destination $partFile) {
-            Move-Item -Path $partFile -Destination $Destination -Force
+            Move-Item -LiteralPath $partFile -Destination $Destination -Force
             Write-AISuccess "$Label complete"
             return $true
         }
@@ -477,7 +477,7 @@ function Invoke-DownloadWithRetry {
 
         if ($success) {
             # Verify file exists and has content
-            if ((Test-Path $Destination) -and ((Get-Item $Destination).Length -gt 0)) {
+            if ((Test-Path -LiteralPath $Destination) -and ((Get-Item -LiteralPath $Destination).Length -gt 0)) {
                 return $true
             } else {
                 Write-AIWarn "Download reported success but file is missing or empty"
@@ -534,22 +534,22 @@ function Invoke-ExtractionWithRetry {
         # Attempt extraction
         try {
             # Remove partial extraction if it exists
-            if (Test-Path $DestinationPath) {
+            if (Test-Path -LiteralPath $DestinationPath) {
                 Write-AI "Cleaning up previous extraction attempt..."
-                Remove-Item -Path $DestinationPath -Recurse -Force -ErrorAction Stop
+                Remove-Item -LiteralPath $DestinationPath -Recurse -Force -ErrorAction Stop
             }
 
             # Create parent directory if needed
             $parentDir = Split-Path -Parent $DestinationPath
-            if (-not (Test-Path $parentDir)) {
-                New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
+            if (-not [string]::IsNullOrWhiteSpace($parentDir) -and -not (Test-Path -LiteralPath $parentDir)) {
+                [System.IO.Directory]::CreateDirectory($parentDir) | Out-Null
             }
 
             # Extract
-            Expand-Archive -Path $ZipPath -DestinationPath $DestinationPath -Force -ErrorAction Stop
+            Expand-Archive -LiteralPath $ZipPath -DestinationPath $DestinationPath -Force -ErrorAction Stop
 
             # Verify extraction succeeded (check if directory exists and has content)
-            if ((Test-Path $DestinationPath) -and ((Get-ChildItem $DestinationPath).Count -gt 0)) {
+            if ((Test-Path -LiteralPath $DestinationPath) -and ((Get-ChildItem -LiteralPath $DestinationPath).Count -gt 0)) {
                 return $true
             } else {
                 Write-AIWarn "Extraction completed but destination is empty"
