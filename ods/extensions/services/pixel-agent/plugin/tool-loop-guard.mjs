@@ -8986,18 +8986,39 @@ export function createToolLoopGuard({
   // a new round; nothing here revises or replays this one. Its reply text is
   // the cut's own, captured at before_message_write (observeReplyEnd): the
   // runtime skips before_agent_finalize for such an incomplete reply.
+  // A silent cut (lastReplySilentCut: this run's own last reply hit the limit
+  // before any visible text, with no tool call or other block of any shape)
+  // qualifies under the same exclusions and ledger without the narration: no
+  // answer exists, and the host goal it was cut from is still unmet.
   function outputLimitWorkSettled(state, runId, findings) {
     const cut = state.outputLimitStop;
-    if (cut?.answered !== true || cut.tool !== undefined || cut.path !== undefined) return false;
-    const settled = goalContinuationSettlement(state, runId, findings, state.lastReplyCutText);
+    if (!cut || cut.tool !== undefined || cut.path !== undefined) return false;
+    const settled = cut.answered === true ? goalContinuationSettlement(state, runId, findings, state.lastReplyCutText)
+      : cut.answered === false && state.lastReplySilentCut === true ? settledGoalRound(state, runId, findings) : undefined;
     return Boolean(settled) && Number.isSafeInteger(settled.calls) && settled.calls >= 1;
   }
 
-  // The exclusions both goal continuation stops share, with the stop's own
-  // final reply text, then the run's own known-call ledger: undefined unless
-  // it settled with every listed execution matched to an owned terminal
-  // receipt of this run.
+  // A reply cut at the output limit before any visible text: a non-empty list
+  // of only well-formed thinking and blank text blocks. Absent, malformed or
+  // unknown content, and any tool block, is not silent. The thinking itself
+  // is never read.
+  function silentOutputLimitReply(message, cut) {
+    return cut?.answered === false && cut.tool === undefined && cut.path === undefined &&
+      (message?.errorMessage === undefined || message.errorMessage === '') &&
+      Array.isArray(message?.content) && message.content.length > 0 &&
+      message.content.every(block => block?.type === 'thinking' ? typeof block.thinking === 'string'
+        : block?.type === 'text' && typeof block.text === 'string') && !assistantMessageText(message);
+  }
+
+  // A goal continuation stop's own final reply text must announce more work.
   function goalContinuationSettlement(state, runId, findings, replyText) {
+    return typeof replyText === 'string' && announcesMoreWork(replyText) ? settledGoalRound(state, runId, findings) : undefined;
+  }
+
+  // The exclusions every goal continuation stop shares, then the run's own
+  // known-call ledger: undefined unless it settled with every listed
+  // execution matched to an owned terminal receipt of this run.
+  function settledGoalRound(state, runId, findings) {
     if (!state.ownerIntentObserved || !state.artifactOwnerInteractive || state.artifactIdentityConflict ||
         state.artifactNoninteractiveObserved || state.managedTeamWorker || state.managedTeamCoordinator ||
         typeof state.currentSessionId !== 'string' || !state.currentSessionId ||
@@ -9013,8 +9034,7 @@ export function createToolLoopGuard({
         state.workspacePreviewRestrictions?.mutation || state.codingExhausted || state.progressBudget.exhaustedLanes.length ||
         ['failed', 'pending'].includes(state.latestVerificationStatus) || findings.length ||
         !state.workspaceMutationRequested ||
-        state.pendingExecSessions.size || state.execCallsInFlight.size || state.terminalExecOverflow ||
-        typeof replyText !== 'string' || !announcesMoreWork(replyText)) return undefined;
+        state.pendingExecSessions.size || state.execCallsInFlight.size || state.terminalExecOverflow) return undefined;
     const settled = taskSettlement(runId, {sessionId: state.currentSessionId, sessionKey: state.currentSessionKey});
     if (settled?.schemaVersion !== 1 || settled.ok !== true || !Array.isArray(settled.executions) ||
         !settled.executions.every(execution => terminalExecution(state, execution?.callId, execution?.tool, settled.executions))) {
@@ -11477,6 +11497,7 @@ export function createToolLoopGuard({
         // Like the deadline, a cut belongs to the attempt that wrote it.
         state.lastReplyCut = undefined;
         state.lastReplyCutText = undefined;
+        state.lastReplySilentCut = undefined;
         state.outputLimitStop = undefined;
       }
       if (typeof sessionId === "string" && sessionId) {
@@ -11856,7 +11877,7 @@ export function createToolLoopGuard({
     if (state.progressBudget.exhausted && !compactionCall) progressFinalization(state).modelCallStarted();
     // A further agent turn means the reply seen at finalization was not final,
     // and a cut reply seen before it was not the round's last.
-    if (!compactionCall) { state.finalReplyText = undefined; state.lastReplyCutText = undefined; }
+    if (!compactionCall) { state.finalReplyText = undefined; state.lastReplyCutText = undefined; state.lastReplySilentCut = undefined; }
     responseDeadlineModelCall(state, runId, event?.callId, compactionCall);
   }
 
@@ -14718,6 +14739,8 @@ export function createToolLoopGuard({
       [context?.sessionId, event?.sessionId].every(id => id === undefined || id === active.state.currentSessionId);
     active.state.lastReplyCutText = ownIds && active.state.lastReplyCut?.answered === true
       ? assistantMessageText(event.message) : undefined;
+    // The same reply cut silently, under the same identity rule and lifetime.
+    active.state.lastReplySilentCut = ownIds && silentOutputLimitReply(event.message, active.state.lastReplyCut);
     // A reply with text and no tool calls ends the attempt's turns: from here
     // OpenClaw delivers it, after the finalization hooks, which can take a
     // while (responseDeadlineDue). A reply cut at the output limit too.
@@ -15133,7 +15156,9 @@ export function createToolLoopGuard({
         });
         // Saved work with no current or earlier preview: the one cause a goal
         // round's 'unfinished-work' stop names. Marked on this object only;
-        // a derived or replaced outcome is another failure and never carries it.
+        // a derived or replaced outcome is another failure and never carries
+        // it, except a silent output-limit cut's, which keeps this outcome's
+        // text (baseDeliveryVerificationForRun).
         if (hasIndexEvidence) missingCurrentPreviewOutcomes.add(missing);
         return missing;
       }
@@ -15505,7 +15530,7 @@ export function createToolLoopGuard({
       : state.progressBudget.exhausted && !state.researchStopped ? 'tool-limit'
       : missingCurrentPreview && unfinishedWorkSettled(state, runId, [...checked, ...carried]) ? 'unfinished-work'
       // The same round cut at the output limit on an answer announcing more
-      // work: 'output-limit', after every stop above.
+      // work, or silently before any answer: 'output-limit', after every stop above.
       : missingCurrentPreview && outputLimitWorkSettled(state, runId, [...checked, ...carried]) ? 'output-limit' : undefined;
     if (stop) result = {...result, stop};
     return artifacts?.length && !state.clientCancelled && ['none','passed','failed'].includes(result.status)
@@ -15547,11 +15572,17 @@ export function createToolLoopGuard({
       const prior = (verification.status === 'failed' || verification.status === 'passed') && verification.text
         ? verification : undefined;
       const preview = prior?.preview ? undefined : progressStopPreview(state);
-      return {status: 'failed', text: [outputLimitStopText(outputLimit, {remote: remoteModelRoute() === true}),
+      const stopped = {status: 'failed', text: [outputLimitStopText(outputLimit, {remote: remoteModelRoute() === true}),
         preview && `[Open last published preview](${preview.url})\n\nThis is the last verified publication, not proof that all requested work completed.`,
         prior && ownerOutcomeText(prior)].filter(Boolean).join('\n\n').slice(0, MAX_INGRESS_VERIFICATION_TEXT),
       ...(prior?.preview ? {preview: prior.preview}
         : preview ? {preview: {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', ...preview}} : {})};
+      // A cut before any answer or call whose verification is the exact
+      // missing-current-preview outcome keeps that marker: this replacement
+      // carries the same failure after the limit's text, and the goal
+      // 'output-limit' stop needs it (deliveryVerificationForRun).
+      if (!outputLimit.tool && prior && missingCurrentPreviewOutcomes.has(prior)) missingCurrentPreviewOutcomes.add(stopped);
+      return stopped;
     }
     // Completion assurance arms its terminal before a revision and is not
     // consulted after a stop, so a tool-limit answer is always the newer one.
