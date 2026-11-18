@@ -14,6 +14,7 @@ import os
 import aiohttp
 
 from helpers import get_llama_metrics, get_cached_llama_metrics
+from runtime_profile import RUNTIME_PROFILE
 
 logger = logging.getLogger(__name__)
 
@@ -229,11 +230,16 @@ async def _fetch_runtime_metrics() -> None:
 
 async def collect_metrics():
     """Poll independent sources together on a five-second cadence."""
+    # The cluster refresh starts curl and Token Spy is a Compose service; the
+    # Desktop profile has neither, and runs no child processes.
+    sources = (
+        (cluster_status.refresh, _fetch_token_spy_metrics, _fetch_runtime_metrics)
+        if RUNTIME_PROFILE.child_processes else (_fetch_runtime_metrics,)
+    )
     while True:
         started = asyncio.get_running_loop().time()
         results = await asyncio.gather(
-            cluster_status.refresh(), _fetch_token_spy_metrics(),
-            _fetch_runtime_metrics(), return_exceptions=True,
+            *(source() for source in sources), return_exceptions=True,
         )
         for result in results:
             if isinstance(result, Exception):
