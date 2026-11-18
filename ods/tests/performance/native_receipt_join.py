@@ -319,13 +319,36 @@ class NativeReceiptWitness:
 
     def _capture_before(self):
         root = self._sessions_dir
-        st = os.lstat(root)
+        try:
+            st = os.lstat(root)
+        except FileNotFoundError:
+            if self._allow_existing_session:
+                raise ValueError("bad_sessions_dir") from None
+            return self._capture_missing_root(root)
         if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
             raise ValueError("bad_sessions_dir")
         if hasattr(os, "getuid") and st.st_uid != os.getuid():
             raise ValueError("bad_sessions_dir")
         path = os.path.join(root, "sessions.json")
-        data, snap = _load_sessions(path)
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            if self._allow_existing_session:
+                raise ValueError("before_index_absent") from None
+            # A fresh runtime creates the index on its first request. Do not
+            # manufacture it, or treat a failed read of an existing file as empty.
+            _abs_clean(root)
+            again = os.lstat(root)
+            if (again.st_dev, again.st_ino) != (st.st_dev, st.st_ino):
+                raise ValueError("root_changed")
+            try:
+                os.lstat(path)
+            except FileNotFoundError:
+                data, snap = {}, None
+            else:
+                raise ValueError("prestate_changed")
+        else:
+            data, snap = _load_sessions(path)
         if self._key not in data:
             return {"root": root, "root_dev": st.st_dev,
                     "root_ino": st.st_ino, "sessions_snap": snap,
@@ -372,6 +395,53 @@ class NativeReceiptWitness:
                              "canonical": canonical, "raw": raw,
                              "snap": jsonl_snap}}
 
+    def _capture_missing_root(self, root):
+        missing, anchor = [], root
+        while True:
+            try:
+                st = os.lstat(anchor)
+                break
+            except FileNotFoundError:
+                missing.append(anchor)
+                parent = os.path.dirname(anchor)
+                if parent == anchor:
+                    raise ValueError("bad_sessions_dir") from None
+                anchor = parent
+        _abs_clean(anchor)
+        self._owned_directory(st)
+        if not missing:
+            raise ValueError("prestate_changed")
+        # The nearest existing ancestor binds the initially absent tree. Check
+        # the missing components again so a concurrent creation is not accepted.
+        for path in missing:
+            try:
+                os.lstat(path)
+            except FileNotFoundError:
+                continue
+            raise ValueError("prestate_changed")
+        again = os.lstat(anchor)
+        if (again.st_dev, again.st_ino) != (st.st_dev, st.st_ino):
+            raise ValueError("root_changed")
+        return {"root": root, "root_dev": None, "root_ino": None,
+                "sessions_snap": None, "existing": None,
+                "created_root": {"anchor": anchor, "dev": st.st_dev,
+                                 "ino": st.st_ino, "missing": missing}}
+
+    @staticmethod
+    def _owned_directory(st):
+        if (not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode)
+                or (hasattr(os, "getuid") and st.st_uid != os.getuid())
+                or stat.S_IMODE(st.st_mode) & 0o022):
+            raise ValueError("bad_sessions_dir")
+
+    def _validate_created_root(self, created):
+        st = os.lstat(created["anchor"])
+        self._owned_directory(st)
+        if (st.st_dev, st.st_ino) != (created["dev"], created["ino"]):
+            raise ValueError("root_changed")
+        for path in created["missing"]:
+            self._owned_directory(os.lstat(path))
+
     def finish(self, api_record):
         if self._finished:
             return self._unproven(["already_finished"])
@@ -415,7 +485,13 @@ class NativeReceiptWitness:
             root_st = os.lstat(root)
         except OSError:
             return self._unproven(["root_changed"])
-        if (root_st.st_dev, root_st.st_ino) != (self._before["root_dev"], self._before["root_ino"]):
+        created = self._before.get("created_root")
+        if created is not None:
+            try:
+                self._validate_created_root(created)
+            except (ValueError, OSError):
+                return self._unproven(["root_changed"])
+        elif (root_st.st_dev, root_st.st_ino) != (self._before["root_dev"], self._before["root_ino"]):
             return self._unproven(["root_changed"])
         path = os.path.join(root, "sessions.json")
         try:
