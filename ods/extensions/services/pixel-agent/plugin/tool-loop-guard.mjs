@@ -370,6 +370,9 @@ export const WORKSPACE_VISUAL_CONTINUATION_SCOPE_REASON =
 export const WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX =
   "Portal saved the website files in your workspace but couldn't publish a preview of them, so they haven't been checked and there is no preview to open yet. Ask Portal to publish the preview.";
 
+export const WORKSPACE_PREVIEW_READ_ONLY_DELIVERY_PREFIX =
+  "Portal read existing website files, but hasn't verified new or changed files for this request. There is no preview to open yet. Ask Portal to finish the changes and publish the preview.";
+
 export const WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX =
   "Portal didn't create the website files for this request, so there is no preview to open yet. Ask Portal to try the build again.";
 
@@ -15068,17 +15071,22 @@ export function createToolLoopGuard({
         }
         // Files this response changed by any file tool also count: the stop's
         // list of changed files must not sit beside "didn't create the files".
-        const hasIndexEvidence = state.changedFiles.size > 0 || [
-          ...state.successfulWritePaths,
-          ...state.successfulReadPaths,
-        ].some(
+        const hasSavedOutputEvidence = state.changedFiles.size > 0 || [...state.successfulWritePaths].some(
           (value) => typeof value === "string" && value.endsWith("/index.html")
         );
+        const hasReadEntryEvidence = [...state.successfulReadPaths].some(
+          (value) => typeof value === "string" && value.endsWith("/index.html")
+        );
+        // Reading an old entry does not prove this request saved any files.
+        // Preserve the existing missing-preview recovery marker for either
+        // kind of evidence; only the delivery's factual claim differs.
+        const hasIndexEvidence = hasSavedOutputEvidence || hasReadEntryEvidence;
         const missing = previewOutcome({
           status: "failed",
-          text: hasIndexEvidence
+          text: hasSavedOutputEvidence
             ? WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX
-            : WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX,
+            : hasReadEntryEvidence ? WORKSPACE_PREVIEW_READ_ONLY_DELIVERY_PREFIX
+              : WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX,
         });
         // Saved work with no current or earlier preview: the one cause a goal
         // round's 'unfinished-work' stop names. Marked on this object only;
