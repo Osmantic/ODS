@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "python": {
+    "version": "3.13.16",
+    "file": "python-3.13.16-embed-amd64.zip",
+    "url": "https://www.python.org/ftp/python/3.13.16/python-3.13.16-embed-amd64.zip",
+    "size": 11439094,
+    "sha256": "97dae5274cc54867065e8d5a3226e48c35017ed332a0fdb0e27d5b5821961297",
+    "publishedAt": "2026-09-30T20:42:36Z",
+    "pathFile": "python313._pth",
+    "zipLibrary": "python313.zip"
+  },
+  "pip": {
+    "version": "26.2.1",
+    "file": "pip-26.2.1-py3-none-any.whl",
+    "url": "https://files.pythonhosted.org/packages/f3/6e/1736e5b4ae2b778ef2f81c47d797de9f891d4d8acb047a24ca37a60294dd/pip-26.2.1-py3-none-any.whl",
+    "size": 1816632,
+    "sha256": "71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e",
+    "publishedAt": "2026-08-04T22:51:12Z"
+  },
+  "verification": "python.org embeddable amd64 zip downloaded and hashed 2026-10-23; its python.exe carries a valid Authenticode signature from the Python Software Foundation. pip wheel digest and size from the PyPI JSON API. Both releases were public at least two weeks before pinning (3.13.17 and pip 26.2.2 were newer). This receipt does not assert fleet qualification."
+}
