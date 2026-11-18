@@ -1,0 +1,272 @@
+--- a/tui_gateway/methods_session.py
++++ b/tui_gateway/methods_session.py
+@@ -331,7 +331,7 @@
+     return model_override, reasoning_override, service_tier_override
+ 
+ 
+-def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
++def _create_session(rid, params: dict, *, copy_parent_history: bool = False, manual_key: str | None = None) -> dict:
+     """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
+     transcript server-side and omits it from the reply."""
+     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
+@@ -341,7 +341,7 @@
+     from .methods_session_model_guard import model_override_conflict
+     if conflict := model_override_conflict(params, _profile_build_scope(profile_home)):
+         return _err(rid, -32602, conflict.pop("message"), conflict)
+-    (sid, source), key = _new_runtime_ids(params), _new_session_key()
++    (sid, source), key = _new_runtime_ids(params), manual_key or _new_session_key()
+     history = _coerce_seed_history(params.get("messages"))
+     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
+     parent_session_id = _str_param(params, "parent_session_id") or None
+@@ -386,7 +386,7 @@
+             "pending_hidden": _flag(params, "hidden"), "room_plumbing": _flag(params, "room_plumbing"),
+             "follow_profile_config": _flag(params, "follow_profile_config"),
+             "profile_home": str(profile_home) if profile_home is not None else None,
+-            "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
++            "manual_resume": bool(manual_key), "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
+             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
+             "transport": current_transport() or _stdio_transport,
+             "auth_user_id": _transport_auth_user_id(current_transport())}
+@@ -411,6 +411,19 @@
+         _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
+     elif history:
+         _seed_row(_sessions[sid])
++    if manual_key:
++        # An explicitly created durable conversation is intent even while empty.
++        # Persist before building an agent or reporting success. No seed message.
++        try:
++            if _ensure_session_db_row(_sessions[sid]) is False:
++                raise RuntimeError("session store unavailable")
++            with _session_db(_sessions[sid]) as db:
++                if db is None or db.get_session(key) is None:
++                    raise RuntimeError("durable session row missing")
++        except Exception:
++            with _sessions_lock:
++                _sessions.pop(sid, None)
++            return _err(rid, 5008, "durable conversation could not be persisted")
+     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
+     _schedule_agent_build(sid)
+     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
+@@ -544,7 +557,8 @@
+     """Per-call ``session.resume`` state. ``owns_db``: the DEDICATED profile handle is ours
+     to close (handler ``finally``) until handed to the hydration worker or the agent."""
+ 
+-    def __init__(self, rid, params: dict, target: str) -> None:
++    def __init__(self, rid, params: dict, target: str, *, manual: bool = False) -> None:
++        self.manual = manual
+         self.rid, self.params, self.target = rid, params, target
+         self.db, self.owns_db, self.found, self.profile_resume_cwd = None, False, None, ""
+         self.cols = _int_param(params, "cols", 80)
+@@ -575,6 +589,7 @@
+             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
+             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
+             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
++        record["manual_resume"] = self.manual
+         if follows_profile:
+             record.update(
+                 follow_profile_config=True,
+@@ -749,8 +764,16 @@
+ 
+ def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
+     """Reuse with _session_resume_lock already held (including the eager double-check)."""
++    if ctx.manual and (session.get("_auto_continue_pending") or (
++            session.get("_auto_continue_scheduled") and not session.get("_auto_continue_finished"))):
++        return _err(ctx.rid, 4096, "automatic continuation is pending")
++    if ctx.manual and (session.get("lazy") or session.get("resume_hydrating")
++                       or session.get("resume_history_error") or session.get("agent_error")):
++        return _err(ctx.rid, 4097, "full conversation history is not ready")
+     if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
+         return refusal
++    if ctx.manual:
++        session["manual_resume"] = True
+     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
+     payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
+                                     transport=current_transport() or _stdio_transport)
+@@ -912,16 +935,17 @@
+         auto_continue=_maybe_schedule_auto_continue(sid, session, ctx.target) if session else None)
+ 
+ 
+-@method("session.resume")
+-def _(rid, params: dict) -> dict:
++def _resume_with_policy(rid, params: dict, *, manual: bool = False) -> dict:
+     if not (target := params.get("session_id", "")):
+         return _err(rid, 4006, "session_id required")
+-    ctx = _Resume(rid, params, target)
++    ctx = _Resume(rid, params, target, manual=manual)
+     # Profile scope: a DEDICATED handle we own until the agent takes it; else the shared launch db.
+     ctx.db, ctx.owns_db = _profile_session_db(ctx.profile_home)
+     try:
+         if ctx.db is None:
+             return _db_unavailable_error(rid, code=5000)
++        if manual and ctx.db.get_session(target) is None:
++            return _err(rid, 4007, "stored session not found")
+         if (resp := _resume_locate(ctx)) is not None:
+             return resp
+         _resume_follow_tip(ctx)
+@@ -944,6 +968,58 @@
+         if ctx.owns_db and ctx.db is not None:
+             with contextlib.suppress(Exception):
+                 ctx.db.close()
++
++
++@method("session.resume")
++def _(rid, params: dict) -> dict:
++    return _resume_with_policy(rid, params)
++
++
++@method("session.resume.manual")
++def _(rid, params: dict) -> dict:
++    # Versioned, discoverable by method support; old runtimes cannot silently
++    # ignore a safety option. Only the full synchronous-history path is offered.
++    if any(_flag(params, key) for key in ("lazy", "defer_history", "eager_build", "omit_messages")):
++        return _err(rid, 4004, "manual resume requires full history")
++    result = _resume_with_policy(rid, params, manual=True)
++    if "result" in result:
++        payload = result["result"]
++        payload["session_key"] = (payload.get("session_key") or payload.get("stored_session_id")
++                                  or payload.get("resumed"))
++        result["result"]["resume_contract"] = "manual-v1"
++        result["result"]["automatic_continuation"] = False
++    return result
++
++
++@method("session.create.manual")
++def _(rid, params: dict) -> dict:
++    """Idempotent explicit empty conversation creation under an authenticated owner."""
++    import hashlib
++    import re
++    owner = _transport_auth_user_id(current_transport())
++    if not owner:
++        return _err(rid, 4013, "authenticated conversation creation required")
++    request_key = params.get("request_key")
++    if not isinstance(request_key, str) or not re.fullmatch(r"[a-f0-9]{64}", request_key):
++        return _err(rid, 4004, "request_key must be 64 lowercase hex characters")
++    # Existing profile validation remains authoritative; no default fallback.
++    home = _profile_home(params.get("profile"))
++    scope = str(home or _hermes_home)
++    key = "manual-" + hashlib.sha256((str(owner) + "\0" + scope + "\0" + request_key).encode()).hexdigest()
++    with _session_resume_lock:
++        with _profile_db(params) as db:
++            if db is None:
++                return _err(rid, 5008, "session store unavailable")
++            exists = db.get_session(key) is not None
++        if not exists:
++            created = _create_session(rid, {"profile": params.get("profile")}, manual_key=key)
++            if "error" in created:
++                return created
++    # Resume takes the same nonreentrant lock internally; call it after release.
++    result = _methods["session.resume.manual"](rid, {"session_id": key, "profile": params.get("profile")})
++    if "result" in result:
++        result["result"]["conversation_root"] = key
++    return result
+ 
+ 
+ # ── cwd / workspace / live-session bookkeeping ───────────────────────
+--- a/tui_gateway/session_auto_continue.py
++++ b/tui_gateway/session_auto_continue.py
+@@ -55,12 +55,19 @@
+ 
+ 
+ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> dict | None:
++    # Serialize scheduling against live manual reattach. A hydration worker
++    # must not start replay after that reattach has promised no continuation.
++    with _session_resume_lock:
++        return _maybe_schedule_auto_continue_locked(sid, session, session_key)
++
++
++def _maybe_schedule_auto_continue_locked(sid: str, session: dict, session_key: str) -> dict | None:
+     """Kick off a continuation turn for a crash-interrupted session (session.resume cold paths). Returns a descriptor
+     for the resume payload when scheduled, else None. The turn runs on a background thread after the deferred agent
+     build via _run_prompt_submit, so the client that just resumed streams it."""
+     # Hosted room turns are recovered by their durable task/lease state machine; generic auto-continue would bypass
+     # its execution generation and duplicate work.
+-    if session.get("source") == "bot_room":
++    if session.get("manual_resume") or session.get("source") == "bot_room":
+         return None
+     home = _session_home(session)
+     if (marker := read_turn_marker(home, session_key)) is None:
+@@ -75,9 +82,11 @@
+     if session.get("_auto_continue_scheduled"):
+         return None
+     session["_auto_continue_scheduled"] = True
++    session["_auto_continue_pending"] = True
++    session["_auto_continue_finished"] = False
+     attempt, text = marker["attempts"] + 1, _auto_continue_note(marker["prompt"])
+ 
+-    def kickoff() -> None:
++    def _kickoff() -> None:
+         rid = f"__auto_continue__{int(time.time() * 1000)}"
+         try:
+             _start_agent_build(sid, session)
+@@ -121,7 +130,18 @@
+         except Exception as exc:
+             _notif_log_failure("auto-continue dispatch failed", exc)
+             _notif_release_turn(session)  # rebound from session_notifications
++    def kickoff() -> None:
++        try:
++            _kickoff()
++        finally:
++            # Publish completion last via pending=False. Admission remains
++            # locked, but a completion callback must also work inline: taking
++            # the nonreentrant scheduling lock here can deadlock its caller.
++            session["_auto_continue_finished"] = True
++            session["_auto_continue_pending"] = False
+     if _start_session_work(kickoff, name=f"auto-continue-{sid}") is None:
++        session["_auto_continue_pending"] = False
++        session["_auto_continue_finished"] = True
+         session["_auto_continue_scheduled"] = False
+         return None
+     logger.info("auto-continue scheduled for session %s (attempt %d, interrupted %.0fs ago)", session_key, attempt, age)
+--- a/tui_gateway/server.py
++++ b/tui_gateway/server.py
+@@ -171,7 +171,7 @@
+     "projects.record_repos", "projects.for_cwd", "projects.tree", "projects.project_sessions",
+     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
+     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
+-    "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
++    "session.resume", "session.resume.manual", "session.create.manual", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
+     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
+ })
+ 
+--- a/tui_gateway/contracts/sessions.py
++++ b/tui_gateway/contracts/sessions.py
+@@ -6,6 +6,7 @@
+ from __future__ import annotations
+ 
+ from pydantic import Field
++from typing import Literal
+ 
+ from .base import JsonValue, Params, Result, WireEnum
+ from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
+@@ -188,6 +189,31 @@
+        doc="Attach to a stored session: reuse it if live here, else lazy / deferred / cold / eager rebuild.")
+ 
+ 
++class SessionManualResumeParams(SessionResumeParams):
++    """Exact stored ID only; alternate history modes are refused."""
++
++
++class SessionManualResumeResult(LiveSessionSnapshot):
++    resume_contract: Literal["manual-v1"]
++    automatic_continuation: Literal[False]
++
++
++method("session.resume.manual", params=SessionManualResumeParams, result=SessionManualResumeResult,
++       doc="Restore full stored conversation without starting an interrupted turn.")
++
++
++class SessionManualCreateParams(ProfileParams):
++    request_key: str = Field(pattern=r"^[a-f0-9]{64}$")
++
++
++class SessionManualCreateResult(SessionManualResumeResult):
++    conversation_root: str
++
++
++method("session.create.manual", params=SessionManualCreateParams, result=SessionManualCreateResult,
++       doc="Idempotent authenticated explicit empty conversation; persists before success; no continuation.")
++
++
+ class SessionActivateParams(SessionParams):
+     cols: int | None = None  # sent by the desktop; the handler keeps the session's current width
+     omit_messages: bool = False

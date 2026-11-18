@@ -1,0 +1,2 @@
+# Unified-diff blank context lines intentionally contain a single space.
+manual-resume.patch -whitespace
