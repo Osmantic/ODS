@@ -12623,6 +12623,12 @@ export function createToolLoopGuard({
         !runningExecSessionId(completed);
       if (terminal) state.previewRevalidationCompletedGeneration = state.previewVerificationGeneration;
       else state.previewRevalidationCandidate = undefined;
+      // Coaching only (conditionalCommandInstruction): the settling call was a
+      // foreground exec that exited 0. workspaceRevalidationCandidate admits any
+      // such command, including one that writes files: this is not evidence of
+      // a read-only check, and it never restores currency.
+      state.previewRevalidationCommandGeneration = terminal && selectedName === 'exec' &&
+        completed.result.details.exitCode === 0 ? state.previewVerificationGeneration : undefined;
     }
     // A command that exited non-zero may also have changed published files.
     if (state.workspacePreview && (successfulMutation ||
@@ -14273,6 +14279,8 @@ export function createToolLoopGuard({
       if (state?.workspacePreviewVerifiedDirectory && !state.workspacePreview &&
           state.workspacePreviewRequired && !state.workspacePreviewForbidden &&
           !state.operationsRequired && !state.exactDownloadRequested) {
+        const settledCommand = conditionalCommandInstruction(state, runId);
+        if (settledCommand) return settledCommand;
         return "[ODS Pixel next step] Files or checks changed after the earlier publication. " +
           "Finish any remaining requested edits and checks, then call tool_call with id " +
           WORKSPACE_PREVIEW_TOOL + " and args " +
@@ -14519,6 +14527,40 @@ export function createToolLoopGuard({
       afterToolCall({toolName: WORKSPACE_PREVIEW_TOOL, toolCallId: callId, params, result}, ctx, agentId);
       return Boolean(state.workspacePreview);
     } finally { pendingToolRuns.delete(callId); }
+  }
+
+  // After the owner's conditional publication, a settled foreground exec that
+  // exited 0 (an eligible pending host comparison, preview-revalidation.mjs)
+  // gets neutral guidance instead of an unconditional republication demand.
+  // Eligibility admits any such command, including a shell write: completion
+  // shows neither changed nor unchanged bytes, so a real edit made after the
+  // publication stays actionable, and only a successful trusted comparison
+  // (which may be unavailable or refused) restores the earlier snapshot. Core
+  // writes, failed, unsettled or later effects, cancellation,
+  // another identity and unconditioned runs keep the existing coaching.
+  function conditionalCommandInstruction(state, runId) {
+    const condition = state?.workspaceRepublicationCondition, origin = state?.workspaceRepublicationBinding;
+    const prior = state?.workspaceRepublicationPrior, candidate = state?.previewRevalidationCandidate;
+    const generation = state?.previewVerificationGeneration, directory = condition?.relativeDirectory;
+    if (!condition || !origin || !prior || !candidate || state.workspacePreview || state.clientCancelled ||
+        state.artifactIdentityConflict || state.workspacePreviewVerifiedDirectory !== directory ||
+        prior.relativeDirectory !== directory || candidate.preview.relativeDirectory !== directory ||
+        candidate.preview.siteId !== prior.siteId || candidate.preview.sha256 !== prior.sha256 ||
+        state.previewRevalidationCompletedGeneration !== generation ||
+        state.previewRevalidationCommandGeneration !== generation || state.pendingExecSessions?.size ||
+        candidate.sessionId !== origin.sessionId || state.currentSessionId !== origin.sessionId ||
+        candidate.sessionKey !== state.currentSessionKey ||
+        (origin.sessionKey !== undefined && origin.sessionKey !== state.currentSessionKey) ||
+        sessionRuns.get(origin.sessionId) !== runId) return undefined;
+    return "[ODS Pixel next step] That foreground command completed. Completion alone shows neither that " +
+      `files in ${directory} changed nor that they are unchanged. The owner asked not to republish ` +
+      `${directory}/${condition.entryFile} if it did not change. If this command or a later owner-requested ` +
+      `edit changed files in ${directory} after the earlier publication, finish any remaining requested edits ` +
+      `and then call tool_call with id ${WORKSPACE_PREVIEW_TOOL} and args ` +
+      `${JSON.stringify({relativeDirectory: directory})}; otherwise do not republish only because a command ` +
+      "ran, and do not repeat a command that already completed. Only a successful trusted ODS comparison " +
+      "with the earlier verified publication can establish that the earlier snapshot is still current; " +
+      "do not claim it is current.";
   }
 
   async function revalidateWorkspacePreview(event, context, agentId = 'pixel') {

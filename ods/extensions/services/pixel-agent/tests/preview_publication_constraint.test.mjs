@@ -160,8 +160,10 @@ function chain(prompt = PROMPT, {directory = DIR, guardOptions = {}, identity = 
     const actual = prepared?.params ?? params;
     const outcome = typeof result === 'function' ? await result(id, actual) : result;
     guard.afterToolCall({toolName: name, params: actual, result: outcome, toolCallId: id}, ctx);
-    guard.toolResultPersist({toolName: name, toolCallId: id, message: {role: 'toolResult', toolName: name, toolCallId: id, ...outcome}}, ctx);
-    return {result: outcome};
+    // The tool message the model actually receives (the persisted result).
+    const persisted = guard.toolResultPersist({toolName: name, toolCallId: id,
+      message: {role: 'toolResult', toolName: name, toolCallId: id, ...outcome}}, ctx)?.message;
+    return {result: outcome, persisted};
   };
   const write = (path, content) => { files.set(path, content); return invoke('write', {path, content}, written); };
   const publish = (params = {relativeDirectory: directory}) => invoke('pixel_ods_workspace_preview', params,
@@ -486,4 +488,180 @@ test('an ordinary run without the owner condition keeps its behaviour under the 
   assert.equal(first.blocked, undefined, first.blocked);
   assert.equal(run.log.requests.length, 1);
   assert.ok(run.log.requests.every(request => !Object.hasOwn(request, 'ifEntryUnchanged')));
+});
+
+// ---- Coaching after a settled command in the owner's conditional run (native 6efc2d3c) ----
+// Native: after the owner's post-publication sha256sum, the host demanded an
+// unconditional republication. Eligibility (workspaceRevalidationCandidate)
+// admits any settled foreground exec, including a shell write, so guidance must
+// be neutral: completion proves neither changed nor unchanged bytes, a real edit
+// stays actionable, and only the trusted comparison restores currency.
+const STALE_REPUBLISH = /Files or checks changed after the earlier publication/;
+const NEUTRAL = /That foreground command completed\. Completion alone shows neither that files in demo-site changed nor that they are unchanged\./;
+const PUBLISH_IF_CHANGED = 'If this command or a later owner-requested edit changed files in demo-site after the earlier publication, finish any remaining requested edits and then call tool_call with id pixel_ods_workspace_preview and args {"relativeDirectory":"demo-site"}; otherwise do not republish only because a command ran, and do not repeat a command that already completed.';
+const textOf = persisted => (persisted?.content ?? []).filter(block => block?.type === 'text').map(block => block.text).join('\n');
+const readResult = {content: [{type: 'text', text: '<!doctype html><h1>Repaired</h1>'}], details: {status: 'completed'}};
+const comparingVerifier = runRef => async preview => snapshotOf(DIR, runRef.run.files).sha256 === preview.sha256;
+
+function assertNeutral(note) {
+  assert.doesNotMatch(note, STALE_REPUBLISH, 'no unconditional republication demand');
+  assert.match(note, NEUTRAL);
+  assert.ok(note.includes(PUBLISH_IF_CHANGED), 'a real edit after the publication stays actionable with exact args');
+  assert.match(note, /The owner asked not to republish demo-site\/index\.html if it did not change\./);
+  assert.match(note, /Only a successful trusted ODS comparison with the earlier verified publication can establish that the earlier snapshot is still current; do not claim it is current\./);
+  assert.doesNotMatch(note, /Before your final answer|ODS compares|will compare/, 'no promise that a comparison runs or passes');
+  assert.doesNotMatch(note, /read-only|this check/i, 'never calls an arbitrary command a read-only check');
+}
+
+test("after the owner's post-publication hash check, coaching is neutral instead of demanding republication", async () => {
+  const run = chain();
+  await run.write(`${DIR}/index.html`, '<!doctype html><h1>Repaired</h1>');
+  await run.publish();
+  const check = await run.hashCheck();
+  assertNeutral(textOf(check.persisted));
+  // Coaching restores nothing: the earlier snapshot is not current until compared.
+  assert.notEqual(run.status(), 'passed');
+  assert.equal(run.log.requests.length, 1);
+  const read = await run.invoke('read', {path: `${DIR}/index.html`}, readResult);
+  assert.doesNotMatch(textOf(read.persisted), STALE_REPUBLISH);
+});
+
+test('the same settled command through a Tool Search exec gets the same neutral coaching', async () => {
+  const run = chain();
+  await run.write(`${DIR}/index.html`, '<!doctype html><h1>Repaired</h1>');
+  await run.publish();
+  const args = {command: `sha256sum ${DIR}/index.html`};
+  const check = await run.invoke('tool_call', {id: 'openclaw:core:exec', args}, {
+    content: [{type: 'text', text: 'checked'}],
+    details: {tool: {id: 'openclaw:core:exec', source: 'openclaw', sourceName: 'core', name: 'exec'},
+      result: {content: [{type: 'text', text: 'checked'}], details: {status: 'completed', exitCode: 0}}},
+  });
+  assert.equal(check.blocked, undefined, check.blocked);
+  assert.notEqual(run.status(), 'passed');
+  assertNeutral(textOf(check.persisted));
+});
+
+for (const [name, verified, expected] of [['succeeds', true, 'passed'], ['fails', false, undefined]]) {
+  test(`after the neutral coaching, currency returns only if the trusted comparison ${name}`, async () => {
+    const calls = [];
+    const run = chain(PROMPT, {guardOptions: {verifyWorkspacePreview: async preview => { calls.push(preview.siteId); return verified; }}});
+    await run.write(`${DIR}/index.html`, '<!doctype html><h1>Repaired</h1>');
+    await run.publish();
+    const prior = run.state().priorSiteId;
+    assertNeutral(textOf((await run.hashCheck()).persisted));
+    assert.notEqual(run.status(), 'passed');
+    const restored = await run.guard.revalidateWorkspacePreview({}, run.context);
+    assert.deepEqual(calls, [prior], 'exactly one trusted comparison of the prior snapshot');
+    assert.equal(restored, verified);
+    if (expected) assert.equal(run.status(), expected);
+    else assert.notEqual(run.status(), 'passed');
+    assert.equal(run.log.requests.length, 1, 'no publication by coaching or comparison');
+  });
+}
+
+// Root control: a successful foreground exec that really writes the entry is
+// eligible exactly like the hash check. It must get the same neutral guidance,
+// which keeps the real edit publishable and never calls it a check.
+const SHELL_EDIT = `sed -i 's/Repaired/Changed by shell/' ${DIR}/index.html`;
+const shellEdit = run => {
+  run.files.set(`${DIR}/index.html`, '<!doctype html><h1>Changed by shell</h1>');
+  return run.invoke('exec', {command: SHELL_EDIT}, {content: [{type: 'text', text: ''}], details: {status: 'completed', exitCode: 0}});
+};
+
+test('a successful shell write of the entry gets the neutral guidance and its publication stays actionable', async () => {
+  const run = chain();
+  await run.write(`${DIR}/index.html`, '<!doctype html><h1>Repaired</h1>');
+  await run.publish();
+  const edit = await shellEdit(run);
+  assert.equal(edit.blocked, undefined, edit.blocked);
+  const note = textOf(edit.persisted);
+  assertNeutral(note);
+  assert.doesNotMatch(note, /do not call pixel_ods_workspace_preview/);
+  assert.notEqual(run.status(), 'passed');
+  // Following the guidance: the publication carries the owner's condition and
+  // the host publishes the changed entry as a new snapshot.
+  const published = await run.publish();
+  assert.equal(published.blocked, undefined, published.blocked);
+  assert.ok(run.log.requests[1].ifEntryUnchanged, 'conditional request');
+  assert.equal(published.result.details.conditionalPublication, 'published');
+  assert.equal(run.log.created.length, 2);
+  assert.equal(run.status(), 'passed');
+  assert.equal(run.state().priorEntrySha256, snapshotOf(DIR, run.files).entrySha256);
+});
+
+test('after an unpublished shell write, the trusted comparison fails and finalize recovery publishes the change', async () => {
+  const ref = {};
+  const run = ref.run = chain(PROMPT, {guardOptions: {verifyWorkspacePreview: comparingVerifier(ref)}});
+  await run.write(`${DIR}/index.html`, '<!doctype html><h1>Repaired</h1>');
+  await run.publish();
+  assertNeutral(textOf((await shellEdit(run)).persisted));
+  assert.equal(await run.guard.revalidateWorkspacePreview({}, run.context), false, 'changed bytes never compare as current');
+  assert.notEqual(run.status(), 'passed');
+  assert.equal(await run.guard.recoverWorkspacePreview({}, run.context), true);
+  assert.ok(run.log.requests[1].ifEntryUnchanged);
+  assert.equal(run.log.created.length, 2, 'the changed entry is published, not reused');
+  assert.equal(run.status(), 'passed');
+});
+
+test('after an unchanged hash check, the same comparison restores the earlier snapshot without publishing', async () => {
+  const ref = {};
+  const run = ref.run = chain(PROMPT, {guardOptions: {verifyWorkspacePreview: comparingVerifier(ref)}});
+  await run.write(`${DIR}/index.html`, '<!doctype html><h1>Repaired</h1>');
+  await run.publish();
+  assertNeutral(textOf((await run.hashCheck()).persisted));
+  assert.equal(await run.guard.revalidateWorkspacePreview({}, run.context), true);
+  assert.equal(run.status(), 'passed');
+  assert.equal(run.log.requests.length, 1);
+});
+
+const failedCheck = {content: [{type: 'text', text: 'sha256sum: missing'}], isError: true,
+  details: {status: 'completed', exitCode: 1}};
+const runningCheck = {content: [{type: 'text', text: 'running'}], details: {status: 'running', sessionId: 'exec-session-1'}};
+for (const [name, act, observed] of [
+  ['an actual core write after publication', run => run.write(`${DIR}/index.html`, '<!doctype html><h1>Changed</h1>'), 'stale'],
+  ['a failed command, then a read', async run => {
+    await run.invoke('exec', {command: `sha256sum ${DIR}/index.html`}, failedCheck);
+    return run.invoke('read', {path: `${DIR}/index.html`}, readResult);
+  }, 'stale'],
+  ['a command still running, then a read', async run => {
+    await run.invoke('exec', {command: `sha256sum ${DIR}/index.html`}, runningCheck);
+    return run.invoke('read', {path: `${DIR}/index.html`}, readResult);
+  }, 'executed'],
+  ['a foreign session key observed before the command', run => {
+    run.guard.observeRun({...run.context, sessionKey: OTHER_KEY}, 'pixel');
+    return run.hashCheck();
+  }, 'executed'],
+  ['an owner cancellation before the command', async run => {
+    assert.equal(await run.guard.abortUserRun(run.user), true);
+    return run.hashCheck();
+  }, 'blocked'],
+]) test(`the neutral conditional coaching is not given after ${name}`, async () => {
+  const run = chain();
+  await run.write(`${DIR}/index.html`, '<!doctype html><h1>Repaired</h1>');
+  await run.publish();
+  const last = await act(run);
+  if (observed === 'blocked') assert.ok(last.blocked, name);
+  else assert.equal(last.blocked, undefined, name);
+  if (observed === 'stale') assert.match(textOf(last.persisted), STALE_REPUBLISH, name);
+  assert.doesNotMatch(textOf(last?.persisted), NEUTRAL, name);
+  assert.equal(run.log.requests.length, 1, name);
+});
+
+test('a real core write after the neutral coaching switches back to the existing republication coaching', async () => {
+  const run = chain();
+  await run.write(`${DIR}/index.html`, '<!doctype html><h1>Repaired</h1>');
+  await run.publish();
+  assertNeutral(textOf((await run.hashCheck()).persisted));
+  const write = await run.write(`${DIR}/index.html`, '<!doctype html><h1>Changed</h1>');
+  assert.match(textOf(write.persisted), STALE_REPUBLISH);
+  assert.doesNotMatch(textOf(write.persisted), NEUTRAL);
+});
+
+test('an ordinary run without the owner condition keeps the existing coaching after the same command', async () => {
+  const run = chain(`Build and publish a website in existing ${DIR}. Edit ${DIR}/index.html. Publish ${DIR} with the existing workspace preview tool.`);
+  await run.write(`${DIR}/index.html`, '<!doctype html><h1>Repaired</h1>');
+  await run.publish();
+  const check = await run.hashCheck();
+  assert.match(textOf(check.persisted), STALE_REPUBLISH);
+  assert.doesNotMatch(textOf(check.persisted), NEUTRAL);
 });
