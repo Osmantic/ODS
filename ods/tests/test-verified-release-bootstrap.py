@@ -90,6 +90,11 @@ def harness(tmp_path):
         shell = shutil.which('powershell.exe')
         if not shell:
             pytest.skip('Windows PowerShell 5.1 is required')
+        # A pwsh parent can export its Core-only module directories. Let the
+        # Windows PowerShell child construct its own normal module search path.
+        for key in list(env):
+            if key.casefold() == 'psmodulepath':
+                del env[key]
         wrapper = root / 'run-test.ps1'
         wrapper.write_text('''
 $ErrorActionPreference = 'Stop'
