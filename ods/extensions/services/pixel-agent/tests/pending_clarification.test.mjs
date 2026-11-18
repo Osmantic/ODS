@@ -684,6 +684,8 @@ async function loadPlugin(sessions, home, sdkOverrides = {}) {
   fs.mkdirSync(path.join(home, '.openclaw'), {recursive: true, mode: 0o700});
   process.env.HOME = home;
   process.env.USERPROFILE = home;
+  // No integrations service answers this instance, whatever runs on the test machine.
+  process.env.ODS_PIXEL_INTEGRATIONS_SOCKET = path.join(home, 'no-integrations.sock');
   const entry = new URL('../plugin/index.js', import.meta.url);
   const source = fs.readFileSync(entry, 'utf8').replace(/from\s+(['"])([^'"]+)\1/g, (match, _quote, specifier) =>
     specifier.startsWith('.') ? `from ${JSON.stringify(new URL(specifier, entry).href)}` : match);
