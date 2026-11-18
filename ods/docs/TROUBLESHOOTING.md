@@ -166,12 +166,12 @@ connection settings. See the [Open WebUI service guide](../extensions/services/o
 
 2. Change port in `.env`:
    ```bash
-   WEBUI_PORT=3001
+   WEBUI_PORT=3003
    ```
 
 3. Restart:
    ```bash
-   docker compose down && docker compose up -d
+   docker compose -f docker-compose.base.yml -f docker-compose.nvidia.yml down && docker compose -f docker-compose.base.yml -f docker-compose.nvidia.yml up -d
    ```
 
 ---
