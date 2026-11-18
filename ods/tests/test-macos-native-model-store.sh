@@ -229,14 +229,21 @@ PY
 echo "[PASS] idle unloading is opt-in and capability-checked before stopping inference"
 
 # Exercise the installer argument/lifecycle block too, with the same real helper.
-INSTALL_LAUNCH="$(awk '/^        # Read reasoning mode from .env/ {p=1} /^        # Wait for health endpoint/ {p=0} p' "$ROOT_DIR/installers/macos/install-macos.sh")"
+# Include the complete deferred function, then invoke it after preparation.
+# The existing lifecycle/health stubs keep this on the fixture runtime.
+INSTALL_LAUNCH="$(awk '
+    /^        # Read reasoning mode from .env/ {p=1}
+    /^        _macos_start_prepared_native_llama\(\) \{/ {deferred=1}
+    p {print}
+    deferred && /^        }$/ {exit}
+' "$ROOT_DIR/installers/macos/install-macos.sh")"
 [[ -n "$INSTALL_LAUNCH" ]] || fail "installer launch block not found"
 MODEL_FULL_PATH="$INSTALL_DIR/data/models/default.gguf"
 MAX_CONTEXT=65536
 _macos_stop_install_owned_native_llama() { printf 'stop\n' >> "$CALLS"; }
 MACOS_NATIVE_PROFILE=false
 : > "$CALLS"
-(eval "$INSTALL_LAUNCH") || fail "installer rejected supported checkpoint runtime"
+(eval "$INSTALL_LAUNCH"; _macos_start_prepared_native_llama) || fail "installer rejected supported checkpoint runtime"
 [[ "$(cat "$CALLS")" == $'stop\nstart' ]] || fail "installer replacement order changed"
 python3 - "$ARGV" <<'PY'
 import sys
@@ -248,7 +255,7 @@ PY
 cp "$LLAMA_SERVER_BIN" "$TMP_DIR/checkpoint-runtime"
 printf '#!/bin/sh\nexit 0\n' > "$LLAMA_SERVER_BIN"
 : > "$CALLS"
-if (eval "$INSTALL_LAUNCH") >/dev/null 2>&1; then fail "installer accepted unsupported checkpoint runtime"; fi
+if (eval "$INSTALL_LAUNCH"; _macos_start_prepared_native_llama) >/dev/null 2>&1; then fail "installer accepted unsupported checkpoint runtime"; fi
 [[ ! -s "$CALLS" ]] || fail "installer stopped model before cache validation"
 cp "$TMP_DIR/checkpoint-runtime" "$LLAMA_SERVER_BIN"
 echo "[PASS] installer launch uses validated cache arguments and preserves live model on rejection"
@@ -269,7 +276,7 @@ assert args.count("--checkpoint-min-step") == 1
 assert args[args.index("--checkpoint-min-step") + 1] == "1024"
 PY
 : > "$CALLS"
-(eval "$INSTALL_LAUNCH") || fail "installer rejected modern spacing runtime"
+(eval "$INSTALL_LAUNCH"; _macos_start_prepared_native_llama) || fail "installer rejected modern spacing runtime"
 [[ "$(cat "$CALLS")" == $'stop\nstart' ]] || fail "modern installer replacement order changed"
 cp "$TMP_DIR/legacy-cache.env" "$INSTALL_DIR/.env"
 cp "$TMP_DIR/checkpoint-runtime" "$LLAMA_SERVER_BIN"

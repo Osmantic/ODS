@@ -415,7 +415,10 @@ macos_resolve_checkpoint_args "$INSTALL" "$RUNTIME" none
 
     def test_installer_launch(self):
         source = (ROOT / "installers/macos/install-macos.sh").read_text(encoding="utf-8")
-        block = section(source, "        # Read reasoning mode from .env", "        # Wait for health endpoint")
+        start = source.index("        # Read reasoning mode from .env")
+        deferred = source.index("        _macos_start_prepared_native_llama() {", start)
+        end = source.index("\n        }\n", deferred) + len("\n        }\n")
+        block = source[start:end]
         script = (
             "set -euo pipefail\n"
             'INSTALL_DIR="$INSTALL"; LLAMA_SERVER_BIN="$RUNTIME"; LLAMA_SERVER_PID_FILE="$INSTALL/data/llama.pid"\n'
@@ -423,7 +426,7 @@ macos_resolve_checkpoint_args "$INSTALL" "$RUNTIME" none
             'source "$ROOT/installers/macos/lib/native-model.sh"\n'
             + self.STUBS +
             "_macos_stop_install_owned_native_llama() { :; }\n"
-            + block
+            + block + "\n_macos_start_prepared_native_llama\n"
         )
         for release in ("b8210", "b9014"):
             with self.subTest(release=release):
