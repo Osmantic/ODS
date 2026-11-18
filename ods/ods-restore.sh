@@ -161,9 +161,10 @@ list_backups() {
         if [[ -f "$backup" ]]; then
             # Compressed backup
             size=$(du -sh "$backup" 2>/dev/null | cut -f1)
-            # Try to read manifest from tar
-            if tar -tzf "$backup" 2>/dev/null | grep -q "manifest.json"; then
-                manifest=$(tar -xzf "$backup" -O */manifest.json 2>/dev/null || echo "")
+            # Read the exact member written by ods-backup.sh. A wildcard can
+            # expand against the caller's cwd, and a tar-list/grep -q probe
+            # fails under pipefail when a large listing hits a closed pipe.
+            if manifest=$(tar -xzf "$backup" -O "$id/manifest.json" 2>/dev/null); then
                 if [[ -n "$manifest" ]]; then
                     backup_type=$(echo "$manifest" | grep -o '"backup_type": "[^"]*"' | cut -d'"' -f4 || echo "unknown")
                     description=$(echo "$manifest" | grep -o '"description": "[^"]*"' | cut -d'"' -f4 || echo "")

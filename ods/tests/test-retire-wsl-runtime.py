@@ -1,8 +1,12 @@
 """Windows retirement uses mocked controllers and disposable files only."""
 
+import contextlib
 import importlib.util
+import io
+import json
 from pathlib import Path
 import stat
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -230,6 +234,91 @@ class RetirementTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'changed'):
                 helper.retire(self.root, validate_only=True)
         self.disable_startup.assert_not_called()
+
+    def test_optional_shortcut_failures_preserve_successful_retirement(self):
+        failures = [{'path': r'C:\Users\me\Desktop\ODS.lnk',
+                     'error': 'The process cannot access the file because it is being used by another process.',
+                     'hresult': '0x80070020'}]
+        self.disable_startup.side_effect = [
+            {'state': 'validated'},
+            {'state': 'disabled', 'shortcutCleanupFailures': failures},
+        ]
+        with contextlib.redirect_stderr(io.StringIO()):
+            result = helper.retire(self.root)
+        self.assertEqual(result['state'], 'retired')
+        self.assertEqual(result['startup'], 'disabled')
+        self.assertEqual(result['shortcutCleanupFailures'], failures)
+        self.stop.assert_called_once_with(self.root, ENV, 'a' * 64)
+        self.assertEqual(self.disable_startup.call_count, 2)
+
+    def test_shortcut_failure_warning_goes_to_stderr_and_stdout_stays_json(self):
+        failures = [{'path': r'C:\Users\me\Desktop\ODS.lnk', 'error': 'denied', 'hresult': '0x80070005'}]
+        self.disable_startup.side_effect = [
+            {'state': 'validated'},
+            {'state': 'disabled', 'shortcutCleanupFailures': failures},
+        ]
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = ['retire-wsl-runtime.py', '--install-dir', str(self.root)]
+        with patch.object(sys, 'argv', argv), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = helper.main()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.stop.call_count, 1)
+        self.assertEqual(self.disable_startup.call_count, 2)
+        parsed = json.loads(stdout.getvalue())
+        self.assertEqual(parsed['state'], 'retired')
+        self.assertEqual(parsed['startup'], 'disabled')
+        self.assertEqual(parsed['shortcutCleanupFailures'], failures)
+        self.assertIn('Warning: ODS shortcut cleanup was incomplete.', stderr.getvalue())
+        self.assertIn('The shortcut ownership record has been retained.', stderr.getvalue())
+        self.assertNotIn('Warning', stdout.getvalue())
+
+    def test_successful_retirement_without_shortcut_failures_is_quiet(self):
+        self.disable_startup.side_effect = [
+            {'state': 'validated'},
+            {'state': 'disabled'},
+        ]
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = ['retire-wsl-runtime.py', '--install-dir', str(self.root)]
+        with patch.object(sys, 'argv', argv), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = helper.main()
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr.getvalue(), '')
+        parsed = json.loads(stdout.getvalue())
+        self.assertEqual(parsed, {'state': 'retired', 'startup': 'disabled'})
+        self.assertNotIn('shortcutCleanupFailures', parsed)
+
+    def test_validate_only_neither_warns_nor_mutates_on_shortcut_failures(self):
+        self.disable_startup.side_effect = [
+            {'state': 'validated', 'shortcutCleanupFailures': [{'path': 'x', 'error': 'y', 'hresult': '0x1'}]},
+        ]
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = ['retire-wsl-runtime.py', '--install-dir', str(self.root), '--validate-only']
+        with patch.object(sys, 'argv', argv), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = helper.main()
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr.getvalue(), '')
+        self.assertEqual(json.loads(stdout.getvalue()), {'state': 'validated', 'startup': 'validated'})
+        self.stop.assert_not_called()
+        self.disable_startup.assert_called_once_with(self.root, ENV, validate_only=True, retire_relay=True)
+
+    def test_genuine_disable_startup_failure_remains_an_error(self):
+        self.disable_startup.side_effect = [
+            {'state': 'validated'},
+            OSError('startup is still active'),
+        ]
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        argv = ['retire-wsl-runtime.py', '--install-dir', str(self.root)]
+        with patch.object(sys, 'argv', argv), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = helper.main()
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertIn('Windows startup retirement failed', stderr.getvalue())
+        self.assertIn('startup is still active', stderr.getvalue())
+        self.stop.assert_not_called()
 
 
 class OwnerTests(unittest.TestCase):

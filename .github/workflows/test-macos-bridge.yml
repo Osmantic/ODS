@@ -21,6 +21,7 @@ on:
       - 'ods/tests/test_pixel_workspace_guidance.py'
       - 'ods/tests/test_pixel_example_projects.py'
       - 'ods/tests/test_macos_pixel_native_install.py'
+      - 'ods/tests/test_macos_native_start_order.py'
       - 'ods/tests/test_macos_pixel_native_uninstall.py'
       - 'ods/tests/test_macos_pixel_ops_account.py'
       - 'ods/tests/test-macos-uninstall-launchagents.sh'
@@ -30,6 +31,7 @@ on:
       - 'ods/tests/test_macos_pixel_controller_repair.py'
       - 'ods/tests/test_macos_pixel_controller_held_proof.py'
       - 'ods/tests/test_macos_pixel_native_finalize.py'
+      - 'ods/tests/test_macos_pixel_native_stack.py'
       - 'ods/tests/test_macos_pixel_ingress*'
       - 'ods/tests/test_macos_pixel_config_volume.py'
       - 'ods/tests/native_config_volume_fixture.py'
@@ -39,6 +41,8 @@ on:
       - 'ods/tests/test_macos_pixel_native_recover.py'
       - 'ods/tests/test_macos_operations_readiness.py'
       - 'ods/tests/test_macos_pixel_access_install.py'
+      - 'ods/tests/test_macos_pixel_initial_recovery.py'
+      - 'ods/tests/test_macos_pixel_native_activate.py'
       - 'ods/tests/test_macos_pixel_runtime_upgrade.py'
       - 'ods/tests/test_pixel_startup_reproof.py'
       - 'ods/tests/test_macos_memory_budget.py'
@@ -77,6 +81,7 @@ on:
       - 'ods/tests/test_pixel_workspace_guidance.py'
       - 'ods/tests/test_pixel_example_projects.py'
       - 'ods/tests/test_macos_pixel_native_install.py'
+      - 'ods/tests/test_macos_native_start_order.py'
       - 'ods/tests/test_macos_pixel_native_uninstall.py'
       - 'ods/tests/test_macos_pixel_ops_account.py'
       - 'ods/tests/test-macos-uninstall-launchagents.sh'
@@ -86,6 +91,7 @@ on:
       - 'ods/tests/test_macos_pixel_controller_repair.py'
       - 'ods/tests/test_macos_pixel_controller_held_proof.py'
       - 'ods/tests/test_macos_pixel_native_finalize.py'
+      - 'ods/tests/test_macos_pixel_native_stack.py'
       - 'ods/tests/test_macos_pixel_ingress*'
       - 'ods/tests/test-macos-cli-saved-python.sh'
       - 'ods/tests/test_macos_pixel_config_volume.py'
@@ -95,6 +101,8 @@ on:
       - 'ods/tests/test_macos_pixel_native_recover.py'
       - 'ods/tests/test_macos_operations_readiness.py'
       - 'ods/tests/test_macos_pixel_access_install.py'
+      - 'ods/tests/test_macos_pixel_initial_recovery.py'
+      - 'ods/tests/test_macos_pixel_native_activate.py'
       - 'ods/tests/test_macos_pixel_runtime_upgrade.py'
       - 'ods/tests/test_pixel_startup_reproof.py'
       - 'ods/tests/test_macos_memory_budget.py'
@@ -120,7 +128,7 @@ jobs:
   socket-contracts:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -185,6 +193,7 @@ jobs:
         run: >-
           python -m pytest -q
           ods/tests/test_macos_pixel_native_install.py
+          ods/tests/test_macos_native_start_order.py
           ods/tests/test_macos_pixel_native_uninstall.py
           ods/tests/test_macos_pixel_ops_account.py
           ods/tests/test_macos_pixel_native_update.py
@@ -194,9 +203,12 @@ jobs:
           ods/tests/test_macos_pixel_controller_repair.py
           ods/tests/test_macos_pixel_controller_held_proof.py
           ods/tests/test_macos_pixel_native_finalize.py
+          ods/tests/test_macos_pixel_native_stack.py
           ods/tests/test_macos_pixel_native_recover.py
           ods/tests/test_macos_operations_readiness.py
           ods/tests/test_macos_pixel_access_install.py
+          ods/tests/test_macos_pixel_initial_recovery.py
+          ods/tests/test_macos_pixel_native_activate.py
           ods/tests/test_macos_pixel_runtime_upgrade.py
           ods/tests/test_pixel_startup_reproof.py
           ods/tests/test_macos_memory_budget.py

@@ -36,7 +36,10 @@ function New-ODSWindowsServicePlan {
         [bool]$EnablePrivacyShield,
         [bool]$EnableBraveSearch = $false,
         [bool]$EnableODSProxy = $false,
-        [bool]$EnableRemoteAccess = $false
+        [bool]$EnableRemoteAccess = $false,
+        [string]$SwitchboardMode = "observe",
+        [bool]$CloudMode = $false,
+        [string]$GpuBackend = ""
     )
 
     $plan = @{}
@@ -45,7 +48,11 @@ function New-ODSWindowsServicePlan {
         -EnableRecommended $EnableRecommended `
         -EnableDeepResearch $EnableDeepResearch `
         -EnableHermes $EnableHermes
-    $plan["litellm"] = New-ODSWindowsServicePlanEntry "litellm" $EnableRecommended "recommended" "recommended services not enabled"
+    # The public model alias and authenticated native AMD/cloud routes need
+    # this gateway even when optional recommended services are disabled.
+    $gatewayRequired = $CloudMode -or $GpuBackend -eq "amd" -or $SwitchboardMode.Trim().ToLowerInvariant() -eq "enabled"
+    $gatewayGroup = if ($gatewayRequired) { "model-runtime" } else { "recommended" }
+    $plan["litellm"] = New-ODSWindowsServicePlanEntry "litellm" ([bool]($EnableRecommended -or $gatewayRequired)) $gatewayGroup "model gateway not required and recommended services not enabled"
     $plan["searxng"] = New-ODSWindowsServicePlanEntry "searxng" $enableSearxng "search" "web search backend not required"
     $plan["token-spy"] = New-ODSWindowsServicePlanEntry "token-spy" $EnableRecommended "recommended" "recommended services not enabled"
 

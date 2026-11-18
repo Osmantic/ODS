@@ -25,6 +25,13 @@ systemctl() {
     manager_action "$1"
 }
 sudo() { "$@"; }
+_agent_probe_host() { printf '127.0.0.1
+'; }
+curl() {
+    [[ "$TEST_HEALTH" == ok ]] || return 7
+    printf '{"status":"ok","version":"test"}
+'
+}
 
 source <(awk '/^cmd_agent\(\) \{/{copy=1} copy{print} copy && /^}$/{exit}' "$1")
 if [[ "$TEST_ACTION" == update-guard ]]; then
@@ -37,14 +44,15 @@ fi
 
 
 class AgentManagerFailures(unittest.TestCase):
-    def probe(self, manager, action, failure):
+    def probe(self, manager, action, failure, health="ok"):
         with tempfile.TemporaryDirectory(prefix="ods-agent-manager-") as temp:
             fixture = Path(temp)
             trace = fixture / "calls"
             env = {**os.environ, "INSTALL_DIR": str(fixture),
                    "ODS_AGENT_FORCE_SESSION": "false", "TEST_TRACE": str(trace),
                    "TEST_OS": "Linux",
-                   "TEST_ACTION": action, "TEST_FAIL": failure}
+                   "TEST_ACTION": action, "TEST_FAIL": failure,
+                   "TEST_HEALTH": health}
             result = subprocess.run(["bash", "-s", "--", str(TARGET)], input=PROBE,
                                     text=True, capture_output=True, env=env, timeout=10)
             calls = trace.read_text().splitlines() if trace.exists() else []
@@ -84,6 +92,18 @@ class AgentManagerFailures(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, output)
                 self.assertEqual(calls, ["stop", "start"])
                 self.assertIn("ERROR:Agent start failed", output)
+
+    def test_start_waits_for_a_healthy_agent(self):
+        # The unit is Type=simple: systemctl start succeeds even when the
+        # agent exits right after it is forked.
+        for manager in ("systemd",):
+            for action, expected_calls in (("start", ["start"]), ("restart", ["stop", "start"])):
+                with self.subTest(manager=manager, action=action):
+                    result, calls, output = self.probe(manager, action, "none", health="down")
+                    self.assertNotEqual(result.returncode, 0, output)
+                    self.assertEqual(calls, expected_calls)
+                    self.assertIn("ERROR:Agent did not become healthy", output)
+                    self.assertNotIn("SUCCESS:Agent started", output)
 
     def test_guarded_update_remains_nonfatal(self):
         for manager in ("systemd",):

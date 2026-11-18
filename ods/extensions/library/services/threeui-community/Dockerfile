@@ -10,5 +10,5 @@ RUN rm -rf /usr/share/nginx/html/*
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY --from=build /packages /usr/share/nginx/html/packages
 COPY --from=build /app/LICENSE /app/ASSET-LICENSES.md /app/FONT-LICENSES.md /app/THIRD_PARTY_NOTICES.md /usr/share/nginx/html/licenses/
-COPY nginx.conf /etc/nginx/nginx.conf
+COPY --chmod=0644 nginx.conf /etc/nginx/nginx.conf
 USER 101:101

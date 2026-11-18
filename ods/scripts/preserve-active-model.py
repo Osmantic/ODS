@@ -13,6 +13,9 @@ installs wrote. Every mode emits a small allowlisted dotenv fragment without
 ``eval``. The default mode also keeps the settings model activation owns for
 the same model on this host's llama-server container: an import's vision
 projector and a fixed chat template, each only while it still checks out.
+On a vLLM install (``LLM_BACKEND=vllm``) the default mode keeps the vLLM
+route, its catalog snapshot and GPU instead (``preserved_vllm_contract``),
+and exits 2 rather than let the rerun fall back to a llama.cpp model.
 
 Round F serves every model as ``--alias <GGUF_FILE>``, so a served model id is
 the GGUF filename. For one release the retired Lemonade forms of the same id
@@ -48,6 +51,8 @@ RUNTIME_KEYS = (
     "LLAMA_ARG_CHECKPOINT_EVERY_NT",
     "LLAMA_ARG_CTX_CHECKPOINTS",
     "LLAMA_ARG_CACHE_RAM",
+    "LLAMA_ARG_UBATCH",
+    "LLAMA_ARG_FIT_TARGET",
     "LLAMA_ARG_SPEC_TYPE",
     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
     "LLAMA_ARG_SPEC_DRAFT_TYPE_K",
@@ -188,16 +193,23 @@ def load_records(catalog_path: Path, imports_path: Path | None) -> list[dict[str
     seen_files = {str(item.get("gguf_file") or "").lower() for item in records}
     if imports_path is None or not imports_path.is_file():
         return records
+    # An unreadable or malformed import registry hides only the imports, as in
+    # the dashboard: the catalog (and an active catalog model) still counts.
     try:
         imported_payload = json.loads(imports_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
-        return []
+        return records
     imported = imported_payload.get("models") if isinstance(imported_payload, dict) else None
-    if not isinstance(imported, list) or not all(isinstance(item, dict) for item in imported):
-        return []
+    if not isinstance(imported, list):
+        return records
     for item in imported:
+        if not isinstance(item, dict):
+            continue
         model_id = str(item.get("id") or "")
         filename = str(item.get("gguf_file") or "").lower()
+        # Skip an import the catalog now ships (or one that is malformed), as
+        # the dashboard's _load_library does. Dropping every record instead
+        # made a rerun replace the owner's active model with the tier pick.
         if (
             item.get("source") != "huggingface"
             or not model_id
@@ -205,7 +217,7 @@ def load_records(catalog_path: Path, imports_path: Path | None) -> list[dict[str
             or model_id in seen_ids
             or filename in seen_files
         ):
-            return []
+            continue
         records.append(item)
         seen_ids.add(model_id)
         seen_files.add(filename)
@@ -370,6 +382,10 @@ def valid_runtime_value(key: str, value: str) -> bool:
         return value.isdigit() and int(value) <= 64
     if key == "LLAMA_ARG_CACHE_RAM":
         return value == "-1" or (value.isdigit() and int(value) <= 1048576)
+    if key == "LLAMA_ARG_UBATCH":
+        return bool(re.fullmatch(r"[1-9][0-9]{0,2}", value)) and int(value) <= 512
+    if key == "LLAMA_ARG_FIT_TARGET":
+        return bool(re.fullmatch(r"[1-9][0-9]{0,4}", value)) and 512 <= int(value) <= 65536
     if key == "LLAMA_ARG_SPEC_TYPE":
         return bool(re.fullmatch(r"[A-Za-z0-9_,.-]{1,64}", value))
     if key == "LLAMA_ARG_SPEC_DRAFT_N_MAX":
@@ -539,6 +555,100 @@ def repaired_served_model_contract(
     if recorded_id and recorded_id not in served_model_ids(contract["GGUF_FILE"]):
         return None
     return env, served_id, contract
+
+
+def is_vllm_runtime(env: dict[str, str]) -> bool:
+    """A ``.env`` whose model the vLLM engine serves (LLM_BACKEND=vllm)."""
+    return env.get("LLM_BACKEND", "").strip().lower() == "vllm"
+
+
+_VLLM_GPU_UUID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
+_VLLM_MEMORY_SHARE = re.compile(r"(?:0(?:\.[0-9]+)?|1(?:\.0+)?)")
+
+
+def vllm_snapshot_installed(models_dir: Path, folder: str, files: list[dict[str, Any]]) -> bool:
+    """Every manifest file is in ``models_dir/folder`` under its final name, at its size.
+
+    scripts/download-hf-manifest.py renames a file into place only after its
+    digest matched, so a complete set of final names at the catalog sizes is a
+    complete verified download. Links are refused, as the GGUF check does.
+    """
+    try:
+        root = models_dir.resolve()
+        snapshot = models_dir / folder
+        if snapshot.is_symlink() or not snapshot.is_dir() or snapshot.resolve().parent != root:
+            return False
+        for item in files:
+            info = (snapshot / item["path"]).lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size != item["size"]:
+                return False
+            if not (snapshot / item["path"]).resolve().is_relative_to(snapshot.resolve()):
+                return False
+    except (OSError, RuntimeError):
+        return False
+    return True
+
+
+def preserved_vllm_contract(args: argparse.Namespace) -> dict[str, str] | None:
+    """The retained vLLM route, while its catalog snapshot is still installed.
+
+    The route stays on vLLM (LLM_BACKEND=vllm) with the same model and GPU, and
+    clears the GGUF keys so no llama.cpp model is downloaded or started. The
+    model folder and served id must be the catalog entry's (a new revision is
+    a new download, which this never starts). VLLM_ARGS comes from this
+    release's catalog entry for that snapshot: its flags are measured with the
+    release's vLLM image, which the installer pins separately (VLLM_IMAGE).
+    The GPU and its memory share are the host's and stay as installed.
+    """
+    env = parse_dotenv(args.env)
+    if (
+        not is_vllm_runtime(env)
+        or env.get("ODS_MODE", "local").strip().lower() != "local"
+        or env.get("EXTERNAL_LLM_URL")
+        or env.get("NATIVE_LLM_BASE_URL")
+    ):
+        return None
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "extensions/services/dashboard-api"))
+    import model_vllm
+
+    llm_model = env.get("LLM_MODEL", "").strip()
+    matches = [
+        item for item in load_records(args.catalog, None)
+        if model_vllm.is_vllm_entry(item) and item.get("llm_model_name") == llm_model
+    ]
+    if len(matches) != 1 or model_vllm.entry_problems(matches[0]):
+        return None
+    model = matches[0]
+    folder = model_vllm.model_dir_name(model)
+    gpu_uuid = env.get("VLLM_GPU_UUID", "")
+    share = env.get("VLLM_GPU_MEMORY_UTILIZATION", "")
+    if (
+        env.get("VLLM_MODEL_DIR") != folder
+        or env.get("VLLM_SERVED_MODEL") != model["served_model_name"]
+        or not _VLLM_GPU_UUID.fullmatch(gpu_uuid)
+        or (share and (not _VLLM_MEMORY_SHARE.fullmatch(share) or float(share) <= 0))
+        or not vllm_snapshot_installed(args.models_dir, folder, model["files"])
+    ):
+        return None
+    source = env.get("MODEL_SELECTION_SOURCE", "")
+    contract = {
+        "LLM_BACKEND": "vllm",
+        "LLM_MODEL": str(model["llm_model_name"]),
+        # A vLLM route has no GGUF; empty values override the tier map's.
+        "GGUF_FILE": "",
+        "GGUF_URL": "",
+        "GGUF_SHA256": "",
+        "MAX_CONTEXT": str(model["context_length"]),
+        "LLM_MODEL_SIZE_MB": str(round(model_vllm.manifest_bytes(model) / 1_000_000)),
+        "MODEL_SELECTION_SOURCE": source if source in {"installer", "dashboard", "operator"} else "preserved-local",
+        "VLLM_MODEL_DIR": folder,
+        "VLLM_SERVED_MODEL": str(model["served_model_name"]),
+        "VLLM_ARGS": model_vllm.vllm_args_text(model),
+        "VLLM_GPU_UUID": gpu_uuid,
+    }
+    if share:
+        contract["VLLM_GPU_MEMORY_UTILIZATION"] = share
+    return contract
 
 
 def is_local_runtime(env: dict[str, str]) -> bool:
@@ -845,6 +955,15 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
             value = str(profile_env[key])
         else:
             value = ""
+        if key in {"LLAMA_ARG_UBATCH", "LLAMA_ARG_FIT_TARGET"}:
+            # These operator settings belong to this container backend. A
+            # stale/invalid tuning value must not discard the active model.
+            backend = normalize_key(args.backend)
+            if (host_native or env.get("NATIVE_LLM_BASE_URL")
+                    or backend not in {"nvidia", "amd", "cpu", "intel", "sycl", "jetson"}
+                    or normalize_key(env.get("GPU_BACKEND")) != backend
+                    or not valid_runtime_value(key, value)):
+                value = ""
         if value and not valid_runtime_value(key, value):
             return None
         runtime_values[key] = value
@@ -974,6 +1093,16 @@ def main() -> int:
         )
         print(f"Repairing the saved description of the served model ({served_id}): "
               f"{changes}. The served model is unchanged.", file=sys.stderr)
+    elif not (args.native_llm or args.external_lemonade) and is_vllm_runtime(parse_dotenv(args.env)):
+        contract = preserved_vllm_contract(args)
+        if contract is None:
+            # Falling through to the recommendation would turn the vLLM
+            # install into a llama.cpp one and download a GGUF.
+            print("This installation runs its model on the vLLM engine, but its saved model is not "
+                  "a complete vLLM catalog snapshot for the GPU it names; refusing to replace it. "
+                  "Run the installer again and choose the vLLM model, or use --reselect-model.",
+                  file=sys.stderr)
+            return 2
     else:
         contract = preserved_contract(args)
         if contract is None:

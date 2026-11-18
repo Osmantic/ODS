@@ -310,13 +310,12 @@ def validate_candidate(config, *, node, entrypoint, expected, env, cwd):
                       'OPENCLAW_SKIP_CHANNELS': '1'}
     bootstrap.command([str(node), str(entrypoint), 'config', 'validate'],
                       cwd=cwd, env=validation_env)
-    loaded = json.loads(bootstrap.command([str(node), str(entrypoint), 'plugins', 'list', '--json'],
-                                          cwd=cwd, env=validation_env))
-    for plugin_id, path in expected.items():
-        matches = [item for item in loaded.get('plugins', []) if item.get('id') == plugin_id]
-        if (len(matches) != 1 or matches[0].get('status') != 'loaded'
-                or matches[0].get('rootDir') != path):
-            raise ValueError('native-config-plugin-not-loaded')
+    output = bootstrap.command([str(node), str(entrypoint),
+        'plugins', 'inspect', '--all', '--runtime', '--json'], cwd=cwd, env=validation_env)
+    try:
+        bootstrap.verify_plugin_report(output, expected)
+    except bootstrap.BootstrapError as exc:
+        raise ValueError('native-config-plugin-not-loaded') from exc
 
 
 def stage_bundle(*, source, ref, candidate, node, runtime, destination, services_digest=None,

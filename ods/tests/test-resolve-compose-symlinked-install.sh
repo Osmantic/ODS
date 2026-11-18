@@ -86,6 +86,34 @@ YAML
 # run_case <label> <script-dir>
 run_case() {
     local label="$1" script_dir="$2" out="$SCRATCH/out" err="$SCRATCH/err" rc
+    # Diagnostics must preserve private source files and must not create or
+    # rewrite the trusted build projection, including through symlinked data.
+    if python3 - "$RESOLVER" "$script_dir" <<'PY'
+import hashlib, json, pathlib, subprocess, sys
+resolver, install = sys.argv[1:]
+root = pathlib.Path(install) / 'data/user-extensions/fixture-build'
+for source in root.iterdir():
+    if source.is_file():
+        source.chmod(0o600)
+def snapshot():
+    return {p.name: (p.stat().st_mode, p.stat().st_mtime_ns,
+                     hashlib.sha256(p.read_bytes()).hexdigest())
+            for p in root.iterdir() if p.is_file()}
+before = snapshot()
+result = subprocess.run(['bash', resolver, '--script-dir', install, '--tier', '1',
+                         '--gpu-backend', 'cpu', '--selection-json'],
+                        capture_output=True, text=True, check=True)
+fragments = json.loads(result.stdout)['fragments']
+assert 'data/user-extensions/fixture-build/compose.yaml' in fragments
+assert not any('.ods-build-context-' in item for item in fragments)
+assert snapshot() == before, 'Diagnostic selection changed the extension'
+PY
+    then
+        pass "$label: read-only selection preserves private build inputs"
+    else
+        fail "$label: read-only selection failed or modified inputs"
+        return
+    fi
     set +e
     bash "$RESOLVER" --script-dir "$script_dir" --tier 1 --gpu-backend cpu >"$out" 2>"$err"
     rc=$?
@@ -107,6 +135,21 @@ run_case() {
     fi
     if [[ ! -f "$script_dir/$OVERLAY" ]]; then
         fail "$label: emitted overlay does not exist under --script-dir"
+        return
+    fi
+    # A second diagnostic read must not rewrite an existing projection.
+    if ! python3 - "$RESOLVER" "$script_dir" "$OVERLAY" <<'PY'
+import pathlib, subprocess, sys
+resolver, install, overlay = sys.argv[1:]
+p = pathlib.Path(install) / overlay
+before = (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode)
+subprocess.run(['bash', resolver, '--script-dir', install, '--tier', '1',
+                '--gpu-backend', 'cpu', '--selection-json'],
+               capture_output=True, text=True, check=True)
+assert (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode) == before
+PY
+    then
+        fail "$label: diagnostic read rewrote the existing projection"
         return
     fi
     pass "$label"

@@ -88,6 +88,45 @@ class CheckpointArgumentsTests(unittest.TestCase):
                     cache.qualify('/binary', values)
                 run.assert_not_called()
 
+    def test_ubatch_bounds_and_quotation(self):
+        self.assertEqual(cache.requested_arguments(('', '', '', '', '', '1')),
+                         ['--ubatch-size', '1'])
+        self.assertEqual(cache.requested_arguments(('', '', '', '', '', '"512"')),
+                         ['--ubatch-size', '512'])
+        self.assertEqual(cache.requested_arguments(('', '', '', '', '', "'256'")),
+                         ['--ubatch-size', '256'])
+        for value in ('0', '-1', '513', '1.5', '$(touch x)', '12\n34'):
+            with self.subTest(value=value), patch.object(cache.subprocess, 'run') as run:
+                with self.assertRaises(ValueError):
+                    cache.qualify('/binary', ('', '', '', '', '', value))
+                run.assert_not_called()
+
+    def test_ubatch_requires_runtime_capability(self):
+        with patch.object(cache.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '--ubatch-size N', '')):
+            self.assertEqual(cache.qualify('/binary', ('', '', '', '', '', '128')),
+                             ['--ubatch-size', '128'])
+        with patch.object(cache.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '--model N', '')):
+            with self.assertRaises(ValueError):
+                cache.qualify('/binary', ('', '', '', '', '', '128'))
+
+    def test_ubatch_unset_is_unchanged(self):
+        with patch.object(cache.subprocess, 'run') as run:
+            self.assertEqual(cache.qualify('/missing', ('', '', '', '', '', '')), [])
+            run.assert_not_called()
+        self.assertEqual(cache.requested_arguments(('', '', '', '', '', '')), [])
+
+    def test_ubatch_cli_framing(self):
+        with patch.object(cache.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '--ubatch-size N', '')):
+            with patch.object(cache.sys, 'argv', ['prog', '--binary', '/binary', '--ubatch=64']):
+                with patch.object(cache.sys, 'stdout') as output:
+                    self.assertEqual(cache.main(), 0)
+                    output.buffer.write.assert_any_call(b'--ubatch-size\0')
+                    output.buffer.write.assert_any_call(b'64\0')
+        with patch.object(cache.subprocess, 'run') as run:
+            with patch.object(cache.sys, 'argv', ['prog', '--binary', '/binary', '--ubatch=0']):
+                self.assertEqual(cache.main(), 1)
+                run.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
