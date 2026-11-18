@@ -253,8 +253,7 @@
  "privacy-shield": {
   "tests/test_key_management.py [arg-type] Argument 1 to \"resolve_shield_api_key\" has incompatible type \"str | int | None\"; expected \"str | None\"": 1,
   "tests/test_streaming_proxy.py [assignment] Incompatible types in assignment (expression has type \"Event\", target has type \"AbstractEventLoop\")": 2,
-  "tests/test_streaming_proxy.py [attr-defined] \"AbstractEventLoop\" has no attribute \"set\"": 2,
-  "tests/test_streaming_proxy.py [index] Value of type \"Iterable[socket]\" is not indexable": 2
+  "tests/test_streaming_proxy.py [attr-defined] \"AbstractEventLoop\" has no attribute \"set\"": 2
  },
  "scripts": {
   "assign_gpus.py [assignment] Incompatible types in assignment (expression has type \"dict[str, Any]\", target has type \"list[Any]\")": 1,
