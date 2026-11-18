@@ -120,11 +120,12 @@ function fresh(request=handoff,ctx=context,guard=createToolLoopGuard()) {
   guard.observeRun(ctx,'pixel',{prompt:request},{executionHost:'sandbox',workspaceRoot:'/workspace'});
   return guard;
 }
-function observeWrite(guard) {
+function observeWrite(guard, expectedBlock = false) {
   const ctx={...context,toolCallId:'write-handoff',toolName:'write'};
   const event={toolName:'write',toolCallId:ctx.toolCallId,params:{path:'Playground/handoff.md',content:answer}};
-  // Real hook functions, simulated observed success: no filesystem tool runs.
-  assert.notEqual(guard.beforeToolCall(event,ctx)?.block,true);
+  // Real hook functions, simulated receipt: no filesystem tool runs. Feed even
+  // an unexpected success after a denied write to test delivery attribution.
+  assert.equal(guard.beforeToolCall(event,ctx)?.block === true,expectedBlock);
   guard.afterToolCall({...event,result:{content:[{type:'text',text:'Successfully wrote handoff.md'}]}},ctx);
 }
 
@@ -146,7 +147,7 @@ test('text-only handoff receives neither document guidance nor a false download 
 
 test('an observed Markdown write cannot manufacture a requested-download obligation',()=>{
   const guard=fresh();
-  observeWrite(guard);
+  observeWrite(guard,true);
   assert.equal(guard.beforeAgentFinalize({lastAssistantMessage:answer},context),undefined);
   assert.deepEqual(guard.deliveryVerificationForRun(context.runId),{status:'none'});
   assert.equal(guard.replyPayloadSending({runId:context.runId,kind:'final',payload:{text:answer}}),undefined);

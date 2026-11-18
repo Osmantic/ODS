@@ -29,8 +29,65 @@ jobs:
           ODS_TEST_PROJECT_NODE: '1'
           ODS_TEST_PROJECT_PYTHON: '1'
           ODS_TEST_PROJECT_DIAGNOSTIC: '1'
-        run: >-
-          python -m pytest -q extensions/services/pixel-agent/tests/test_project_*.py
-          tests/test_pixel_project_install.py tests/test_pixel_runtime_budget.py
+        run: |
+          # Observe a slow CLI without ptrace or changes to pytest's deadlines.
+          python scripts/diagnose-docker-info-stall.py "$RUNNER_TEMP/docker-info-stall.jsonl" --seconds 180 &
+          sampler_pid=$!
+          stop_sampler() {
+            for running_pid in $(jobs -pr); do
+              if test "$running_pid" = "$sampler_pid"; then kill "$running_pid" 2>/dev/null || true; fi
+            done
+            wait "$sampler_pid" 2>/dev/null || true
+          }
+          trap stop_sampler EXIT
+          python -m pytest -q extensions/services/pixel-agent/tests/test_project_*.py \
+            tests/test_pixel_project_install.py tests/test_pixel_runtime_budget.py
+      - name: Record Docker-info process snapshots
+        if: always()
+        run: |
+          if test -s "$RUNNER_TEMP/docker-info-stall.jsonl"; then
+            cat "$RUNNER_TEMP/docker-info-stall.jsonl"
+          elif test -f "$RUNNER_TEMP/docker-info-stall.jsonl"; then
+            echo 'No slow docker-info process observed by sampler'
+          else
+            echo 'Sampler output unavailable; no process-state conclusion'
+          fi
       - name: Portal registration and transport
         run: node --test extensions/services/pixel-agent/tests/project_*.test.mjs
+      - name: Diagnose failed Docker execution
+        if: failure()
+        continue-on-error: true
+        run: |
+          # Keep the original test failure and deadlines. These observations
+          # distinguish engine/runner stalls from project execution failures.
+          python - <<'PY'
+          import json, os, shutil, subprocess, time
+          from pathlib import Path
+          result = {'loadavg': os.getloadavg(), 'disk': {}}
+          for directory in ('/', '/tmp', '/var/lib/docker'):
+              try:
+                  result['disk'][directory] = shutil.disk_usage(directory)._asdict()
+              except OSError as error:
+                  result['disk'][directory] = {'error': type(error).__name__}
+          result['memory'] = [line for line in Path('/proc/meminfo').read_text().splitlines()
+                              if line.startswith(('MemTotal:', 'MemAvailable:', 'SwapFree:'))]
+          result['pressure'] = {name: Path('/proc/pressure/' + name).read_text()
+                                for name in ('cpu', 'memory', 'io')}
+          result['engine_info_samples'] = []
+          for _ in range(3):
+              started = time.monotonic()
+              sample = {}
+              try:
+                  process = subprocess.run(['docker', 'info', '--format', '{{.MemTotal}}'],
+                                           capture_output=True, text=True, timeout=5)
+                  sample.update(return_code=process.returncode,
+                                memory_bytes=int(process.stdout.strip()) if process.stdout.strip().isdigit() else None,
+                                stderr_bytes=len(process.stderr.encode()))
+              except (OSError, subprocess.SubprocessError) as error:
+                  sample['error'] = type(error).__name__
+              sample['elapsed_seconds'] = round(time.monotonic() - started, 3)
+              result['engine_info_samples'].append(sample)
+          print(json.dumps(result, indent=2))
+          PY
+          timeout 10s sudo journalctl -u docker.service -u containerd.service --since '-10 min' --no-pager -n 120 || true
+

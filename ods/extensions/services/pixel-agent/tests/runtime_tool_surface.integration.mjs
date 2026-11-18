@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createPublicWebExtractTool } from '../plugin/web-extract.mjs';
+import { createReadonlyExecTool } from '../plugin/readonly-execution-tool.mjs';
 import { createWorkspacePreviewInspectTool, INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash } from '../plugin/workspace-preview-inspect.mjs';
 
 const file = process.env.OPENCLAW_TOOL_SEARCH_MODULE;
@@ -42,13 +43,13 @@ test('working tools are direct while specialist tools remain in the real catalog
 test('the ordinary direct surface stays small while every specialist stays catalogued', () => {
   const nativeNames = ['read', 'write', 'edit', 'apply_patch', 'exec', 'process',
     'web_fetch', 'web_search', 'pixel_ods_web_extract', 'pixel_ods_skill', 'pixel_ods_ask_user',
-    'pixel_ods_extensions', 'pixel_ods_extension_request_status', 'pixel_ods_workspace_preview', 'pixel_ods_workspace_preview_inspect'];
+    'pixel_ods_extensions', 'pixel_ods_extension_request_status', 'pixel_ods_workspace_preview', 'pixel_ods_workspace_preview_inspect', 'pixel_ods_readonly_exec'];
   const specialistNames = ['pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_advance',
     'pixel_ods_extension_request_retry', 'pixel_ods_source_proposal',
     'pixel_ods_python_library_proposal', 'pixel_ods_extension_proposal'];
   const result = run([...nativeNames, ...specialistNames].map(tool));
   assert.deepEqual(result.tools.map(t => t.name), [...controls.map(t => t.name), ...nativeNames]);
-  assert.equal(result.tools.length, 18); // Fifteen native tools plus the three search controls.
+  assert.equal(result.tools.length, 19); // Sixteen native tools plus the three search controls.
   assert.equal(result.catalogToolCount, nativeNames.length + specialistNames.length);
 });
 
@@ -57,6 +58,32 @@ test('policy-denied tools are not synthesized and duplicate names stay deferred'
   assert.deepEqual(result.tools.map(t => t.name), [...controls.map(t => t.name), 'web_fetch']);
   assert.equal(result.catalogToolCount, 3);
   assert.ok(!result.tools.some(t => t.name === 'exec'));
+});
+
+test('protected calculation exposes its exact schema without bypassing admission', async () => {
+  let executions=0;
+  const calculation=createReadonlyExecTool({agentId:'pixel'}, {
+    admission:{take(){throw Object.assign(new Error('unbound'),{code:'readonly-exec-call-unbound'});}},
+    execute:async()=>{executions++;},scopeForContext:()=>{throw new Error('must not reach scope');}
+  });
+  const direct=run([calculation]).tools.find(t=>t.name===calculation.name);
+  assert.equal(direct,calculation);
+  assert.equal(direct.parameters.additionalProperties,false);
+  assert.deepEqual(direct.parameters.required,['command']);
+  assert.match(direct.parameters.properties.workdir.description,/relative POSIX/);
+  const refused=await direct.execute('unadmitted',{command:'printf 1'});
+  assert.equal(refused.isError,true);
+  assert.equal(refused.details.code,'readonly-exec-call-unbound');
+  assert.equal(executions,0);
+  assert.deepEqual(run([]).tools,controls);
+  assert.deepEqual(run([calculation,calculation]).tools,controls);
+  assert.deepEqual(run([calculation],{agentId:'another-agent'}).tools,controls);
+  for(const contextTokens of [4096,8192]) {
+    const result=run([calculation],{config:{tools:{toolSearch:{enabled:true,mode:'tools'}},
+      agents:{defaults:{contextTokens}}}});
+    assert.deepEqual(result.tools,controls);
+    assert.equal(result.catalogToolCount,1);
+  }
 });
 
 test('deferred specialists remain searchable, describable and callable through the normal dispatcher', async () => {

@@ -242,11 +242,12 @@ export function executionHostForAgent(config, id = 'pixel') {
 }
 
 export function createAccessRuntime({directory = path.join(os.homedir(), '.openclaw', '.ods-access-runtime'),
+  discovery = false,
   config, settingsConfig, createTools, resolveSandbox, execControl, runtimeVersion = 'unknown', hooksAllowed = false,
   readProcessSessions, now = () => performance.now(),
   probeDirectory = path.join(process.platform === 'darwin' ? '/private/var/lib/ods-pixel-access-probes' :
     '/var/lib/ods-pixel-access-probes', String(process.getuid?.() ?? 'unsupported'))} = {}) {
-  if (typeof process.getuid !== 'function') {
+  if (discovery || typeof process.getuid !== 'function') {
     const unavailable = () => { throw new Error('POSIX admission unavailable'); };
     return {status: () => ({available: false, phase: 'unavailable', revision: null, active: 0, proof: null}),
       admit: () => ({outcome: 'pass'}), finish() {}, beforeTool() {}, afterTool() {},
@@ -258,7 +259,7 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
   // Other releases keep normal guard behavior, but cannot change access until
   // their hook coverage is qualified. Held state always continues to block.
   const qualified = runtimeVersion === '2026.6.33' && hooksAllowed === true;
-  const runs = new Set(), tools = new Set(), detached = new Map(), internalRuns = new Set();
+  const runs = new Set(), tools = new Map(), detached = new Map(), internalRuns = new Set();
   const transitionFailures = new WeakMap();
   const transitionError = code => {
     const failure = new Error('runtime transition refused');
@@ -480,7 +481,37 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
     if (failed || ['held','interrupted'].includes(state.phase)) return {block: true, blockReason: blocked().message};
     // Missing identities cannot be paired safely; fail closed before execution.
     if (!event?.toolCallId) return {block: true, blockReason: 'Tool identity unavailable during access coordination.'};
-    tools.add(event.toolCallId); state.phase = 'busy'; changed();
+    tools.set(event.toolCallId, {toolName:event.toolName, context:{agentId:context?.agentId,
+      runId:context?.runId, sessionId:context?.sessionId, sessionKey:context?.sessionKey}});
+    state.phase = 'busy'; changed();
+  }
+  // Stop can omit the model-visible completion: the deferred tool_call wrapper
+  // or the directly offered protected tool. Only the runner's verified
+  // settlement may release that exact admission and run/session binding.
+  function settleReadonlyParent(scope) {
+    if (failed) throw new Error('readonly admission runtime unavailable');
+    const deferred = scope?.deferredParentCallId !== undefined;
+    const id = deferred ? scope.deferredParentCallId : scope?.toolCallId;
+    if (typeof id !== 'string' || !id)
+      throw new Error('readonly admission settlement scope mismatch');
+    const admitted = tools.get(id);
+    if (!admitted) return; // The SDK may already have delivered normal completion.
+    const expectedKind = deferred ? 'tool_call' : 'pixel_ods_readonly_exec';
+    if (admitted.toolName !== expectedKind || scope.agentId !== 'pixel' ||
+        ['agentId','runId','sessionId','sessionKey'].some(key =>
+          typeof scope[key] !== 'string' || !scope[key] || admitted.context[key] !== scope[key]))
+      throw new Error('readonly admission settlement scope mismatch');
+    const previousPhase = state.phase;
+    tools.delete(id);
+    try {
+      if (!busy() && state.phase === 'busy') state.phase = 'idle';
+      changed();
+    } catch (error) {
+      tools.set(id, admitted);
+      state.phase = previousPhase;
+      failed = true;
+      throw error;
+    }
   }
   function afterTool(event, context) {
     if (isInternal(context)) return;
@@ -664,7 +695,7 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
       if (fs.existsSync(sentinel)) fs.unlinkSync(sentinel);
     }
   }
-  return {status, admit, finish, beforeTool, afterTool, acquire, acquireMaintenance, release, releaseMaintenance,
+  return {status, admit, finish, beforeTool, afterTool, settleReadonlyParent, acquire, acquireMaintenance, release, releaseMaintenance,
     probe, owns, readSettings, readModel, reconcileDetached,
     classifyTransitionError: failure => transitionFailures.get(failure) ?? null, isProbe: isInternal};
 }

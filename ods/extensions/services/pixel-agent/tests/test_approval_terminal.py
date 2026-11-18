@@ -90,16 +90,17 @@ def gone_or_zombie(proc):
     # only an absent proc entry or an observed zombie satisfies cleanup.
     try:
         return proc.read_text().split()[2] == "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return True
 
 
-def test_reaped_proc_during_observation_is_gone(monkeypatch):
+@pytest.mark.parametrize("missing", [FileNotFoundError, ProcessLookupError])
+def test_reaped_proc_during_observation_is_gone(monkeypatch, missing):
     proc = Path("/proc/12345/stat")
     monkeypatch.setattr(Path, "exists", lambda _self: True)
 
     def reaped(_self):
-        raise FileNotFoundError("fixture: reaped before read")
+        raise missing("fixture: reaped before read")
 
     monkeypatch.setattr(Path, "read_text", reaped)
     assert gone_or_zombie(proc)

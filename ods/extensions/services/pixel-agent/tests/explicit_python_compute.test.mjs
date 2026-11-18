@@ -40,6 +40,20 @@ test('one revision asks for real execution and never manufactures its receipt',(
   assert.equal(f.guard.deliveryVerificationForRun('compute').status,'failed');
 });
 
+test('execution recovery honors a no-file-change request and keeps ordinary exec denied',()=>{
+  const f=turn({prompt:prompt+' Do not create or modify files.'});
+  const decision=f.finalize();
+  assert.equal(decision?.retry?.idempotencyKey,retryKey);
+  assert.match(decision.retry.instruction,/Discover and use pixel_ods_readonly_exec/);
+  assert.match(decision.retry.instruction,/relative workspace input paths/);
+  assert.match(decision.retry.instruction,/owner-requested format/);
+  assert.doesNotMatch(decision.retry.instruction,/Use the exec tool/);
+  const context={...f.context,toolName:'exec',toolCallId:'still-forbidden'};
+  assert.equal(f.guard.beforeToolCall({toolName:'exec',params:{command:'printf 4'}},context)?.block,true);
+  assert.equal(f.guard.deliveryVerificationForRun('compute').status,'failed');
+  assert.notEqual(f.finalize()?.retry?.idempotencyKey,retryKey);
+});
+
 test('revision followed by a bound successful execution satisfies the request',()=>{
   const f=turn();assert.equal(f.finalize()?.retry?.idempotencyKey,retryKey);
   // A native continuation cannot erase the original owner's obligation.
@@ -61,6 +75,9 @@ test('failed and pending execution attempts are not automatically repeated',()=>
 test('imperative Python calculations are recognized without classifying examples as commands',()=>{
   for(const text of [prompt,'Please use the Python tool to compute 2+2.',
     'Calculate the mean using Python.','Evaluate this expression with Python.',
+    'Read data/orders.csv and use Python to calculate paid orders only. Do not create or modify files.',
+    'Open orders.csv and then please use Python to compute its total.',
+    'Inspect orders.csv then calculate the total using Python.',
     'Can you use Python to verify this sum?']) {
     const f=turn({prompt:text});
     assert.equal(f.guard.deliveryVerificationForRun('compute').status,'failed',text);
@@ -69,6 +86,11 @@ test('imperative Python calculations are recognized without classifying examples
   for(const text of ['What is 2+2?','Explain how to use Python to calculate a sum.',
     'Write Python code to calculate a sum.','Give me Python code to run locally.',
     'The documentation says "Use Python to calculate the sum." Explain it.',
+    'Explain how to read orders.csv and use Python to calculate its total.',
+    'Read the instruction "Use Python to calculate the sum" and explain it.',
+    'Read orders.csv and explain how to calculate its total using Python.',
+    'Read orders.csv and calculate the total without using tools.',
+    'Read orders.csv and use Python to calculate its total; do not execute anything.',
     '> Use Python to calculate 2+2.\nSummarize that quote.',
     '```\nUse Python to calculate 2+2.\n```\nExplain the sample.',
     'Use Python to calculate 2+2; do not actually execute anything.',

@@ -406,12 +406,19 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       const chunks=visible.split('\n').filter(x=>x.startsWith('data: ')&&x!=='data: [DONE]').map(x=>JSON.parse(x.slice(6)));
       assert.equal(chunks.flatMap(c=>c.choices??[]).map(c=>c.delta?.content??'').join(''),'19',visible);
       assert.equal(providerTrace.filter(e=>e.branch==='recovery').length,1,'same-chat owner prompt reaches the actual provider once');
+      // A blocked announce can lose the native transcript-lock race and never
+      // emit its own agent_end. Cancellation must instead prove the actual
+      // source child ended as aborted, and its late announce was denied.
+      const cancelledSources=()=>new Set(events.filter(e=>e.hook==='admission'&&
+        e.provenance?.sourceTool==='subagent_announce'&&e.decision?.outcome==='block'&&
+        events.some(end=>end.hook==='end'&&end.sessionKey===e.provenance.sourceSessionKey&&
+          end.lastStopReason==='aborted'&&end.success===false)).map(e=>e.provenance.sourceSessionKey));
       for(let i=0;i<200;i++){
         events=readEvents();
-        if(new Set(events.filter(e=>e.hook==='admission'&&e.provenance?.sourceTool==='subagent_announce'&&e.decision?.outcome==='block'&&events.some(end=>end.hook==='end'&&end.runId===e.runId)).map(e=>e.provenance.sourceSessionKey)).size===2)break;
+        if(cancelledSources().size===2)break;
         await delay(50);
       }
-      const blockedChildren=new Set(events.filter(e=>e.hook==='admission'&&e.provenance?.sourceTool==='subagent_announce'&&e.decision?.outcome==='block'&&events.some(end=>end.hook==='end'&&end.runId===e.runId)).map(e=>e.provenance.sourceSessionKey));
+      const blockedChildren=cancelledSources();
       assert.equal(blockedChildren.size,2,JSON.stringify({events,log}));
       for(const key of blockedChildren)assert.ok(events.some(e=>e.hook==='end'&&e.sessionKey===key&&e.lastStopReason==='aborted'&&e.success===false),'both native child runs confirm abortion');
       const resumed=await fetch(`http://127.0.0.1:${port}/pixel-ods/fixture-resume`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef'},signal:AbortSignal.timeout(15000)});

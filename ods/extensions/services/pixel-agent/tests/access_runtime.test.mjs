@@ -18,6 +18,15 @@ function fixture() {
 const token = 'a'.repeat(64), other = 'b'.repeat(64);
 const runtimeUrl = new URL('../plugin/access-runtime.mjs', import.meta.url).href;
 const linux = {skip: process.platform !== 'linux'};
+test('discovery never creates or claims an access-state directory',t=>{
+  const options=fixture();t.after(()=>fs.rmSync(path.dirname(options.directory),{recursive:true,force:true}));
+  const runtime=createAccessRuntime({...options,discovery:true});
+  assert.equal(runtime.status().available,false);
+  assert(!fs.existsSync(options.directory));
+  assert.deepEqual(runtime.admit(),{outcome:'pass'});
+  assert.throws(()=>runtime.acquire(token,other),/unavailable/);
+  assert(!fs.existsSync(options.directory));
+});
 test('startup diagnostics distinguish qualification from private state failures', t => {
   const cases = [
     {change: o => {o.hooksAllowed = false;}, stage: null, qualification: 'conversation-hooks'},
@@ -946,4 +955,116 @@ test('activity diagnostics distinguish owner classes without releasing or exposi
   assert.deepEqual(snapshot.activity,{runs:0,tools:0,detached:1});
   assert.equal(snapshot.active,1);assert.equal(snapshot.phase,'busy');
   assert.equal(JSON.stringify(snapshot).includes('private-'),false);
+});
+
+const settleScope = (overrides = {}) => ({agentId: 'pixel', runId: 'run-1', sessionId: 'sess-1',
+  sessionKey: 'key-1', toolCallId: 'parent-1', deferredParentCallId: 'parent-1', ...overrides});
+
+test('verified direct settlement clears only its own admission and tolerates later SDK completion', () => {
+  const runtime=createAccessRuntime(fixture());
+  const scope=settleScope({toolCallId:'direct-1',deferredParentCallId:undefined});
+  runtime.admit({},scope);
+  runtime.beforeTool({toolCallId:'direct-1',toolName:'pixel_ods_readonly_exec'},scope);
+  runtime.beforeTool({toolCallId:'other',toolName:'exec'},scope);
+  runtime.finish({},scope);
+  runtime.settleReadonlyParent(scope);
+  assert.deepEqual(runtime.status().activity,{runs:0,tools:1,detached:0});
+  runtime.afterTool({toolCallId:'direct-1',toolName:'pixel_ods_readonly_exec'},scope);
+  runtime.settleReadonlyParent(scope);
+  assert.deepEqual(runtime.status().activity,{runs:0,tools:1,detached:0});
+  runtime.afterTool({toolCallId:'other',toolName:'exec'},scope);
+  assert.equal(runtime.status().phase,'idle');
+});
+
+test('direct settlement refuses scope confusion and malformed or cross-kind parent identity', () => {
+  const runtime=createAccessRuntime(fixture());
+  const scope=settleScope({toolCallId:'direct-1',deferredParentCallId:undefined});
+  runtime.beforeTool({toolCallId:'direct-1',toolName:'pixel_ods_readonly_exec'},scope);
+  runtime.beforeTool({toolCallId:'parent-1',toolName:'tool_call'},scope);
+  runtime.beforeTool({toolCallId:'exec-1',toolName:'exec'},scope);
+  for(const overrides of [{agentId:'other'},{runId:'other'},{sessionId:'other'},{sessionKey:'other'},
+    {runId:''},{toolCallId:'parent-1'},{toolCallId:'exec-1'},
+    {deferredParentCallId:'direct-1'},{deferredParentCallId:''},{deferredParentCallId:null}]) {
+    assert.throws(()=>runtime.settleReadonlyParent({...scope,...overrides}),/scope mismatch/);
+    assert.equal(runtime.status().activity.tools,3);
+  }
+  runtime.settleReadonlyParent({...scope,toolCallId:'missing'});
+  assert.equal(runtime.status().activity.tools,3);
+});
+
+test('failed durable direct settlement retains admission and fails closed',linux,t=>{
+  const options=fixture(),runtime=createAccessRuntime(options);
+  t.after(()=>fs.rmSync(path.dirname(options.directory),{recursive:true,force:true}));
+  const scope=settleScope({toolCallId:'direct-1',deferredParentCallId:undefined});
+  runtime.beforeTool({toolCallId:'direct-1',toolName:'pixel_ods_readonly_exec'},scope);
+  fs.chmodSync(options.directory,0o755);
+  assert.throws(()=>runtime.settleReadonlyParent(scope),/unsafe runtime state/);
+  assert.equal(runtime.status().activity.tools,1);
+  assert.equal(runtime.status().available,false);
+  fs.chmodSync(options.directory,0o700);
+  assert.throws(()=>runtime.settleReadonlyParent(scope),/runtime unavailable/);
+  assert.equal(runtime.status().activity.tools,1);
+});
+
+test('settleReadonlyParent releases only the exact deferred parent admission', () => {
+  const runtime = createAccessRuntime(fixture());
+  const ctx = {agentId: 'pixel', runId: 'run-1', sessionId: 'sess-1', sessionKey: 'key-1'};
+  runtime.admit({}, ctx);
+  runtime.beforeTool({toolCallId: 'parent-1', toolName: 'tool_call'}, ctx);
+  runtime.beforeTool({toolCallId: 'other-call', toolName: 'exec'}, ctx);
+  assert.deepEqual(runtime.status().activity, {runs: 1, tools: 2, detached: 0});
+  runtime.settleReadonlyParent(settleScope());
+  assert.deepEqual(runtime.status().activity, {runs: 1, tools: 1, detached: 0});
+  assert.equal(runtime.status().phase, 'busy');
+  runtime.afterTool({toolCallId: 'other-call', toolName: 'exec'}, ctx);
+  runtime.finish({}, ctx);
+  assert.equal(runtime.status().phase, 'idle');
+});
+
+test('settleReadonlyParent refuses wrong scope, wrong kind, and unknown ids', () => {
+  const runtime = createAccessRuntime(fixture());
+  const ctx = {agentId: 'pixel', runId: 'run-1', sessionId: 'sess-1', sessionKey: 'key-1'};
+  runtime.admit({}, ctx);
+  runtime.beforeTool({toolCallId: 'parent-1', toolName: 'tool_call'}, ctx);
+  for (const bad of [
+    settleScope({runId: 'run-other'}),
+    settleScope({sessionId: 'sess-other'}),
+    settleScope({sessionKey: 'key-other'}),
+    settleScope({agentId: 'other'}),
+    settleScope({runId: ''}),
+  ]) assert.throws(() => runtime.settleReadonlyParent(bad), /readonly admission settlement scope mismatch/);
+  assert.deepEqual(runtime.status().activity, {runs: 1, tools: 1, detached: 0});
+  runtime.beforeTool({toolCallId: 'exec-1', toolName: 'exec'}, ctx);
+  assert.throws(() => runtime.settleReadonlyParent(settleScope({deferredParentCallId: 'exec-1'})),
+    /readonly admission settlement scope mismatch/);
+  assert.deepEqual(runtime.status().activity, {runs: 1, tools: 2, detached: 0});
+  runtime.settleReadonlyParent(settleScope({deferredParentCallId: 'missing'}));
+  assert.deepEqual(runtime.status().activity, {runs: 1, tools: 2, detached: 0});
+});
+
+test('finish does not sweep outstanding tool admissions', () => {
+  const runtime = createAccessRuntime(fixture());
+  const ctx = {agentId: 'pixel', runId: 'run-1', sessionId: 'sess-1', sessionKey: 'key-1'};
+  runtime.admit({}, ctx);
+  runtime.beforeTool({toolCallId: 'parent-1', toolName: 'tool_call'}, ctx);
+  runtime.finish({}, ctx);
+  assert.deepEqual(runtime.status().activity, {runs: 0, tools: 1, detached: 0});
+  assert.equal(runtime.status().phase, 'busy');
+  runtime.settleReadonlyParent(settleScope());
+  assert.deepEqual(runtime.status().activity, {runs: 0, tools: 0, detached: 0});
+  assert.equal(runtime.status().phase, 'idle');
+});
+
+test('failed durable settlement retains the admission and fails closed', linux, t => {
+  const options = fixture(), runtime = createAccessRuntime(options);
+  t.after(() => fs.rmSync(path.dirname(options.directory), {recursive:true, force:true}));
+  const ctx = {agentId:'pixel',runId:'run-1',sessionId:'sess-1',sessionKey:'key-1'};
+  runtime.beforeTool({toolCallId:'parent-1',toolName:'tool_call'}, ctx);
+  fs.chmodSync(options.directory, 0o755);
+  assert.throws(() => runtime.settleReadonlyParent(settleScope()), /unsafe runtime state/);
+  assert.equal(runtime.status().activity.tools, 1);
+  assert.equal(runtime.status().available, false);
+  fs.chmodSync(options.directory, 0o700);
+  assert.throws(() => runtime.settleReadonlyParent(settleScope()), /runtime unavailable/);
+  assert.equal(runtime.status().activity.tools, 1);
 });

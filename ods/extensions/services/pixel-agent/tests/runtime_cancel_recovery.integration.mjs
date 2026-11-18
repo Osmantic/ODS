@@ -24,6 +24,7 @@ import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 import {createIngressServer} from '../host/pixel_ingress.mjs';
 import {CLIENT_CANCELLED_REASON,OWNER_CANCELLED_REQUEST_CONTEXT} from '../plugin/tool-loop-guard.mjs';
+import {OWNER_FILE_MUTATION_FORBIDDEN_REASON} from '../plugin/owner-readonly-tools.mjs';
 const pkg=process.env.OPENCLAW_PACKAGE;
 const PORTAL="\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. If it asks for exact text, " +
   'copy that full exact text. Do not answer with a generic acknowledgement. Do not output NO_REPLY.]';
@@ -194,7 +195,8 @@ test(`real harness owner cancel then literal reply: cancel ${phase}, model ${mod
       const aRun=events.find(event=>event.decision==='revise')?.finalize;
       assert.ok(aRun&&aRun!==bRun,'the research run armed its revision before the cancel\n'+trace);
       assert.ok(requests.some(request=>request.owner==='A'&&request.turn==='revision'),'OpenClaw started that revision pass\n'+trace);
-      assert.ok(events.filter(event=>event.prompt===aRun).every(event=>[null,CLIENT_CANCELLED_REASON].includes(event.context)),
+      assert.ok(events.filter(event=>event.prompt===aRun).every(event=>
+        [null,CLIENT_CANCELLED_REASON,OWNER_FILE_MUTATION_FORBIDDEN_REASON].includes(event.context)),
         'the cancelled run never takes the next message\'s notice\n'+trace);
     }
     assert.equal(events.filter(event=>event.context===OWNER_CANCELLED_REQUEST_CONTEXT).length,

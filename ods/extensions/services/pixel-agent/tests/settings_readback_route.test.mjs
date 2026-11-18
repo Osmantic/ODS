@@ -137,7 +137,7 @@ test('provider readback admits no private paths or additional caller fields', as
 });
 
 test('registration supplies the SDK current snapshot lazily, separate from startup probe config', () => {
-  const begin = source.indexOf('    accessRuntime ??= createAccessRuntime(');
+  const begin = source.indexOf('    const makeAccessRuntime = () => createAccessRuntime(');
   const finish = source.indexOf('    const managedRuntime =', begin);
   assert.ok(begin >= 0 && finish > begin);
   const startup = {generation: 'startup'};
@@ -145,13 +145,16 @@ test('registration supplies the SDK current snapshot lazily, separate from start
   const hooks = [];
   const context = {api: {config: startup, registerHook: (...args) => hooks.push(args), runtime: {config: {current() { reads++; return current; }}}},
     registerBootstrapCapabilities,
-    accessRuntime: undefined, createAccessRuntime: options => options,
+    discoveryRegistration: false, stateDirectory: '/owner/state',
+    registeredAccessRuntime: undefined, createAccessRuntime: options => options,
     createOpenClawCodingTools() {}, resolveSandboxContext() {}, execCancellationControl: {},
     OPENCLAW_VERSION: '2026.6.33'};
   vm.runInNewContext(source.slice(begin, finish), context);
   assert.equal(hooks.length, 1); assert.equal(hooks[0][0], 'agent:bootstrap');
-  const options = context.accessRuntime;
+  const options = context.registeredAccessRuntime;
   assert.equal(reads, 0);
+  assert.equal(options.discovery, false);
+  assert.equal(options.directory, '/owner/state/.ods-access-runtime');
   assert.equal(options.config(), startup);
   assert.equal(options.settingsConfig(), current);
   current = {generation: 'reloaded'};
@@ -191,10 +194,11 @@ function registeredRoute(managed) {
       createLease: () => ({durableReplayGuard: true, acquireLease() {throw new Error('no transport allowed');}, releaseLease() {}}),
       createHandoff: () => async () => null})});
   const context = vm.createContext({api, managedRuntimeRegistry: registry, registerBootstrapCapabilities,
-    accessRuntime: undefined, createAccessRuntime: () => access, createOpenClawCodingTools() {},
+    discoveryRegistration: false, stateDirectory: '/owner/state',
+    registeredAccessRuntime: undefined, createAccessRuntime: () => access, createOpenClawCodingTools() {},
     resolveSandboxContext() {}, execCancellationControl: {}, OPENCLAW_VERSION: '2026.6.33',
     sendJson(res, status, value) {Object.assign(res, {status, body: value});}});
-  const begin = source.indexOf('    accessRuntime ??= createAccessRuntime(');
+  const begin = source.indexOf('    const makeAccessRuntime = () => createAccessRuntime(');
   const finish = source.indexOf('    contextCompaction ??=', begin);
   assert.ok(begin >= 0 && finish > begin);
   // Include the actual production assignment from registry to route owner.

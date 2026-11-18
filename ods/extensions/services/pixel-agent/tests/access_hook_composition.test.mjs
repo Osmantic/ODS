@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import {createWorkspaceArtifactAdmission,normalizeWorkspaceArtifact} from '../plugin/workspace-artifact.mjs';
 import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
+import {createReadonlyExecAdmission} from '../plugin/readonly-execution-tool.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
 import {withCronCommandPayloadBlock} from '../plugin/cron-command-payload-guard.mjs';
 import {withPixelSubagentWorkspace} from '../plugin/subagent-workspace.mjs';
@@ -21,6 +22,7 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
   const lifecycleCalls = [], warnings = [];
   const conversationImageLifecycle = {observe() {lifecycleCalls.push('image');}};
   const projectRunControl = createProjectRunControl();
+  const readonlyAdmission = createReadonlyExecAdmission();
   const runtime = {
     isProbe: context => context?.runId === 'private-proof',
     beforeTool: () => { calls.push('admit'); },
@@ -43,13 +45,13 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
     },
     goalProgress: {before() {}, update() {}, finish() {}},
     conversationImageLifecycle,
-    bundleAdmission, artifactAdmission, projectRunControl, projectSnapshots: {before() {}, end() {}}, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, withCronCommandPayloadBlock,
+    bundleAdmission, artifactAdmission, readonlyAdmission, projectRunControl, projectSnapshots: {before() {}, end() {}}, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, withCronCommandPayloadBlock,
     delegationDelivery:{end(){lifecycleCalls.push('delegation');},blocked(){},before(){},after(){},admission(){},hasPendingChildren(){return false;},...delivery},
     withPixelSubagentWorkspace, resolveUserPath: value=>value,
     resolveAgentWorkspaceDir:config=>config?.agents?.list?.find(agent=>agent.id==='pixel')?.workspace,
     AGENT_ID: 'pixel',
   });
-  return {callbacks, calls, runtime, activity, bundleAdmission, artifactAdmission, projectRunControl,
+  return {callbacks, calls, runtime, activity, bundleAdmission, artifactAdmission, readonlyAdmission, projectRunControl,
     lifecycleCalls, conversationImageLifecycle, warnings};
 }
 const context = {agentId: 'pixel', runId: 'cron-request', toolName: 'cron'};
@@ -175,6 +177,21 @@ test('bundle scope is recorded only after guard and native admission both permit
     else assert.deepEqual(bundleAdmission.take('bundle',args,ctx),ctx);
     callbacks.after_tool_call(event,ctx);
     assert.throws(()=>bundleAdmission.take('bundle',args,ctx),/unbound/);
+  }
+});
+
+test('readonly execution scope requires final guard and native admission, and expires after the hook',async()=>{
+  const args={command:'printf 4',workdir:'.',timeoutSeconds:10};
+  const ctx={agentId:'pixel',runId:'run',sessionId:'session',sessionKey:'key',toolCallId:'readonly'};
+  const event={toolName:'pixel_ods_readonly_exec',toolCallId:'readonly',params:args};
+  for(const deniedBy of ['none','guard','native']){
+    const {callbacks,runtime,readonlyAdmission}=hooks(deniedBy==='guard'?{block:true}:undefined);
+    if(deniedBy==='native')runtime.beforeTool=()=>({block:true});
+    await callbacks.before_tool_call(event,ctx);
+    if(deniedBy==='none')assert.deepEqual(readonlyAdmission.take('readonly',args,ctx),ctx);
+    else assert.throws(()=>readonlyAdmission.take('readonly',args,ctx),/unbound/);
+    callbacks.after_tool_call(event,ctx);
+    assert.throws(()=>readonlyAdmission.take('readonly',args,ctx),/unbound/);
   }
 });
 

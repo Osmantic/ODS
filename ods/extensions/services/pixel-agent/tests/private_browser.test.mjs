@@ -97,6 +97,22 @@ test("configured browser permits natural follow-up navigation and URL-free actio
   }
 });
 
+test("owner file ban preserves authorized browser observation under private-address gates", () => {
+  const guard = createToolLoopGuard();
+  guard.observeRun(context, "pixel", event, { privateBrowserAccess: true });
+  assert.equal(guard.beforeToolCall(browser, context)?.block, undefined);
+  for (const action of ["snapshot", "screenshot", "console", "tabs", "status", "focus", "close"]) {
+    assert.equal(guard.beforeToolCall({ toolName: "browser", params: { action, targetId: "tab-1" } }, context)?.block, undefined, action);
+  }
+  assert.equal(guard.beforeToolCall({ toolName: "browser", params: { action: "navigate", targetUrl: "http://127.0.0.1:3001/" } }, context)?.block, undefined);
+  assert.equal(guard.beforeToolCall({ toolName: "tool_call", params: { id: "openclaw:browser:browser", args: { action: "open", url: "http://127.0.0.1:3001/" } } }, context)?.block, undefined);
+  assert.equal(guard.beforeToolCall({ toolName: "tool_call", params: { id: "openclaw:core:browser", args: { action: "snapshot", targetId: "tab-1" } } }, context)?.block, undefined);
+  assert.equal(guard.beforeToolCall({ toolName: "browser", params: { action: "evaluate", expression: "1+1" } }, context)?.block, true);
+  assert.equal(guard.beforeToolCall({ toolName: "browser", params: { action: "download", targetId: "tab-1" } }, context)?.block, true);
+  assert.equal(guard.beforeToolCall({ toolName: "browser", params: { action: "screenshot", targetId: "tab-1", outputPath: "/tmp/x.png" } }, context)?.block, true);
+  assert.equal(guard.beforeToolCall({ toolName: "tool_call", params: { id: "openclaw:browser:browser", args: { action: "upload", targetId: "tab-1" } } }, context)?.block, true);
+});
+
 test("wrapped public fetch tools retain their private-address restrictions", () => {
   const guard = createToolLoopGuard();
   guard.observeRun(context, "pixel", event, { privateBrowserAccess: true });

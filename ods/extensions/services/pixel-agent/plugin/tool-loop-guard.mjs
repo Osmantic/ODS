@@ -1,4 +1,5 @@
-import {ownerLaneText, ownerForbidsTools} from './owner-tool-policy.mjs';
+import {ownerLaneText, ownerForbidsTools, ownerForbidsFileMutation} from './owner-tool-policy.mjs';
+import {ownerReadonlyToolAllowed, OWNER_FILE_MUTATION_FORBIDDEN_REASON} from './owner-readonly-tools.mjs';
 import {validDeliveredArtifact, normalizeWorkspaceArtifact, WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE} from './workspace-artifact.mjs';
 // Pixel per-run tool-loop guard.
 //
@@ -5349,8 +5350,17 @@ function ownerRequestsPythonCompute(text) {
   if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\s+(?:(?:actually|really)\s+)?(?:execute|executing|run|running|interpret|interpreting|use|using|call|calling|invoke|invoking|calculate|compute|evaluate|check|verify)\b/i.test(lane)) return false;
   return lane.split(/[!?;\n]+|\.(?=\s|$)/).some(raw => {
     const clause = raw.trim().replace(/^(?:please|can\s+you|could\s+you|would\s+you)\s+/i, '');
-    return /^use\s+(?:(?:the|your)\s+)?python(?:\s+(?:tool|interpreter|execution\s+tool|exec\s+tool))?\s+to\s+(?:calculate|compute|evaluate|check|verify)\b/i.test(clause) ||
-      /^(?:calculate|compute|evaluate|check|verify)\b[^.!?;\n]{0,200}\b(?:using|with)\s+(?:(?:the|your)\s+)?python\b/i.test(clause);
+    // "Read the CSV and use Python to calculate ..." is two owner actions.
+    // Split only after an imperative file-read head, so explanations and
+    // reported instructions do not acquire an execution obligation.
+    const actions = /^(?:read|open|load|inspect)\b/i.test(clause)
+      ? clause.split(/\s+(?:and(?:\s+then)?|then)\s+(?=(?:please\s+)?(?:use|calculate|compute|evaluate|check|verify)\b)/i)
+      : [clause];
+    return actions.some(action => {
+      const directive = action.replace(/^please\s+/i, '');
+      return /^use\s+(?:(?:the|your)\s+)?python(?:\s+(?:tool|interpreter|execution\s+tool|exec\s+tool))?\s+to\s+(?:calculate|compute|evaluate|check|verify)\b/i.test(directive) ||
+        /^(?:calculate|compute|evaluate|check|verify)\b[^.!?;\n]{0,200}\b(?:using|with)\s+(?:(?:the|your)\s+)?python\b/i.test(directive);
+    });
   });
 }
 
@@ -8115,6 +8125,7 @@ export function createToolLoopGuard({
   abortRunAndDrain,
   cancelProjectRun,
   execControl,
+  readonlyExecutionAuthority,
   evidenceArtifactWriter,
   onWorkspaceMutation = () => {},
   verifyWorkspacePreview,
@@ -9124,7 +9135,15 @@ export function createToolLoopGuard({
   // A call this guard refuses runs nothing: it neither advances nor revokes a
   // pending host comparison, and its receipt is recognized by exact call ID.
   function beforeToolCall(event, context, agentId = "pixel", nativeDelegationPending = false) {
-    const originalDecision = decideToolCall(event, context, agentId);
+    const internalReadonlyExecution = readonlyExecutionAuthority?.consume(event, context) === true;
+    let originalDecision = decideToolCall(event, context, agentId, internalReadonlyExecution);
+    // An internally bound calculation is already prepared for a distinct RO
+    // sandbox. Policy can refuse it, but must never silently rewrite its command
+    // or move it to the ordinary/native execution directory.
+    if (internalReadonlyExecution && originalDecision?.block !== true && originalDecision?.params &&
+        !isDeepStrictEqual(originalDecision.params, event?.params)) {
+      originalDecision = {block:true, blockReason:'Read-only execution parameters changed during authorization. No calculation was run.'};
+    }
     // Only refine an already-proven phantom process refusal. Real exec
     // sessions, earlier denials, correction allowances and failure fuses keep
     // their existing decisions. Fixed text preserves identical-outcome checks.
@@ -9163,7 +9182,7 @@ export function createToolLoopGuard({
     return decision;
   }
 
-  function decideToolCall(event, context, agentId) {
+  function decideToolCall(event, context, agentId, internalReadonlyExecution = false) {
     if (context?.agentId !== agentId) return undefined;
     // OpenClaw 2026.6 does not consistently expose sessionKey during
     // before_prompt_build for OpenAI-compatible HTTP turns. Tool hooks do
@@ -9172,8 +9191,9 @@ export function createToolLoopGuard({
     // capable of aborting a long model continuation after the first tool.
     observeRun(context, agentId);
     const toolName = context?.toolName ?? event?.toolName;
-    const canonicalParams = canonicalWorkspaceParams(toolName, event?.params, runs.get(context?.runId)?.configuredWorkspaceRoot);
-    let normalizedParams = normalizeWorkspaceParams(toolName, canonicalParams) ??
+    const canonicalParams = internalReadonlyExecution ? event?.params :
+      canonicalWorkspaceParams(toolName, event?.params, runs.get(context?.runId)?.configuredWorkspaceRoot);
+    let normalizedParams = internalReadonlyExecution ? undefined : normalizeWorkspaceParams(toolName, canonicalParams) ??
       (isDeepStrictEqual(canonicalParams, event?.params) ? undefined : canonicalParams);
 
     const { runId, sessionId } = runIdentity(event, context);
@@ -9187,6 +9207,11 @@ export function createToolLoopGuard({
       blockReason: "Pixel could not recover the owner's request for this subagent continuation. Start a fresh owner message; child results cannot authorize tools.",
     };
     if (state?.ownerNoTools) return {block:true, blockReason:OWNER_NO_TOOLS_REASON};
+    if (state?.ownerFileMutationForbidden &&
+        !ownerReadonlyToolAllowed(toolName, normalizedParams ?? event?.params, internalReadonlyExecution,
+          state.workspacePreviewRequired === true)) {
+      return {block:true, blockReason:OWNER_FILE_MUTATION_FORBIDDEN_REASON};
+    }
     if (state?.execGuidanceLeakRetried) return {block:true, blockReason:"Correct the answer from existing output without calling tools or repeating completed work."};
     // After compaction the pixels may have left the context; re-reading is then legitimate.
     if (state?.attachedPictureIds && !state.compactionSeen && namesAttachedPicture(event?.params, state.attachedPictureIds)) {
@@ -11135,7 +11160,7 @@ export function createToolLoopGuard({
     if (derivedReason) return { block: true, blockReason: derivedReason };
 
     if (!WEB_TOOLS.has(toolName)) {
-      if (selectedToolName === "exec" && execControl) {
+      if (selectedToolName === "exec" && execControl && !internalReadonlyExecution) {
         const params = { ...selectedParams };
         const originalFingerprint = execFingerprint(params);
         const originalVerificationFingerprint = verificationExecFingerprint(params);
@@ -11324,6 +11349,8 @@ export function createToolLoopGuard({
         priorSourceReceipts);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
       if (ownerIntent && state.ownerNoTools === undefined) state.ownerNoTools=ownerForbidsTools(ownerIntent);
+      if (ownerIntent && state.ownerFileMutationForbidden === undefined)
+        state.ownerFileMutationForbidden=ownerForbidsFileMutation(ownerIntent);
       const pictureIds=attachedPictureIds(currentUserText(event?.messages,event?.prompt));
       if (pictureIds.length && state.attachedPictureIds === undefined) state.attachedPictureIds=pictureIds;
       if (ownerIntent) state.extensionCompletionGate ??= createExtensionCompletionGate(ownerIntent);
@@ -14535,7 +14562,9 @@ export function createToolLoopGuard({
     if (state?.clientCancelled) return CLIENT_CANCELLED_REASON;
     const withdrawn = state?.withdrawnOwnerRequest && !resendsWithdrawnAnswer(state) ? OWNER_CANCELLED_REQUEST_CONTEXT : undefined;
     const outputLimit = state?.priorOutputLimit ? outputLimitContext(state.priorOutputLimit) : undefined;
-    return [withdrawn, outputLimit].filter(Boolean).join('\n\n') || undefined;
+    const readonly = state?.ownerFileMutationForbidden && !state.ownerNoTools
+      ? OWNER_FILE_MUTATION_FORBIDDEN_REASON : undefined;
+    return [withdrawn, outputLimit, readonly].filter(Boolean).join('\n\n') || undefined;
   }
 
   // The owner stopped a clarification answer and sent the same answer again.
@@ -14691,8 +14720,11 @@ export function createToolLoopGuard({
           !workspaceArtifactUnavailableReason({...context, runId})) {
         state.executionRequestRetried = true;
         return {action:'revise', reason:'The requested code run has no execution receipt.', retry:{
-          instruction:'The owner requested actual code execution. Use the exec tool to run the requested code, ' +
-            'then report the command and its observed output. Do not substitute an estimated or inferred answer.',
+          instruction:'The owner requested actual code execution. ' +
+            (state.ownerFileMutationForbidden
+              ? 'Discover and use pixel_ods_readonly_exec to run the requested calculation without changing owner files. Use relative workspace input paths and omit workdir for the workspace root. Do not use ordinary exec or delegation to bypass the file restriction. '
+              : 'Use the exec tool to run the requested code. ') +
+            'Report its observed output in the owner-requested format. Do not substitute an estimated or inferred answer.',
           idempotencyKey:'pixel-ods-explicit-code-execution', maxAttempts:1}};
       }
       const decision = state?.extensionCompletionGate?.active && !extensionStopped

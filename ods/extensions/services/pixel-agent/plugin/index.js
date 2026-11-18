@@ -89,6 +89,9 @@ import { createWorkspacePreviewInspectTool } from "./workspace-preview-inspect.m
 import { previewScreenshotCapability } from "./preview-screenshot.mjs";
 import {createWorkspaceBundleAdmission, createWorkspaceBundleService, createWorkspaceBundleTool} from './workspace-bundle.mjs';
 import {createWorkspaceBundleExecution} from './workspace-bundle-execution.mjs';
+import {createReadonlyExecutionAuthority} from './readonly-execution-authority.mjs';
+import {createReadonlyExecutionRuntime} from './readonly-execution-runtime.mjs';
+import {createReadonlyExecAdmission,createReadonlyExecTool,READONLY_EXEC_TOOL} from './readonly-execution-tool.mjs';
 import { createTaskActivity } from "./task-activity.mjs";
 import { createWorkspaceProjects } from "./workspace-projects.mjs";
 import { createProjectRestoreRoute, createProjectSnapshots } from "./project-snapshots.mjs";
@@ -100,7 +103,8 @@ import {createConversationImageLifecycle} from './conversation-image-lifecycle.m
 import {createChatImageReadTool,CHAT_IMAGE_READ_TOOL} from './chat-image-read.mjs';
 import {readConversationImage,readConversationImagePolicy} from './chat-image-transport.mjs';
 import {createExtensionProposalTool, createSourceProposalTool, createPythonLibraryProposalTool, createExtensionRequestStatusTool, createExtensionRequestPrepareTool, createExtensionRequestAdvanceTool, createExtensionRequestRetryTool, submitExtensionProposal} from './extension-proposal.mjs';
-import { createOpenClawCodingTools, resolveSandboxContext, OPENCLAW_VERSION } from "openclaw/plugin-sdk/agent-harness";
+import { createOpenClawCodingTools, resolveSandboxContext, OPENCLAW_VERSION,
+  acquireSessionWriteLock, runAgentHarnessAfterToolCallHook } from "openclaw/plugin-sdk/agent-harness";
 
 const AGENT_ID = process.env.PIXEL_AGENT_ID ?? "pixel";
 let runtimeIdentity;
@@ -115,8 +119,8 @@ const workspaceProjects = createWorkspaceProjects();
 // deletion removes the chat's card with its transcripts.
 const pendingClarifications = createPendingClarifications();
 const taskActivity = createTaskActivity({agentId:AGENT_ID, goalForRun:id=>goalProgress.projection(id),projectsForSession:key=>workspaceProjects.forSession(key)});
-let execCancellationControl;
-let accessRuntime;
+let registeredExecCancellationControl;
+let registeredAccessRuntime;
 let projectSnapshots;
 let contextCompaction;
 let conversationImageLifecycle;
@@ -126,6 +130,9 @@ const evidenceArtifactWriter = createEvidenceArtifactWriter();
 let perplexicaAvailability;
 const bundleAdmission = createWorkspaceBundleAdmission();
 const artifactAdmission = createWorkspaceArtifactAdmission();
+const readonlyAuthority = createReadonlyExecutionAuthority();
+const readonlyAdmission = createReadonlyExecAdmission();
+let readonlyRuntime, readonlyApi;
 
 // Restrict tool registration to the Pixel agent. Tools are only offered to the
 // agent id declared by this plugin (see openclaw.plugin.json); this guards the
@@ -276,6 +283,19 @@ export default definePluginEntry({
   name: "Pixel ODS Integration",
   description: "Read-only ODS status and strictly guarded public-page evidence for Pixel.",
   register(api) {
+    if (api.registrationMode !== 'discovery') readonlyApi = api;
+    readonlyRuntime ??= createReadonlyExecutionRuntime({
+      readConfig: () => readonlyApi?.runtime?.config?.current?.() ?? readonlyApi?.config,
+      resolveStateDir: () => readonlyApi?.runtime?.state?.resolveStateDir(),
+      resolveCliPath: () => fileURLToPath(new URL('../../openclaw.mjs', import.meta.resolve('openclaw/plugin-sdk/agent-harness'))),
+      createTools: createOpenClawCodingTools, resolveSandbox: resolveSandboxContext,
+      acquireLease: acquireSessionWriteLock, afterToolCall: runAgentHarnessAfterToolCallHook,
+      authority: readonlyAuthority,
+      onSettled: scope => {
+        if (!registeredAccessRuntime) throw new Error('readonly admission runtime unavailable');
+        registeredAccessRuntime.settleReadonlyParent(scope);
+      },
+    });
     // Discovery tools and build-time schema captures must never read host state.
     // Failure to collect diagnostics must also never prevent agent registration.
     if (api.registrationMode !== 'discovery' && !runtimeIdentity) {
@@ -286,14 +306,23 @@ export default definePluginEntry({
       } catch { /* preserve explicit unknown observations */ }
       runtimeIdentity = createRuntimeIdentity({pluginRoot, modulePath, openclawVersion:OPENCLAW_VERSION});
     }
-    execCancellationControl ??= createExecCancellationControl({
+    const discoveryRegistration = api.registrationMode === 'discovery';
+    const stateDirectory = !discoveryRegistration ? api.runtime?.state?.resolveStateDir?.() : undefined;
+    const makeExecControl = () => createExecCancellationControl({
+      ...(stateDirectory ? {root: `${stateDirectory}/.ods-exec-control`} : {}),
       executionHost: executionHostForAgent(api.config, AGENT_ID),
     });
-    accessRuntime ??= createAccessRuntime({config: () => api.config,
+    const execCancellationControl = discoveryRegistration ? makeExecControl()
+      : registeredExecCancellationControl ??= makeExecControl();
+    const makeAccessRuntime = () => createAccessRuntime({config: () => api.config,
+      discovery: discoveryRegistration,
+      ...(stateDirectory ? {directory: `${stateDirectory}/.ods-access-runtime`} : {}),
       settingsConfig: typeof api.runtime?.config?.current === 'function' ? () => api.runtime.config.current() : undefined,
       createTools: createOpenClawCodingTools, resolveSandbox: resolveSandboxContext,
       execControl: () => execCancellationControl, runtimeVersion: OPENCLAW_VERSION,
       hooksAllowed: api.config?.plugins?.entries?.["pixel-ods"]?.hooks?.allowConversationAccess === true});
+    const accessRuntime = discoveryRegistration ? makeAccessRuntime()
+      : registeredAccessRuntime ??= makeAccessRuntime();
     registerBootstrapCapabilities(api);
     const managedRuntime = managedRuntimeRegistry.register(api, accessRuntime);
     if (managedRuntime) currentManagedRuntime = managedRuntime;
@@ -360,7 +389,11 @@ export default definePluginEntry({
           reason: "ods_client_disconnect",
         }),
       execControl: execCancellationControl,
-      cancelProjectRun: scope => projectRunControl.cancel(scope),
+      readonlyExecutionAuthority: readonlyAuthority,
+      cancelProjectRun: async scope => {
+        const results = await Promise.allSettled([projectRunControl.cancel(scope),readonlyRuntime.cancel(scope)]);
+        return results.every(result => result.status === 'fulfilled' && result.value === true);
+      },
       evidenceArtifactWriter,
       onWorkspaceMutation:mutation=>workspaceProjects.record(mutation),
       verifyWorkspacePreview:createWorkspacePreviewVerifier({transport:api.pluginConfig?.workspacePreviewTransport}),
@@ -435,11 +468,18 @@ export default definePluginEntry({
     });
     api.on('subagent_spawned',(event,context)=>delegationDelivery.nativeSpawn(event,context));
     api.on('gateway_stop',()=>delegationDelivery.invalidate());
+    api.on('gateway_start',()=>readonlyRuntime.recover().catch(()=>{
+      api.logger.warn('Read-only calculation recovery is unavailable; new calculations require verified cleanup.');
+    }));
     const executeBundle = createWorkspaceBundleService({runHelper: bundleExecution.runHelper,
       invalidatePreview: scope => toolLoopGuard.invalidateWorkspaceBundle(scope)});
     api.registerTool(onlyPixel(context => createWorkspaceBundleTool(context, {
       admission: bundleAdmission, execute: executeBundle, scopeForContext: bundleExecution.scopeForContext,
     })), {names: ['pixel_ods_workspace_bundle']});
+    api.registerTool(onlyPixel(context => createReadonlyExecTool(context, {
+      admission: readonlyAdmission, execute: readonlyRuntime.execute, scopeForContext: readonlyRuntime.scopeForContext,
+      onNotStarted: active => accessRuntime.settleReadonlyParent(active),
+    })), {names: [READONLY_EXEC_TOOL]});
 
     // OpenClaw does not replay arbitrary plugin tools after an empty model
     // continuation. Give the Pixel agent an explicit, trusted prompt contract
@@ -554,6 +594,7 @@ export default definePluginEntry({
       delegationDelivery.before(event,context,decision);
       bundleAdmission.before(event, context, decision);
       artifactAdmission.before(event, context, decision);
+      readonlyAdmission.before(event, context, decision);
       projectRunControl.before(event, context, decision);
       taskActivity.before(event, context, decision?.block === true);
       await projectSnapshots.before(event, context, decision);
@@ -563,6 +604,7 @@ export default definePluginEntry({
       delegationDelivery.after(event,context);
       bundleAdmission.after(event, context);
       artifactAdmission.after(event, context);
+      readonlyAdmission.after(event, context);
       projectRunControl.after(event, context);
       accessRuntime.afterTool(event, context);
       if (!accessRuntime.isProbe(context)) {
