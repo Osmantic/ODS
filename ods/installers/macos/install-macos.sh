@@ -2395,8 +2395,8 @@ else
         macos_install_native_llama "$LLAMA_SERVER_BIN" "$LLAMA_CPP_RELEASE_TAG" \
             "$LLAMA_CPP_MACOS_ASSET" "$LLAMA_CPP_MACOS_URL" || exit 1
 
-        # Start native llama-server with Metal
-        ai "Starting native llama-server (Metal)..."
+        # Resolve the exact launch profile before preparing dependent services.
+        ai "Preparing native llama-server (Metal)..."
         MODEL_FULL_PATH="$MACOS_NATIVE_MODEL_PATH"
 
         mkdir -p "$(dirname "$LLAMA_SERVER_PID_FILE")"
@@ -2461,58 +2461,60 @@ else
 
         _macos_stop_install_owned_native_llama \
             "Stopping prior install-owned native inference before replacement..."
-        bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" start \
-            "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE" "${_llama_args[@]}"
-        LLAMA_PID="$(cat "$LLAMA_SERVER_PID_FILE")"
+        _macos_start_prepared_native_llama() {
+            bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" start \
+                "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE" "${_llama_args[@]}"
+            LLAMA_PID="$(cat "$LLAMA_SERVER_PID_FILE")"
 
-        # Wait for health endpoint
-        ai "Waiting for llama-server to load model..."
-        MAX_WAIT=180
-        WAITED=0
-        HEALTHY=false
-        while [[ "$WAITED" -lt "$MAX_WAIT" ]]; do
-            sleep 2
-            WAITED=$((WAITED + 2))
-            if curl -sf --max-time 10 "http://${_llama_probe_host}:${_native_llama_port}/health" >/dev/null 2>&1; then
-                HEALTHY=true
-                break
-            fi
-            # Check if process died
-            if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
-                ai_err "llama-server process died. Check logs:"
-                ai "  tail -50 ${LLAMA_SERVER_LOG}"
-                exit 1
-            fi
-            if (( WAITED % 10 == 0 )); then
-                ai "  Still loading... (${WAITED}s)"
-            fi
-        done
+            # Wait for health endpoint
+            ai "Waiting for llama-server to load model..."
+            MAX_WAIT=180
+            WAITED=0
+            HEALTHY=false
+            while [[ "$WAITED" -lt "$MAX_WAIT" ]]; do
+                sleep 2
+                WAITED=$((WAITED + 2))
+                if curl -sf --max-time 10 "http://${_llama_probe_host}:${_native_llama_port}/health" >/dev/null 2>&1; then
+                    HEALTHY=true
+                    break
+                fi
+                # Check if process died
+                if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
+                    ai_err "llama-server process died. Check logs:"
+                    ai "  tail -50 ${LLAMA_SERVER_LOG}"
+                    exit 1
+                fi
+                if (( WAITED % 10 == 0 )); then
+                    ai "  Still loading... (${WAITED}s)"
+                fi
+            done
 
-        if $HEALTHY; then
-            ai_ok "Native llama-server healthy (PID ${LLAMA_PID})"
+            if $HEALTHY; then
+                ai_ok "Native llama-server healthy (PID ${LLAMA_PID})"
 
-            # ── Pre-warm the LLM slot ──
-            # /health returning 200 only means the model is mmap'd. The
-            # FIRST chat completion still has to materialize KV cache and
-            # JIT compile fused kernels — during that, llama-server 503s
-            # concurrent requests. Hermes Agent's default 3-retry / 120s
-            # budget burns out on this on slower hardware, so we force
-            # the slot through cold path here while we're already in the
-            # "this may take a minute" install context. Bounded by curl
-            # --max-time so a stalled llama-server can't hang the install.
-            _prewarm_url="http://${_llama_probe_host}:${_native_llama_port}/v1/chat/completions"
-            _prewarm_model="${GGUF_FILE:-default}"
-            _prewarm_body="{\"model\":\"${_prewarm_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}"
-            if curl -sf --max-time 120 -X POST "$_prewarm_url" \
-                -H "Content-Type: application/json" \
-                -d "$_prewarm_body" >/dev/null 2>&1; then
-                ai_ok "LLM slot pre-warmed (first real chat will be fast)"
+                # ── Pre-warm the LLM slot ──
+                # /health returning 200 only means the model is mmap'd. The
+                # FIRST chat completion still has to materialize KV cache and
+                # JIT compile fused kernels — during that, llama-server 503s
+                # concurrent requests. Hermes Agent's default 3-retry / 120s
+                # budget burns out on this on slower hardware, so we force
+                # the slot through cold path here while we're already in the
+                # "this may take a minute" install context. Bounded by curl
+                # --max-time so a stalled llama-server can't hang the install.
+                _prewarm_url="http://${_llama_probe_host}:${_native_llama_port}/v1/chat/completions"
+                _prewarm_model="${GGUF_FILE:-default}"
+                _prewarm_body="{\"model\":\"${_prewarm_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}"
+                if curl -sf --max-time 120 -X POST "$_prewarm_url" \
+                    -H "Content-Type: application/json" \
+                    -d "$_prewarm_body" >/dev/null 2>&1; then
+                    ai_ok "LLM slot pre-warmed (first real chat will be fast)"
+                else
+                    ai_warn "LLM pre-warm timed out — first Hermes prompt may need a retry while the slot warms."
+                fi
             else
-                ai_warn "LLM pre-warm timed out — first Hermes prompt may need a retry while the slot warms."
+                ai_warn "llama-server did not become healthy within ${MAX_WAIT}s. It may still be loading."
             fi
-        else
-            ai_warn "llama-server did not become healthy within ${MAX_WAIT}s. It may still be loading."
-        fi
+        }
     fi
 
     # ── Assemble Docker Compose flags ──
@@ -3084,6 +3086,14 @@ for service in (data.get("services") or {}).values():
     echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"
     if $ENABLE_PIXEL; then
         _macos_add_example_projects
+    fi
+
+    # Keep model weights and KV allocation out of Docker builds and Pixel
+    # preparation. Start the unchanged profile after activation, before any
+    # detached bootstrap promotion can replace its listener.
+    if ! $CLOUD_MODE; then
+        ai "Starting native llama-server after service preparation (Metal)..."
+        _macos_start_prepared_native_llama
     fi
 
     # ── Launch background model upgrade ──────────────────────────────────
