@@ -3,7 +3,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'installers/windows/ods.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw $errors[0] }
-foreach ($name in @('Stop-ODSOwnedContainersForRecovery', 'Invoke-Stop', 'Invoke-Disable')) {
+foreach ($name in @('Stop-ODSOwnedContainersForRecovery', 'Invoke-Stop', 'Get-ODSExtensionStopTargets', 'Invoke-Disable')) {
     $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     . ([scriptblock]::Create($definition.Extent.Text))
 }
