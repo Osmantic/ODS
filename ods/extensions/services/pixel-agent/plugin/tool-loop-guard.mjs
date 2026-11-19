@@ -12352,7 +12352,27 @@ export function createToolLoopGuard({
       }
     }
     const refusedCall = state.previewRevalidationRefusedCalls?.delete(toolCallId) === true && failedToolOutcome(event);
-    const noWorkspaceEffect = refusedCall || workspaceReadOnlyCall(toolName, event?.params);
+    // Tool Search reports a catalog publication through its child and then its
+    // wrapper. Only the same first, already-verified receipt under the exact
+    // pending parent and unchanged generation is a duplicate, not a new effect.
+    const firstPreview = pendingToolRun?.firstWorkspacePreview;
+    const firstPreviewOuter = firstPreview && toolName === 'tool_call'
+      ? toolSearchSelectedToolEvent(event, WORKSPACE_PREVIEW_TOOL, 'pixel-ods') : undefined;
+    const sameInitialPreviewReceipt = Boolean(firstPreviewOuter && !toolCallFailed(event) &&
+      pendingToolRun.runId === runId && pendingToolRun.transport === toolName &&
+      pendingToolRun.selectedToolName === WORKSPACE_PREVIEW_TOOL &&
+      !state.clientCancelled && !state.artifactIdentityConflict &&
+      (!event?.runId || event.runId === runId) &&
+      (!event?.toolCallId || event.toolCallId === toolCallId) &&
+      (!context?.sessionId || context.sessionId === firstPreview.sessionId) &&
+      (!context?.sessionKey || context.sessionKey === firstPreview.sessionKey) &&
+      state.currentSessionId === firstPreview.sessionId && state.currentSessionKey === firstPreview.sessionKey &&
+      sessionRuns.get(firstPreview.sessionId) === runId &&
+      state.previewVerificationGeneration === firstPreview.generation &&
+      state.workspacePreview === firstPreview.preview && state.workspaceRepublicationPrior === firstPreview.preview &&
+      isDeepStrictEqual(firstPreviewOuter.params, firstPreview.params) &&
+      isDeepStrictEqual(workspacePreviewOutcome(firstPreviewOuter, firstPreview.preview.relativeDirectory, state), firstPreview.preview));
+    const noWorkspaceEffect = refusedCall || sameInitialPreviewReceipt || workspaceReadOnlyCall(toolName, event?.params);
     if (!noWorkspaceEffect) state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
     // Counted for EDIT_EARLY_NOTICE: reads, and commands that only read files
     // (the model's own command, from the pending record), on the outer call
@@ -12839,12 +12859,12 @@ export function createToolLoopGuard({
     const conditionalOutcome = previewEvent && !declinedPreviewError && !documentPreviewError &&
       state.workspaceRepublicationCondition && !toolCallFailed(previewEvent)
       ? previewEvent.result?.details?.conditionalPublication : undefined;
-    let conditionalHandled = false;
-    if (previewEvent && !declinedPreviewError && !documentPreviewError) state.previewReceipts = (state.previewReceipts ?? 0) + 1;
+    let conditionalHandled = sameInitialPreviewReceipt;
+    if (previewEvent && !declinedPreviewError && !documentPreviewError && !sameInitialPreviewReceipt) state.previewReceipts = (state.previewReceipts ?? 0) + 1;
     const issuedBinding = previewPublicationBindings.get(toolCallId);
     // A Tool Search child and its outer call report the same reuse once.
-    if (previewEvent && issuedBinding && appliedPublicationBindings.has(issuedBinding)) conditionalHandled = true;
-    else if (previewEvent && state.workspaceRepublicationCondition && state.workspaceRepublicationPrior &&
+    if (!conditionalHandled && previewEvent && issuedBinding && appliedPublicationBindings.has(issuedBinding)) conditionalHandled = true;
+    else if (!conditionalHandled && previewEvent && state.workspaceRepublicationCondition && state.workspaceRepublicationPrior &&
         !declinedPreviewError && !documentPreviewError && !toolCallFailed(previewEvent)) {
       const binding = conditionalReceiptBinding(state, runId, toolCallId, previewEvent.result?.details);
       const prior = binding?.prior;
@@ -12886,6 +12906,8 @@ export function createToolLoopGuard({
       );
       state.workspacePreviewLastAttemptSucceeded = Boolean(preview);
       if (preview) {
+        const firstConditionalPreview = !state.workspaceRepublicationPrior &&
+          state.workspaceRepublicationCondition?.relativeDirectory === preview.relativeDirectory;
         state.workspacePreviewDirectory = preview.relativeDirectory;
         state.workspaceRenderedInspection = undefined;
         state.workspaceInspectionGeneration = (state.workspaceInspectionGeneration ?? 0) + 1;
@@ -12920,6 +12942,19 @@ export function createToolLoopGuard({
         // what a later conditional republication is compared with.
         if (state.workspaceRepublicationCondition?.relativeDirectory === preview.relativeDirectory) {
           state.workspaceRepublicationPrior = state.workspacePreview;
+        }
+        if (firstConditionalPreview && toolName === WORKSPACE_PREVIEW_TOOL && typeof toolCallId === 'string') {
+          const parents = [...pendingToolRuns].filter(([id, pending]) => {
+            const prefix = `${toolSearchChildPrefix(id)}${WORKSPACE_PREVIEW_TOOL}:`;
+            return pending.transport === 'tool_call' && pending.runId === runId &&
+              pending.selectedToolName === WORKSPACE_PREVIEW_TOOL &&
+              isDeepStrictEqual(pending.selectedParams, previewEvent.params) &&
+              toolCallId.startsWith(prefix) && /^[1-9][0-9]*$/.test(toolCallId.slice(prefix.length));
+          });
+          if (parents.length === 1) parents[0][1].firstWorkspacePreview = Object.freeze({
+            preview, params: structuredClone(previewEvent.params), generation: state.previewVerificationGeneration,
+            sessionId: state.currentSessionId, sessionKey: state.currentSessionKey,
+          });
         }
       }
     }

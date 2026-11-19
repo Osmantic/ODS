@@ -503,6 +503,72 @@ const textOf = persisted => (persisted?.content ?? []).filter(block => block?.ty
 const readResult = {content: [{type: 'text', text: '<!doctype html><h1>Repaired</h1>'}], details: {status: 'completed'}};
 const comparingVerifier = runRef => async preview => snapshotOf(DIR, runRef.run.files).sha256 === preview.sha256;
 
+// Native Tool Search calls the catalog child before reporting its envelope.
+// The first publication must survive both callbacks without being mistaken
+// for a second, unbound conditional publication (native c54032de, 2026-11-18).
+async function nestedFirstPublication(run, {childId, afterChild, envelope, expectedChildRefusal = false} = {}) {
+  const name = 'pixel_ods_workspace_preview', params = {relativeDirectory: DIR};
+  return run.invoke('tool_call', {id: `openclaw:pixel-ods:${name}`, args: params}, async outerId => {
+    const child = await run.invoke(name, params, (id, actual) => run.tool.execute(id, actual),
+      childId ?? `tool_search_code:${outerId}:${name}:1`);
+    assert.equal(child.blocked, undefined);
+    assert.equal(child.result.isError, expectedChildRefusal ? true : undefined);
+    if (expectedChildRefusal) assert.equal(child.result.details.errorCode, 'conditional_publication_unavailable');
+    if (afterChild) await afterChild();
+    const tool = {id: `openclaw:pixel-ods:${name}`, source: 'openclaw', sourceName: 'pixel-ods', name};
+    const result = {content: [{type: 'text', text: JSON.stringify({tool, result: child.result})}],
+      details: {tool, result: child.result}};
+    return envelope ? envelope(result) : result;
+  }, 'nested-preview');
+}
+
+test('a nested first publication keeps neutral coaching and needs the trusted comparison', async () => {
+  const ref = {};
+  const run = ref.run = chain(PROMPT, {guardOptions: {verifyWorkspacePreview: comparingVerifier(ref)}});
+  await run.write(`${DIR}/index.html`, '<!doctype html><h1>Repaired</h1>');
+  const first = await nestedFirstPublication(run);
+  assert.equal(first.blocked, undefined);
+  assert.equal(run.status(), 'passed');
+  assert.equal(run.state().previewReceipts, 1, 'one publication, not one per hook callback');
+  assertNeutral(textOf((await run.hashCheck()).persisted));
+  assert.notEqual(run.status(), 'passed', 'the hash receipt alone never proves currency');
+  assert.equal(await run.guard.revalidateWorkspacePreview({}, run.context), true);
+  assert.equal(run.status(), 'passed');
+  assert.equal(run.log.requests.length, 1, 'no repeat host publication');
+});
+
+for (const variant of ['foreign-child', 'invalid-child-sequence', 'mismatching-snapshot', 'wrong-envelope-source',
+  'outer-failure', 'intervening-write', 'identity-conflict']) {
+  test(`a nested first publication never preserves an unbound duplicate: ${variant}`, async () => {
+    const ref = {};
+    const run = ref.run = chain(PROMPT, {guardOptions: {verifyWorkspacePreview: comparingVerifier(ref)}});
+    await run.write(`${DIR}/index.html`, '<!doctype html><h1>Repaired</h1>');
+    const options = {};
+    if (variant === 'foreign-child') {
+      options.childId = 'tool_search_code:other:pixel_ods_workspace_preview:1';
+      options.expectedChildRefusal = true;
+    }
+    if (variant === 'invalid-child-sequence') options.childId = 'tool_search_code:nested-preview:pixel_ods_workspace_preview:invalid';
+    if (variant === 'mismatching-snapshot') options.envelope = result => {
+      result.details.result = structuredClone(result.details.result);
+      result.details.result.details.sha256 = 'f'.repeat(64);
+      return result;
+    };
+    if (variant === 'wrong-envelope-source') options.envelope = result => {
+      result.details.tool.sourceName = 'other'; return result;
+    };
+    if (variant === 'outer-failure') options.envelope = result => ({...result, isError: true});
+    if (variant === 'intervening-write') options.afterChild = () => run.write(`${DIR}/index.html`, '<!doctype html><h1>Changed</h1>');
+    if (variant === 'identity-conflict') options.afterChild = () => run.guard.observeRun({...run.context,
+      sessionKey: `agent:pixel:openai-user:ods-${'f'.repeat(64)}`}, 'pixel');
+    await nestedFirstPublication(run, options);
+    await run.hashCheck();
+    assert.equal(await run.guard.revalidateWorkspacePreview({}, run.context), false);
+    assert.notEqual(run.status(), 'passed');
+    assert.equal(run.log.requests.length, variant === 'foreign-child' ? 0 : 1);
+  });
+}
+
 function assertNeutral(note) {
   assert.doesNotMatch(note, STALE_REPUBLISH, 'no unconditional republication demand');
   assert.match(note, NEUTRAL);
