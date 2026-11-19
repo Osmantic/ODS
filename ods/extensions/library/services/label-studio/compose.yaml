@@ -7,6 +7,9 @@ services:
       - no-new-privileges:true
     environment:
       - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+      # Label Studio serves local files from "/" unless a root is set; keep it
+      # to the dataset mount so a signed-in user cannot read container files.
+      - LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT=/label-studio/upload
       - LABEL_STUDIO_DATA_ROOT=/label-studio/data
       - LABEL_STUDIO_STATIC_ASSETS_ROOT=/label-studio/www
       - LABEL_STUDIO_UPLOAD_DIR=/label-studio/upload
