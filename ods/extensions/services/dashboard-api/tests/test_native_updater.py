@@ -293,3 +293,128 @@ def test_updater_rejects_payload_missing_executable(tmp_path, monkeypatch):
 
     # Original executable is preserved!
     assert (app_dir / "ODS.exe").read_bytes() == b"ORIGINAL_EXE_V300"
+
+
+def test_stage_native_update_rejects_unsafe_target_version_and_preserves_backups(tmp_path, monkeypatch):
+    """Unsafe target versions with dot segments, separators, or invalid chars are rejected before IO, preserving backups."""
+    monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "WINDOWS_DESKTOP_PROFILE", True)
+    reset_native_updater_state("3.0.0")
+
+    updates_root = tmp_path / "updates"
+    backup_dir = updates_root / "backup-3.0.0-12345"
+    backup_dir.mkdir(parents=True)
+    backup_file = backup_dir / "ODS.exe"
+    backup_file.write_bytes(b"BACKUP_PAYLOAD_V300")
+
+    downloads_dir = updates_root / "downloads"
+    downloads_dir.mkdir(parents=True)
+    archive_file = downloads_dir / "existing_package.zip"
+    archive_file.write_bytes(b"EXISTING_ARCHIVE")
+
+    dummy_sha = "0" * 64
+    unsafe_targets = [
+        "..",
+        "../staged",
+        "../../updates",
+        "/etc/shadow",
+        "C:\\Windows\\System32",
+        "3.1.0/evil",
+        "3.1.0\\evil",
+        ":bad",
+        ".",
+        "...",
+        "3.1.0..beta",
+    ]
+
+    for unsafe in unsafe_targets:
+        with pytest.raises(ValueError, match="target_version"):
+            asyncio.run(
+                stage_native_update(
+                    target_version=unsafe,
+                    download_url="https://releases.open-dev-society.org/ods-update.zip",
+                    expected_sha256=dummy_sha,
+                    current_version="3.0.0",
+                )
+            )
+
+    # Existing backup and archive must be completely intact
+    assert backup_file.exists()
+    assert backup_file.read_bytes() == b"BACKUP_PAYLOAD_V300"
+    assert archive_file.exists()
+    assert archive_file.read_bytes() == b"EXISTING_ARCHIVE"
+
+    # Also test via endpoint that it returns HTTP 400 (not 502) and preserves backup
+    client = TestClient(main.app)
+    headers = {"Authorization": f"Bearer {security.DASHBOARD_API_KEY}"}
+    resp = client.post(
+        "/api/update/native/stage",
+        headers=headers,
+        json={
+            "targetVersion": "..",
+            "downloadUrl": "https://releases.open-dev-society.org/ods-update.zip",
+            "expectedSha256": dummy_sha,
+        },
+    )
+    assert resp.status_code == 400
+    assert "Invalid target_version" in resp.json()["detail"]
+
+    # Verify backup is still untouched
+    assert backup_file.exists()
+    assert backup_file.read_bytes() == b"BACKUP_PAYLOAD_V300"
+
+
+def test_apply_staged_update_env_write_failure_preserves_owner_env_and_rolls_back(tmp_path, monkeypatch):
+    """An injected write/replace failure during .env update rolls back the app and keeps owner settings byte-identical."""
+    monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "WINDOWS_DESKTOP_PROFILE", True)
+    reset_native_updater_state("3.0.0")
+
+    app_dir = tmp_path / "app" / "current"
+    app_dir.mkdir(parents=True)
+    (app_dir / "ODS.exe").write_bytes(b"ORIGINAL_WORKING_V300")
+
+    env_path = tmp_path / ".env"
+    initial_env_content = (
+        "# Critical Owner Configuration\n"
+        "ODS_VERSION=3.0.0\n"
+        "DASHBOARD_PASSWORD=keep-my-secret-token\n"
+        "PORT=3101\n"
+        "LLM_MODEL=qwen3.5:2b\n"
+        "CTX_SIZE=4096\n"
+        "CUSTOM_VAR=do_not_truncate\n"
+    )
+    env_path.write_text(initial_env_content, encoding="utf-8")
+
+    zip_bytes = _make_zip_bytes({"ODS.exe": b"NEW_BINARY_V310"})
+    sha256_hex = hashlib.sha256(zip_bytes).hexdigest()
+
+    with patch("native_updater.httpx.AsyncClient", lambda **kw: _FakeAsyncClient(zip_bytes, **kw)):
+        asyncio.run(
+            stage_native_update(
+                target_version="3.1.0",
+                download_url="https://releases.open-dev-society.org/ods-3.1.0.zip",
+                expected_sha256=sha256_hex,
+                current_version="3.0.0",
+            )
+        )
+
+    # Injected atomic replace error during .env persistence
+    with patch("native_updater.os.replace", side_effect=OSError("Injected simulated disk replace error")):
+        with pytest.raises(RuntimeError, match="automatically rolled back"):
+            apply_staged_update(app_dir)
+
+    state = get_native_updater_state()
+    assert state["status"] == "rolled_back"
+    assert "Injected simulated disk replace error" in (state["error"] or "")
+
+    # The application was restored to working binary
+    assert (app_dir / "ODS.exe").read_bytes() == b"ORIGINAL_WORKING_V300"
+
+    # Owner .env settings survived byte-for-byte identical!
+    assert env_path.read_text(encoding="utf-8") == initial_env_content
+
+    # No leftover .tmp files
+    tmp_files = list(tmp_path.glob("*.tmp*"))
+    assert not tmp_files
+

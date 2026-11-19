@@ -12,6 +12,8 @@ import hashlib
 import io
 import json
 import logging
+import os
+import re
 import shutil
 import time
 import zipfile
@@ -127,6 +129,57 @@ def _extract_safe_zip(zip_bytes_or_path: bytes | Path, destination: Path) -> int
     return file_count
 
 
+def _validate_target_version(target_version: str, updates_root: Path) -> tuple[str, Path, Path]:
+    """Validate target version before any filesystem modifications or downloads.
+
+    Rejects empty strings, path separators, absolute paths, and dot segments ('..'),
+    ensuring that the staged directory and archive paths are strict children of their
+    respective roots.
+    """
+    clean_version = (target_version or "").strip().lstrip("v")
+    if not clean_version:
+        raise ValueError("target_version cannot be empty")
+
+    # Reject path separators, absolute paths, and dot segments
+    if (
+        "/" in clean_version
+        or "\\" in clean_version
+        or ":" in clean_version
+        or clean_version in (".", "..")
+        or ".." in clean_version
+        or clean_version.startswith(".")
+        or clean_version.endswith(".")
+        or Path(clean_version).is_absolute()
+    ):
+        raise ValueError(f"Invalid target_version: {target_version!r}")
+
+    # Enforce allowed characters for a release version (alphanumeric, dot, hyphen, plus)
+    if not re.match(r"^[0-9A-Za-z]+([0-9A-Za-z._+-]*[0-9A-Za-z]+)?$", clean_version):
+        raise ValueError(f"Invalid target_version: {target_version!r}")
+
+    root_resolved = updates_root.resolve()
+    staged_parent = (root_resolved / "staged").resolve()
+    staged_dir = (staged_parent / clean_version).resolve()
+
+    try:
+        rel = staged_dir.relative_to(staged_parent)
+        if str(rel) in (".", ""):
+            raise ValueError(f"staged_dir cannot be staging root: {staged_dir}")
+    except ValueError as exc:
+        raise ValueError(f"staged_dir must be a strict child of {staged_parent}: {exc}") from exc
+
+    downloads_dir = (root_resolved / "downloads").resolve()
+    archive_path = (downloads_dir / f"ods-windows-desktop-{clean_version}.zip").resolve()
+    try:
+        rel_archive = archive_path.relative_to(downloads_dir)
+        if str(rel_archive) in (".", ""):
+            raise ValueError(f"archive_path cannot be downloads root: {archive_path}")
+    except ValueError as exc:
+        raise ValueError(f"archive_path must be a strict child of {downloads_dir}: {exc}") from exc
+
+    return clean_version, staged_dir, archive_path
+
+
 async def stage_native_update(
     *,
     target_version: str,
@@ -137,6 +190,9 @@ async def stage_native_update(
     release_notes: str | None = None,
 ) -> dict[str, Any]:
     """Download, verify SHA-256, and extract an update package into staging."""
+    updates_root = get_updates_root()
+    clean_version, staged_dir, archive_path = _validate_target_version(target_version, updates_root)
+
     norm_sha = (expected_sha256 or "").strip().lower()
     if len(norm_sha) != 64 or any(c not in "0123456789abcdef" for c in norm_sha):
         raise ValueError("expected_sha256 must be a 64-character lowercase hex SHA-256 digest")
@@ -144,7 +200,7 @@ async def stage_native_update(
         raise ValueError("Update download_url must use https://")
 
     _updater_state.current_version = current_version
-    _updater_state.target_version = target_version.lstrip("v")
+    _updater_state.target_version = clean_version
     _updater_state.download_url = download_url
     _updater_state.expected_sha256 = norm_sha
     _updater_state.changelog_url = changelog_url
@@ -156,14 +212,10 @@ async def stage_native_update(
     _updater_state.error = None
     _updater_state.updated_at = time.time()
 
-    updates_root = get_updates_root()
-    downloads_dir = updates_root / "downloads"
-    staged_parent = updates_root / "staged"
+    downloads_dir = archive_path.parent
+    staged_parent = staged_dir.parent
     downloads_dir.mkdir(parents=True, exist_ok=True)
     staged_parent.mkdir(parents=True, exist_ok=True)
-
-    archive_path = downloads_dir / f"ods-windows-desktop-{_updater_state.target_version}.zip"
-    staged_dir = staged_parent / _updater_state.target_version
 
     hasher = hashlib.sha256()
     try:
@@ -230,6 +282,48 @@ def validate_update_payload(directory: Path) -> bool:
     return (directory / "ODS.exe").is_file() or (directory / "bin" / "ODS.exe").is_file()
 
 
+def _update_env_version_transactional(env_path: Path, target_version: str | None) -> None:
+    """Atomically update ODS_VERSION in a .env file, preserving owner settings and file modes."""
+    if not target_version or not env_path.is_file():
+        return
+    try:
+        content = env_path.read_text(encoding="utf-8")
+    except OSError as err:
+        logger.error("Failed to read %s: %s; aborting .env version update", env_path, err)
+        raise
+
+    lines = content.splitlines()
+    updated_lines: list[str] = []
+    replaced = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in line:
+            key = line.split("=", 1)[0].strip()
+            if key == "ODS_VERSION":
+                updated_lines.append(f"ODS_VERSION={target_version}")
+                replaced = True
+                continue
+        updated_lines.append(line)
+    if not replaced:
+        updated_lines.append(f"ODS_VERSION={target_version}")
+
+    tmp = env_path.with_name(f"{env_path.name}.tmp.{os.getpid()}.{time.time_ns()}")
+    try:
+        tmp.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+        try:
+            shutil.copymode(str(env_path), str(tmp))
+        except OSError:
+            pass
+        os.replace(str(tmp), str(env_path))
+    except Exception as err:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        logger.error("Failed to write transactional .env to %s: %s", env_path, err)
+        raise
+
+
 def apply_staged_update(
     app_dir: Path,
     *,
@@ -269,20 +363,9 @@ def apply_staged_update(
 
         # Update ODS_VERSION in DATA_DIR/.env while preserving all owner settings
         if config.DATA_DIR:
-            env_path = Path(config.DATA_DIR) / ".env"
+            env_path = (Path(config.DATA_DIR) / ".env").resolve()
             if env_path.is_file():
-                lines = env_path.read_text(encoding="utf-8").splitlines()
-                updated_lines = []
-                replaced = False
-                for line in lines:
-                    if line.startswith("ODS_VERSION="):
-                        updated_lines.append(f"ODS_VERSION={_updater_state.target_version}")
-                        replaced = True
-                    else:
-                        updated_lines.append(line)
-                if not replaced:
-                    updated_lines.append(f"ODS_VERSION={_updater_state.target_version}")
-                env_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+                _update_env_version_transactional(env_path, _updater_state.target_version)
 
         _updater_state.current_version = _updater_state.target_version or _updater_state.current_version
         _updater_state.status = "applied"
