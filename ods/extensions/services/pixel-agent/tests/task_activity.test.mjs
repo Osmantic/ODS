@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createTaskActivity} from '../plugin/task-activity.mjs';
+import {createGoalProgress} from '../plugin/goal-progress.mjs';
 import {parseTaskActivity} from '../host/task_activity_schema.mjs';
 const runId = 'chatcmpl_11111111-2222-4333-8444-555555555555';
 const ctx = {agentId:'pixel',runId};
@@ -323,6 +324,25 @@ for (const [name, change, reason] of [
   const changed = change(run) ?? {};
   const result = run.recorder.settlement(changed.id ?? runId, {...run.owned, ...changed.owned});
   assert.deepEqual(result, {schemaVersion:1, ok:false, reason});
+});
+
+test('a refused plan update stays failed in settlement after a later accepted plan', () => {
+  const run = settlementRun();
+  const goal = createGoalProgress();
+  goal.begin({prompt:'/goal Repair the form'}, run.context);
+  const hyphenated = {...PLAN, steps:[{...PLAN.steps[0], id:'copy-title'}]};
+  const outer = {toolName:'tool_call', params:{id:'openclaw:pixel-ods:pixel_ods_goal', args:hyphenated}};
+  const outerContext = {...run.context, toolName:'tool_call', toolCallId:'refused-plan'};
+  const decision = goal.before(outer, outerContext);
+  assert.equal(decision?.block, true, 'the plan guard refuses the hyphenated step ID');
+  run.recorder.before(outer, outerContext, decision.block === true);
+  run.recorder.after({...outer, result:{isError:true, content:[{type:'text', text:decision.blockReason}]}}, outerContext);
+  assert.equal(goal.before({toolName:'pixel_ods_goal', params:PLAN}, {...run.context, toolName:'pixel_ods_goal'}), undefined);
+  settledRound(run);
+  assert.deepEqual(run.recorder.settlement(runId, run.owned), {schemaVersion:1, ok:false, reason:'failed'});
+  const projected = run.recorder.projection(runId);
+  assert.equal(projected.blocked, 1);
+  assert.equal(parseTaskActivity(projected, runId), projected);
 });
 
 test('settlement refuses a run whose session key conflicted and a truncated ledger', () => {
