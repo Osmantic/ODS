@@ -3258,21 +3258,22 @@ def load_model(
 def _apply_env_updates(env_path: Path, updates: dict[str, str]) -> None:
     """Safely and atomically update key-value pairs in a .env file."""
     lines: list[str] = []
-    seen = set()
+    seen: set[str] = set()
     if env_path.is_file():
         try:
             content = env_path.read_text(encoding="utf-8")
-            for line in content.splitlines():
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#") and "=" in line:
-                    key = line.split("=", 1)[0].strip()
-                    if key in updates:
-                        lines.append(f"{key}={updates[key]}")
-                        seen.add(key)
-                        continue
-                lines.append(line)
-        except OSError:
-            pass
+        except OSError as err:
+            logger.error("Failed to read %s: %s; aborting .env update", env_path, err)
+            raise
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in line:
+                key = line.split("=", 1)[0].strip()
+                if key in updates:
+                    lines.append(f"{key}={updates[key]}")
+                    seen.add(key)
+                    continue
+            lines.append(line)
     for k, v in updates.items():
         if k not in seen:
             lines.append(f"{k}={v}")
@@ -3280,11 +3281,13 @@ def _apply_env_updates(env_path: Path, updates: dict[str, str]) -> None:
     try:
         tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
         os.replace(str(tmp), str(env_path))
-    except OSError:
+    except OSError as err:
+        logger.error("Failed to write updated .env to %s: %s", env_path, err)
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
+        raise
 
 
 def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template_override: str | None = None):
@@ -3375,17 +3378,6 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
                 )
                 target_context = max_safe_ctx
 
-        env_updates = {
-            "GGUF_FILE": matched["filename"],
-            "LLM_MODEL": alias_str,
-            "CTX_SIZE": str(target_context),
-        }
-        for base_dir in (INSTALL_DIR, DATA_DIR):
-            if base_dir:
-                env_file = Path(base_dir) / ".env"
-                if env_file.exists():
-                    _apply_env_updates(env_file, env_updates)
-
         restart_ok = restart_native_llama_server(
             model_path=matched["path"],
             context_length=target_context,
@@ -3396,6 +3388,26 @@ def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to start native llama-server with model '{matched['filename']}'",
+            )
+
+        env_updates = {
+            "GGUF_FILE": matched["filename"],
+            "LLM_MODEL": alias_str,
+            "CTX_SIZE": str(target_context),
+        }
+        updated_env_files: set[Path] = set()
+        try:
+            for base_dir in (INSTALL_DIR, DATA_DIR):
+                if base_dir:
+                    env_file = (Path(base_dir) / ".env").resolve()
+                    if env_file.exists() and env_file not in updated_env_files:
+                        _apply_env_updates(env_file, env_updates)
+                        updated_env_files.add(env_file)
+        except OSError as err:
+            logger.error("Failed to persist model configuration to .env: %s", err)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Model started but failed to persist configuration: {err}",
             )
 
         actual_context = target_context

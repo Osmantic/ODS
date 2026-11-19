@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import Response
+from fastapi import HTTPException, Response
 
 import config
 from context_budget import plan_context_budget
@@ -671,5 +672,176 @@ async def test_pixel_status_includes_windows_desktop_runtime(monkeypatch):
     assert runtime["source"] == "windows-desktop"
     assert runtime["model"] == "qwen 3.5 4b"
     assert runtime["contextLength"] == 4096
+
+
+def test_apply_env_updates_aborts_on_read_failure_and_preserves_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Verify _apply_env_updates raises on read failure and leaves original file untouched."""
+    env_file = tmp_path / ".env"
+    initial_content = "EXISTING_KEY=keep_me\nANOTHER_KEY=original_val\n"
+    env_file.write_text(initial_content, encoding="utf-8")
+
+    def failing_read(self: Path, *args: object, **kwargs: object) -> str:
+        raise PermissionError("Access denied reading file")
+
+    monkeypatch.setattr(Path, "read_text", failing_read)
+
+    with pytest.raises(PermissionError, match="Access denied"):
+        models._apply_env_updates(env_file, {"EXISTING_KEY": "new_val", "NEW_KEY": "val"})
+
+    # Restore read_text to verify the file was not overwritten
+    monkeypatch.undo()
+    assert env_file.read_text(encoding="utf-8") == initial_content
+    # Ensure no temporary file was left behind
+    tmp_files = list(tmp_path.glob("*.tmp"))
+    assert tmp_files == []
+
+
+def test_apply_env_updates_surfaces_write_failures_and_preserves_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Verify _apply_env_updates surfaces write/replace failures and cleans up tmp files."""
+    env_file = tmp_path / ".env"
+    initial_content = "EXISTING_KEY=keep_me\n"
+    env_file.write_text(initial_content, encoding="utf-8")
+
+    def failing_replace(src: str, dst: str) -> None:
+        raise OSError("Disk locked or full")
+
+    import os
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    with pytest.raises(OSError, match="Disk locked or full"):
+        models._apply_env_updates(env_file, {"EXISTING_KEY": "new_val"})
+
+    monkeypatch.undo()
+    assert env_file.read_text(encoding="utf-8") == initial_content
+    tmp_files = list(tmp_path.glob("*.tmp"))
+    assert tmp_files == []
+
+
+def test_apply_env_updates_updates_in_place_and_preserves_unrelated_settings(tmp_path: Path) -> None:
+    """Verify _apply_env_updates updates existing keys in place and appends new ones while preserving unrelated lines."""
+    env_file = tmp_path / ".env"
+    initial_content = (
+        "# System configuration\n"
+        "PORT=3101\n"
+        "GGUF_FILE=old-model.gguf\n"
+        "LLM_MODEL=old-alias\n"
+        "CUSTOM_KEY=custom_value\n"
+    )
+    env_file.write_text(initial_content, encoding="utf-8")
+
+    models._apply_env_updates(env_file, {
+        "GGUF_FILE": "new-model.gguf",
+        "CTX_SIZE": "8192",
+    })
+
+    updated_lines = env_file.read_text(encoding="utf-8").splitlines()
+    assert "# System configuration" in updated_lines
+    assert "PORT=3101" in updated_lines
+    assert "GGUF_FILE=new-model.gguf" in updated_lines
+    assert "LLM_MODEL=old-alias" in updated_lines
+    assert "CUSTOM_KEY=custom_value" in updated_lines
+    assert "CTX_SIZE=8192" in updated_lines
+
+
+def test_activate_model_failed_restart_preserves_install_and_data_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Verify failed native llama restart raises HTTP 500 and preserves both INSTALL_DIR and DATA_DIR .env files."""
+    install_dir = tmp_path / "install"
+    data_dir = tmp_path / "data"
+    install_dir.mkdir()
+    data_dir.mkdir()
+
+    install_env = install_dir / ".env"
+    data_env = data_dir / ".env"
+
+    install_initial = (
+        "GGUF_FILE=original-model.gguf\n"
+        "LLM_MODEL=original-alias\n"
+        "CTX_SIZE=2048\n"
+        "INSTALL_EXTRA=keep_install_setting\n"
+    )
+    data_initial = (
+        "GGUF_FILE=original-model.gguf\n"
+        "LLM_MODEL=original-alias\n"
+        "CTX_SIZE=2048\n"
+        "DATA_EXTRA=keep_data_setting\n"
+    )
+    install_env.write_text(install_initial, encoding="utf-8")
+    data_env.write_text(data_initial, encoding="utf-8")
+
+    monkeypatch.setattr(config, "WINDOWS_DESKTOP_PROFILE", True)
+    monkeypatch.setattr(models, "INSTALL_DIR", str(install_dir))
+    monkeypatch.setattr(models, "DATA_DIR", str(data_dir))
+    monkeypatch.setattr(
+        models,
+        "_find_loadable_model",
+        lambda m: {"id": m, "name": "Target Model", "gguf": "target-model.gguf"},
+    )
+    fake_installed = [
+        {"filename": "target-model.gguf", "path": str(install_dir / "target-model.gguf")}
+    ]
+
+    with patch("native_llm.list_local_gguf_models", return_value=fake_installed), \
+         patch("native_llm.restart_native_llama_server", return_value=False) as mock_restart:
+        with pytest.raises(HTTPException) as exc_info:
+            models.load_model("target-model", None, api_key="test-key")
+
+        assert exc_info.value.status_code == 500
+        assert "Failed to start native llama-server" in str(exc_info.value.detail)
+        mock_restart.assert_called_once()
+
+    # Both .env files must be 100% untouched
+    assert install_env.read_text(encoding="utf-8") == install_initial
+    assert data_env.read_text(encoding="utf-8") == data_initial
+    # selected-model.json should not exist
+    assert not (data_dir / "selected-model.json").exists()
+
+
+def test_activate_model_successful_restart_updates_install_and_data_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Verify successful native llama restart persists GGUF_FILE, LLM_MODEL, and CTX_SIZE to both .env files."""
+    install_dir = tmp_path / "install"
+    data_dir = tmp_path / "data"
+    install_dir.mkdir()
+    data_dir.mkdir()
+
+    install_env = install_dir / ".env"
+    data_env = data_dir / ".env"
+
+    install_env.write_text("GGUF_FILE=old.gguf\nLLM_MODEL=old\nINSTALL_VAL=123\n", encoding="utf-8")
+    data_env.write_text("GGUF_FILE=old.gguf\nLLM_MODEL=old\nDATA_VAL=456\n", encoding="utf-8")
+
+    monkeypatch.setattr(config, "WINDOWS_DESKTOP_PROFILE", True)
+    monkeypatch.setattr(models, "INSTALL_DIR", str(install_dir))
+    monkeypatch.setattr(models, "DATA_DIR", str(data_dir))
+    monkeypatch.setattr(
+        models,
+        "_find_loadable_model",
+        lambda m: {"id": m, "name": "New Model", "gguf": "new-model.gguf"},
+    )
+    fake_installed = [
+        {"filename": "new-model.gguf", "path": str(install_dir / "new-model.gguf")}
+    ]
+
+    with patch("native_llm.list_local_gguf_models", return_value=fake_installed), \
+         patch("native_llm.restart_native_llama_server", return_value=True) as mock_restart:
+        result = models.load_model("new-model", None, api_key="test-key")
+        assert result.get("status") == "reloaded"
+        assert result.get("model") == "new-model.gguf"
+        mock_restart.assert_called_once()
+
+    install_lines = install_env.read_text(encoding="utf-8").splitlines()
+    assert "GGUF_FILE=new-model.gguf" in install_lines
+    assert "LLM_MODEL=new-model" in install_lines
+    assert "INSTALL_VAL=123" in install_lines
+
+    data_lines = data_env.read_text(encoding="utf-8").splitlines()
+    assert "GGUF_FILE=new-model.gguf" in data_lines
+    assert "LLM_MODEL=new-model" in data_lines
+    assert "DATA_VAL=456" in data_lines
+
+    selection_file = data_dir / "selected-model.json"
+    assert selection_file.exists()
+    saved = json.loads(selection_file.read_text(encoding="utf-8"))
+    assert saved["ggufFile"] == "new-model.gguf"
+
 
 
