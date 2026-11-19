@@ -8267,6 +8267,27 @@ export function createToolLoopGuard({
   // Process scopes in which an exec has returned a background session.
   const sessionBackgroundExecs = new Set();
 
+  // Inspection reads an immutable published snapshot, even while a settled
+  // workspace call awaits its trusted byte comparison. Retain evidence only
+  // for this run's exact eligible snapshot and identity. This selects a proof
+  // target; it never restores workspace currency or certifies completion.
+  function immutableInspectionPreview(state, runId) {
+    if (state?.workspacePreview) return state.workspacePreview;
+    const candidate = state?.previewRevalidationCandidate;
+    if (!candidate || runs.get(runId) !== state || state.clientCancelled || state.artifactIdentityConflict ||
+        !state.ownerIntentObserved || state.workspacePreviewForbidden || state.progressBudget.exhausted ||
+        state.progressBudget.laneExhausted('workspace') ||
+        state.previewRevalidationCompletedGeneration !== state.previewVerificationGeneration ||
+        typeof candidate.sessionId !== 'string' || !candidate.sessionId ||
+        typeof candidate.sessionKey !== 'string' || !candidate.sessionKey ||
+        state.currentSessionId !== candidate.sessionId || state.currentSessionKey !== candidate.sessionKey ||
+        sessionRuns.get(candidate.sessionId) !== runId ||
+        state.configuredWorkspaceRoot !== candidate.workspaceRoot ||
+        state.workspacePreviewVerifiedDirectory !== candidate.preview.relativeDirectory ||
+        state.pendingExecSessions?.size || state.pendingProjectExecs?.size) return undefined;
+    return candidate.preview;
+  }
+
   function workspaceVisibilityInspectionPassed(state) {
     const proof = state.workspaceVisibilityInspection;
     return visibilityInspectionMatches(proof, state.workspacePreview) &&
@@ -12342,15 +12363,16 @@ export function createToolLoopGuard({
       const inspected = toolName === PREVIEW_INSPECTION_TOOL ? event
         : toolSearchEventEnvelope(event, PREVIEW_INSPECTION_TOOL, 'pixel-ods');
       if (inspected && isDeepStrictEqual(inspected.params, pendingToolRun.selectedParams)) {
+        const inspectionPreview = immutableInspectionPreview(state, runId);
         // A successful read-only check of the same snapshot does not erase an
         // earlier interaction check. Failed or unbound receipts still revoke it.
         const proof = !failedToolOutcome(event)
-          ? boundVisibilityInspection(inspected.params, inspected.result, state.workspacePreview) : undefined;
+          ? boundVisibilityInspection(inspected.params, inspected.result, inspectionPreview) : undefined;
         const priorProof = pendingToolRun.priorVisibilityInspection;
         const retainInteraction = !failedToolOutcome(event) &&
-          visibilityInspectionMatches(priorProof, state.workspacePreview) &&
+          visibilityInspectionMatches(priorProof, inspectionPreview) &&
           priorProof.sessionId === state.currentSessionId && priorProof.sessionKey === state.currentSessionKey &&
-          boundStaticPreviewInspection(inspected.params, inspected.result, state.workspacePreview);
+          boundStaticPreviewInspection(inspected.params, inspected.result, inspectionPreview);
         state.workspaceVisibilityInspection = proof ? Object.freeze({...proof,
           sessionId: state.currentSessionId, sessionKey: state.currentSessionKey})
           : retainInteraction ? priorProof : undefined;
@@ -12361,19 +12383,19 @@ export function createToolLoopGuard({
         const behaviorBound = behaviorAttempt && behaviorAttempt.sessionId === state.currentSessionId &&
           behaviorAttempt.sessionKey === state.currentSessionKey ? behaviorAttempt : undefined;
         const behaviorProof = !failedToolOutcome(event) && behaviorBound
-          ? boundPreviewBehavior(inspected.params, inspected.result, state.workspacePreview, behaviorBound) : undefined;
+          ? boundPreviewBehavior(inspected.params, inspected.result, inspectionPreview, behaviorBound) : undefined;
         const priorBehaviorProof = pendingToolRun.priorBehaviorInspection;
         const retainBehavior = !failedToolOutcome(event) && behaviorBound &&
-          visibilityInspectionMatches(priorBehaviorProof, state.workspacePreview) &&
+          visibilityInspectionMatches(priorBehaviorProof, inspectionPreview) &&
           priorBehaviorProof.sessionId === state.currentSessionId && priorBehaviorProof.sessionKey === state.currentSessionKey &&
-          boundStaticPreviewInspection(inspected.params, inspected.result, state.workspacePreview);
+          boundStaticPreviewInspection(inspected.params, inspected.result, inspectionPreview);
         state.workspaceBehaviorInspection = behaviorProof ? Object.freeze({...behaviorProof,
           sessionId: state.currentSessionId, sessionKey: state.currentSessionKey})
           : retainBehavior ? priorBehaviorProof : undefined;
         // Reuse the strict current pending-call/session/generation binding above.
         // Every new inspection clears the previous proof and establishes its own.
         const renderedProof = !failedToolOutcome(event)
-          ? boundRenderedPreviewInspection(inspected.params, inspected.result, state.workspacePreview) : undefined;
+          ? boundRenderedPreviewInspection(inspected.params, inspected.result, inspectionPreview) : undefined;
         state.workspaceRenderedInspection = renderedProof ? Object.freeze({...renderedProof,
           sessionId: state.currentSessionId, sessionKey: state.currentSessionKey}) : undefined;
         // A passing plan that the behavior policy above rejects only for an
@@ -12387,7 +12409,7 @@ export function createToolLoopGuard({
           inspected.result?.details?.errorCode === 'unavailable';
         // Selects the repair instruction only; bound to this exact snapshot.
         state.workspaceInspectionPageErrors = !event?.error
-          ? boundInspectionPageErrors(inspected.params, inspected.result, state.workspacePreview) : undefined;
+          ? boundInspectionPageErrors(inspected.params, inspected.result, inspectionPreview) : undefined;
         // Load-time names precede every step, so a failed step or an untested
         // show/hide change (incomplete) keeps them. A receipt without them
         // (older capsule, transport failure) changes no verdict, but this
@@ -12396,11 +12418,11 @@ export function createToolLoopGuard({
         // direct call (tower2's transport), which failed and incomplete
         // inspections are; a thrown call has no receipt to bind.
         const controls = state.requestedControlNames?.length
-          ? boundInspectionControls(inspected.params, inspected.result, state.workspacePreview) : undefined;
+          ? boundInspectionControls(inspected.params, inspected.result, inspectionPreview) : undefined;
         if (controls) {
           state.workspaceControlNamesInspected = controls.sha256;
           if (controls.controls) state.workspaceControlNameCheck =
-            requestedControlNameCheck(state.requestedControlNames, state.workspacePreview, controls);
+            requestedControlNameCheck(state.requestedControlNames, inspectionPreview, controls);
         }
       }
     }

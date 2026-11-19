@@ -1342,3 +1342,100 @@ test('published but unverified interactions drop an unverified persistence claim
   assert.ok(!delivered.text.includes(PREVIEW_STORAGE_DISCLOSURE));
   assert.doesNotMatch(delivered.text,/Everything persists/);
 });
+
+
+// Native d335a742: successful immutable-snapshot checks were lost between a
+// settled grep and the final trusted comparison of unchanged workspace bytes.
+function persistBindingOutcome(guard, observed) {
+ guard.toolResultPersist({toolName:observed.event.toolName,toolCallId:observed.event.toolCallId,
+  message:{role:'toolResult',toolName:observed.event.toolName,toolCallId:observed.event.toolCallId,...observed.result}},observed.ctx);
+}
+function persistBindingPublication(f) {
+ const event={toolName:'pixel_ods_workspace_preview',toolCallId:'publish'};
+ persistBindingOutcome(f.guard,{event,ctx:{...context,...event},result:{details:f.preview}});
+}
+
+function pendingInspectionFixture({matches=true,verifier=true}={}){
+ let comparisons=0;
+ const result=setup({verifyWorkspacePreview:verifier?async()=>{comparisons++;return matches;}:undefined});
+ persistBindingPublication(result);
+ const grepResult={content:[{type:'text',text:'1: details'}],details:{status:'completed',exitCode:0}};
+ const grep=call(result.guard,'exec',{command:'grep -n details site/index.html'},'post-publish-grep',grepResult);
+ persistBindingOutcome(result.guard,{...grep,result:grepResult});
+ return {...result,comparisons:()=>comparisons};
+}
+
+for(const wrapped of [false,true])test(`immutable inspection survives pending workspace currency after a settled command (wrapped=${wrapped})`,async()=>{
+ const f=pendingInspectionFixture();
+ const observed=inspection(f.guard,plan(f.preview),{wrapped,id:'after-grep'});
+ f.guard.afterToolCall({...observed.event,result:observed.result},observed.ctx);persistBindingOutcome(f.guard,observed);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed','snapshot inspection is not proof of current workspace bytes');
+ assert.equal(f.comparisons(),0,'no hidden comparison or publication');
+ assert.equal(await f.guard.revalidateWorkspacePreview({},context),true);
+ assert.equal(f.comparisons(),1);
+ assert.equal(f.guard.verificationForRun('run').status,'passed','the recorded snapshot checks and subsequent trusted equality both hold');
+});
+
+for(const option of [{matches:false},{verifier:false}])test(`immutable inspection cannot replace final trusted byte verification ${JSON.stringify(option)}`,async()=>{
+ const f=pendingInspectionFixture(option);const a=inspection(f.guard,plan(f.preview));
+ f.guard.afterToolCall({...a.event,result:a.result},a.ctx);persistBindingOutcome(f.guard,a);
+ assert.equal(await f.guard.revalidateWorkspacePreview({},context),false);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});
+
+test('a running foreground command cannot lend its snapshot to new inspection evidence',async()=>{
+ const f=setup({verifyWorkspacePreview:async()=>true});
+ persistBindingPublication(f);
+ call(f.guard,'exec',{command:'grep -n details site/index.html'},'running-grep',{
+  content:[{type:'text',text:'running'}],details:{status:'running',sessionId:'owned-running'}});
+ const a=inspection(f.guard,plan(f.preview));f.guard.afterToolCall({...a.event,result:a.result},a.ctx);persistBindingOutcome(f.guard,a);
+ assert.equal(await f.guard.revalidateWorkspacePreview({},context),false);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});
+
+for(const changed of [{sessionId:'foreign'},{sessionKey:'foreign-key'}])test(`foreign inspection receipt cannot supply pending-currency proof ${Object.keys(changed)[0]}`,async()=>{
+ const f=pendingInspectionFixture();const a=inspection(f.guard,plan(f.preview));
+ const foreign={...a.ctx,...changed};
+ f.guard.afterToolCall({...a.event,result:a.result},foreign);persistBindingOutcome(f.guard,{...a,ctx:foreign});
+ await f.guard.revalidateWorkspacePreview({},context);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});
+
+test('failed inspection evidence is still failed after workspace equality returns',async()=>{
+ const f=pendingInspectionFixture();const a=inspection(f.guard,plan(f.preview));
+ a.result={...a.result,isError:true,details:{...a.result.details,status:'failed',steps:a.result.details.steps.map((s,i)=>i===0?{...s,status:'failed'}:s)}};
+ f.guard.afterToolCall({...a.event,result:a.result},a.ctx);persistBindingOutcome(f.guard,a);
+ assert.equal(await f.guard.revalidateWorkspacePreview({},context),true);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});
+
+test('a mismatching snapshot receipt cannot supply inspection proof after an unchanged command',async()=>{
+ const f=pendingInspectionFixture();const a=inspection(f.guard,plan(f.preview));
+ a.result={...a.result,details:{...a.result.details,sha256:'f'.repeat(64)}};
+ f.guard.afterToolCall({...a.event,result:a.result},a.ctx);persistBindingOutcome(f.guard,a);
+ await f.guard.revalidateWorkspacePreview({},context);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});
+
+
+test('owner cancellation rejects a late inspection while workspace currency is pending',async()=>{
+ const seed=setup();const user='ods-'+ 'a'.repeat(64);
+ const own={...context,sessionKey:'agent:pixel:openai-user:'+user};
+ const guard=createToolLoopGuard({workspacePreviewInspectionAvailable:true,verifyWorkspacePreview:async()=>true,
+  abortRunAndDrain:async()=>({aborted:true,drained:true,forceCleared:false})});
+ guard.observeRun(own,'pixel',{prompt:owner});
+ const content='<!doctype html><button>Show details</button><p hidden>Details</p>';
+ const written={content:[{type:'text',text:'Successfully wrote file.'}]};
+ const write=call(guard,'write',{path:'site/index.html',content},'own-write',written,own);
+ persistBindingOutcome(guard,{...write,result:written});
+ const published={details:seed.preview};const pub=call(guard,'pixel_ods_workspace_preview',{relativeDirectory:seed.preview.relativeDirectory},'own-publish',published,own);
+ persistBindingOutcome(guard,{...pub,result:published});
+ const checked={content:[{type:'text',text:'1:details'}],details:{status:'completed',exitCode:0}};
+ const grep=call(guard,'exec',{command:'grep -n details site/index.html'},'own-grep',checked,own);persistBindingOutcome(guard,{...grep,result:checked});
+ const pending=inspection(guard,plan(seed.preview),{id:'late-cancelled-inspection',runContext:own});
+ assert.equal(await guard.abortUserRun(user),true);
+ guard.afterToolCall({...pending.event,result:pending.result},pending.ctx);
+ persistBindingOutcome(guard,pending);
+ assert.equal(await guard.revalidateWorkspacePreview({},own),false);
+ assert.notEqual(guard.verificationForRun('run').status,'passed');
+});
