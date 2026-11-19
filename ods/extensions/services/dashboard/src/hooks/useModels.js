@@ -196,7 +196,7 @@ function normalizeActiveRuntime(value) {
   // capabilities remain validated by the server, outside this display state.
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const { source, model, contextLength } = value
-  if (!['local-switchboard', 'external-host', 'remote-provider'].includes(source)
+  if (!['local-switchboard', 'external-host', 'remote-provider', 'windows-desktop'].includes(source)
     || typeof model !== 'string' || !model.trim() || model.length > 256) return null
   if (contextLength != null && (!Number.isInteger(contextLength) || contextLength < 1 || contextLength > 10000000)) return null
   if (source === 'remote-provider' && (!Number.isInteger(contextLength) || contextLength < 4096
@@ -547,6 +547,7 @@ export function useModels({observe=true, reuseLastCatalog=false} = {}) {
     let activationError = null
     let targetLoaded = false
     const requestedContextLength = Number(options.contextLength || 0) || null
+    let answeredContextLength = null
     const snapshotMatches = (data) => {
       if (
         data?.currentModel !== modelId ||
@@ -555,7 +556,10 @@ export function useModels({observe=true, reuseLastCatalog=false} = {}) {
       ) return false
       if (!requestedContextLength) return true
       const activeModel = data?.models?.find(model => model.id === modelId)
-      return Number(activeModel?.contextLength || 0) === requestedContextLength
+      const currentContext = Number(activeModel?.contextLength || 0)
+      if (answeredContextLength && currentContext === answeredContextLength) return true
+      if (activationAnswered && currentContext > 0) return true
+      return currentContext === requestedContextLength
     }
     // A superseded response may confirm the operation when the newer published
     // inventory agrees. A newer route/context or active lifecycle still blocks it.
@@ -587,6 +591,14 @@ export function useModels({observe=true, reuseLastCatalog=false} = {}) {
       .then(async (response) => {
         if (response.ok) {
           activationAnswered = true
+          try {
+            const body = await responseJson(response)
+            if (Number.isInteger(body?.contextLength) && body.contextLength > 0) {
+              answeredContextLength = body.contextLength
+            }
+          } catch {
+            // Optional contextLength payload; ignore non-JSON or empty response body
+          }
           return
         }
 

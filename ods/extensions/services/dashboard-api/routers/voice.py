@@ -26,7 +26,7 @@ async def voice_status(api_key: str = Depends(verify_api_key)):
     service health infrastructure. Full voice API is not yet implemented.
     """
     from helpers import check_service_health
-    from config import SERVICES
+    from config import SERVICES, WINDOWS_DESKTOP_PROFILE
 
     services_status = {}
     for svc_key, display_name in [("whisper", "stt"), ("tts", "tts")]:
@@ -38,6 +38,11 @@ async def voice_status(api_key: str = Depends(verify_api_key)):
             except Exception:
                 logger.warning("Health check failed for %s", svc_key, exc_info=True)
                 services_status[display_name] = {"status": "unavailable"}
+        elif WINDOWS_DESKTOP_PROFILE:
+            services_status[display_name] = {
+                "status": "healthy",
+                "provider": "windows-native-speech",
+            }
         else:
             services_status[display_name] = {"status": NOT_CONFIGURED}
 
