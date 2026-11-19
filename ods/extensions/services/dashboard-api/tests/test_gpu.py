@@ -466,6 +466,11 @@ class TestGetGpuInfoAppleContainer:
 
 class TestGetGpuInfoDispatcher:
 
+    @pytest.fixture(autouse=True)
+    def _stub_windows_native_probe(self, monkeypatch):
+        """Isolate dispatcher tests from host's physical Windows native GPU probe."""
+        monkeypatch.setattr("gpu.get_gpu_info_windows_native_detailed", lambda: None)
+
     def _make_gpu_info(self, name, backend):
         from models import GPUInfo
         return GPUInfo(
@@ -561,3 +566,52 @@ class TestGetGpuInfoDispatcher:
 
         result = get_gpu_info()
         assert result is None
+
+    def test_windows_native_success(self, monkeypatch):
+        from models import IndividualGPU
+
+        monkeypatch.setattr("gpu.platform.system", lambda: "Windows")
+        native_gpus = [
+            IndividualGPU(
+                index=0,
+                uuid="GPU-WIN-0",
+                name="NVIDIA GeForce RTX 4080",
+                memory_used_mb=1024,
+                memory_total_mb=16384,
+                memory_percent=6.25,
+                utilization_percent=25,
+                temperature_c=55,
+            )
+        ]
+        monkeypatch.setattr(
+            "gpu.get_gpu_info_windows_native_detailed",
+            lambda: ("nvidia", native_gpus),
+        )
+
+        result = get_gpu_info()
+        assert result is not None
+        assert result.name == "NVIDIA GeForce RTX 4080"
+        assert result.gpu_backend == "nvidia"
+        assert result.memory_total_mb == 16384
+
+    def test_windows_native_unavailable_falls_back_to_backends(self, monkeypatch):
+        monkeypatch.setattr("gpu.platform.system", lambda: "Windows")
+        monkeypatch.setattr("gpu.WINDOWS_DESKTOP_PROFILE", False)
+        monkeypatch.setattr("gpu.os.environ", {"GPU_BACKEND": "nvidia"})
+        gpu = self._make_gpu_info("Fallback NVIDIA", "nvidia")
+        monkeypatch.setattr("gpu.get_gpu_info_nvidia", lambda: gpu)
+        monkeypatch.setattr("gpu.get_gpu_info_amd", lambda: None)
+        monkeypatch.setattr("gpu.get_gpu_info_apple", lambda: None)
+
+        result = get_gpu_info()
+        assert result is not None
+        assert result.name == "Fallback NVIDIA"
+
+    def test_windows_desktop_profile_unavailable_returns_none(self, monkeypatch):
+        monkeypatch.setattr("gpu.platform.system", lambda: "Windows")
+        monkeypatch.setattr("gpu.WINDOWS_DESKTOP_PROFILE", True)
+        monkeypatch.setattr("gpu.get_gpu_info_nvidia", lambda: self._make_gpu_info("Unused", "nvidia"))
+
+        result = get_gpu_info()
+        assert result is None
+

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import platform
 import time
 import urllib.error
 import urllib.request
@@ -24,10 +25,12 @@ from gpu import (
     get_gpu_info_nvidia_detailed,
     get_gpu_info_windows_host,
     get_gpu_info_windows_host_detailed,
+    get_gpu_info_windows_native_detailed,
     get_gpu_info_wsl_host_detailed,
     get_wsl_gpu_backend,
     _live_env_value,
     read_gpu_topology,
+    read_windows_user_gpu_preference,
 )
 from models import GPUInfo, IndividualGPU, MultiGPUStatus
 from models import AmdRuntimeStatus
@@ -74,6 +77,10 @@ def _apple_info_to_individual(info: GPUInfo) -> IndividualGPU:
 
 def _get_raw_gpus(gpu_backend: str) -> Optional[list[IndividualGPU]]:
     """Return per-GPU list from the appropriate backend, with fallback."""
+    if platform.system() == "Windows":
+        win_native = get_gpu_info_windows_native_detailed()
+        if win_native:
+            return win_native[1]
     if gpu_backend == "apple":
         info = get_gpu_info_apple()
         if info is None:
@@ -487,6 +494,12 @@ async def gpu_history():
             gpus_data[gpu_key]["power_w"].append(g.get("power_w"))
 
     return {"timestamps": timestamps, "gpus": gpus_data}
+
+
+@router.get("/api/gpu/windows-preference", dependencies=[Depends(verify_api_key)])
+async def gpu_windows_preference():
+    """Return Windows DirectX UserGpuPreferences state (high_performance, power_saving, system_default)."""
+    return await asyncio.to_thread(read_windows_user_gpu_preference)
 
 
 # ============================================================================

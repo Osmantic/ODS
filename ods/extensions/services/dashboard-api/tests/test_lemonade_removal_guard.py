@@ -75,7 +75,7 @@ def _scanned_files() -> list[Path]:
         files += sorted(
             path for path in (ODS / root).rglob("*")
             if path.is_file() and path.suffix in SOURCE_SUFFIXES
-            and not {"tests", "__tests__", "__pycache__", "node_modules"} & set(path.parts)
+            and not {"tests", "__tests__", "__pycache__", "node_modules", ".mypy_cache", ".pytest_cache", ".ruff_cache"} & set(path.parts)
             and ".test." not in path.name
         )
     return files
