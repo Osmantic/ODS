@@ -23,7 +23,7 @@ def active_runtime_projection(status: object) -> dict[str, object] | None:
     if not isinstance(status, dict):
         return None
     runtime = status.get("activeRuntime")
-    if isinstance(runtime, dict) and runtime.get("source") == "local-switchboard":
+    if isinstance(runtime, dict) and runtime.get("source") in ("local-switchboard", "windows-desktop"):
         expected = {"source", "model", "contextLength"}
         if (
             set(runtime) == expected
