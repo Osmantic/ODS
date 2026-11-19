@@ -1439,3 +1439,65 @@ test('owner cancellation rejects a late inspection while workspace currency is p
  assert.equal(await guard.revalidateWorkspacePreview({},own),false);
  assert.notEqual(guard.verificationForRun('run').status,'passed');
 });
+
+// Native b709aa71: a passed blank-form check erased an earlier passed FAQ
+// check of the same immutable snapshot. Every action still needs a result.
+function independentFormPlan(preview) {
+ return {...plan(preview),steps:[
+  {action:'click',locator:{role:'button',name:'Submit sample form',exact:true}},
+  ...['name','phone','email','model','service','date'].map(field=>({
+   action:'assert-text',locator:{selector:'#'+field+'Error'},expectedText:'Required '+field})),
+ ]};
+}
+function finishIndependentInspection(f,observed) {
+ f.guard.afterToolCall({...observed.event,result:observed.result},observed.ctx);
+ persistBindingOutcome(f.guard,observed);
+}
+for(const wrapped of [false,true])for(const pending of [false,true])
+test(`independent asserted form check retains the earlier visibility proof wrapped=${wrapped} pendingCurrency=${pending}`,async()=>{
+ const f=pending?pendingInspectionFixture():setup();
+ if(!pending)persistBindingPublication(f);
+ const first=inspection(f.guard,plan(f.preview),{wrapped,id:'faq-first'});
+ finishIndependentInspection(f,first);
+ const form=behaviorInspection(f.guard,independentFormPlan(f.preview),{wrapped,id:'form-second'});
+ finishIndependentInspection(f,form);
+ if(pending){
+  assert.notEqual(f.guard.verificationForRun('run').status,'passed','browser evidence cannot replace current workspace byte equality');
+  assert.equal(f.comparisons(),0);
+  assert.equal(await f.guard.revalidateWorkspacePreview({},context),true);
+  assert.equal(f.comparisons(),1);
+ }
+ assert.equal(f.guard.verificationForRun('run').status,'passed','both independent passed inspection duties remain recorded');
+});
+
+for(const wrapped of [false,true])test(`independent form then visibility check also completes wrapped=${wrapped}`,()=>{
+ const f=setup();persistBindingPublication(f);
+ finishIndependentInspection(f,behaviorInspection(f.guard,independentFormPlan(f.preview),{wrapped,id:'form-first'}));
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed','form validation does not establish the FAQ transition');
+ finishIndependentInspection(f,inspection(f.guard,plan(f.preview),{wrapped,id:'faq-second'}));
+ assert.equal(f.guard.verificationForRun('run').status,'passed');
+});
+
+for(const wrapped of [false,true])for(const fault of [
+ 'failed','page-errors','wrong-hash','unbound','no-prior-proof','trailing-click','double-click',
+])test(`independent inspection does not retain visibility through ${fault} wrapped=${wrapped}`,()=>{
+ const f=setup();persistBindingPublication(f);
+ if(fault!=='no-prior-proof')finishIndependentInspection(f,inspection(f.guard,plan(f.preview),{wrapped,id:'prior-visibility'}));
+ const params=independentFormPlan(f.preview);
+ if(fault==='trailing-click')params.steps.push({action:'click',locator:{selector:'#unasserted'}});
+ if(fault==='double-click')params.steps.splice(1,0,{action:'click',locator:{selector:'#another-unasserted'}});
+ const observed=behaviorInspection(f.guard,params,{wrapped,id:'independent-fault',
+  pageErrors:fault==='page-errors'?{count:1,messages:['Synthetic page error']}:undefined});
+ const inner=wrapped?observed.result.details.result:observed.result;
+ if(fault==='failed'){
+  inner.isError=true;inner.details.status='failed';
+  inner.details.steps[0]={...inner.details.steps[0],status:'failed',errorCode:'no_match',before:{count:0}};
+ }
+ if(fault==='wrong-hash')inner.details.sha256='f'.repeat(64);
+ if(fault==='unbound'){
+  observed.ctx={...observed.ctx,toolCallId:'unbound-independent'};
+  observed.event={...observed.event,toolCallId:'unbound-independent'};
+ }
+ finishIndependentInspection(f,observed);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});

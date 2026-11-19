@@ -12364,15 +12364,18 @@ export function createToolLoopGuard({
         : toolSearchEventEnvelope(event, PREVIEW_INSPECTION_TOOL, 'pixel-ods');
       if (inspected && isDeepStrictEqual(inspected.params, pendingToolRun.selectedParams)) {
         const inspectionPreview = immutableInspectionPreview(state, runId);
-        // A successful read-only check of the same snapshot does not erase an
-        // earlier interaction check. Failed or unbound receipts still revoke it.
+        // Independent successful checks of the same immutable snapshot retain
+        // earlier interaction evidence. A new action still needs its own
+        // asserted result; failed or unbound receipts revoke the earlier proof.
         const proof = !failedToolOutcome(event)
           ? boundVisibilityInspection(inspected.params, inspected.result, inspectionPreview) : undefined;
         const priorProof = pendingToolRun.priorVisibilityInspection;
         const retainInteraction = !failedToolOutcome(event) &&
           visibilityInspectionMatches(priorProof, inspectionPreview) &&
           priorProof.sessionId === state.currentSessionId && priorProof.sessionKey === state.currentSessionKey &&
-          boundStaticPreviewInspection(inspected.params, inspected.result, inspectionPreview);
+          (boundStaticPreviewInspection(inspected.params, inspected.result, inspectionPreview) ||
+            boundPreviewBehavior(inspected.params, inspected.result, inspectionPreview,
+              attemptedPreviewBehavior(inspected.params, inspectionPreview)));
         state.workspaceVisibilityInspection = proof ? Object.freeze({...proof,
           sessionId: state.currentSessionId, sessionKey: state.currentSessionKey})
           : retainInteraction ? priorProof : undefined;
