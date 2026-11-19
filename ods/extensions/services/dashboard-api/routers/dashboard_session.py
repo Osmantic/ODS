@@ -34,6 +34,7 @@ from typing import Annotated, Any
 
 import dashboard_password
 import security
+from config import WINDOWS_DESKTOP_PROFILE
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from security import verify_api_key
@@ -132,11 +133,14 @@ def verify_dashboard_session(request: Request) -> Response:
 def dashboard_session_status(request: Request) -> dict:
     """Reached only once nginx allowed the request. ``session`` is False for
     the no-sign-in local browser, so the UI can hide Sign out there."""
-    return {
+    payload = {
         "signedIn": True,
         "session": session_is_valid(request.cookies.get(SESSION_COOKIE_NAME, "")),
         "passwordConfigured": dashboard_password.record() is not None,
     }
+    if WINDOWS_DESKTOP_PROFILE:
+        payload["remoteAccess"] = False
+    return payload
 
 
 @router.post("/api/auth/dashboard-session/login")

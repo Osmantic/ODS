@@ -39,6 +39,7 @@ ODS_USER_DATA_PATHS=(
     "data/config"                    # setup wizard / persona configuration
     "data/pixel-images"              # generated image library
     "data/pixel-agent-teams"         # Pixel agent team history (0700)
+    "data/portal-identity.json"      # assistant display identity profile
     "data/dashboard-password.json"   # dashboard login (0600); unconfigured without it
     "data/model-imports.json"        # user-imported model library entries
     "data/model-stores.json"         # registered external model stores
@@ -76,6 +77,9 @@ ODS_BACKUP_EXCLUDED_DATA_PATHS=(
     "data/dashboard-api-key.txt"         # fallback key, regenerated when unset in .env
     "data/config-backups"                # .env snapshots; .env itself is backed up
     "data/remote-provider"               # routing state and secrets rendered by the installer
+    "data/selected-model.json"           # active model selection state, re-derived on boot
+    "data/portal-runtime"                # ephemeral portal coordination runtime directory
+    "data/native-runtime"                # ephemeral native process coordination directory
     "data/pixel-chat-results"            # SSE delivery receipts, pruned after 7 days
     "data/.dashboard-private-stores"     # migration custody; live images exported separately
 )

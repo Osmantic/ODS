@@ -30,9 +30,33 @@ async def _body(request):
 
 
 async def _request(method, payload=None):
-    path = "/v1/pixel/identity/save" if method == "POST" else "/v1/pixel/identity"
+    import config
+    from pathlib import Path
+    from pixel_chat_identity import read_local_desktop_identity
+
+    if config.WINDOWS_DESKTOP_PROFILE:
+        current = read_local_desktop_identity()
+        if method == "POST" and payload is not None:
+            if payload["expectedRevision"] != current["revision"]:
+                raise HTTPException(409, "Assistant identity changed elsewhere; refresh before saving.", headers=NO_STORE)
+            updated = normalize_document({
+                "schemaVersion": 1,
+                "revision": current["revision"] + 1,
+                "displayName": payload["displayName"],
+            })
+            if config.DATA_DIR:
+                try:
+                    identity_file = Path(config.DATA_DIR) / "portal-identity.json"
+                    identity_file.parent.mkdir(parents=True, exist_ok=True)
+                    identity_file.write_text(json.dumps(updated), encoding="utf-8")
+                except OSError:
+                    pass
+            return JSONResponse(updated, headers=NO_STORE)
+        return JSONResponse(current, headers=NO_STORE)
+
+    endpoint = "/v1/pixel/identity/save" if method == "POST" else "/v1/pixel/identity"
     try:
-        result = await request_agent_json(method, path, payload=payload, timeout=10)
+        result = await request_agent_json(method, endpoint, payload=payload, timeout=10)
     except AgentHTTPError as error:
         status = error.status_code if error.status_code in (400, 409, 413, 503) else 502
         detail = ("Assistant identity changed elsewhere; refresh before saving." if status == 409

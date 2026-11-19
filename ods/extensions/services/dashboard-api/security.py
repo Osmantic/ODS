@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 
 DASHBOARD_API_KEY = os.environ.get("DASHBOARD_API_KEY")
 if not DASHBOARD_API_KEY:
+    if os.environ.get("ODS_RUNTIME_PROFILE", "").strip().lower() == "windows-desktop":
+        raise RuntimeError(
+            "DASHBOARD_API_KEY must be set when ODS_RUNTIME_PROFILE=windows-desktop"
+        )
     DASHBOARD_API_KEY = secrets.token_urlsafe(32)
     key_file = Path("/data/dashboard-api-key.txt")
     key_file.parent.mkdir(parents=True, exist_ok=True)
