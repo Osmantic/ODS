@@ -36,8 +36,15 @@ services:
       # --- AgentOps observability (disabled by default) ---
       - AGENTOPS_ENABLED=${AGENTOPS_ENABLED:-False}
       - AGENTOPS_API_KEY=${AGENTOPS_API_KEY:-}
+    # The image runs from /CrewAI-Studio and opens crewai.db relative to it
+    # (agents, tasks, crews, tools). Link that file into the /app data mount
+    # so it survives container recreation; the code and images stay in place.
+    command:
+      - sh
+      - -c
+      - ln -sf /app/crewai.db crewai.db && exec streamlit run ./app/app.py --server.headless true
     volumes:
-      # App data (SQLite DB, crew configs, history) lives under /app in the container
+      # Persistent data: the Studio SQLite database is linked to /app/crewai.db.
       - ./data/crewai:/app:rw
     ports:
       - "127.0.0.1:${CREWAI_PORT:-8501}:8501"

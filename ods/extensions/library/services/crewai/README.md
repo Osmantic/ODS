@@ -25,3 +25,9 @@ Your data is preserved when disabling. To re-enable later: `ods enable crewai`
 1. Enable the service: `ods enable crewai`
 2. Open `http://localhost:8501`
 3. Create agents, define tasks, and run crews through the visual builder
+
+## Data
+
+Agents, tasks, crews and tools are stored in `data/crewai/crewai.db`.
+Installs made before this change kept that database inside the container, so
+anything created there is not carried over when the container is recreated.
