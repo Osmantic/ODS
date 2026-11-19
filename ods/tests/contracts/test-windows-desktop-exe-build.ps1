@@ -135,6 +135,38 @@ try {
         $readUninstLink = $shellObj.CreateShortcut($testUninstLnkPath)
         Assert-True ($readUninstLink.Arguments -match [regex]::Escape($customInstallDir)) "Uninstall shortcut Arguments includes custom install dir with spaces"
         Assert-True ($readUninstLink.Arguments -match [regex]::Escape($customAppDataDir)) "Uninstall shortcut Arguments includes custom appdata dir with spaces"
+
+        # 7. Test nondefault port configuration derived from .env and CLI arguments
+        $portInstallDir = Join-Path $tmpRoot 'Custom Port Install'
+        New-Item -ItemType Directory -Path $portInstallDir -Force | Out-Null
+        $portEnvPath = Join-Path $portInstallDir '.env'
+        Set-Content -LiteralPath $portEnvPath -Value "DASHBOARD_PORT=3901`nLLAMA_PORT=8985`nODS_NATIVE_LLM_URL=http://127.0.0.1:8985`nODS_LLAMA_ENDPOINT=http://127.0.0.1:8985"
+
+        $portStatusRaw = (& $odsExe "--install-dir=$portInstallDir" "--appdata-dir=$customAppDataDir" --status-json | Out-String).Trim()
+        $portStatus = $portStatusRaw | ConvertFrom-Json
+        Assert-True ($portStatus.dashboardPort -eq 3901) "ODS.exe --status-json derives custom dashboardPort (3901) from .env"
+        Assert-True ($portStatus.llamaPort -eq 8985) "ODS.exe --status-json derives custom llamaPort (8985) from .env"
+        Assert-True ($portStatus.portalUrl -eq 'http://localhost:3901/pixel') "ODS.exe --status-json computes portalUrl from custom dashboard port"
+        Assert-True ($portStatus.dashboardApiListening -eq $false) "Custom port 3901 is not running while services stopped"
+        Assert-True ($portStatus.llamaServerListening -eq $false) "Custom port 8985 is not running while services stopped"
+
+        # Test CLI argument port overrides
+        $overrideStatusRaw = (& $odsExe "--install-dir=$portInstallDir" "--appdata-dir=$customAppDataDir" "--dashboard-port=4101" "--llama-port=9085" --status-json | Out-String).Trim()
+        $overrideStatus = $overrideStatusRaw | ConvertFrom-Json
+        Assert-True ($overrideStatus.dashboardPort -eq 4101) "ODS.exe honors --dashboard-port=4101 CLI override"
+        Assert-True ($overrideStatus.llamaPort -eq 9085) "ODS.exe honors --llama-port=9085 CLI override"
+        Assert-True ($overrideStatus.portalUrl -eq 'http://localhost:4101/pixel') "ODS.exe computes portalUrl from CLI override port"
+
+        # Test shortcut generation with nondefault ports
+        $customPortLinkPath = Join-Path $shortcutTestDir 'ODS-CustomPort.lnk'
+        $cpLink = $shellObj.CreateShortcut($customPortLinkPath)
+        $cpLink.TargetPath = $odsExe
+        $cpLink.Arguments = "--install-dir=`"$portInstallDir`" --appdata-dir=`"$customAppDataDir`" --dashboard-port=3901 --llama-port=8985"
+        $cpLink.Save()
+
+        $readCpLink = $shellObj.CreateShortcut($customPortLinkPath)
+        Assert-True ($readCpLink.Arguments -match '--dashboard-port=3901') "Shortcut Arguments include --dashboard-port=3901"
+        Assert-True ($readCpLink.Arguments -match '--llama-port=8985') "Shortcut Arguments include --llama-port=8985"
     } finally {
         $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($shellObj)
     }

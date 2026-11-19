@@ -42,6 +42,37 @@ namespace OdsNativeDesktop
         [DllImport("user32.dll")]
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
+        internal static Dictionary<string, string> ReadEnvFile(string installDir, string appDataDir)
+        {
+            Dictionary<string, string> env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            string[] candidates = new string[]
+            {
+                Path.Combine(installDir, ".env"),
+                Path.Combine(appDataDir, ".env")
+            };
+            foreach (string envFile in candidates)
+            {
+                if (!File.Exists(envFile)) continue;
+                try
+                {
+                    foreach (string line in File.ReadAllLines(envFile, Encoding.UTF8))
+                    {
+                        string s = (line ?? "").Trim();
+                        if (string.IsNullOrEmpty(s) || s.StartsWith("#")) continue;
+                        int eq = s.IndexOf('=');
+                        if (eq <= 0) continue;
+                        string k = s.Substring(0, eq).Trim();
+                        string v = s.Substring(eq + 1).Trim().Trim('\'', '"');
+                        env[k] = v;
+                    }
+                }
+                catch
+                {
+                }
+            }
+            return env;
+        }
+
         [STAThread]
         private static int Main(string[] args)
         {
@@ -88,10 +119,60 @@ namespace OdsNativeDesktop
                 }
             }
 
+            // Derive ports from installed configuration (.env), falling back to defaults 3101 / 8085
+            int dashboardPort = 3101;
+            int llamaPort = 8085;
+            Dictionary<string, string> env = ReadEnvFile(installDir, appDataDir);
+            if (env.ContainsKey("DASHBOARD_PORT"))
+            {
+                int dp;
+                if (int.TryParse(env["DASHBOARD_PORT"], out dp) && dp > 0) dashboardPort = dp;
+            }
+            else if (env.ContainsKey("PORT"))
+            {
+                int dp;
+                if (int.TryParse(env["PORT"], out dp) && dp > 0) dashboardPort = dp;
+            }
+            if (env.ContainsKey("LLAMA_PORT"))
+            {
+                int lp;
+                if (int.TryParse(env["LLAMA_PORT"], out lp) && lp > 0) llamaPort = lp;
+            }
+
             for (int i = 0; i < args.Length; i++)
             {
                 string a = args[i] ?? "";
-                if (a.StartsWith("--set-gpu-preference=", StringComparison.OrdinalIgnoreCase))
+                if (a.StartsWith("--dashboard-port=", StringComparison.OrdinalIgnoreCase))
+                {
+                    int dp;
+                    if (int.TryParse(a.Substring("--dashboard-port=".Length).Trim().Trim('"'), out dp) && dp > 0) dashboardPort = dp;
+                }
+                else if (a.Equals("--dashboard-port", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    int dp;
+                    if (int.TryParse(args[++i].Trim().Trim('"'), out dp) && dp > 0) dashboardPort = dp;
+                }
+                else if (a.StartsWith("--port=", StringComparison.OrdinalIgnoreCase))
+                {
+                    int dp;
+                    if (int.TryParse(a.Substring("--port=".Length).Trim().Trim('"'), out dp) && dp > 0) dashboardPort = dp;
+                }
+                else if (a.Equals("--port", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    int dp;
+                    if (int.TryParse(args[++i].Trim().Trim('"'), out dp) && dp > 0) dashboardPort = dp;
+                }
+                else if (a.StartsWith("--llama-port=", StringComparison.OrdinalIgnoreCase))
+                {
+                    int lp;
+                    if (int.TryParse(a.Substring("--llama-port=".Length).Trim().Trim('"'), out lp) && lp > 0) llamaPort = lp;
+                }
+                else if (a.Equals("--llama-port", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    int lp;
+                    if (int.TryParse(args[++i].Trim().Trim('"'), out lp) && lp > 0) llamaPort = lp;
+                }
+                else if (a.StartsWith("--set-gpu-preference=", StringComparison.OrdinalIgnoreCase))
                 {
                     string mode = a.Substring("--set-gpu-preference=".Length).Trim().ToLowerInvariant();
                     int code = mode == "power_saving" ? 1 : (mode == "let_windows_decide" ? 0 : 2);
@@ -108,18 +189,22 @@ namespace OdsNativeDesktop
                     );
                     return 0;
                 }
-                if (a == "--status-json")
+                else if (a == "--status-json")
                 {
                     string llamaExe = Path.Combine(appDataDir, @"runtimes\llama\llama-server.exe");
                     int prefCode = GetUserGpuPreferenceCode(llamaExe, Application.ExecutablePath);
                     string prefMode = prefCode == 1 ? "power_saving" : (prefCode == 0 ? "let_windows_decide" : "high_performance");
-                    bool apiUp = IsTcpPortOpen("127.0.0.1", 3101, 250);
-                    bool llamaUp = IsTcpPortOpen("127.0.0.1", 8085, 250);
-                    bool envFound = File.Exists(Path.Combine(installDir, ".env"));
+                    bool apiUp = IsTcpPortOpen("127.0.0.1", dashboardPort, 250);
+                    bool llamaUp = IsTcpPortOpen("127.0.0.1", llamaPort, 250);
+                    bool envFound = File.Exists(Path.Combine(installDir, ".env")) || File.Exists(Path.Combine(appDataDir, ".env"));
+                    string portalUrl = string.Format("http://localhost:{0}/pixel", dashboardPort);
                     string json = string.Format(
-                        "{{\"executable\":\"ODS.exe\",\"version\":\"3.0.0\",\"runtimeProfile\":\"windows-desktop\",\"installDir\":\"{0}\",\"appDataDir\":\"{1}\",\"envFileFound\":{2},\"gpuPreferenceMode\":\"{3}\",\"gpuPreferenceCode\":{4},\"preferDiscreteGpu\":{5},\"dashboardApiListening\":{6},\"llamaServerListening\":{7}}}",
+                        "{{\"executable\":\"ODS.exe\",\"version\":\"3.0.0\",\"runtimeProfile\":\"windows-desktop\",\"installDir\":\"{0}\",\"appDataDir\":\"{1}\",\"dashboardPort\":{2},\"llamaPort\":{3},\"portalUrl\":\"{4}\",\"envFileFound\":{5},\"gpuPreferenceMode\":\"{6}\",\"gpuPreferenceCode\":{7},\"preferDiscreteGpu\":{8},\"dashboardApiListening\":{9},\"llamaServerListening\":{10}}}",
                         EscapeJson(installDir),
                         EscapeJson(appDataDir),
+                        dashboardPort,
+                        llamaPort,
+                        EscapeJson(portalUrl),
                         envFound ? "true" : "false",
                         prefMode,
                         prefCode,
@@ -159,7 +244,7 @@ namespace OdsNativeDesktop
 
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new DesktopShellForm(installDir, appDataDir));
+                Application.Run(new DesktopShellForm(installDir, appDataDir, dashboardPort, llamaPort));
             }
             return 0;
         }
@@ -266,10 +351,11 @@ namespace OdsNativeDesktop
         [DllImport("dwmapi.dll")]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
-        private const string PortalTargetUrl = "http://localhost:3101/pixel";
-
         private readonly string _installDir;
         private readonly string _appDataDir;
+        private readonly int _dashboardPort;
+        private readonly int _llamaPort;
+        private readonly string _portalTargetUrl;
         private readonly NotifyIcon _trayIcon;
         private readonly ToolStripMenuItem _gpuHighPerfMenu;
         private readonly ToolStripMenuItem _gpuPowerSaveMenu;
@@ -286,10 +372,34 @@ namespace OdsNativeDesktop
         private bool _suppressComboEvent;
         private DateTime _lastStartAttemptUtc = DateTime.MinValue;
 
-        public DesktopShellForm(string installDir, string appDataDir)
+        public DesktopShellForm(string installDir, string appDataDir, int dashboardPort = 3101, int llamaPort = 8085)
         {
             _installDir = installDir;
             _appDataDir = appDataDir;
+
+            Dictionary<string, string> env = ReadDotEnv();
+            if (dashboardPort == 3101)
+            {
+                if (env.ContainsKey("DASHBOARD_PORT"))
+                {
+                    int dp;
+                    if (int.TryParse(env["DASHBOARD_PORT"], out dp) && dp > 0) dashboardPort = dp;
+                }
+                else if (env.ContainsKey("PORT"))
+                {
+                    int dp;
+                    if (int.TryParse(env["PORT"], out dp) && dp > 0) dashboardPort = dp;
+                }
+            }
+            if (llamaPort == 8085 && env.ContainsKey("LLAMA_PORT"))
+            {
+                int lp;
+                if (int.TryParse(env["LLAMA_PORT"], out lp) && lp > 0) llamaPort = lp;
+            }
+
+            _dashboardPort = dashboardPort;
+            _llamaPort = llamaPort;
+            _portalTargetUrl = string.Format("http://localhost:{0}/pixel", _dashboardPort);
 
             Text = "ODS — Osmantic Deployment System";
             Size = new Size(1360, 860);
@@ -474,10 +584,10 @@ namespace OdsNativeDesktop
                 _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
                 _webViewReady = true;
 
-                if (Program.IsTcpPortOpen("127.0.0.1", 3101, 200))
+                if (Program.IsTcpPortOpen("127.0.0.1", _dashboardPort, 200))
                 {
                     _portalLoaded = true;
-                    _webView.CoreWebView2.Navigate(PortalTargetUrl);
+                    _webView.CoreWebView2.Navigate(_portalTargetUrl);
                 }
                 else
                 {
@@ -495,41 +605,41 @@ namespace OdsNativeDesktop
             }
         }
 
-        private static string BuildBootSplashHtml()
+        private string BuildBootSplashHtml()
         {
-            return @"<!doctype html>
+            return string.Format(@"<!doctype html>
 <html>
 <head>
 <meta charset='utf-8'>
 <style>
-  body {
+  body {{
     margin: 0; height: 100vh; display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     background: #0b0f19; color: #f1f5f9;
     font-family: 'Segoe UI', system-ui, sans-serif;
-  }
-  .card {
+  }}
+  .card {{
     background: #111827; border: 1px solid #1e293b; border-radius: 16px;
     padding: 40px 52px; text-align: center; box-shadow: 0 20px 50px rgba(0,0,0,0.5);
-  }
-  .spinner {
+  }}
+  .spinner {{
     width: 44px; height: 44px; margin: 0 auto 20px;
     border: 3px solid #1e293b; border-top-color: #38bdf8;
     border-radius: 50%; animation: spin 0.9s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  h2 { margin: 0 0 8px; font-size: 20px; color: #38bdf8; }
-  p { margin: 0; font-size: 13.5px; color: #94a3b8; }
+  }}
+  @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+  h2 {{ margin: 0 0 8px; font-size: 20px; color: #38bdf8; }}
+  p {{ margin: 0; font-size: 13.5px; color: #94a3b8; }}
 </style>
 </head>
 <body>
   <div class='card'>
     <div class='spinner'></div>
     <h2>Starting ODS Native Desktop...</h2>
-    <p>Initializing local Portal API (127.0.0.1:3101) and GPU inference engine (127.0.0.1:8085)</p>
+    <p>Initializing local Portal API (127.0.0.1:{0}) and GPU inference engine (127.0.0.1:{1})</p>
   </div>
 </body>
-</html>";
+</html>", _dashboardPort, _llamaPort);
         }
 
         private void RestoreMainWindow()
@@ -545,10 +655,10 @@ namespace OdsNativeDesktop
         private void ReloadPortal()
         {
             if (!_webViewReady || _webView.CoreWebView2 == null) return;
-            if (Program.IsTcpPortOpen("127.0.0.1", 3101, 200))
+            if (Program.IsTcpPortOpen("127.0.0.1", _dashboardPort, 200))
             {
                 _portalLoaded = true;
-                _webView.CoreWebView2.Navigate(PortalTargetUrl);
+                _webView.CoreWebView2.Navigate(_portalTargetUrl);
             }
             else
             {
@@ -576,26 +686,7 @@ namespace OdsNativeDesktop
 
         private Dictionary<string, string> ReadDotEnv()
         {
-            Dictionary<string, string> env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            string envFile = Path.Combine(_installDir, ".env");
-            if (!File.Exists(envFile)) return env;
-            try
-            {
-                foreach (string line in File.ReadAllLines(envFile, Encoding.UTF8))
-                {
-                    string s = (line ?? "").Trim();
-                    if (string.IsNullOrEmpty(s) || s.StartsWith("#")) continue;
-                    int eq = s.IndexOf('=');
-                    if (eq <= 0) continue;
-                    string k = s.Substring(0, eq).Trim();
-                    string v = s.Substring(eq + 1).Trim().Trim('\'', '"');
-                    env[k] = v;
-                }
-            }
-            catch
-            {
-            }
-            return env;
+            return Program.ReadEnvFile(_installDir, _appDataDir);
         }
 
         private void EnsureNativeServicesStarted()
@@ -604,8 +695,8 @@ namespace OdsNativeDesktop
             string llamaExe = Path.Combine(_appDataDir, @"runtimes\llama\llama-server.exe");
             int gpuPref = Program.GetUserGpuPreferenceCode(llamaExe, Application.ExecutablePath);
 
-            // 1. Start llama-server.exe if present and port 8085 is not yet open
-            if (!Program.IsTcpPortOpen("127.0.0.1", 8085, 200) && File.Exists(llamaExe))
+            // 1. Start llama-server.exe if present and port is not yet open
+            if (!Program.IsTcpPortOpen("127.0.0.1", _llamaPort, 200) && File.Exists(llamaExe))
             {
                 string ggufName = env.ContainsKey("GGUF_FILE") ? env["GGUF_FILE"] : "";
                 string modelPath = !string.IsNullOrEmpty(ggufName)
@@ -642,7 +733,7 @@ namespace OdsNativeDesktop
                         ProcessStartInfo lpsi = new ProcessStartInfo
                         {
                             FileName = llamaExe,
-                            Arguments = string.Format("-m \"{0}\" --host 127.0.0.1 --port 8085 -c {1} -ngl {2} -np 1 --fit off{3}", modelPath, ctxSize, ngl, aliasArg),
+                            Arguments = string.Format("-m \"{0}\" --host 127.0.0.1 --port {1} -c {2} -ngl {3} -np 1 --fit off{4}", modelPath, _llamaPort, ctxSize, ngl, aliasArg),
                             WorkingDirectory = Path.GetDirectoryName(llamaExe),
                             UseShellExecute = false,
                             CreateNoWindow = true
@@ -655,8 +746,8 @@ namespace OdsNativeDesktop
                 }
             }
 
-            // 2. Start dashboard-api on 127.0.0.1:3101 if not yet open
-            if (!Program.IsTcpPortOpen("127.0.0.1", 3101, 200))
+            // 2. Start dashboard-api on 127.0.0.1:_dashboardPort if not yet open
+            if (!Program.IsTcpPortOpen("127.0.0.1", _dashboardPort, 200))
             {
                 string pyExe = env.ContainsKey("ODS_PYTHON_EXE") ? env["ODS_PYTHON_EXE"] : "";
                 if (string.IsNullOrEmpty(pyExe) || !File.Exists(pyExe))
@@ -736,7 +827,7 @@ namespace OdsNativeDesktop
                         ProcessStartInfo apsi = new ProcessStartInfo
                         {
                             FileName = pyExe,
-                            Arguments = string.Format("-m uvicorn --app-dir \"{0}\" main:app --host 127.0.0.1 --port 3101", apiDir),
+                            Arguments = string.Format("-m uvicorn --app-dir \"{0}\" main:app --host 127.0.0.1 --port {1}", apiDir, _dashboardPort),
                             WorkingDirectory = apiDir,
                             UseShellExecute = false,
                             CreateNoWindow = true
@@ -765,9 +856,11 @@ namespace OdsNativeDesktop
                         apsi.EnvironmentVariables["ODS_DASHBOARD_DIST"] = staticDir;
                         apsi.EnvironmentVariables["STATIC_DIR"] = staticDir;
                         apsi.EnvironmentVariables["ODS_EXTENSIONS_DIR"] = extDir;
-                        apsi.EnvironmentVariables["LLAMA_PORT"] = "8085";
-                        apsi.EnvironmentVariables["ODS_NATIVE_LLM_URL"] = "http://127.0.0.1:8085";
-                        apsi.EnvironmentVariables["ODS_LLAMA_ENDPOINT"] = "http://127.0.0.1:8085";
+                        apsi.EnvironmentVariables["LLAMA_PORT"] = _llamaPort.ToString();
+                        apsi.EnvironmentVariables["ODS_NATIVE_LLM_URL"] = string.Format("http://127.0.0.1:{0}", _llamaPort);
+                        apsi.EnvironmentVariables["ODS_LLAMA_ENDPOINT"] = string.Format("http://127.0.0.1:{0}", _llamaPort);
+                        apsi.EnvironmentVariables["DASHBOARD_PORT"] = _dashboardPort.ToString();
+                        apsi.EnvironmentVariables["PORT"] = _dashboardPort.ToString();
                         apsi.EnvironmentVariables["DASHBOARD_API_KEY"] = env.ContainsKey("DASHBOARD_API_KEY") && !string.IsNullOrEmpty(env["DASHBOARD_API_KEY"])
                             ? env["DASHBOARD_API_KEY"]
                             : "ods-windows-desktop-local-key";
@@ -803,8 +896,8 @@ namespace OdsNativeDesktop
             _gpuSelectorCombo.SelectedIndex = (code == 1) ? 1 : 0;
             _suppressComboEvent = false;
 
-            bool apiUp = Program.IsTcpPortOpen("127.0.0.1", 3101, 150);
-            bool llamaUp = Program.IsTcpPortOpen("127.0.0.1", 8085, 150);
+            bool apiUp = Program.IsTcpPortOpen("127.0.0.1", _dashboardPort, 150);
+            bool llamaUp = Program.IsTcpPortOpen("127.0.0.1", _llamaPort, 150);
 
             // Only auto-restart services if dashboard-api is down. When dashboard-api is online,
             // it manages llama-server model switches and reloads to avoid process duplication.
@@ -831,14 +924,14 @@ namespace OdsNativeDesktop
             }
             else
             {
-                _serviceBadgeLabel.Text = "● Starting Native Services (127.0.0.1:3101)...";
+                _serviceBadgeLabel.Text = string.Format("● Starting Native Services (127.0.0.1:{0})...", _dashboardPort);
                 _serviceBadgeLabel.ForeColor = Color.FromArgb(251, 191, 36);
             }
 
             if (apiUp && _webViewReady && !_portalLoaded && _webView.CoreWebView2 != null)
             {
                 _portalLoaded = true;
-                _webView.CoreWebView2.Navigate(PortalTargetUrl);
+                _webView.CoreWebView2.Navigate(_portalTargetUrl);
             }
         }
 
@@ -865,7 +958,7 @@ namespace OdsNativeDesktop
                 string btnText = "v3.0.0 (Up to date)";
                 try
                 {
-                    HttpWebRequest req = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:3101/api/version?force=true");
+                    HttpWebRequest req = (HttpWebRequest)WebRequest.Create(string.Format("http://127.0.0.1:{0}/api/version?force=true", _dashboardPort));
                     req.Timeout = 3500;
                     using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
                     using (StreamReader reader = new StreamReader(resp.GetResponseStream()))

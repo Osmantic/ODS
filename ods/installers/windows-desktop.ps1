@@ -697,6 +697,12 @@ if (-not $SkipShortcuts) {
             if ($resolvedAppDataDir) {
                 $launchArgs += "--appdata-dir=`"$resolvedAppDataDir`""
             }
+            if ($DashboardPort -and $DashboardPort -ne 3101) {
+                $launchArgs += "--dashboard-port=$DashboardPort"
+            }
+            if ($LlamaPort -and $LlamaPort -ne 8085) {
+                $launchArgs += "--llama-port=$LlamaPort"
+            }
             $shortcutArguments = ($launchArgs -join ' ')
 
             foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
