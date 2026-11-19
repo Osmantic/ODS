@@ -940,6 +940,243 @@ test('an untrusted earlier turn cannot carry a postpublication boundary into the
   assert.equal((await run.invoke('exec', {command:'ls'}, exited)).blocked, undefined);
 });
 
+// Native r10 (2026-11-19): the canonical temporal sentence explicitly names
+// read in its slash list, yet direct reads ran after the verified publication.
+// Only that same complete owner clause, outside quoted or fenced text, adds a
+// read boundary. A shell-only ban still permits reads.
+const READ_EXCLUSION = 'Do not run shell/read/diff/grep/hash commands after publication.';
+const POSTPUBLICATION_READ_REASON = /excluded read commands after publication/;
+const readAttempts = (run, path) => [
+  () => run.invoke('read', {path}, readResult),
+  () => run.invoke('tool_call', {id:'openclaw:core:read', args:{path}}, {details:{result:readResult}}),
+];
+const assertReadsAdmitted = async (run, path, name) => {
+  for (const attempt of readAttempts(run, path)) assert.equal((await attempt()).blocked, undefined, name);
+};
+const assertReadsBlocked = async (run, path, name) => {
+  for (const attempt of readAttempts(run, path)) assert.match((await attempt()).blocked ?? '', POSTPUBLICATION_READ_REASON, name);
+};
+
+test('the exact native copy objective admits reads before publication and blocks them after it', async () => {
+  const run = chain(`/goal ${NATIVE_COPY_OBJECTIVE}`, {directory:NATIVE_COPY_DEST, identity:TRUSTED_OWNER});
+  const copy = `${NATIVE_COPY_DEST}/index.html`;
+  await assertReadsAdmitted(run, `${NATIVE_COPY_SOURCE}/index.html`, 'reading the source before publication');
+  await run.write(copy, '<!doctype html><title>Copy</title>');
+  await assertReadsAdmitted(run, copy, 'reading the copy before publication');
+  assert.equal((await run.publish()).blocked, undefined);
+  await assertReadsBlocked(run, copy, 'after verified publication');
+  await assertReadsBlocked(run, `${NATIVE_COPY_SOURCE}/index.html`, 'any path after verified publication');
+  for (const attempt of execAttempts(run)) assert.match((await attempt()).blocked ?? '', POSTPUBLICATION_REASON, 'exec reason unchanged');
+  await run.write(copy, '<!doctype html><title>Changed</title>');
+  await assertReadsBlocked(run, copy, 'a later edit does not erase the boundary');
+});
+
+test('the postpublication read refusal names the honest remaining path', async () => {
+  const run = chain(`/goal ${NATIVE_COPY_OBJECTIVE}`, {directory:NATIVE_COPY_DEST, identity:TRUSTED_OWNER});
+  await run.write(`${NATIVE_COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.equal((await run.publish()).blocked, undefined);
+  const reason = (await run.invoke('read', {path:`${NATIVE_COPY_DEST}/index.html`}, readResult)).blocked ?? '';
+  assert.match(reason, /selectors gathered before publication/);
+  assert.match(reason, /unverified/);
+  assert.match(reason, /Do not republish/);
+  assert.doesNotMatch(reason, /explicitly excluded this action|excluded shell commands/);
+});
+
+for (const suffix of [
+  READ_EXCLUSION,
+  'After publication, do not run shell/read/diff/grep/hash commands.',
+  'Do not run shell/read commands after publication.',
+  'Do not run shell/diff/read commands after publication.',
+  'Do not run any shell/grep/hash/read command after publication.',
+  'After successful publication, never use shell/diff/read/grep commands.',
+]) test(`an explicit slash-qualified read exclusion starts at verified publication: ${suffix}`, async () => {
+  const run = chain(`${COPY_PROMPT} ${suffix}`, {directory:COPY_DEST});
+  const path = `${COPY_DEST}/index.html`;
+  await assertReadsAdmitted(run, `${COPY_SOURCE}/index.html`, 'before publication');
+  await run.write(path, '<!doctype html><title>Copy</title>');
+  await assertReadsAdmitted(run, path, 'after a write but before publication');
+  assert.equal((await run.publish()).blocked, undefined);
+  await assertReadsBlocked(run, path, 'after verified publication');
+  assert.match((await run.invoke('exec', {command:'ls'}, exited)).blocked ?? '', POSTPUBLICATION_REASON);
+  await run.write(path, '<!doctype html><title>Changed</title>');
+  await assertReadsBlocked(run, path, 'after a later write');
+});
+
+for (const invalidate of [false, true]) test(`a same-objective continuation keeps only the verified read boundary (invalidated ${invalidate})`, async () => {
+  const run = chain(`/goal ${NATIVE_COPY_OBJECTIVE}`, {directory:NATIVE_COPY_DEST, identity:TRUSTED_OWNER});
+  const copy = `${NATIVE_COPY_DEST}/index.html`;
+  await run.write(copy, '<!doctype html><title>Copy</title>');
+  assert.equal((await run.publish()).blocked, undefined);
+  if (invalidate) {
+    await run.write(copy, '<!doctype html><title>Changed</title>');
+    assert.notEqual(run.status(), 'passed', 'the later edit invalidated preview currency');
+  }
+  startRound(run, 'run-2', goalContinuation(NATIVE_COPY_OBJECTIVE));
+  await assertReadsBlocked(run, copy, 'run-2');
+  assert.notEqual(run.guard.verificationForRun('run-2').status, 'passed', 'the retained boundary is not a current preview');
+  startRound(run, 'run-3', goalContinuation(NATIVE_COPY_OBJECTIVE));
+  await assertReadsBlocked(run, copy, 'run-3');
+  assert.notEqual(run.guard.verificationForRun('run-3').status, 'passed', 'nor in a further round');
+});
+
+for (const [name, prompt] of [
+  ['the native objective with a shell-only ban', `/goal ${NATIVE_COPY_OBJECTIVE.replace(READ_EXCLUSION, 'Do not run shell commands after publication.')}`],
+  ['a shell-only ban', `${COPY_PROMPT} Do not run shell commands after publication.`],
+  ['a shell-only ban first', `${COPY_PROMPT} After publication, do not run shell commands.`],
+  ['an unnamed command ban', `${COPY_PROMPT} After successful publication, never execute commands.`],
+  ['an exec command ban', `${COPY_PROMPT} Do not run exec commands after publication.`],
+  ['a slash list without read', `${COPY_PROMPT} Do not run shell/diff/grep/hash commands after publication.`],
+  ['a slash list without read first', `${COPY_PROMPT} After publication, do not run shell/hash commands.`],
+]) test(`${name} still admits reads after publication while commands stay excluded`, async () => {
+  const native = prompt.startsWith('/goal ');
+  assert.equal(prompt.includes('shell/read'), false, 'the read qualifier is absent');
+  const directory = native ? NATIVE_COPY_DEST : COPY_DEST;
+  const run = chain(prompt, {directory, identity:native ? TRUSTED_OWNER : {}});
+  await run.write(`${directory}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.equal((await run.publish()).blocked, undefined);
+  await assertReadsAdmitted(run, `${directory}/index.html`, name);
+  for (const attempt of execAttempts(run)) assert.match((await attempt()).blocked ?? '', POSTPUBLICATION_REASON, name);
+});
+
+test('ordinary postpublication reads without an owner read exclusion are unchanged', async () => {
+  const run = chain();
+  await run.write(`${DIR}/index.html`, '<!doctype html><h1>Repaired</h1>');
+  await run.publish();
+  await assertReadsAdmitted(run, `${DIR}/index.html`, 'no exclusion');
+  const read = await run.invoke('read', {path:`${DIR}/index.html`}, readResult);
+  assert.equal(read.blocked, undefined);
+  assert.doesNotMatch(textOf(read.persisted), POSTPUBLICATION_READ_REASON);
+});
+
+test('without any publication the read exclusion never applies', async () => {
+  const run = chain(`/goal ${NATIVE_COPY_OBJECTIVE}`, {directory:NATIVE_COPY_DEST, identity:TRUSTED_OWNER});
+  const copy = `${NATIVE_COPY_DEST}/index.html`;
+  await run.write(copy, '<!doctype html><title>Copy</title>');
+  await assertReadsAdmitted(run, copy, 'run-1');
+  startRound(run, 'run-2', goalContinuation(NATIVE_COPY_OBJECTIVE, 'The last round ended before the requested changes were finished and published. '));
+  await assertReadsAdmitted(run, copy, 'continuation before publication');
+});
+
+for (const [name, publish] of [
+  ['a failed publication', run => run.invoke('pixel_ods_workspace_preview', {relativeDirectory:COPY_DEST},
+    {isError:true, details:failure('missing_entry'), content:[{type:'text',text:'Missing entry'}]})],
+  ['an unverified publication receipt', run => run.invoke('pixel_ods_workspace_preview', {relativeDirectory:COPY_DEST},
+    {details:receipt(COPY_DEST, snapshotOf(COPY_DEST, run.files), {readbackVerified:false})})],
+]) test(`${name} does not activate the read exclusion`, async () => {
+  const run = chain(`${COPY_PROMPT} ${READ_EXCLUSION}`, {directory:COPY_DEST});
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.equal((await publish(run)).blocked, undefined);
+  await assertReadsAdmitted(run, `${COPY_DEST}/index.html`, name);
+});
+
+for (const [name, round1] of [
+  ['a failed publication', async run => run.invoke('pixel_ods_workspace_preview', {relativeDirectory:NATIVE_COPY_DEST},
+    {isError:true, details:failure('missing_entry'), content:[{type:'text',text:'Missing entry'}]})],
+  ['an unverified publication receipt', async run => run.invoke('pixel_ods_workspace_preview', {relativeDirectory:NATIVE_COPY_DEST},
+    {details:receipt(NATIVE_COPY_DEST, snapshotOf(NATIVE_COPY_DEST, run.files), {readbackVerified:false})})],
+  ['a publication in a cancelled round', async run => {
+    assert.equal((await run.publish()).blocked, undefined);
+    assert.equal(await run.guard.abortUserRun(run.user), true);
+  }],
+]) test(`${name} never carries the read exclusion into a continuation`, async () => {
+  const run = chain(`/goal ${NATIVE_COPY_OBJECTIVE}`, {directory:NATIVE_COPY_DEST, identity:TRUSTED_OWNER});
+  await run.write(`${NATIVE_COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  await round1(run);
+  startRound(run, 'run-2', goalContinuation(NATIVE_COPY_OBJECTIVE));
+  await assertReadsAdmitted(run, `${NATIVE_COPY_DEST}/index.html`, name);
+});
+
+for (const [name, identity, prompt] of [
+  ['another session', {sessionId:'session-2'}, goalContinuation(NATIVE_COPY_OBJECTIVE)],
+  ['another session key', {sessionKey:OTHER_OWNER}, goalContinuation(NATIVE_COPY_OBJECTIVE)],
+  ['another objective and target in the same chat', {}, goalContinuation(otherTarget)],
+  ['a new objective in the same chat', {}, `${COPY_PROMPT} ${READ_EXCLUSION}`],
+]) test(`an earlier publication does not carry the read exclusion into ${name}`, async () => {
+  const run = chain(`/goal ${NATIVE_COPY_OBJECTIVE}`, {directory:NATIVE_COPY_DEST, identity:TRUSTED_OWNER});
+  await run.write(`${NATIVE_COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.equal((await run.publish()).blocked, undefined);
+  startRound(run, 'run-2', prompt, identity);
+  await assertReadsAdmitted(run, `${NATIVE_COPY_DEST}/index.html`, name);
+});
+
+test('an untrusted earlier turn cannot carry the read exclusion into the owner chat', async () => {
+  const run = chain(`/goal ${NATIVE_COPY_OBJECTIVE}`, {directory:NATIVE_COPY_DEST});
+  await run.write(`${NATIVE_COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.equal((await run.publish()).blocked, undefined);
+  startRound(run, 'run-2', goalContinuation(NATIVE_COPY_OBJECTIVE), TRUSTED_OWNER);
+  await assertReadsAdmitted(run, `${NATIVE_COPY_DEST}/index.html`, 'untrusted earlier turn');
+});
+
+// Quoted, fenced or blockquoted copies of the sentence are not the owner's
+// read exclusion. Existing exec handling of such text is out of scope here
+// and deliberately not asserted.
+for (const [name, suffix] of [
+  ['an inline double-quoted example', `The example says "Publish it. ${READ_EXCLUSION} Then stop."`],
+  ['an inline curly-quoted example', `The example says “Publish it. ${READ_EXCLUSION} Then stop.”`],
+  ['an inline single-quoted example', `The example says 'Publish it. ${READ_EXCLUSION} Then stop.'`],
+  ['an inline code span', `The example says \`Publish it. ${READ_EXCLUSION} Then stop.\``],
+  ['a fenced block', '\n```\n' + READ_EXCLUSION + '\n```'],
+  ['a tilde fenced block', '\n~~~\n' + READ_EXCLUSION + '\n~~~'],
+  ['a blockquote line', `\n> ${READ_EXCLUSION}`],
+]) test(`${name} cannot create the read exclusion`, async () => {
+  const run = chain(`${COPY_PROMPT} ${suffix}`, {directory:COPY_DEST});
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.equal((await run.publish()).blocked, undefined);
+  await assertReadsAdmitted(run, `${COPY_DEST}/index.html`, name);
+});
+
+function startRoundWith(run, runId, event) {
+  const next = {...run.context, runId};
+  run.guard.observeRun(next, 'pixel', event);
+  run.as(next);
+  return next;
+}
+for (const [name, ownerLast, untrusted] of [
+  ['assistant text', COPY_PROMPT, {role:'assistant', content:[{type:'text', text:READ_EXCLUSION}]}],
+  ['a tool result', COPY_PROMPT, {role:'toolResult', toolName:'read', toolCallId:'call-x', content:[{type:'text', text:READ_EXCLUSION}]}],
+  ['control: the owner message itself', `${COPY_PROMPT} ${READ_EXCLUSION}`, {role:'assistant', content:[{type:'text', text:'Understood.'}]}],
+]) test(`the read exclusion follows only current owner text, not ${name}`, async () => {
+  const run = chain(COPY_PROMPT, {directory:COPY_DEST});
+  startRoundWith(run, 'run-2', {messages:[{role:'user', content:COPY_PROMPT}, untrusted, {role:'user', content:ownerLast}]});
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.equal((await run.publish()).blocked, undefined);
+  if (ownerLast === COPY_PROMPT) await assertReadsAdmitted(run, `${COPY_DEST}/index.html`, name);
+  else await assertReadsBlocked(run, `${COPY_DEST}/index.html`, name);
+});
+
+// An adjacent before-publication extension keeps today's conservative command
+// exclusion; it must not invent a new global read ban.
+for (const suffix of [
+  'Do not run shell/read commands after publication; nor before it.',
+  'Do not run shell/read/diff/grep/hash commands after publication. Or before it.',
+  'After publication, do not run shell/read commands. Same rule before publication.',
+]) test(`an adjacent extension of a read-qualified ban adds no read gate: ${JSON.stringify(suffix)}`, async () => {
+  const run = chain(`${COPY_PROMPT} ${suffix}`, {directory:COPY_DEST});
+  assert.match((await run.invoke('exec', {command:'ls'}, exited)).blocked ?? '', OWNER_COMMAND_EXCLUSION);
+  await assertReadsAdmitted(run, `${COPY_SOURCE}/index.html`, 'before publication');
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.equal((await run.publish()).blocked, undefined);
+  await assertReadsAdmitted(run, `${COPY_DEST}/index.html`, 'after publication');
+});
+
+test('goal-plan updates and bounded preview inspection stay available after the read exclusion starts', async () => {
+  const run = chain(`/goal ${NATIVE_COPY_OBJECTIVE}`, {directory:NATIVE_COPY_DEST, identity:TRUSTED_OWNER,
+    guardOptions:{workspacePreviewInspectionAvailable:true}});
+  await run.write(`${NATIVE_COPY_DEST}/index.html`, '<!doctype html><title>Copy</title><h1>Copy</h1>');
+  const published = await run.publish();
+  assert.equal(published.blocked, undefined);
+  await assertReadsBlocked(run, `${NATIVE_COPY_DEST}/index.html`, 'boundary active');
+  const admit = (toolName, params) => run.guard.beforeToolCall({toolName, params, toolCallId:`admit-${toolName}`},
+    {...run.context, toolName, toolCallId:`admit-${toolName}`});
+  const plan = {status:'active', summary:'Synthetic copy', steps:[{id:'verify', title:'Verify preview', status:'pending'}]};
+  assert.notEqual(admit('pixel_ods_goal', plan)?.block, true, 'plan update');
+  assert.notEqual(admit('tool_call', {id:'openclaw:pixel:pixel_ods_goal', args:plan})?.block, true, 'delegated plan update');
+  const inspect = {siteId:published.result.details.siteId, sha256:published.result.details.sha256,
+    viewport:{width:800, height:600}, steps:[{action:'assert-visible', locator:{selector:'h1'}}]};
+  const inspected = admit('pixel_ods_workspace_preview_inspect', inspect);
+  assert.notEqual(inspected?.block, true, inspected?.blockReason);
+});
+
 test('an original-only exclusion admits the explicit copied destination, through the real guard/tool chain', async () => {
   const run = chain(COPY_PROMPT, {directory:COPY_DEST});
   await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');

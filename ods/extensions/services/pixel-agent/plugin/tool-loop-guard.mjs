@@ -7053,11 +7053,20 @@ function workspacePreviewRestrictions(text) {
   // Recognize the complete sentence before splitting conjunctions. Otherwise
   // "after publication but also before it" would lose its second condition.
   // A semicolon continues the sentence ("after publication; nor before it").
-  const sentences = text.split(/[!?\n]+|\.(?=\s|$)/).map(clause => clause.trim());
-  const following = index => sentences.slice(index + 1).find(Boolean) ?? "";
-  const temporal = sentences.map((clause, index) => POSTPUBLICATION_COMMAND_EXCLUSION.test(clause) &&
-    !POSTPUBLICATION_COMMAND_EXTENSION.test(following(index)));
+  const split = value => value.split(/[!?\n]+|\.(?=\s|$)/).map(clause => clause.trim());
+  const temporalClauses = clauses => clauses.map((clause, index) => POSTPUBLICATION_COMMAND_EXCLUSION.test(clause) &&
+    !POSTPUBLICATION_COMMAND_EXTENSION.test(clauses.slice(index + 1).find(Boolean) ?? ""));
+  const sentences = split(text);
+  const temporal = temporalClauses(sentences);
   const execAfterPublication = temporal.some(Boolean);
+  // A read ban needs that same complete clause to name read in its slash list
+  // and to remain a temporal clause of the owner's own prose: quoted, fenced
+  // or blockquoted copies never add one. It implies execAfterPublication.
+  const ownerSentences = split(ownerLaneText(text));
+  const ownerFlags = temporalClauses(ownerSentences);
+  const ownerTemporal = new Set(ownerSentences.filter((clause, index) => ownerFlags[index]));
+  const readAfterPublication = sentences.some((clause, index) => temporal[index] && ownerTemporal.has(clause) &&
+    /\bshell((?:\/(?:read|diff|grep|hash))+)/i.exec(clause)?.[1].toLowerCase().split('/').includes('read'));
   const excluded = sentences.filter((clause, index) => !temporal[index])
     .flatMap(clause => clause.split(/;|\b(?:but|however|instead|then)\b/i))
     .map(clause => clause.match(/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|without)\b([^.!?;\n]{1,320})/i)?.[1] ?? "")
@@ -7077,6 +7086,7 @@ function workspacePreviewRestrictions(text) {
     // Arbitrary commands cannot be checked against a single-file edit boundary.
     exec: Boolean(existingFile) || /\b(?:run|use|execute)\b[^\n]{0,48}\b(?:shell|commands?|exec)\b/i.test(excluded),
     execAfterPublication,
+    readAfterPublication,
     web: /\b(?:contact|visit|fetch|browse|use)\b[^\n]{0,48}\b(?:external|websites?|sites?|network|web|internet)\b/i.test(excluded),
     directory: paths.size === 1 ? [...paths][0] : undefined,
   };
@@ -7122,9 +7132,13 @@ function workspacePreviewRestrictionReason(state, tool, params) {
       EVIDENCE_REPORT_TOOL, 'pixel_ods_download_promote', WORKSPACE_BUNDLE_TOOL].includes(tool);
   // An earlier round's verified publication of this same objective counts too
   // (earlierPostpublicationBoundary). That retains the ban, never a preview.
-  const postpublicationCommand = restriction.execAfterPublication &&
-    Boolean(state.workspacePreview || state.workspacePreviewVerifiedDirectory || state.workspacePostpublicationRetained) &&
+  const published = Boolean(state.workspacePreview || state.workspacePreviewVerifiedDirectory || state.workspacePostpublicationRetained);
+  const postpublicationCommand = restriction.execAfterPublication && published &&
     ['exec', 'process', WORKSPACE_BUNDLE_TOOL].includes(tool);
+  // Only the owner's explicit slash-qualified read exclusion reaches read.
+  if (restriction.readAfterPublication && published && tool === 'read') {
+    return 'The owner excluded read commands after publication. Use selectors gathered before publication with the remaining inspection and plan tools, and report any check you cannot complete as unverified. Do not republish as a workaround or claim checks that have not passed.';
+  }
   if ((scopedMutation && !scopedExistingFileMutationAllowed(state, tool, params)) ||
       (restriction.mutation && ['write', 'edit', 'apply_patch', WORKSPACE_BUNDLE_TOOL].includes(tool)) ||
       ((restriction.exec || postpublicationCommand) && ['exec', 'process', WORKSPACE_BUNDLE_TOOL].includes(tool)) ||
