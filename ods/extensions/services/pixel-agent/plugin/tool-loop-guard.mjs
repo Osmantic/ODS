@@ -7023,6 +7023,25 @@ const POSTPUBLICATION_COMMAND_EXCLUSION = (() => {
   const stage = String.raw`after\s+(?:successful\s+)?publication`;
   return new RegExp(`^(?:${command}\\s+${stage}|${stage}\\s*,?\\s+${command})$`, 'i');
 })();
+// An adjacent elliptical sentence ("Or before it.", "Same rule before
+// publication.") extends that ban to before publication. Such an extension
+// keeps the conservative exclusion; ordinary later sentences do not.
+const POSTPUBLICATION_COMMAND_EXTENSION = /^(?:(?:and|but)\s+)?(?:(?:not|or|nor|also|either|neither|likewise|ditto|too)\b|(?:the\s+)?same\b|(?:(?:also|even|or|nor)\s+)?(?:before|prior\s+to|until)\s+(?:it|that|then|this|publication|publishing)\s*,?\s*(?:either|too|as\s+well|also)?$)/i;
+
+// portal_goal.goal_prompt() repeats the owner's objective before this preface.
+// It only identifies the same objective; it is never evidence of past work.
+const GOAL_CONTINUATION_PREFACE = '\n\nContinue this goal from the saved work.';
+function goalObjectiveText(text) {
+  const bare = String(text ?? '').replace(/\r\n?/g, '\n').trim().replace(/^\/goal\s+/i, '');
+  const preface = bare.indexOf(GOAL_CONTINUATION_PREFACE);
+  return (preface >= 0 ? bare.slice(0, preface) : bare).trim();
+}
+
+function objectiveNamesDirectory(objective, directory) {
+  if (typeof objective !== 'string' || !objective || typeof directory !== 'string' || !directory) return false;
+  const name = directory.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[\\s\\x60"'(])(?:/workspace/)?${name}(?=$|[\\s\\x60"',;:!?)/]|\\.(?:\\s|$))`).test(objective);
+}
 
 function workspacePreviewRestrictions(text) {
   // A positive repair does not erase the owner's independent exclusions.
@@ -7033,10 +7052,14 @@ function workspacePreviewRestrictions(text) {
   const authorship = /\b(?:build|create|develop|generate|implement|make|write|edit|fix|repair|modify|update|add|change|remove|delete|rename|move|patch|improve)\b/i.test(positive);
   // Recognize the complete sentence before splitting conjunctions. Otherwise
   // "after publication but also before it" would lose its second condition.
-  const sentences = text.split(/[!?;\n]+|\.(?=\s|$)/).map(clause => clause.trim());
-  const execAfterPublication = sentences.some(clause => POSTPUBLICATION_COMMAND_EXCLUSION.test(clause));
-  const excluded = sentences.filter(clause => !POSTPUBLICATION_COMMAND_EXCLUSION.test(clause))
-    .flatMap(clause => clause.split(/\b(?:but|however|instead|then)\b/i))
+  // A semicolon continues the sentence ("after publication; nor before it").
+  const sentences = text.split(/[!?\n]+|\.(?=\s|$)/).map(clause => clause.trim());
+  const following = index => sentences.slice(index + 1).find(Boolean) ?? "";
+  const temporal = sentences.map((clause, index) => POSTPUBLICATION_COMMAND_EXCLUSION.test(clause) &&
+    !POSTPUBLICATION_COMMAND_EXTENSION.test(following(index)));
+  const execAfterPublication = temporal.some(Boolean);
+  const excluded = sentences.filter((clause, index) => !temporal[index])
+    .flatMap(clause => clause.split(/;|\b(?:but|however|instead|then)\b/i))
     .map(clause => clause.match(/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|without)\b([^.!?;\n]{1,320})/i)?.[1] ?? "")
     .join("\n");
   const paths = new Set([...text.matchAll(/(?:^|[\s`"'])(?:\/workspace\/)?([A-Za-z0-9][A-Za-z0-9._-]{0,127}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}){1,11})(?=$|[\s`"',;!?]|\.(?:\s|$))/g)]
@@ -7097,8 +7120,10 @@ function workspacePreviewRestrictionReason(state, tool, params) {
   const scopedMutation = restriction.existingFile &&
     ['write', 'edit', 'apply_patch', 'move', 'rename', 'delete', 'mkdir',
       EVIDENCE_REPORT_TOOL, 'pixel_ods_download_promote', WORKSPACE_BUNDLE_TOOL].includes(tool);
+  // An earlier round's verified publication of this same objective counts too
+  // (earlierPostpublicationBoundary). That retains the ban, never a preview.
   const postpublicationCommand = restriction.execAfterPublication &&
-    Boolean(state.workspacePreview || state.workspacePreviewVerifiedDirectory) &&
+    Boolean(state.workspacePreview || state.workspacePreviewVerifiedDirectory || state.workspacePostpublicationRetained) &&
     ['exec', 'process', WORKSPACE_BUNDLE_TOOL].includes(tool);
   if ((scopedMutation && !scopedExistingFileMutationAllowed(state, tool, params)) ||
       (restriction.mutation && ['write', 'edit', 'apply_patch', WORKSPACE_BUNDLE_TOOL].includes(tool)) ||
@@ -8584,6 +8609,28 @@ export function createToolLoopGuard({
     }
   }
 
+  // An owner's after-publication command ban starts at that owner's actual
+  // verified publication, which an earlier round of the same goal may have
+  // made. Only an earlier run in this same trusted owner chat (session and
+  // key) with the same objective and a verified publication of a directory
+  // that objective names counts. Cancelled, conflicting and team runs never
+  // do. This keeps the ban only: never a preview, comparison, permission or proof.
+  function earlierPostpublicationBoundary(state, runId) {
+    const objective = state.workspacePostpublicationObjective;
+    if (!objective || !state.artifactOwnerInteractive || state.managedTeamWorker || state.clientCancelled ||
+        state.artifactIdentityConflict || !state.currentSessionId || !state.currentSessionKey) return false;
+    for (const [otherRunId, other] of runs) {
+      if (otherRunId === runId || !other.artifactOwnerInteractive || other.managedTeamWorker ||
+          other.clientCancelled || other.artifactIdentityConflict ||
+          other.currentSessionId !== state.currentSessionId || other.currentSessionKey !== state.currentSessionKey ||
+          other.workspacePostpublicationObjective !== objective) continue;
+      if (other.workspacePostpublicationRetained) return true;
+      const published = other.workspacePreview?.relativeDirectory ?? other.workspacePreviewVerifiedDirectory;
+      if (objectiveNamesDirectory(objective, published)) return true;
+    }
+    return false;
+  }
+
   function rememberSessionPreview(sessionId, preview, state) {
     if (typeof sessionId !== "string" || !sessionId || !preview) return;
     if (sessionPreviews.has(sessionId)) sessionPreviews.delete(sessionId);
@@ -9000,6 +9047,8 @@ export function createToolLoopGuard({
         workspacePreview: undefined,
         workspaceLastVerifiedPreview: undefined,
         workspacePreviewVerifiedDirectory: undefined,
+        workspacePostpublicationObjective: undefined,
+        workspacePostpublicationRetained: false,
         invalidUnittestBlocks: 0,
         invalidParsedJsonBlocks: 0,
         noOpEditBlocks: 0,
@@ -11853,6 +11902,10 @@ export function createToolLoopGuard({
         state.workspacePreviewRestrictions = explicitDelivery && !state.workspacePreviewAuthorshipRequired
           ? workspacePreviewRestrictions(ownerIntent)
           : undefined;
+        if (state.workspacePreviewRestrictions?.execAfterPublication) {
+          state.workspacePostpublicationObjective ??= goalObjectiveText(ownerIntent);
+          state.workspacePostpublicationRetained ||= earlierPostpublicationBoundary(state, runId);
+        }
         state.workspacePreviewInspectionRequested =
           userMessageRequestsWorkspacePreviewInspection(
             event?.messages,

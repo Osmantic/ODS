@@ -795,6 +795,151 @@ test('a temporal command ban does not weaken an independent no-web exclusion', a
   assert.ok((await run.invoke('web_fetch', {url:'https://example.invalid'}, {})).blocked);
 });
 
+// Independent review F1 (2026-11-19): stripping the canonical sentence must
+// not drop the owner's adjacent extension of the same ban to before
+// publication. A semicolon continues the sentence; an adjacent elliptical
+// sentence extends it. Both keep the existing conservative exclusion.
+const OWNER_COMMAND_EXCLUSION = /explicitly excluded this action|excluded shell commands after publication/;
+for (const suffix of [
+  'Do not run shell commands after publication; nor before it.',
+  'Do not run shell commands after publication; or before it.',
+  'Do not run shell commands after publication. Or before it.',
+  'Do not run shell commands after publication. Nor before publication.',
+  'Do not run shell commands after publication! Before it either.',
+  'Do not run shell commands after publication.\nThe same applies before publication.',
+  'After publication, do not run shell commands. Same rule before publication.',
+]) test(`an adjacent before-publication extension keeps the command ban: ${JSON.stringify(suffix)}`, async () => {
+  const run = chain(`${COPY_PROMPT} ${suffix}`, {directory:COPY_DEST});
+  assert.match((await run.invoke('exec', {command:'ls'}, exited)).blocked ?? '', OWNER_COMMAND_EXCLUSION);
+  assert.match((await run.invoke('tool_call', {id:'openclaw:core:exec', args:{command:'ls'}},
+    {details:{result:exited}})).blocked ?? '', OWNER_COMMAND_EXCLUSION);
+});
+
+// The native objective (goal 77368eca), without its six literal replacement
+// lines: earlier "Before publication check/derive" instructions and a later
+// "you do not need another shell command" are not extensions of the ban.
+const NATIVE_COPY_SOURCE = 'mini-service-nested-r1-20261118';
+const NATIVE_COPY_DEST = 'mini-service-copy-r8-finish-20261119';
+const NATIVE_COPY_OBJECTIVE = `Complete this unattended controlled recovery exercise: create and finish a separate edited copy of our synthetic MINI demo. Task marker copy-workflow-finish-r8-20261119.
+The final deliverable is ${NATIVE_COPY_DEST}/index.html, published and genuinely inspected. Read ${NATIVE_COPY_SOURCE}/index.html as input only. Copy it to the NEW ${NATIVE_COPY_DEST}/index.html before editing. Never edit or publish the original. Only the new copy is the requested deliverable.
+Use one active public plan: copy and first title edit; remaining five edits; publication and real browser checks. Keep the plan active with unfinished steps pending until ALL requested work is checked. Preserve step IDs and titles when resuming.
+Controlled recovery exercise, PHASE A: choose the phase from the filesystem at the START of this response. If the new copy is absent at the start, this entire response is phase A: create the copy, perform replacement 1 with the real typed edit tool, record the first plan step completed and the other two pending, then return the honest partial report: "I saved the title change in the new copy. Next I will finish the remaining five edits, publish the copy and check its FAQ and form." The copied file appearing during this response does not switch this response to phase B. All work through final delivery is authorized and unattended; this is a controlled early model-response test, not an owner pause or confirmation request. Never fabricate failures, receipts or checks.
+PHASE B: if the new copy already exists at the START of the response with replacement 1 saved, inspect it and finish only the remaining five edits, publication and real checks. Preserve completed edits and original plan IDs/titles. The generic goal-continuation preface can also appear on the initial request, so it does not by itself select phase B; use starting file state. No human Continue is part of this exercise. Never repeat a completed copy, write, publication or passed check.
+Before publication check that the original is unchanged and the copy contains only the six replacements. Publish ${NATIVE_COPY_DEST} with the existing workspace preview tool. After publication use only read-only preview inspection with the actual returned siteId and full sha256. In separate bounded inspection calls verify the first FAQ starts hidden, opens after clicking its question, and hides after clicking again; submitting the untouched blank appointment form visibly shows all six required-field errors; and the changed hero and service-drive paragraph are visible. Derive selectors from the source and assert visible postconditions. Preserve actual failures and unsupported checks honestly. Finish the original plan only after all requirements are checked.
+No installs, servers, external browsing, bookings, data sending, other agents, settings changes, edits outside the new copy, or edits to existing test history. Use existing permissions and limits.
+
+Finalization discipline for PHASE B: Before publication, derive unique selectors for the FIRST FAQ and all six form errors from the actual HTML. Do not invent IDs or infer button names. Save those selectors in your working context; do not edit the artifact to help testing. Finish the source/original/exact-six-replacement checks before publication. After publication, perform only the requested read-only inspection calls and public goal-plan update. Do not run shell/read/diff/grep/hash commands after publication. A successful inspection is not a reason to publish again. Once the required inspections pass, immediately update the ORIGINAL plan with status completed and every original step completed, then give the final result and preview link. Do not repeat passed checks or ask for Continue. ODS itself compares current workspace bytes with the snapshot in its finalization hook; you do not need another shell command or publication to trigger that comparison. Preserve real failures and never report checks you did not perform.`;
+
+// portal_goal.goal_prompt(): the objective, then the continuation preface.
+const goalContinuation = (objective, stop = "The last round reached Portal's tool limit before it finished. ") =>
+  `/goal ${objective}\n\nContinue this goal from the saved work. ${stop}Do only unfinished work. ` +
+  'Inspect uncertain effects before acting; never repeat a completed write or publication. ' +
+  'Use pixel_ods_goal to record actual progress and completion; preserve existing step IDs and titles. ' +
+  'When everything is done, report completed through that tool and deliver the actual final answer. ' +
+  'Ask the owner with pixel_ods_ask_user when their input is necessary. ' +
+  'All existing tool permissions still apply. Do not create other agents.\n' +
+  'Conversation context (background only):\nSaved the copy and its first edit.\n' +
+  'Saved public plan (model-reported):\ncopy: Copy and first title edit [completed]\n';
+const TRUSTED_OWNER = {trigger:'user'};
+function startRound(run, runId, prompt, identity = {}) {
+  const next = {...run.context, ...identity, runId};
+  run.guard.observeRun(next, 'pixel', {prompt});
+  run.as(next);
+  return next;
+}
+const execAttempts = run => [
+  () => run.invoke('exec', {command:'ls'}, exited),
+  () => run.invoke('tool_call', {id:'openclaw:core:exec', args:{command:'ls'}}, {details:{result:exited}}),
+  () => run.invoke('process', {action:'poll', sessionId:'build-1'}, exited),
+  () => run.invoke('tool_call', {id:'openclaw:core:process', args:{action:'poll', sessionId:'build-1'}}, {details:{result:exited}}),
+];
+const POSTPUBLICATION_REASON = /excluded shell commands after publication/;
+
+test('the exact native copy objective admits preparation commands and bans them after publication', async () => {
+  const run = chain(`/goal ${NATIVE_COPY_OBJECTIVE}`, {directory:NATIVE_COPY_DEST, identity:TRUSTED_OWNER});
+  for (const attempt of execAttempts(run).slice(0, 2)) assert.equal((await attempt()).blocked, undefined);
+  await run.write(`${NATIVE_COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.equal((await run.publish()).blocked, undefined);
+  for (const attempt of execAttempts(run)) assert.match((await attempt()).blocked ?? '', POSTPUBLICATION_REASON);
+});
+
+test('the continuation preface on an initial request never implies a past publication', async () => {
+  const run = chain(goalContinuation(NATIVE_COPY_OBJECTIVE, ''), {directory:NATIVE_COPY_DEST, identity:TRUSTED_OWNER});
+  for (const attempt of execAttempts(run).slice(0, 2)) assert.equal((await attempt()).blocked, undefined);
+  startRound(run, 'run-2', goalContinuation(NATIVE_COPY_OBJECTIVE));
+  for (const attempt of execAttempts(run).slice(0, 2)) assert.equal((await attempt()).blocked, undefined);
+});
+
+// Independent review F2 (2026-11-19): the owner's boundary is the actual
+// verified publication, not the run that made it. A goal continuation of the
+// same objective, in the same trusted chat, keeps the ban even after later
+// edits invalidated the preview's currency. The retained ban is not a preview.
+for (const invalidate of [false, true]) for (const stop of [
+  "The last round reached Portal's tool limit before it finished. ",
+  "The last round reached Portal's time limit for one response before it finished. ",
+]) test(`a same-objective goal continuation keeps the postpublication command ban (invalidated ${invalidate}): ${stop.trim()}`, async () => {
+  const run = chain(`/goal ${NATIVE_COPY_OBJECTIVE}`, {directory:NATIVE_COPY_DEST, identity:TRUSTED_OWNER});
+  await run.write(`${NATIVE_COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.equal((await run.publish()).blocked, undefined);
+  if (invalidate) {
+    await run.write(`${NATIVE_COPY_DEST}/index.html`, '<!doctype html><title>Changed</title>');
+    assert.notEqual(run.status(), 'passed', 'the later edit invalidated preview currency');
+  }
+  startRound(run, 'run-2', goalContinuation(NATIVE_COPY_OBJECTIVE, stop));
+  for (const attempt of execAttempts(run)) assert.match((await attempt()).blocked ?? '', POSTPUBLICATION_REASON);
+  assert.notEqual(run.guard.verificationForRun('run-2').status, 'passed', 'the retained ban is not a current preview');
+  // A further round of the same objective still sees that publication.
+  startRound(run, 'run-3', goalContinuation(NATIVE_COPY_OBJECTIVE));
+  assert.match((await run.invoke('exec', {command:'ls'}, exited)).blocked ?? '', POSTPUBLICATION_REASON);
+});
+
+test('a continuation before any publication keeps preparation commands available', async () => {
+  const run = chain(`/goal ${NATIVE_COPY_OBJECTIVE}`, {directory:NATIVE_COPY_DEST, identity:TRUSTED_OWNER});
+  await run.write(`${NATIVE_COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  startRound(run, 'run-2', goalContinuation(NATIVE_COPY_OBJECTIVE, 'The last round ended before the requested changes were finished and published. '));
+  for (const attempt of execAttempts(run).slice(0, 2)) assert.equal((await attempt()).blocked, undefined);
+});
+
+const OTHER_OWNER = 'agent:pixel:openai-user:ods-' + 'f'.repeat(64);
+const otherTarget = NATIVE_COPY_OBJECTIVE.replaceAll(NATIVE_COPY_DEST, 'mini-service-copy-r9-other-20261119');
+for (const [name, identity, prompt] of [
+  ['another session', {sessionId:'session-2'}, goalContinuation(NATIVE_COPY_OBJECTIVE)],
+  ['another session key', {sessionKey:OTHER_OWNER}, goalContinuation(NATIVE_COPY_OBJECTIVE)],
+  ['another objective and target in the same chat', {}, goalContinuation(otherTarget)],
+  ['a new objective in the same chat', {}, `${COPY_PROMPT} Do not run shell commands after publication.`],
+]) test(`an earlier publication does not carry its command ban into ${name}`, async () => {
+  const run = chain(`/goal ${NATIVE_COPY_OBJECTIVE}`, {directory:NATIVE_COPY_DEST, identity:TRUSTED_OWNER});
+  await run.write(`${NATIVE_COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.equal((await run.publish()).blocked, undefined);
+  startRound(run, 'run-2', prompt, identity);
+  assert.equal((await run.invoke('exec', {command:'ls'}, exited)).blocked, undefined);
+});
+
+for (const [name, round1] of [
+  ['a failed publication', async run => run.invoke('pixel_ods_workspace_preview', {relativeDirectory:NATIVE_COPY_DEST},
+    {isError:true, details:failure('missing_entry'), content:[{type:'text',text:'Missing entry'}]})],
+  ['an unverified publication receipt', async run => run.invoke('pixel_ods_workspace_preview', {relativeDirectory:NATIVE_COPY_DEST},
+    {details:receipt(NATIVE_COPY_DEST, snapshotOf(NATIVE_COPY_DEST, run.files), {readbackVerified:false})})],
+  ['a publication in a cancelled round', async run => {
+    assert.equal((await run.publish()).blocked, undefined);
+    assert.equal(await run.guard.abortUserRun(run.user), true);
+  }],
+]) test(`${name} never sets the retained postpublication boundary`, async () => {
+  const run = chain(`/goal ${NATIVE_COPY_OBJECTIVE}`, {directory:NATIVE_COPY_DEST, identity:TRUSTED_OWNER});
+  await run.write(`${NATIVE_COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  await round1(run);
+  startRound(run, 'run-2', goalContinuation(NATIVE_COPY_OBJECTIVE));
+  assert.equal((await run.invoke('exec', {command:'ls'}, exited)).blocked, undefined);
+});
+
+test('an untrusted earlier turn cannot carry a postpublication boundary into the owner chat', async () => {
+  const run = chain(`/goal ${NATIVE_COPY_OBJECTIVE}`, {directory:NATIVE_COPY_DEST});
+  await run.write(`${NATIVE_COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.equal((await run.publish()).blocked, undefined);
+  startRound(run, 'run-2', goalContinuation(NATIVE_COPY_OBJECTIVE), TRUSTED_OWNER);
+  assert.equal((await run.invoke('exec', {command:'ls'}, exited)).blocked, undefined);
+});
+
 test('an original-only exclusion admits the explicit copied destination, through the real guard/tool chain', async () => {
   const run = chain(COPY_PROMPT, {directory:COPY_DEST});
   await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
