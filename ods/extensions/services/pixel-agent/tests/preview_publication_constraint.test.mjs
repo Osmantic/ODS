@@ -740,6 +740,61 @@ const COPY_SOURCE = 'original-demo';
 const COPY_DEST = 'edited-demo';
 const COPY_PROMPT = `Read ${COPY_SOURCE}/index.html as input only. Copy it to the NEW ${COPY_DEST}/index.html before editing. Never edit or publish the original. Only the new copy is the requested deliverable. Publish ${COPY_DEST} with the existing workspace preview tool.`;
 
+// Native goal 77368eca: a command ban explicitly limited to after publication
+// must not block the commands required to prepare the copy beforehand.
+for (const suffix of [
+  'Do not run shell commands after publication.',
+  'Do not run shell/read/diff/grep/hash commands after publication.',
+  'After publication, do not run shell commands.',
+  'After successful publication, never execute commands.',
+]) for (const wrapped of [false, true]) test(`postpublication-only command ban starts after a verified publication (${wrapped}): ${suffix}`, async () => {
+  const run = chain(`${COPY_PROMPT} ${suffix}`, {directory:COPY_DEST});
+  const command = () => wrapped
+    ? run.invoke('tool_call', {id:'openclaw:core:exec', args:{command:'ls'}}, {details:{result:exited}})
+    : run.invoke('exec', {command:'ls'}, exited);
+  assert.equal((await command()).blocked, undefined, 'preparation command remains allowed');
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.equal((await run.publish()).blocked, undefined);
+  assert.ok((await command()).blocked, 'the owner ban applies after verified publication');
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Changed</title>');
+  assert.ok((await command()).blocked, 'later edits do not erase the after-publication boundary');
+});
+
+for (const suffix of [
+  'Do not run shell commands.',
+  'Do not run shell commands after publication or before it.',
+  'If the files changed after publication, do not run shell commands.',
+  'Do not run shell commands. After publication, do not run shell commands.',
+  'After publication, do not run shell commands or contact external sites.',
+  'Do not run shell commands after publication but also before it.',
+  'Do not run shell commands after publication then before it too.',
+  'Do not run shell commands after publication. Do not run shell commands after publication but also before it.',
+]) test(`postpublication parsing preserves global or ambiguous bans: ${suffix}`, async () => {
+  const run = chain(`${COPY_PROMPT} ${suffix}`, {directory:COPY_DEST});
+  assert.ok((await run.invoke('exec', {command:'ls'}, exited)).blocked);
+});
+
+test('a failed publication does not activate a postpublication command ban', async () => {
+  const run = chain(`${COPY_PROMPT} Do not run shell commands after publication.`, {directory:COPY_DEST});
+  const failed = await run.invoke('pixel_ods_workspace_preview', {relativeDirectory:COPY_DEST},
+    {isError:true, details:failure('missing_entry'), content:[{type:'text',text:'Missing entry'}]});
+  assert.equal(failed.blocked, undefined);
+  assert.equal((await run.invoke('exec', {command:'ls'}, exited)).blocked, undefined);
+});
+
+test('an unverified publication receipt cannot activate the temporal boundary', async () => {
+  const run = chain(`${COPY_PROMPT} Do not run shell commands after publication.`, {directory:COPY_DEST});
+  const unverified = receipt(COPY_DEST, snapshotOf(COPY_DEST, run.files), {readbackVerified:false});
+  await run.invoke('pixel_ods_workspace_preview', {relativeDirectory:COPY_DEST}, {details:unverified});
+  assert.equal((await run.invoke('exec', {command:'ls'}, exited)).blocked, undefined);
+});
+
+test('a temporal command ban does not weaken an independent no-web exclusion', async () => {
+  const run = chain(`${COPY_PROMPT} After publication, do not run shell commands. Do not contact external sites.`, {directory:COPY_DEST});
+  assert.equal((await run.invoke('exec', {command:'ls'}, exited)).blocked, undefined);
+  assert.ok((await run.invoke('web_fetch', {url:'https://example.invalid'}, {})).blocked);
+});
+
 test('an original-only exclusion admits the explicit copied destination, through the real guard/tool chain', async () => {
   const run = chain(COPY_PROMPT, {directory:COPY_DEST});
   await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');

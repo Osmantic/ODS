@@ -7016,6 +7016,14 @@ function requestsNamedSessionPreview(text, preview) {
   return !/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:publish(?:ing)?|republish(?:ing)?|preview(?:ing)?|display(?:ing)?|show(?:ing)?|open(?:ing)?|view(?:ing)?)\b/i.test(ownerText);
 }
 
+// Only complete, unqualified owner clauses get this temporal interpretation.
+// Extra alternatives or conditions retain the existing conservative exclusion.
+const POSTPUBLICATION_COMMAND_EXCLUSION = (() => {
+  const command = String.raw`(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid)\s+(?:run|use|execute)\s+(?:any\s+)?(?:(?:shell(?:\/(?:read|diff|grep|hash))*|exec)\s+)?commands?`;
+  const stage = String.raw`after\s+(?:successful\s+)?publication`;
+  return new RegExp(`^(?:${command}\\s+${stage}|${stage}\\s*,?\\s+${command})$`, 'i');
+})();
+
 function workspacePreviewRestrictions(text) {
   // A positive repair does not erase the owner's independent exclusions.
   // Only a single explicitly named file gets the narrow existing-file gate;
@@ -7023,7 +7031,12 @@ function workspacePreviewRestrictions(text) {
   const positive = workspacePreviewInstructionText(text, {preserveFileTargets:true}).replace(
     /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without|no)\b(?:(?!\b(?:but|instead|then)\b)[^.!?;\n])*/gi, " ");
   const authorship = /\b(?:build|create|develop|generate|implement|make|write|edit|fix|repair|modify|update|add|change|remove|delete|rename|move|patch|improve)\b/i.test(positive);
-  const excluded = text.split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
+  // Recognize the complete sentence before splitting conjunctions. Otherwise
+  // "after publication but also before it" would lose its second condition.
+  const sentences = text.split(/[!?;\n]+|\.(?=\s|$)/).map(clause => clause.trim());
+  const execAfterPublication = sentences.some(clause => POSTPUBLICATION_COMMAND_EXCLUSION.test(clause));
+  const excluded = sentences.filter(clause => !POSTPUBLICATION_COMMAND_EXCLUSION.test(clause))
+    .flatMap(clause => clause.split(/\b(?:but|however|instead|then)\b/i))
     .map(clause => clause.match(/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|without)\b([^.!?;\n]{1,320})/i)?.[1] ?? "")
     .join("\n");
   const paths = new Set([...text.matchAll(/(?:^|[\s`"'])(?:\/workspace\/)?([A-Za-z0-9][A-Za-z0-9._-]{0,127}(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}){1,11})(?=$|[\s`"',;!?]|\.(?:\s|$))/g)]
@@ -7040,6 +7053,7 @@ function workspacePreviewRestrictions(text) {
     existingFile,
     // Arbitrary commands cannot be checked against a single-file edit boundary.
     exec: Boolean(existingFile) || /\b(?:run|use|execute)\b[^\n]{0,48}\b(?:shell|commands?|exec)\b/i.test(excluded),
+    execAfterPublication,
     web: /\b(?:contact|visit|fetch|browse|use)\b[^\n]{0,48}\b(?:external|websites?|sites?|network|web|internet)\b/i.test(excluded),
     directory: paths.size === 1 ? [...paths][0] : undefined,
   };
@@ -7083,13 +7097,18 @@ function workspacePreviewRestrictionReason(state, tool, params) {
   const scopedMutation = restriction.existingFile &&
     ['write', 'edit', 'apply_patch', 'move', 'rename', 'delete', 'mkdir',
       EVIDENCE_REPORT_TOOL, 'pixel_ods_download_promote', WORKSPACE_BUNDLE_TOOL].includes(tool);
+  const postpublicationCommand = restriction.execAfterPublication &&
+    Boolean(state.workspacePreview || state.workspacePreviewVerifiedDirectory) &&
+    ['exec', 'process', WORKSPACE_BUNDLE_TOOL].includes(tool);
   if ((scopedMutation && !scopedExistingFileMutationAllowed(state, tool, params)) ||
       (restriction.mutation && ['write', 'edit', 'apply_patch', WORKSPACE_BUNDLE_TOOL].includes(tool)) ||
-      (restriction.exec && ['exec', 'process', WORKSPACE_BUNDLE_TOOL].includes(tool)) ||
+      ((restriction.exec || postpublicationCommand) && ['exec', 'process', WORKSPACE_BUNDLE_TOOL].includes(tool)) ||
       (restriction.web && ['web_search', 'web_fetch', 'pixel_ods_research', 'pixel_ods_web_extract', 'browser'].includes(tool))) {
     return restriction.existingFile
       ? `The owner restricted this repair to the existing file ${restriction.existingFile}. Read that exact file successfully in this turn, then edit it or use an Update File-only patch. Do not create, rename, move, delete, or change other files, and do not use shell commands or excluded web tools to bypass this boundary.`
-      : 'The owner requested publication of existing files and explicitly excluded this action. Use the preview tool for the requested directory, then report its actual result; do not create a replacement or substitute another capability.';
+      : postpublicationCommand && !restriction.exec
+        ? 'The owner excluded shell commands after publication. Use only the remaining allowed inspection and plan tools, then report the actual result. Do not repeat a publication or claim checks that have not passed.'
+        : 'The owner requested publication of existing files and explicitly excluded this action. Use the preview tool for the requested directory, then report its actual result; do not create a replacement or substitute another capability.';
   }
   return undefined;
 }
