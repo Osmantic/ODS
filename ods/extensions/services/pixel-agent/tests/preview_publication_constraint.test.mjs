@@ -1,3 +1,4 @@
+import {extractCopyPublication} from '../plugin/preview-copy-publication.mjs';
 // The owner's explicit first publication with a conditional repeat:
 // "If that post-publication hash check did not change the file, do not
 // republish it." (native goal c211ecda, 2026-11-18, refused every preview).
@@ -506,8 +507,8 @@ const comparingVerifier = runRef => async preview => snapshotOf(DIR, runRef.run.
 // Native Tool Search calls the catalog child before reporting its envelope.
 // The first publication must survive both callbacks without being mistaken
 // for a second, unbound conditional publication (native c54032de, 2026-11-18).
-async function nestedFirstPublication(run, {childId, afterChild, envelope, expectedChildRefusal = false} = {}) {
-  const name = 'pixel_ods_workspace_preview', params = {relativeDirectory: DIR};
+async function nestedFirstPublication(run, {childId, afterChild, envelope, expectedChildRefusal = false, directory = DIR} = {}) {
+  const name = 'pixel_ods_workspace_preview', params = {relativeDirectory: directory};
   return run.invoke('tool_call', {id: `openclaw:pixel-ods:${name}`, args: params}, async outerId => {
     const child = await run.invoke(name, params, (id, actual) => run.tool.execute(id, actual),
       childId ?? `tool_search_code:${outerId}:${name}:1`);
@@ -730,4 +731,184 @@ test('an ordinary run without the owner condition keeps the existing coaching af
   const check = await run.hashCheck();
   assert.match(textOf(check.persisted), STALE_REPUBLISH);
   assert.doesNotMatch(textOf(check.persisted), NEUTRAL);
+});
+
+const NATIVE_COPY = "/goal Create and finish a separate edited copy of our synthetic MINI demo. This is a fresh task named copy-workflow-proof-20261118.\nRead mini-service-nested-r1-20261118/index.html as input only. Copy it to the NEW mini-service-copy-r1-20261118/index.html before editing. Never edit or publish the original. Only the new copy is the requested deliverable.\nIn the copy make exactly these six literal text replacements, preserving every other byte, all JavaScript, styles, form validation and the existing field types:\n1. Replace \"<title>MINI Drive Center \u2014 Sample Preview</title>\" with \"<title>MINI Service Arrival \u2014 Demo</title>\".\n2. Replace \"<span>MINI Drive Center<small>\" with \"<span>MINI Service Arrival<small>\".\n3. Replace \"<p>MINI Drive Center \u2014 demo page with sample content only. Not a real dealership listing.</p>\" with \"<p>MINI Service Arrival \u2014 demo page with sample content only. Not a real dealership listing.</p>\".\n4. Replace \"<h1>Keep your MINI <span>going the extra mile</span>.</h1>\" with \"<h1>Your MINI <span>service visit, made simple</span>.</h1>\".\n5. Replace \"<p>Meet your service advisor. We confirm the work order, walk through the items, and confirm pricing before anything begins.</p>\" with \"<p>Pull into the marked service drive. A service advisor will greet you, confirm your appointment and review the work before it begins.</p>\".\n6. Replace \"<p>Book a service visit in a couple of taps. Pick a time that works and we will confirm it by text. This button is a sample placeholder \u2014 no real booking is sent.</p>\" with \"<p>This is a local demo. Try the form below; no appointment is sent and no real booking is made.</p>\".\nUse one small public plan and finish the work. Do file/command checks before publication: prove the original is unchanged and the copy contains only those six replacements. Publish mini-service-copy-r1-20261118 with the existing workspace preview tool.\nAfter publication use the actual preview inspector with its returned siteId and full sha256. In separate bounded inspection calls verify: (a) the first FAQ answer starts hidden, opens after its question is clicked and hides again after a second click; (b) submitting the untouched blank appointment form visibly shows all six required-field errors. Also confirm the changed hero and service-drive paragraph are visible. Use source-derived selectors and visible postconditions, not click dispatch alone. Keep every real check, split plans to fit the tool limits, and do not change the UI or field types just to satisfy an inspector limitation.\nAfter publishing, use only read-only preview inspection for verification so that the publication stays current. Finish the original plan and deliver the actual result, not a promise to continue. If any real check fails or remains unsupported, say so accurately. No installs, servers, external browsing, bookings, data sending, other agents or edits outside the new copy. Do not repeat completed writes or publications.\n";
+
+// Native goal 773fe8d6: the original's exclusion is not the copy's exclusion.
+const COPY_SOURCE = 'original-demo';
+const COPY_DEST = 'edited-demo';
+const COPY_PROMPT = `Read ${COPY_SOURCE}/index.html as input only. Copy it to the NEW ${COPY_DEST}/index.html before editing. Never edit or publish the original. Only the new copy is the requested deliverable. Publish ${COPY_DEST} with the existing workspace preview tool.`;
+
+test('an original-only exclusion admits the explicit copied destination, through the real guard/tool chain', async () => {
+  const run = chain(COPY_PROMPT, {directory:COPY_DEST});
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  const published = await run.publish();
+  assert.equal(published.blocked, undefined, published.blocked);
+  assert.equal(published.result?.isError, undefined);
+  assert.equal(run.log.requests.length, 1);
+  assert.equal(run.log.requests[0].relativeDirectory, COPY_DEST);
+});
+
+test('the complete failed native request admits only its explicitly requested copy', async () => {
+  const run = chain(NATIVE_COPY, {directory:'mini-service-copy-r1-20261118'});
+  await run.write('mini-service-copy-r1-20261118/index.html', '<!doctype html><title>Copy</title>');
+  const published = await run.publish();
+  assert.equal(published.blocked, undefined, published.blocked);
+  assert.equal(run.log.requests.length, 1);
+  assert.equal(run.log.requests[0].relativeDirectory, 'mini-service-copy-r1-20261118');
+});
+
+for (const params of [
+  {relativeDirectory:COPY_SOURCE},
+  {relativeDirectory:'other-site'},
+  {directory:COPY_SOURCE},
+  {relativeDirectory:COPY_DEST, sourceDirectory:COPY_SOURCE},
+  {relativeDirectory:COPY_DEST, directory:COPY_SOURCE},
+]) test(`the copy exclusion cannot publish another target: ${JSON.stringify(params)}`, async () => {
+  const run = chain(COPY_PROMPT, {directory:COPY_DEST});
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  await run.write(`${COPY_SOURCE}/index.html`, '<!doctype html><title>Original</title>');
+  await run.write('other-site/index.html', '<!doctype html><title>Other</title>');
+  assert.ok((await run.publish(params)).blocked);
+  assert.equal(run.log.requests.length, 0);
+});
+
+for (const suffix of [
+  'Never publish anything.',
+  'Do not show me a preview.',
+  'Do not edit files or publish anything.',
+  'Only the code, please.',
+  'Hold it until I say so.',
+  'Only after I approve, though.',
+  'Never publish the copy.',
+]) test(`a copy never overrides a separate owner restriction: ${suffix}`, async () => {
+  const run = chain(`${COPY_PROMPT} ${suffix}`, {directory:COPY_DEST});
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.ok((await run.publish()).blocked);
+  assert.equal(run.log.requests.length, 0);
+});
+
+test('a deferred copy publication stays refused', async () => {
+  const run = chain(COPY_PROMPT.replace(`Publish ${COPY_DEST} with the existing workspace preview tool.`, `Publish ${COPY_DEST} after I approve.`), {directory:COPY_DEST});
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.ok((await run.publish()).blocked);
+  assert.equal(run.log.requests.length, 0);
+});
+
+test('guidance sets aside only the recognized original exclusion', () => {
+  assert.equal(userMessagePreviewStance([], COPY_PROMPT), 'open');
+  assert.equal(userMessagePreviewStance([], NATIVE_COPY), 'open');
+  assert.equal(userMessagePreviewStance([], COPY_PROMPT + ' Do not publish anything.'), 'forbidden');
+});
+
+
+test('copy-scope recognition refuses ambiguous, overlapping, quoted and malformed targets', () => {
+  assert.deepEqual(extractCopyPublication(COPY_PROMPT)?.relativeDirectory, COPY_DEST);
+  for (const text of [
+    COPY_PROMPT.replace('Read original-demo/index.html as input only.', ''),
+    COPY_PROMPT.replace('Copy it', 'Copy something'),
+    COPY_PROMPT.replace('edited-demo/index.html', '../edited-demo/index.html'),
+    COPY_PROMPT.replace('edited-demo/index.html', '/tmp/edited-demo/index.html'),
+    COPY_PROMPT.replaceAll(COPY_DEST, COPY_SOURCE),
+    COPY_PROMPT.replaceAll(COPY_DEST, COPY_SOURCE + '/nested'),
+    COPY_PROMPT.replaceAll(COPY_SOURCE, COPY_DEST + '/nested'),
+    COPY_PROMPT.replace(`Publish ${COPY_DEST}`, `Publish ${COPY_DEST.toUpperCase()}`),
+    COPY_PROMPT + ' Copy it to the NEW another-demo/index.html before editing.',
+    COPY_PROMPT + ' Read other-original/index.html as input only.',
+    COPY_PROMPT + ' Publish original-demo.',
+    COPY_PROMPT.replace('Never edit or publish the original.', 'Never edit or publish the original or anything else.'),
+    'Never edit or publish the original. "' + COPY_PROMPT + '"',
+    "Never edit or publish the original. '" + COPY_PROMPT + "'",
+    'Never edit or publish the original. ```text\n' + COPY_PROMPT + '\n```',
+    'Never edit or publish the original.\n> ' + COPY_PROMPT,
+    COPY_PROMPT + ' Inspect unrelated/other.html.',
+  ]) assert.equal(extractCopyPublication(text), undefined, text);
+});
+
+test('an explicit source-to-copy command is accepted without an ambiguous pronoun', async () => {
+  const prompt = COPY_PROMPT.replace('Copy it', `Copy ${COPY_SOURCE}/index.html`);
+  const run = chain(prompt, {directory:COPY_DEST});
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  assert.equal((await run.publish()).blocked, undefined);
+  assert.equal(run.log.requests.length, 1);
+});
+
+test('a copied preview works through the nested Tool Search transport', async () => {
+  const run = chain(COPY_PROMPT, {directory:COPY_DEST});
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  const result = await nestedFirstPublication(run, {directory:COPY_DEST});
+  assert.equal(result.blocked, undefined, result.blocked);
+  assert.equal(run.log.requests.length, 1);
+  assert.equal(run.log.requests[0].relativeDirectory, COPY_DEST);
+});
+
+for (const identity of [{sessionId:undefined}, {sessionKey:undefined}])
+  test(`a copy exception needs complete identity: ${JSON.stringify(identity)}`, async () => {
+    const run = chain(COPY_PROMPT, {directory:COPY_DEST, identity});
+    await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+    assert.ok((await run.publish()).blocked);
+    assert.equal(run.log.requests.length, 0);
+  });
+
+for (const [label, change] of [
+  ['foreign call session', run => run.as({...run.context,sessionId:'foreign'})],
+  ['foreign call owner', run => run.as({...run.context,sessionKey:OTHER_KEY})],
+  ['conflicting observation', run => run.guard.observeRun({...run.context,sessionKey:OTHER_KEY}, 'pixel', {prompt:COPY_PROMPT})],
+  ['changed owner words', run => run.guard.observeRun(run.context, 'pixel', {prompt:'Publish original-demo/index.html.'})],
+  ['later owner refusal', run => run.guard.observeRun(run.context, 'pixel', {prompt:COPY_PROMPT + ' Do not publish anything.'})],
+  ['owner cancellation', run => run.guard.abortUserRun(run.user)],
+]) test(`a scoped copy cannot publish after ${label}`, async () => {
+  const run = chain(COPY_PROMPT, {directory:COPY_DEST});
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  await change(run);
+  assert.ok((await run.publish()).blocked, label);
+  assert.equal(run.log.requests.length, 0);
+});
+
+test('the original-exclusion exception is not a reusable unbound host grant', async () => {
+  const run = chain(COPY_PROMPT, {directory:COPY_DEST});
+  assert.equal((await run.tool.execute('unbound', {relativeDirectory:COPY_DEST})).isError, true);
+  assert.equal(run.log.requests.length, 0);
+});
+
+test('a failed copy publication remains failed instead of becoming delivery evidence', async () => {
+  const run = chain(COPY_PROMPT, {directory:COPY_DEST});
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  await run.invoke('pixel_ods_workspace_preview', {relativeDirectory:COPY_DEST}, {isError:true,
+    content:[{type:'text',text:'host failure'}],details:{status:'failed'}});
+  assert.notEqual(run.status(), 'passed');
+  assert.equal(run.log.requests.length, 0);
+});
+
+
+test('quoted, unfinished fenced, and explicitly embedded example instructions do not establish copy authority', () => {
+  const direct = COPY_PROMPT.replace('Copy it', `Copy ${COPY_SOURCE}/index.html`);
+  for (const text of [
+    'Never edit or publish the original. “' + COPY_PROMPT + '”',
+    'Never edit or publish the original.\n```text\n' + COPY_PROMPT,
+    'Never edit or publish the original.\n~~~text\n' + COPY_PROMPT,
+    'Write instructions.txt containing:\n' + direct,
+    'Write instructions.txt with the following text:\n' + direct,
+  ]) {
+    assert.equal(extractCopyPublication(text), undefined, text);
+    assert.notEqual(userMessagePreviewStance([], text), 'open', text);
+  }
+});
+
+for (const [label, change] of [
+  ['a late owner refusal', run => run.guard.observeRun(run.context, 'pixel', {prompt:COPY_PROMPT + ' Do not publish anything.'})],
+  ['a late identity conflict', run => run.guard.observeRun({...run.context,sessionKey:OTHER_KEY}, 'pixel', {prompt:COPY_PROMPT})],
+  ['changed owner words', run => run.guard.observeRun(run.context, 'pixel', {prompt:'Publish original-demo/index.html.'})],
+  ['a cancellation', run => run.guard.abortUserRun(run.user)],
+]) test(`execution policy independently refuses a previously admitted copy after ${label}`, async () => {
+  const run = chain(COPY_PROMPT, {directory:COPY_DEST});
+  await run.write(`${COPY_DEST}/index.html`, '<!doctype html><title>Copy</title>');
+  const name='pixel_ods_workspace_preview',params={relativeDirectory:COPY_DEST},id='admitted-copy';
+  const admitted=run.guard.beforeToolCall({toolName:name,params,toolCallId:id},{...run.context,toolName:name,toolCallId:id});
+  assert.equal(admitted?.block, undefined);
+  await change(run);
+  const result=await run.tool.execute(id, params);
+  assert.equal(result.isError, true);
+  assert.equal(run.log.requests.length, 0);
 });

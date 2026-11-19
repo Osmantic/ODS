@@ -1,3 +1,4 @@
+import {extractCopyPublication} from './preview-copy-publication.mjs';
 import {ownerLaneText, ownerForbidsTools} from './owner-tool-policy.mjs';
 import {validDeliveredArtifact, normalizeWorkspaceArtifact, WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE} from './workspace-artifact.mjs';
 // Pixel per-run tool-loop guard.
@@ -6833,11 +6834,20 @@ function conditionalRepublicationPolicy(messages, prompt, sessionPreview = undef
 // evidence: only "open" asks the model for a publication. The owner's exact
 // conditional first publication is open here as at admission, through the
 // same closed policy; every other prohibition, deferral or hold still forbids.
+// An explicitly named copy can also exclude its original: the same pure
+// policy supplies guidance while admission/execution enforce the copy target.
 // Guidance only, never host authority: admission also requires the session
 // evidence (an earlier turn's preview of that directory still refuses there).
+function copyPublicationPolicy(messages, prompt) {
+  const found = extractCopyPublication(currentOwnerIntentText(messages, prompt));
+  if (!found || ownerPreviewStance([], found.remaining) !== "open" ||
+      DEFERRED_REQUEST.test(found.request.split(PURPOSE_CLAUSE)[0]) || ACTION_DEFERRAL.test(found.afterRequest)) return undefined;
+  return Object.freeze({relativeDirectory:found.relativeDirectory, sourceDirectory:found.sourceDirectory});
+}
+
 export function userMessagePreviewStance(messages, prompt = undefined) {
   const stance = ownerPreviewStance(messages, prompt);
-  return stance === "forbidden" && conditionalRepublicationPolicy(messages, prompt) ? "open" : stance;
+  return stance === "forbidden" && (copyPublicationPolicy(messages, prompt) || conditionalRepublicationPolicy(messages, prompt)) ? "open" : stance;
 }
 
 function portuguesePreviewForbidden(text) {
@@ -7399,7 +7409,7 @@ function workspaceNewCopyRequested(text) {
 }
 
 function freshWorkspaceCreationRequested(text) {
-  if (workspaceNewCopyRequested(text)) return true;
+  if (copyPublicationPolicy([], text) || workspaceNewCopyRequested(text)) return true;
   const creation = /\b(?:build|create|develop|design|generate|implement|make|write)\s+(?:(?:me|us)\s+)?(?:a|an|another|new|some)\s+\w/i;
   const rejected = /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,96}\b(?:build|create|develop|design|generate|implement|make|write)\b/i;
   const existingTarget = /\b(?:existing|previous|prior|same|current)\s+\w/i;
@@ -8604,14 +8614,31 @@ export function createToolLoopGuard({
   const REFUSE_PUBLICATION = Object.freeze({refuse: true});
   const previewPublicationBindings = new Map();
   const appliedPublicationBindings = new WeakSet();
+  // The exception is owned by one original request and complete run/session
+  // identity. It narrows publication to the named copy, never the original,
+  // an enclosing directory, or a model-supplied source-review root.
+  function copyPublicationCurrent(state, runId) {
+    const origin = state.workspaceCopyPublicationBinding, identity = state.artifactOwnerContext;
+    return origin && !state.clientCancelled && !state.artifactIdentityConflict &&
+      state.ownerRequestText === origin.ownerIntent && state.workspaceCopyPublicationOwnerIntent === origin.ownerIntent && state.ownerIntentObserved && !state.workspacePreviewForbidden &&
+      identity?.sessionId === origin.sessionId && identity?.sessionKey === origin.sessionKey &&
+      state.currentSessionId === origin.sessionId && state.currentSessionKey === origin.sessionKey &&
+      sessionRuns.get(origin.sessionId) === runId;
+  }
+
   function previewPublicationCondition(toolCallId, params) {
     const bound = pendingPreviewPublication(toolCallId, params);
     const runId = bound[0]?.[1]?.runId, state = runs.get(runId);
     if (!bound.length) {
-      return [...runs.values()].some(other => other.workspaceRepublicationCondition &&
+      return [...runs.values()].some(other => other.workspaceCopyPublicationPolicy || other.workspaceRepublicationCondition &&
         other.workspaceRepublicationCondition.relativeDirectory === params?.relativeDirectory) ? REFUSE_PUBLICATION : undefined;
     }
     if (!state || bound.some(([, run]) => run.runId !== runId)) return REFUSE_PUBLICATION;
+    const copied = state.workspaceCopyPublicationPolicy;
+    if (copied && (!copyPublicationCurrent(state, runId) ||
+        params?.relativeDirectory !== copied.relativeDirectory || Object.keys(params ?? {}).join(',') !== 'relativeDirectory' ||
+        bound.some(([, run]) => run.inspectionSessionId !== state.workspaceCopyPublicationBinding.sessionId ||
+          run.inspectionSessionKey !== state.workspaceCopyPublicationBinding.sessionKey))) return REFUSE_PUBLICATION;
     const condition = state.workspaceRepublicationCondition;
     if (!condition) return undefined;
     // The complete identity the condition was recognized and this call was
@@ -8914,6 +8941,9 @@ export function createToolLoopGuard({
         workspaceVerificationRequested: false,
         workspacePreviewRequired: false,
         workspacePreviewForbidden: false,
+        workspaceCopyPublicationPolicy: undefined,
+        workspaceCopyPublicationBinding: undefined,
+        workspaceCopyPublicationOwnerIntent: undefined,
         workspacePreviewOptional: false,
         workspaceDocumentDeliveryRequested: false,
         workspacePreviewMode: undefined,
@@ -10012,6 +10042,15 @@ export function createToolLoopGuard({
       }
       const suppliedArgs =
         toolName === "tool_call" ? pendingParams?.args : pendingParams;
+      const copied = state.workspaceCopyPublicationPolicy;
+      const copyBinding = state.workspaceCopyPublicationBinding;
+      if (copied && (!copyPublicationCurrent(state, runId) ||
+          context?.sessionId !== copyBinding.sessionId || context?.sessionKey !== copyBinding.sessionKey ||
+          Object.keys(suppliedArgs ?? {}).some(key => !['relativeDirectory', 'directory'].includes(key)) ||
+          normalizeWorkspaceFilePath(suppliedArgs?.relativeDirectory ?? suppliedArgs?.directory) !== copied.relativeDirectory ||
+          (suppliedArgs?.directory !== undefined && normalizeWorkspaceFilePath(suppliedArgs.directory) !== copied.relativeDirectory))) {
+        return {block:true, blockReason:"The owner excluded the original from publication. Publish only the explicitly named copied directory; do not publish the original, another directory, or a source-review root."};
+      }
       const republication = state.workspaceRepublicationCondition;
       if (republication && (normalizeWorkspaceFilePath(suppliedArgs?.relativeDirectory) !== republication.relativeDirectory ||
           suppliedArgs?.sourceDirectory !== undefined)) {
@@ -11645,7 +11684,21 @@ export function createToolLoopGuard({
         const previousPreview = typeof sessionId === "string" && sessionId
           ? sessionPreviews.get(sessionId)
           : undefined;
+        state.workspaceCopyPublicationOwnerIntent = ownerIntent;
         let previewStance = ownerPreviewStance(event?.messages, event?.prompt, previousPreview);
+        const copiedPublication = previewStance === "forbidden" && !state.artifactIdentityConflict &&
+            !state.clientCancelled && typeof sessionId === "string" && sessionId &&
+            typeof context.sessionKey === "string" && context.sessionKey && ownerIntent === state.ownerRequestText
+          ? copyPublicationPolicy(event?.messages, event?.prompt) : undefined;
+        if (copiedPublication && (!state.workspaceCopyPublicationPolicy ||
+            (isDeepStrictEqual(state.workspaceCopyPublicationPolicy, copiedPublication) &&
+             state.workspaceCopyPublicationBinding.ownerIntent === ownerIntent &&
+             state.workspaceCopyPublicationBinding.sessionId === sessionId &&
+             state.workspaceCopyPublicationBinding.sessionKey === context.sessionKey))) {
+          state.workspaceCopyPublicationPolicy ??= copiedPublication;
+          state.workspaceCopyPublicationBinding ??= Object.freeze({ownerIntent, sessionId, sessionKey:context.sessionKey});
+          previewStance = "open";
+        }
         // Once recognized, the owner's condition holds for the whole run, bound
         // to the owner's exact words and this session; a later prompt can still
         // forbid publication outright. Repeating those exact words in this run
@@ -11697,10 +11750,10 @@ export function createToolLoopGuard({
           (visualContinuationRequested || verificationContinuationRequested) && repairMatchesPreview && typeof sessionId === "string" && sessionId
             ? sessionPreviews.get(sessionId)
             : undefined;
-        const previewRequested = namedPreviewRequested || userMessageRequestsWorkspacePreview(
+        const previewRequested = Boolean(copiedPublication && previewStance === "open") || namedPreviewRequested || userMessageRequestsWorkspacePreview(
           event?.messages, event?.prompt
         );
-        const explicitDelivery = namedPreviewRequested || (previewRequested && hasExplicitWorkspacePreviewDirective(
+        const explicitDelivery = Boolean(copiedPublication && previewStance === "open") || namedPreviewRequested || (previewRequested && hasExplicitWorkspacePreviewDirective(
           currentOwnerIntentText(event?.messages, event?.prompt)
         ));
         state.workspaceVisualContinuationRequested = Boolean(trustedSessionPreview);
@@ -11778,7 +11831,7 @@ export function createToolLoopGuard({
           state.extensionCompletionGate = undefined;
           state.extensionPendingHandoff = false;
         }
-        state.workspaceNewCopyRequested = workspaceNewCopyRequested(state.ownerRequestText ?? ownerIntent ?? "");
+        state.workspaceNewCopyRequested = Boolean(state.workspaceCopyPublicationPolicy) || workspaceNewCopyRequested(state.ownerRequestText ?? ownerIntent ?? "");
         state.workspaceMutationRequested =
           state.workspacePreviewRequired ||
           userMessageRequestsWorkspaceMutation(event?.messages, event?.prompt);
