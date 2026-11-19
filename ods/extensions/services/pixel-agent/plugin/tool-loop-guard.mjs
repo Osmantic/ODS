@@ -14392,6 +14392,8 @@ export function createToolLoopGuard({
       if (state?.workspacePreviewVerifiedDirectory && !state.workspacePreview &&
           state.workspacePreviewRequired && !state.workspacePreviewForbidden &&
           !state.operationsRequired && !state.exactDownloadRequested) {
+        const pendingInspection = pendingPreviewInspectionInstruction(state, runId);
+        if (pendingInspection) return pendingInspection;
         const settledCommand = conditionalCommandInstruction(state, runId);
         if (settledCommand) return settledCommand;
         return "[ODS Pixel next step] Files or checks changed after the earlier publication. " +
@@ -14651,6 +14653,26 @@ export function createToolLoopGuard({
   // (which may be unavailable or refused) restores the earlier snapshot. Core
   // writes, failed, unsettled or later effects, cancellation,
   // another identity and unconditioned runs keep the existing coaching.
+  // Ordinary settled commands can leave workspace currency pending while
+  // their immutable snapshot remains inspectable. This is guidance only:
+  // neither command completion nor inspection certifies current file bytes.
+  function pendingPreviewInspectionInstruction(state, runId) {
+    if (state?.workspaceRepublicationCondition || !workspacePreviewInspectionAvailable ||
+        typeof verifyWorkspacePreview !== 'function' || state.workspaceVisibilityInspectionUnavailable ||
+        state.workspacePreview ||
+        state.previewRevalidationCommandGeneration !== state.previewVerificationGeneration) return undefined;
+    const preview = immutableInspectionPreview(state, runId);
+    if (!preview) return undefined;
+    return "[ODS Pixel next step] Inspect remaining requested behavior on the existing immutable snapshot: " +
+      `call ${PREVIEW_INSPECTION_TOOL} with siteId ${JSON.stringify(preview.siteId)}, ` +
+      `sha256 ${JSON.stringify(preview.sha256)}, viewport {width,height}, and source-derived steps. ` +
+      "If deferred, describe that exact tool then call its returned id. Do not repeat passed checks. " +
+      "Do not republish only because a command ran. If actual edits changed the files, finish those edits " +
+      "and publish the changed files once. Otherwise finish the remaining inspections and original plan, " +
+      "then reply; ODS must still compare current files with the snapshot before completion. " +
+      "Do not claim current bytes or unsupported checks are verified.";
+  }
+
   function conditionalCommandInstruction(state, runId) {
     const condition = state?.workspaceRepublicationCondition, origin = state?.workspaceRepublicationBinding;
     const prior = state?.workspaceRepublicationPrior, candidate = state?.previewRevalidationCandidate;
@@ -15463,7 +15485,9 @@ export function createToolLoopGuard({
             "This snapshot may not include subsequent changes and does not verify completion of this request. " +
             (state.codingExhausted
               ? "Start a fresh message to continue repairing, verifying, and publishing the current files."
-              : "Ask Portal to verify and publish the current files.");
+              : pendingPreviewInspectionInstruction(state, runId)
+                ? "The published snapshot can still be inspected; a trusted comparison of current workspace files remains pending."
+                : "Ask Portal to verify and publish the current files.");
           return previewOutcome({
             status: "failed",
             text,

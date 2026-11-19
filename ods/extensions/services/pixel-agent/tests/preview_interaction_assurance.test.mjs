@@ -1501,3 +1501,56 @@ for(const wrapped of [false,true])for(const fault of [
  finishIndependentInspection(f,observed);
  assert.notEqual(f.guard.verificationForRun('run').status,'passed');
 });
+
+// Native aa04dfa9 kept following republication guidance after settled probes
+// and never reached the inspector. Command completion still proves no equality.
+function commandCoachingFixture({wrapped=false,command='grep -n details site/index.html',
+ matches=true,verifier=true,available=true,running=false,failed=false,foreign=false}={}) {
+ let comparisons=0;
+ const f=setup({enabled:available,verifyWorkspacePreview:verifier?async()=>{comparisons++;return matches;}:undefined});
+ persistBindingPublication(f);
+ const selected={command};
+ const inner={content:[{type:'text',text:'synthetic command result'}],
+  details:running?{status:'running',sessionId:'owned-command-session'}:{status:failed?'failed':'completed',exitCode:failed?1:0},
+  ...(failed?{isError:true}:{})};
+ const name=wrapped?'tool_call':'exec';
+ const params=wrapped?{id:'openclaw:core:exec',args:selected}:selected;
+ const result=wrapped?{details:{tool:{id:params.id,name:'exec',source:'openclaw',sourceName:'core'},result:inner},...(failed?{isError:true}:{})}:inner;
+ const observed=call(f.guard,name,params,'post-publish-command',result);
+ if(foreign)f.guard.observeRun({...context,sessionKey:'foreign-owner-key'},'pixel',{prompt:owner});
+ const persisted=persistObserved(f.guard,observed,result);
+ return {...f,persisted,comparisons:()=>comparisons};
+}
+
+for(const wrapped of [false,true])for(const command of ['grep -n details site/index.html','sha256sum site/index.html'])
+test(`ordinary settled command guides immutable inspection without demanding republication wrapped=${wrapped} command=${command}`,()=>{
+ const f=commandCoachingFixture({wrapped,command});
+ const steps=nextSteps(f.persisted).join('\n');
+ assert.ok(steps.includes(PREVIEW_INSPECTION_TOOL),'next step must identify the actual inspector');
+ assert.ok(steps.includes(f.preview.siteId)&&steps.includes(f.preview.sha256),'use this exact immutable publication');
+ assert.match(steps,/do not republish (?:only|solely) because/i);
+ assert.doesNotMatch(steps,/then call tool_call with id pixel_ods_workspace_preview /);
+ assert.equal(f.comparisons(),0,'guidance does not perform or fake the trusted comparison');
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+ const presented=(f.persisted?.message?.content??[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
+ assert.doesNotMatch(presented,/Ask Portal to verify and publish the current files/,'the card must not contradict eligible pending-inspection guidance');
+});
+
+for(const [label,options]of [
+ ['no trusted verifier',{verifier:false}],['no inspector',{available:false}],
+ ['running command',{running:true}],['failed command',{failed:true}],['foreign owner',{foreign:true}],
+])test(`ordinary pending-inspection guidance is withheld for ${label}`,()=>{
+ const f=commandCoachingFixture(options);
+ assert.ok(!nextSteps(f.persisted).some(s=>s.includes(PREVIEW_INSPECTION_TOOL)&&s.includes(f.preview.sha256)));
+ assert.equal(f.comparisons(),0);
+});
+
+test('ordinary pending-inspection guidance cannot replace failed final file equality',async()=>{
+ const f=commandCoachingFixture({matches:false});
+ const check=inspection(f.guard,plan(f.preview),{id:'snapshot-after-command'});
+ finishIndependentInspection(f,check);
+ assert.equal(f.comparisons(),0);
+ assert.equal(await f.guard.revalidateWorkspacePreview({},context),false);
+ assert.equal(f.comparisons(),1);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});
