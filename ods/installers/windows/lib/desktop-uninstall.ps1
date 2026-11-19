@@ -25,7 +25,7 @@ function Register-ODSWindowsDesktopUninstall {
 
         [string]$RegistryPath = $script:ODSDesktopUninstallRegistryPath,
 
-        [hashtable]$MockRegistry = $null
+        [System.Collections.IDictionary]$MockRegistry = $null
     )
 
     $resolvedInstall = [IO.Path]::GetFullPath($InstallDir)
@@ -36,7 +36,7 @@ function Register-ODSWindowsDesktopUninstall {
     }
 
     $pwshExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $uninstallCmd = "`"$pwshExe`" -NoProfile -ExecutionPolicy Bypass -File `"$uninstallScript`" -InstallDir `"$resolvedInstall`""
+    $uninstallCmd = "`"$pwshExe`" -NoProfile -ExecutionPolicy Bypass -File `"$uninstallScript`" -InstallDir `"$resolvedInstall`" -LocalAppDataDir `"$resolvedAppData`""
     $quietUninstallCmd = "$uninstallCmd -Quiet"
 
     $entries = [ordered]@{
@@ -86,7 +86,7 @@ function Uninstall-ODSWindowsDesktop {
 
         [string]$RegistryPath = $script:ODSDesktopUninstallRegistryPath,
 
-        [hashtable]$MockRegistry = $null
+        [System.Collections.IDictionary]$MockRegistry = $null
     )
 
     $preserveUserData = if ($RemoveAllData) { $false } elseif ($KeepData) { $true } else { $true }

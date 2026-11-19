@@ -73,7 +73,9 @@ foreach ($p in Get-Process -ErrorAction SilentlyContinue) {
             }
         }
 
-        if ($isManaged -or $belongs) {
+        # Do not let a PID-file match bypass executable ownership checks.
+        # A process is only stopped if its executable verifiably belongs to this installation/app-data runtime.
+        if ($belongs -and ($isManaged -or $p.ProcessName -in @('ODS', 'llama-server', 'python', 'pythonw'))) {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
         }
     } catch { }

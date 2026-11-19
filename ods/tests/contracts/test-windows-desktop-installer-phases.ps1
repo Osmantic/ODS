@@ -79,6 +79,16 @@ try {
     # 3. Verify Windows Installed Apps registration
     Assert-True ($mockUninstallReg['DisplayName'] -eq 'ODS (Osmantic Deployment System)') "Phase 5 registers DisplayName in Windows Uninstall registry"
     Assert-True ($mockUninstallReg['Publisher'] -eq 'Osmantic Deployment System') "Phase 5 registers Publisher in Windows Uninstall registry"
+    Assert-True ($mockUninstallReg['UninstallString'] -match ('-LocalAppDataDir\s+"' + [regex]::Escape($appDataDir) + '"')) "Phase 5 registers UninstallString with quoted custom LocalAppDataDir"
+    Assert-True ($mockUninstallReg['QuietUninstallString'] -match ('-LocalAppDataDir\s+"' + [regex]::Escape($appDataDir) + '"')) "Phase 5 registers QuietUninstallString with quoted custom LocalAppDataDir"
+
+    # Test library registration with distinct default vs custom roots
+    $libScript = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'installers\windows\lib\desktop-uninstall.ps1'
+    . $libScript
+    $mockCustomReg = @{}
+    Register-ODSWindowsDesktopUninstall -InstallDir 'C:\custom\ods' -LocalAppDataDir 'D:\custom\appdata' -MockRegistry $mockCustomReg | Out-Null
+    Assert-True ($mockCustomReg['UninstallString'] -match '-InstallDir\s+"C:\\custom\\ods"') "Register-ODSWindowsDesktopUninstall includes quoted custom InstallDir"
+    Assert-True ($mockCustomReg['UninstallString'] -match '-LocalAppDataDir\s+"D:\\custom\\appdata"') "Register-ODSWindowsDesktopUninstall includes quoted custom LocalAppDataDir"
 
     # 4. Simulate user switching llama-server.exe to Power Saving (GpuPreference=1) in Windows Graphics Settings
     $llamaExeKey = [IO.Path]::GetFullPath((Join-Path $appDataDir 'runtimes\llama\llama-server.exe'))
@@ -130,7 +140,51 @@ try {
 
     Remove-ItemProperty -LiteralPath $dxKey -Name $foreignDxVal -Force -ErrorAction SilentlyContinue
 
-    # 6. Test standalone uninstaller with -RemoveAllData
+    # 6. Test process ownership filtering: stale PID and foreign executables survive
+    $mockPid = 99991
+    $foreignPid = 99992
+    $foreignLlamaPid = 99993
+    $ownedPid = 99994
+
+    Set-Content -LiteralPath (Join-Path $appDataDir '.llama-server.pid') -Value "$foreignPid"
+
+    $fakeProcesses = @(
+        [pscustomobject]@{ Id = $ownedPid; Path = (Join-Path $installDir 'ODS.exe'); ProcessName = 'ODS' },
+        [pscustomobject]@{ Id = $foreignPid; Path = 'C:\Windows\System32\notepad.exe'; ProcessName = 'notepad' },
+        [pscustomobject]@{ Id = $foreignLlamaPid; Path = 'C:\other-app\llama-server.exe'; ProcessName = 'llama-server' }
+    )
+
+    $stopped = [System.Collections.Generic.List[int]]::new()
+    $testManagedPids = @()
+    foreach ($base in @($installDir, $appDataDir)) {
+        $pfile = Join-Path $base '.llama-server.pid'
+        if (Test-Path -LiteralPath $pfile) {
+            $c = (Get-Content -LiteralPath $pfile -Raw).Trim()
+            if ($c -match '^\d+$') { $testManagedPids += [int]$c }
+        }
+    }
+    foreach ($p in $fakeProcesses) {
+        $isManaged = $p.Id -in $testManagedPids
+        $pPath = $p.Path
+        $belongs = $false
+        if ($pPath) {
+            $normP = [System.IO.Path]::GetFullPath($pPath)
+            if ($installDir -and ($normP.StartsWith("$installDir\", [System.StringComparison]::OrdinalIgnoreCase) -or $normP.Equals($installDir, [System.StringComparison]::OrdinalIgnoreCase))) {
+                $belongs = $true
+            }
+            if ($appDataDir -and ($normP.StartsWith("$appDataDir\", [System.StringComparison]::OrdinalIgnoreCase) -or $normP.Equals($appDataDir, [System.StringComparison]::OrdinalIgnoreCase))) {
+                $belongs = $true
+            }
+        }
+        if ($belongs -and ($isManaged -or $p.ProcessName -in @('ODS', 'llama-server', 'python', 'pythonw'))) {
+            $stopped.Add($p.Id)
+        }
+    }
+    Assert-True ($stopped -contains $ownedPid) "Process loop terminates owned ODS.exe"
+    Assert-True ($stopped -notcontains $foreignPid) "Process loop does not terminate foreign process with stale recycled PID"
+    Assert-True ($stopped -notcontains $foreignLlamaPid) "Process loop does not terminate unrelated llama-server outside install directories"
+
+    # 7. Test standalone uninstaller with -RemoveAllData
     & $uninstallerScript -InstallDir $installDir -LocalAppDataDir $appDataDir -RemoveAllData -Quiet
 
     Assert-True (-not (Test-Path -LiteralPath $installDir)) "Standalone uninstaller -RemoveAllData removes installDir completely"
