@@ -49,3 +49,13 @@ test('an explicit no-download statement does not invent a file handoff', () => {
   }
   assert.equal(selects([], `No download of old.zip is requested. Attach current.pdf.\n\n${role}`),true);
 });
+
+test('goal final-answer guidance cannot turn inspection into a download', () => {
+  const goal = 'When everything is done, report completed through that tool and deliver the actual final answer.';
+  assert.equal(selects([], `Inspect the project without changing files. No download or attachment is requested.\n\n${goal}`),false);
+  assert.equal(selects([], 'Inspect the project. Deliver the final response.'),false);
+  assert.equal(selects([], 'Inspect the project. Deliver the requested text.'),false);
+  assert.equal(selects([], `Attach report.pdf. ${goal}`),true);
+  assert.equal(selects([], 'Deliver answer.txt.'),true);
+  assert.equal(selects([], 'Deliver response.json.'),true);
+});

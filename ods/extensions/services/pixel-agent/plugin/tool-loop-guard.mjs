@@ -5316,11 +5316,11 @@ export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = 
   const positive = lane.split(/[!?;\n]+|\.(?=\s|$)/).filter(clause =>
     !/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\s+(?:download|deliver|attach|publish)\b/i.test(clause) &&
     !/^\s*no\s+(?:downloads?|attachments?)(?:\s+(?:or|and)\s+(?:downloads?|attachments?))?\s+(?:(?:is|are)\s+)?(?:requested|needed|required)\s*$/i.test(clause)
-  ).join(' ').replace(/\bdeliver\s+(?:the\s+)?(?:requested\s+)?text\s+instead\s+of\s+(?:making|creating)\s+files\b/gi, '');
-  // The dashboard's builder role asks for text instead of files. Neither its
-  // deliver verb nor the rejected files are a file-handoff request. Exclude
-  // only that text-only phrase from the fallback; independent attachment or
-  // file requests remain in lane and retain their receipt requirement.
+  ).join(' ').replace(/\bdeliver\s+(?:the\s+)?(?:(?:requested|actual|complete|concise|final)\s+)*(?:text|answer|response)\b(?![\w.-])(?:\s+instead\s+of\s+(?:making|creating)\s+files\b)?/gi, '');
+  // Builder and goal guidance ask for a text answer. Bind deliver to its
+  // object: an answer is not a file handoff merely because another clause
+  // mentions files. Keep literal filenames such as answer.txt and independent
+  // attachment requests intact, with their existing receipt requirements.
   // The noun delivery (for example, a file's delivery date) is not itself
   // a publication request. Preserve the existing download/attachment phrases
   // and deliver verb without combining a schedule with a file mention.
