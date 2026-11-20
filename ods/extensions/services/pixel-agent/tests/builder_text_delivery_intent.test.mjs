@@ -42,3 +42,10 @@ test('text instead of files can coexist with an independent file attachment', ()
   assert.equal(selects([], 'Deliver the requested text instead of making files.'),false);
   assert.equal(selects([], 'Deliver text instead of creating files.'),false);
 });
+
+test('an explicit no-download statement does not invent a file handoff', () => {
+  for (const sentence of ['No download or attachment is requested.', 'No downloads are requested.', 'No attachment needed.', 'No download is required.']) {
+    assert.equal(selects([], `Inspect the project without changing files. ${sentence}\n\n${role}`), false, sentence);
+  }
+  assert.equal(selects([], `No download of old.zip is requested. Attach current.pdf.\n\n${role}`),true);
+});

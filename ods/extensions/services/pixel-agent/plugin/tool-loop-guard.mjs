@@ -5314,7 +5314,8 @@ export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = 
     }).filter(Boolean).join('. ');
   }
   const positive = lane.split(/[!?;\n]+|\.(?=\s|$)/).filter(clause =>
-    !/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\s+(?:download|deliver|attach|publish)\b/i.test(clause)
+    !/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\s+(?:download|deliver|attach|publish)\b/i.test(clause) &&
+    !/^\s*no\s+(?:downloads?|attachments?)(?:\s+(?:or|and)\s+(?:downloads?|attachments?))?\s+(?:(?:is|are)\s+)?(?:requested|needed|required)\s*$/i.test(clause)
   ).join(' ').replace(/\bdeliver\s+(?:the\s+)?(?:requested\s+)?text\s+instead\s+of\s+(?:making|creating)\s+files\b/gi, '');
   // The dashboard's builder role asks for text instead of files. Neither its
   // deliver verb nor the rejected files are a file-handoff request. Exclude
