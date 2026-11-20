@@ -121,7 +121,15 @@ function nameDiagnosis(locator, controls) {
     return ` At load, after the page scripts ran, the ${replaced.visible ? 'rendered' : 'hidden'} ${locator.role} whose text is ${JSON.stringify(want)} has the accessible name ${JSON.stringify(replaced.name)}, set by ${by}, which replaces its text as the name. Role/name locators match the accessible name, not the text.`;
   }
   const cased = same.find(item => item.name !== want && item.name.toLowerCase() === want.toLowerCase());
-  return cased ? ` At load, a ${locator.role} is named ${JSON.stringify(cased.name)}; accessible names match case-sensitively.` : '';
+  if (cased) return ` At load, a ${locator.role} is named ${JSON.stringify(cased.name)}; accessible names match case-sensitively.`;
+  // Diagnostic only: keep exact matching, the submitted plan and failure receipt
+  // unchanged. Suggest a name only when one load-time control differs solely
+  // in whitespace; ambiguous lookalikes never select a control for the owner.
+  const withoutSpace = value => value.replace(/\s/g, '');
+  const spaced = same.filter(item => item.name !== want && withoutSpace(item.name) === withoutSpace(want));
+  return spaced.length === 1
+    ? ` At load, a ${locator.role} is named ${JSON.stringify(spaced[0].name)}; this differs only in whitespace from the requested name. Copy the observed exact name; matching is not relaxed.`
+    : '';
 }
 // A rendered control whose load-time name is exactly this locator's name,
 // while no rendered element matched it before any click could change the page.
@@ -214,7 +222,7 @@ function transitionCoverageFeedback(request, result) {
   const syntaxFailure = result.steps?.find(step => step.errorCode === 'invalid_selector');
   if (syntaxFailure) return `Step ${syntaxFailure.index + 1} has invalid CSS selector syntax; that step produced no visibility measurement and later steps were not executed. Use a standard CSS selector from the actual source, or a supported role with the exact accessible name and exact:true. Text-matching extensions such as :contains() are not CSS selectors. Correct the locator and retry the inspection on the same published snapshot; do not remove the requested behavior checks. For show/hide behavior, keep assertions of opposite visibility for the same affected element around the control click. Requested behavior remains unverified.`;
   const visibilityFailure = result.steps?.find(step => step.errorCode === 'visibility_mismatch');
-  if (visibilityFailure) return `Step ${visibilityFailure.index + 1} matched the element but did not observe its requested visibility. Check the actual target and its ancestors for hidden CSS, opacity and entrance animation. Script, style and head metadata elements are normally not rendered; their visibility says nothing about whether page JavaScript executed. The inspector runs page JavaScript in Chromium: test visible UI effects with fill, click and behavior assertions on rendered elements. The inspector waits for the requested state within its bounded observation window; an opposite state remains a failure. Read the actual markup and script before changing locators or files, retain the published preview, and verify the requested behavior after any repair. Requested behavior remains unverified.`;
+  if (visibilityFailure) return `Step ${visibilityFailure.index + 1} matched the element but did not observe its requested visibility. Check the actual target and its ancestors for hidden CSS, opacity and entrance animation. If an ancestor clips its overflow, a child can retain a layout box. For a collapsed region, assert the state of the collapsed container itself; this check does not measure overflow clipping. Script, style and head metadata elements are normally not rendered; their visibility says nothing about whether page JavaScript executed. The inspector runs page JavaScript in Chromium: test visible UI effects with fill, click and behavior assertions on rendered elements. The inspector waits for the requested state within its bounded observation window; an opposite state remains a failure. Read the actual markup and script before changing locators or files, retain the published preview, and verify the requested behavior after any repair. Requested behavior remains unverified.`;
   const textFailure = result.steps?.find(step => step.action === 'assert-text' && step.status === 'failed' && step.errorCode === 'text_mismatch');
   if (textFailure) return `Step ${textFailure.index + 1} (steps[${textFailure.index}].expectedText) did not match the observed normalized visible text. ` +
     'A mismatch can mean a missing or wrong action, an incorrect expectation, or a page defect. Before changing files, compare the actions actually completed before this assertion, its locator and expectedText with the owner\'s requested behavior and the source. ' +
