@@ -14,17 +14,19 @@ const RUN_ID = 'chatcmpl_5b2c1d0e-7a1f-4e3b-9c2d-1f0e3a4b5c6d';
 const CONTINUED = '\n\nContinue this goal from the saved work. Do only unfinished work.';
 
 test('the ingress accepts a known stop on a failed outcome and nothing else', () => {
-  for (const stop of ['tool-limit', 'run-deadline']) {
+  for (const stop of ['tool-limit', 'run-deadline', 'unfinished-work', 'output-limit']) {
     assert.deepEqual(parseVerificationResponse({status: 'failed', text: 'Stopped.', stop}, RUN_ID),
       {status: 'failed', text: 'Stopped.', stop});
   }
   for (const value of [
-    {status: 'failed', text: 'Stopped.', stop: 'output-limit'},
+    {status: 'failed', text: 'Stopped.', stop: 'unknown-output-limit'},
     {status: 'failed', text: 'Stopped.', stop: ['tool-limit']},
     {status: 'failed', text: 'Stopped.', stop: ''},
     {status: 'passed', text: 'Done.', stop: 'tool-limit'},
     {status: 'none', stop: 'run-deadline'},
     {status: 'pending', text: 'Which one?', stop: 'tool-limit'},
+    {status: 'passed', text: 'Done.', stop: 'output-limit'},
+    {status: 'pending', text: 'Which one?', stop: 'output-limit'},
   ]) assert.throws(() => parseVerificationResponse(value, RUN_ID), /verification state unavailable/, JSON.stringify(value));
 });
 

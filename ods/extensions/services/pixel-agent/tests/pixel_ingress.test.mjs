@@ -2406,3 +2406,21 @@ test('HTTP SSE path submits once and returns exact done content', async () => {
     await new Promise(r => gw.server.close(r));
   }
 });
+
+// A /goal round whose saved edits settled but whose requested publication
+// has not happened yet carries the closed failed stop 'unfinished-work'
+// (tool-loop-guard.mjs), which goal mode's controller continues. The ingress
+// accepts it only on a failed outcome, like the other closed stops.
+test('the ingress accepts the unfinished-work stop only on a failed outcome', async () => {
+  const {parseVerificationResponse} = await import(process.env.PIXEL_INGRESS_MODULE ?? "../host/pixel_ingress.mjs");
+  const runId = 'chatcmpl_5b2c1d0e-7a1f-4e3b-9c2d-1f0e3a4b5c6e';
+  assert.deepEqual(parseVerificationResponse({status: 'failed', text: 'Saved, not published.', stop: 'unfinished-work'}, runId),
+    {status: 'failed', text: 'Saved, not published.', stop: 'unfinished-work'});
+  for (const value of [
+    {status: 'passed', text: 'Done.', stop: 'unfinished-work'},
+    {status: 'pending', text: 'Which one?', stop: 'unfinished-work'},
+    {status: 'none', stop: 'unfinished-work'},
+    {status: 'failed', text: 'Stopped.', stop: 'unfinished'},
+    {status: 'failed', text: 'Stopped.', stop: ['unfinished-work']},
+  ]) assert.throws(() => parseVerificationResponse(value, runId), /verification state unavailable/, JSON.stringify(value));
+});

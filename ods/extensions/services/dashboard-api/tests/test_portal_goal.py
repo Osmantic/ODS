@@ -264,7 +264,7 @@ def test_an_edit_a_stop_cut_off_is_not_counted():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('stop', [None, 'output-limit', ['tool-limit']])
+@pytest.mark.parametrize('stop', [None, 'unknown-output-limit', ['tool-limit']])
 async def test_other_failed_rounds_still_end_the_goal(tmp_path, stop):
     calls=[]
     async def run(owner,agent):
@@ -277,6 +277,45 @@ async def test_other_failed_rounds_still_end_the_goal(tmp_path, stop):
     row=manager.list(OWNER,'chat')[0]
     assert row['status']=='failed' and len(calls)==1
     assert row['agents'][0]['error']=='The agent could not verify completion. Its response is not a verified result.'
+
+
+@pytest.mark.asyncio
+async def test_settled_output_limit_before_edits_uses_new_durable_turn(tmp_path):
+    calls=[]
+    async def run(owner,agent):
+        calls.append(copy.deepcopy(agent))
+        if len(calls)==1:
+            yield edits_frame()
+            for frame in stopped_round('I read the source. Next I will repair the form.', 'output-limit'):yield frame
+        else:
+            yield goal_frame('completed')
+            for frame in finish('Actual repaired result'):yield frame
+    manager=TeamManager(TeamStore(tmp_path/'teams'),run,yes)
+    manager.start(OWNER,'chat','goal','Repair and publish the form',None,'','goal')
+    await settle(manager)
+    row=manager.list(OWNER,'chat')[0]
+    assert row['status']=='completed' and len(calls)==2
+    assert calls[0]['request_id']!=calls[1]['request_id']
+    assert calls[0]['chat_id']==calls[1]['chat_id']
+    prompt=calls[1]['messages'][-1]['content']
+    assert "The last round reached the model's output limit" in prompt
+    assert 'Inspect uncertain effects before acting; never repeat a completed write or publication.' in prompt
+
+
+@pytest.mark.asyncio
+async def test_output_limit_without_progress_still_stops_after_existing_bound(tmp_path):
+    calls=[]
+    async def run(owner,agent):
+        calls.append(agent['request_id'])
+        yield edits_frame()
+        for frame in stopped_round('Next I will inspect more source.', 'output-limit'):yield frame
+    manager=TeamManager(TeamStore(tmp_path/'teams'),run,yes)
+    manager.start(OWNER,'chat','goal','Repair and publish the form',None,'','goal')
+    await settle(manager)
+    row=manager.list(OWNER,'chat')[0]
+    assert row['status']=='failed' and len(calls)==GOAL_STOPPED_ROUNDS+1
+    assert len(calls)==len(set(calls)) and not row['agents'][0]['retryable']
+    assert row['agents'][0]['error'].startswith('The goal is incomplete.')
 
 
 @pytest.mark.asyncio

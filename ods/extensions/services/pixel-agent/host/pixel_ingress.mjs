@@ -43,7 +43,7 @@ const MAX_VERIFICATION_TEXT = 32 * 1024;
 // shipped-example guard, plugin/example-guard.mjs).
 const MAX_VERIFICATION_NOTICE = 1024;
 // The limits that may stop a failed response (verification `stop`).
-const VERIFICATION_STOPS = new Set(['tool-limit', 'run-deadline']);
+const VERIFICATION_STOPS = new Set(['tool-limit', 'run-deadline', 'unfinished-work', 'output-limit']);
 const MAX_VERIFICATION_RESPONSE = 1024 * 1024;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMPTY_ASSISTANT_RESPONSE = "⚠️ Agent couldn't generate a response. Please try again.";

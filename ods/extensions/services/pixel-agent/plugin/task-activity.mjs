@@ -27,6 +27,31 @@ function kindFor(event, context) {
   return KINDS.get(name) ?? 'unknown';
 }
 
+// The goal partial-work settlement view (settlement below) accepts only these
+// exact tools: a direct call by name, or a catalog call by its exact source
+// (the pinned runtime's ids are openclaw:core:<tool> and
+// openclaw:pixel-ods:<tool>; the plan contract also names the bare id).
+// Discovery and the plan tool are 'unknown' in the public kinds above; that
+// display schema is not widened. Everything else refuses the settlement.
+const SETTLEMENT_CORE = new Set(['read', 'ls', 'glob', 'grep', 'write', 'edit', 'apply_patch', 'exec', 'process']);
+const SETTLEMENT_PLUGIN = new Set(['pixel_ods_goal', 'pixel_ods_activity']);
+const SETTLEMENT_DIRECT = new Set([...SETTLEMENT_CORE, ...SETTLEMENT_PLUGIN, 'tool_search', 'tool_describe']);
+const SETTLEMENT_EDITS = new Set(['write', 'edit', 'apply_patch']);
+const SETTLEMENT_EXECUTIONS = new Set(['exec', 'process']);
+function settlementTool(selected) {
+  if (!selected || typeof selected.name !== 'string') return undefined;
+  if (!selected.wrapped) return SETTLEMENT_DIRECT.has(selected.name) ? selected.name : undefined;
+  const [source, name] = selected.name.startsWith('openclaw:core:') ? ['core', selected.name.slice(14)]
+    : selected.name.startsWith('openclaw:pixel-ods:') ? ['pixel-ods', selected.name.slice(19)] : [undefined, selected.name];
+  if (source !== 'pixel-ods' && SETTLEMENT_CORE.has(name)) return name;
+  if (source !== 'core' && SETTLEMENT_PLUGIN.has(name)) return name;
+  return undefined;
+}
+
+// The parent part of a Tool Search child ID, as the pinned runtime sanitizes it
+// (tool_search_code:<parent>:<tool>:<sequence>).
+const childParent = parentId => parentId.trim().replace(/[^A-Za-z0-9_.:-]+/g, '_').slice(0,120) || 'call';
+
 function failedResult(event) {
   if (event?.error) return true;
   let result = event?.result;
@@ -91,22 +116,56 @@ export function createTaskActivity({agentId = 'pixel', now = () => new Date().to
   function record(event, context, outcome) {
     const run = knownRun(event, context);
     let callId = context?.toolCallId ?? event?.toolCallId;
-    if (!run || typeof callId !== 'string' || !callId || callId.length > 256) return;
+    if (!run) return;
+    // Not displayed, but never silently absent from the settlement either.
+    if (typeof callId !== 'string' || !callId || callId.length > 256) { run.unidentifiedCall = true; return; }
     const toolName = context?.toolName ?? event?.toolName;
     // The pinned Tool Search runtime emits hooks for both the outer tool_call
     // and its inner execution. Correlate its explicit parent ID, not arguments
     // or timing, so one invocation is not displayed as two calls.
+    const hookCallId = callId;
     if (callId.startsWith('tool_search_code:') && typeof toolName === 'string') {
       const parents = [...run.calls].filter(([parentId, call]) => {
         if (!call.wrapped || call.kind !== kindFor(event, context)) return false;
-        const parent = parentId.trim().replace(/[^A-Za-z0-9_.:-]+/g, '_').slice(0,120) || 'call';
-        const prefix = `tool_search_code:${parent}:${toolName}:`;
+        const prefix = `tool_search_code:${childParent(parentId)}:${toolName}:`;
         return callId.startsWith(prefix) && /^[1-9][0-9]*$/.test(callId.slice(prefix.length));
       });
       if (parents.length === 1) callId = parents[0][0];
+      // A child that two parents could own belongs to neither (settlement only).
+      else if (parents.length > 1) run.ambiguousChild = true;
+    } else if (toolName === 'tool_call' && !run.calls.has(callId) &&
+        [...run.calls].some(([parentId, call]) => call.wrapped && childParent(parentId) === childParent(callId))) {
+      // Two catalog calls whose child IDs would share one sanitized prefix.
+      run.ambiguousChild = true;
     }
+    const child = callId !== hookCallId;
     const existing = run.calls.get(callId);
     if (!existing && run.calls.size >= maximumCalls) { run.truncated = true; return; }
+    // Settlement evidence, never projected: what every hook of this call
+    // showed, kept even where the display outcome below is replaced.
+    const evidence = existing?.evidence ?? {admitted:false, settled:false, failed:false, conflict:false,
+      selected:{wrapped:toolName === 'tool_call', name:toolName === 'tool_call' ? event?.params?.id : toolName}};
+    const hookName = toolName === 'tool_call' ? event?.params?.id : toolName;
+    // A receipt without a result says nothing about what happened.
+    if ((outcome === 'completed' || outcome === 'failed') && (event?.result === undefined || event?.result === null) &&
+        !event?.error) evidence.unknown = true;
+    if ((typeof context?.toolCallId === 'string' && typeof event?.toolCallId === 'string' && context.toolCallId !== event.toolCallId) ||
+        (typeof context?.toolName === 'string' && typeof event?.toolName === 'string' && context.toolName !== event.toolName) ||
+        (typeof context?.sessionId === 'string' && context.sessionId !== run.sessionId) ||
+        // Any present session key, valid or not, must be the run's own.
+        (typeof context?.sessionKey === 'string' && context.sessionKey !== run.sessionKey) ||
+        (typeof event?.sessionKey === 'string' && event.sessionKey !== run.sessionKey) ||
+        (typeof event?.runId === 'string' && event.runId !== run.runId) ||
+        (typeof event?.sessionId === 'string' && event.sessionId !== run.sessionId) ||
+        // A child names its parent's tool; an outer hook repeats its own selection.
+        (child ? hookName !== settlementTool(evidence.selected) : hookName !== evidence.selected.name)) evidence.conflict = true;
+    if (outcome === 'failed' || outcome === 'blocked') evidence.failed = true;
+    if (!child && (outcome === 'running' || outcome === 'blocked')) {
+      // A second admission after its receipt is not this call's evidence.
+      if (existing && existing.outcome !== 'running') evidence.conflict = true;
+      evidence.admitted = true;
+    }
+    if (!child && (outcome === 'completed' || outcome === 'failed')) evidence.settled = evidence.admitted;
     // A blocked attempt must not later become a successful effect because a
     // wrapper emitted an after-hook. Duplicate hook delivery is idempotent.
     if (existing?.outcome === 'blocked' || (existing && outcome === 'running' && existing.outcome !== 'running')) return;
@@ -116,7 +175,8 @@ export function createTaskActivity({agentId = 'pixel', now = () => new Date().to
     const observedAt=now();
     const startedAt=existing?.startedAt ?? noEarlierThan(observedAt,run.startedAt);
     const finishedAt=outcome==='running' ? null : existing?.finishedAt ?? noEarlierThan(observedAt,startedAt);
-    run.calls.set(callId, {kind:existing?.kind ?? kindFor(event, context), outcome, display, startedAt, finishedAt, wrapped:existing?.wrapped ?? toolName === 'tool_call'});
+    run.calls.set(callId, {kind:existing?.kind ?? kindFor(event, context), outcome, display, startedAt, finishedAt,
+      wrapped:existing?.wrapped ?? toolName === 'tool_call', evidence});
   }
   return {
     begin,
@@ -153,6 +213,35 @@ export function createTaskActivity({agentId = 'pixel', now = () => new Date().to
       run.finishedAt = [...run.calls.values()].reduce((latest,call)=>
         noEarlierThan(latest,call.finishedAt ?? call.startedAt),noEarlierThan(now(),run.startedAt));
       run.state = event?.success === true ? 'completed' : event?.success === false || event?.error ? 'failed' : 'finished';
+    },
+    // Read-only settlement of one run's known calls for the goal partial-work
+    // stop (tool-loop-guard.mjs): this run, bound to the caller's session,
+    // complete (not truncated), every call admitted and settled by its own
+    // hooks with no failure, block or identity conflict at any hook, and only
+    // allowlisted tools. Lists every execution for the guard to match to its
+    // own bound terminal receipts. Known-call settlement only: it cannot see
+    // detached processes or effects outside these receipts.
+    settlement(id, {sessionId, sessionKey} = {}) {
+      const refuse = reason => ({schemaVersion:1, ok:false, reason});
+      const run = runs.get(id);
+      if (!run) return refuse('missing');
+      if (run.sessionConflict || typeof sessionId !== 'string' || !sessionId || run.sessionId !== sessionId ||
+          typeof sessionKey !== 'string' || !sessionKey || run.sessionKey !== sessionKey) return refuse('identity');
+      if (run.truncated) return refuse('truncated');
+      if (run.unidentifiedCall || run.ambiguousChild) return refuse('identity');
+      let edits = 0;
+      const executions = [];
+      for (const [callId, call] of run.calls) {
+        const evidence = call.evidence;
+        if (!evidence || evidence.failed || call.outcome === 'failed' || call.outcome === 'blocked') return refuse('failed');
+        if (evidence.conflict) return refuse('identity');
+        if (!evidence.admitted || !evidence.settled || evidence.unknown || call.outcome !== 'completed') return refuse('unsettled');
+        const tool = settlementTool(evidence.selected);
+        if (!tool) return refuse('unknown-tool');
+        if (SETTLEMENT_EDITS.has(tool)) edits++;
+        if (SETTLEMENT_EXECUTIONS.has(tool)) executions.push({callId, tool});
+      }
+      return {schemaVersion:1, ok:true, calls:run.calls.size, edits, executions};
     },
     projection(id) {
       const run = runs.get(id);

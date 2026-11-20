@@ -1304,13 +1304,21 @@ test('verification after gateway restart requires fresh publication and browser 
   const {preview}=setup({prompt:'Build a packing checklist website in site and show me a working preview.'});
   const guard=createToolLoopGuard({workspacePreviewInspectionAvailable:true});
   const next={...context,runId:'after-restart'};
-  guard.observeRun(next,'pixel',{prompt:verifyFollowup,messages:[
+  // Reconciled: the changed prompt below comes from beforeAgentFinalize,
+  // not from a new owner. Carry the same test host input through that retry.
+  const inputId=createHash('sha256').update('restart-finalize-test-input').digest('hex').slice(0,32);
+  const status=()=>Object.freeze({inputId,queuedInputs:0,cancelled:false,terminated:false});
+  const hostContext=(kind,attempt)=>({...next,ownerInputProvenance:Object.freeze({
+    schema:'ods.owner-input.v1',runId:next.runId,sessionId:next.sessionId,sessionKey:next.sessionKey,
+    inputId,attempt,kind,retryReasons:Object.freeze(kind==='run_input'?[]:['finalize_revision']),status
+  })});
+  guard.observeRun(hostContext('run_input',1),'pixel',{prompt:verifyFollowup,messages:[
     {role:'assistant',content:'The previous preview passed all six checks.'}
   ]});
   assert.equal(guard.verificationForRun(next.runId).status,'failed','prior prose cannot satisfy a new verification request');
   const retry=guard.beforeAgentFinalize({},next)?.retry;
   assert.ok(retry,'no-tool answer must request fresh work');
-  guard.observeRun(next,'pixel',{prompt:retry.instruction});
+  guard.observeRun(hostContext('host_retry',2),'pixel',{prompt:retry.instruction});
   call(guard,'read',{path:preview.relativeDirectory+'/index.html'},'read-current',{content:[{type:'text',text:'<!doctype html><button>Show details</button><p hidden>Details</p>'}]},next);
   call(guard,'pixel_ods_workspace_preview',{relativeDirectory:preview.relativeDirectory},'fresh-publish',{details:preview},next);
   assert.equal(guard.verificationForRun(next.runId).status,'failed','HTTP readback alone is insufficient after restart');
@@ -1341,4 +1349,236 @@ test('published but unverified interactions drop an unverified persistence claim
   const delivered=guard.replyPayloadSending({runId:'run',kind:'final',payload:{text:'Everything persists.'}}).payload;
   assert.ok(!delivered.text.includes(PREVIEW_STORAGE_DISCLOSURE));
   assert.doesNotMatch(delivered.text,/Everything persists/);
+});
+
+
+// Native d335a742: successful immutable-snapshot checks were lost between a
+// settled grep and the final trusted comparison of unchanged workspace bytes.
+function persistBindingOutcome(guard, observed) {
+ guard.toolResultPersist({toolName:observed.event.toolName,toolCallId:observed.event.toolCallId,
+  message:{role:'toolResult',toolName:observed.event.toolName,toolCallId:observed.event.toolCallId,...observed.result}},observed.ctx);
+}
+function persistBindingPublication(f) {
+ const event={toolName:'pixel_ods_workspace_preview',toolCallId:'publish'};
+ persistBindingOutcome(f.guard,{event,ctx:{...context,...event},result:{details:f.preview}});
+}
+
+function pendingInspectionFixture({matches=true,verifier=true}={}){
+ let comparisons=0;
+ const result=setup({verifyWorkspacePreview:verifier?async()=>{comparisons++;return matches;}:undefined});
+ persistBindingPublication(result);
+ const grepResult={content:[{type:'text',text:'1: details'}],details:{status:'completed',exitCode:0}};
+ const grep=call(result.guard,'exec',{command:'grep -n details site/index.html'},'post-publish-grep',grepResult);
+ persistBindingOutcome(result.guard,{...grep,result:grepResult});
+ return {...result,comparisons:()=>comparisons};
+}
+
+for(const wrapped of [false,true])test(`immutable inspection survives pending workspace currency after a settled command (wrapped=${wrapped})`,async()=>{
+ const f=pendingInspectionFixture();
+ const observed=inspection(f.guard,plan(f.preview),{wrapped,id:'after-grep'});
+ f.guard.afterToolCall({...observed.event,result:observed.result},observed.ctx);persistBindingOutcome(f.guard,observed);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed','snapshot inspection is not proof of current workspace bytes');
+ assert.equal(f.comparisons(),0,'no hidden comparison or publication');
+ assert.equal(await f.guard.revalidateWorkspacePreview({},context),true);
+ assert.equal(f.comparisons(),1);
+ assert.equal(f.guard.verificationForRun('run').status,'passed','the recorded snapshot checks and subsequent trusted equality both hold');
+});
+
+for(const option of [{matches:false},{verifier:false}])test(`immutable inspection cannot replace final trusted byte verification ${JSON.stringify(option)}`,async()=>{
+ const f=pendingInspectionFixture(option);const a=inspection(f.guard,plan(f.preview));
+ f.guard.afterToolCall({...a.event,result:a.result},a.ctx);persistBindingOutcome(f.guard,a);
+ assert.equal(await f.guard.revalidateWorkspacePreview({},context),false);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});
+
+test('a running foreground command cannot lend its snapshot to new inspection evidence',async()=>{
+ const f=setup({verifyWorkspacePreview:async()=>true});
+ persistBindingPublication(f);
+ call(f.guard,'exec',{command:'grep -n details site/index.html'},'running-grep',{
+  content:[{type:'text',text:'running'}],details:{status:'running',sessionId:'owned-running'}});
+ const a=inspection(f.guard,plan(f.preview));f.guard.afterToolCall({...a.event,result:a.result},a.ctx);persistBindingOutcome(f.guard,a);
+ assert.equal(await f.guard.revalidateWorkspacePreview({},context),false);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});
+
+for(const changed of [{sessionId:'foreign'},{sessionKey:'foreign-key'}])test(`foreign inspection receipt cannot supply pending-currency proof ${Object.keys(changed)[0]}`,async()=>{
+ const f=pendingInspectionFixture();const a=inspection(f.guard,plan(f.preview));
+ const foreign={...a.ctx,...changed};
+ f.guard.afterToolCall({...a.event,result:a.result},foreign);persistBindingOutcome(f.guard,{...a,ctx:foreign});
+ await f.guard.revalidateWorkspacePreview({},context);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});
+
+test('failed inspection evidence is still failed after workspace equality returns',async()=>{
+ const f=pendingInspectionFixture();const a=inspection(f.guard,plan(f.preview));
+ a.result={...a.result,isError:true,details:{...a.result.details,status:'failed',steps:a.result.details.steps.map((s,i)=>i===0?{...s,status:'failed'}:s)}};
+ f.guard.afterToolCall({...a.event,result:a.result},a.ctx);persistBindingOutcome(f.guard,a);
+ assert.equal(await f.guard.revalidateWorkspacePreview({},context),true);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});
+
+test('a mismatching snapshot receipt cannot supply inspection proof after an unchanged command',async()=>{
+ const f=pendingInspectionFixture();const a=inspection(f.guard,plan(f.preview));
+ a.result={...a.result,details:{...a.result.details,sha256:'f'.repeat(64)}};
+ f.guard.afterToolCall({...a.event,result:a.result},a.ctx);persistBindingOutcome(f.guard,a);
+ await f.guard.revalidateWorkspacePreview({},context);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});
+
+
+test('owner cancellation rejects a late inspection while workspace currency is pending',async()=>{
+ const seed=setup();const user='ods-'+ 'a'.repeat(64);
+ const own={...context,sessionKey:'agent:pixel:openai-user:'+user};
+ const guard=createToolLoopGuard({workspacePreviewInspectionAvailable:true,verifyWorkspacePreview:async()=>true,
+  abortRunAndDrain:async()=>({aborted:true,drained:true,forceCleared:false})});
+ guard.observeRun(own,'pixel',{prompt:owner});
+ const content='<!doctype html><button>Show details</button><p hidden>Details</p>';
+ const written={content:[{type:'text',text:'Successfully wrote file.'}]};
+ const write=call(guard,'write',{path:'site/index.html',content},'own-write',written,own);
+ persistBindingOutcome(guard,{...write,result:written});
+ const published={details:seed.preview};const pub=call(guard,'pixel_ods_workspace_preview',{relativeDirectory:seed.preview.relativeDirectory},'own-publish',published,own);
+ persistBindingOutcome(guard,{...pub,result:published});
+ const checked={content:[{type:'text',text:'1:details'}],details:{status:'completed',exitCode:0}};
+ const grep=call(guard,'exec',{command:'grep -n details site/index.html'},'own-grep',checked,own);persistBindingOutcome(guard,{...grep,result:checked});
+ const pending=inspection(guard,plan(seed.preview),{id:'late-cancelled-inspection',runContext:own});
+ assert.equal(await guard.abortUserRun(user),true);
+ guard.afterToolCall({...pending.event,result:pending.result},pending.ctx);
+ persistBindingOutcome(guard,pending);
+ assert.equal(await guard.revalidateWorkspacePreview({},own),false);
+ assert.notEqual(guard.verificationForRun('run').status,'passed');
+});
+
+// Native b709aa71: a passed blank-form check erased an earlier passed FAQ
+// check of the same immutable snapshot. Every action still needs a result.
+function independentFormPlan(preview) {
+ return {...plan(preview),steps:[
+  {action:'click',locator:{role:'button',name:'Submit sample form',exact:true}},
+  ...['name','phone','email','model','service','date'].map(field=>({
+   action:'assert-text',locator:{selector:'#'+field+'Error'},expectedText:'Required '+field})),
+ ]};
+}
+function finishIndependentInspection(f,observed) {
+ f.guard.afterToolCall({...observed.event,result:observed.result},observed.ctx);
+ persistBindingOutcome(f.guard,observed);
+}
+for(const wrapped of [false,true])for(const pending of [false,true])
+test(`independent asserted form check retains the earlier visibility proof wrapped=${wrapped} pendingCurrency=${pending}`,async()=>{
+ const f=pending?pendingInspectionFixture():setup();
+ if(!pending)persistBindingPublication(f);
+ const first=inspection(f.guard,plan(f.preview),{wrapped,id:'faq-first'});
+ finishIndependentInspection(f,first);
+ const form=behaviorInspection(f.guard,independentFormPlan(f.preview),{wrapped,id:'form-second'});
+ finishIndependentInspection(f,form);
+ if(pending){
+  assert.notEqual(f.guard.verificationForRun('run').status,'passed','browser evidence cannot replace current workspace byte equality');
+  assert.equal(f.comparisons(),0);
+  assert.equal(await f.guard.revalidateWorkspacePreview({},context),true);
+  assert.equal(f.comparisons(),1);
+ }
+ assert.equal(f.guard.verificationForRun('run').status,'passed','both independent passed inspection duties remain recorded');
+});
+
+for(const wrapped of [false,true])test(`independent form then visibility check also completes wrapped=${wrapped}`,()=>{
+ const f=setup();persistBindingPublication(f);
+ finishIndependentInspection(f,behaviorInspection(f.guard,independentFormPlan(f.preview),{wrapped,id:'form-first'}));
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed','form validation does not establish the FAQ transition');
+ finishIndependentInspection(f,inspection(f.guard,plan(f.preview),{wrapped,id:'faq-second'}));
+ assert.equal(f.guard.verificationForRun('run').status,'passed');
+});
+
+for(const wrapped of [false,true])for(const fault of [
+ 'failed','page-errors','wrong-hash','unbound','no-prior-proof','trailing-click','double-click',
+])test(`independent inspection does not retain visibility through ${fault} wrapped=${wrapped}`,()=>{
+ const f=setup();persistBindingPublication(f);
+ if(fault!=='no-prior-proof')finishIndependentInspection(f,inspection(f.guard,plan(f.preview),{wrapped,id:'prior-visibility'}));
+ const params=independentFormPlan(f.preview);
+ if(fault==='trailing-click')params.steps.push({action:'click',locator:{selector:'#unasserted'}});
+ if(fault==='double-click')params.steps.splice(1,0,{action:'click',locator:{selector:'#another-unasserted'}});
+ const observed=behaviorInspection(f.guard,params,{wrapped,id:'independent-fault',
+  pageErrors:fault==='page-errors'?{count:1,messages:['Synthetic page error']}:undefined});
+ const inner=wrapped?observed.result.details.result:observed.result;
+ if(fault==='failed'){
+  inner.isError=true;inner.details.status='failed';
+  inner.details.steps[0]={...inner.details.steps[0],status:'failed',errorCode:'no_match',before:{count:0}};
+ }
+ if(fault==='wrong-hash')inner.details.sha256='f'.repeat(64);
+ if(fault==='unbound'){
+  observed.ctx={...observed.ctx,toolCallId:'unbound-independent'};
+  observed.event={...observed.event,toolCallId:'unbound-independent'};
+ }
+ finishIndependentInspection(f,observed);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});
+
+// Native aa04dfa9 kept following republication guidance after settled probes
+// and never reached the inspector. Command completion still proves no equality.
+function commandCoachingFixture({wrapped=false,command='grep -n details site/index.html',
+ matches=true,verifier=true,available=true,running=false,failed=false,foreign=false}={}) {
+ let comparisons=0;
+ const f=setup({enabled:available,verifyWorkspacePreview:verifier?async()=>{comparisons++;return matches;}:undefined});
+ persistBindingPublication(f);
+ const selected={command};
+ const inner={content:[{type:'text',text:'synthetic command result'}],
+  details:running?{status:'running',sessionId:'owned-command-session'}:{status:failed?'failed':'completed',exitCode:failed?1:0},
+  ...(failed?{isError:true}:{})};
+ const name=wrapped?'tool_call':'exec';
+ const params=wrapped?{id:'openclaw:core:exec',args:selected}:selected;
+ const result=wrapped?{details:{tool:{id:params.id,name:'exec',source:'openclaw',sourceName:'core'},result:inner},...(failed?{isError:true}:{})}:inner;
+ const observed=call(f.guard,name,params,'post-publish-command',result);
+ if(foreign)f.guard.observeRun({...context,sessionKey:'foreign-owner-key'},'pixel',{prompt:owner});
+ const persisted=persistObserved(f.guard,observed,result);
+ return {...f,persisted,comparisons:()=>comparisons};
+}
+
+for(const wrapped of [false,true])for(const command of ['grep -n details site/index.html','sha256sum site/index.html'])
+test(`ordinary settled command guides immutable inspection without demanding republication wrapped=${wrapped} command=${command}`,()=>{
+ const f=commandCoachingFixture({wrapped,command});
+ const steps=nextSteps(f.persisted).join('\n');
+ assert.ok(steps.includes(PREVIEW_INSPECTION_TOOL),'next step must identify the actual inspector');
+ assert.ok(steps.includes(f.preview.siteId)&&steps.includes(f.preview.sha256),'use this exact immutable publication');
+ assert.match(steps,/do not republish (?:only|solely) because/i);
+ assert.doesNotMatch(steps,/then call tool_call with id pixel_ods_workspace_preview /);
+ assert.equal(f.comparisons(),0,'guidance does not perform or fake the trusted comparison');
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+ const presented=(f.persisted?.message?.content??[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
+ assert.doesNotMatch(presented,/Ask Portal to verify and publish the current files/,'the card must not contradict eligible pending-inspection guidance');
+});
+
+for(const [label,options]of [
+ ['no trusted verifier',{verifier:false}],['no inspector',{available:false}],
+ ['running command',{running:true}],['failed command',{failed:true}],['foreign owner',{foreign:true}],
+])test(`ordinary pending-inspection guidance is withheld for ${label}`,()=>{
+ const f=commandCoachingFixture(options);
+ assert.ok(!nextSteps(f.persisted).some(s=>s.includes(PREVIEW_INSPECTION_TOOL)&&s.includes(f.preview.sha256)));
+ assert.equal(f.comparisons(),0);
+});
+
+test('ordinary pending-inspection guidance cannot replace failed final file equality',async()=>{
+ const f=commandCoachingFixture({matches:false});
+ const check=inspection(f.guard,plan(f.preview),{id:'snapshot-after-command'});
+ finishIndependentInspection(f,check);
+ assert.equal(f.comparisons(),0);
+ assert.equal(await f.guard.revalidateWorkspacePreview({},context),false);
+ assert.equal(f.comparisons(),1);
+ assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});
+
+// The historical unmarked changed-text form is retained as a refusal case.
+test('verification after restart cannot publish after an unproven finalize retry',()=>{
+  const {preview}=setup({prompt:'Build a packing checklist website in site and show me a working preview.'});
+  const guard=createToolLoopGuard({workspacePreviewInspectionAvailable:true});
+  const next={...context,runId:'after-restart-without-provenance'};
+  guard.observeRun(next,'pixel',{prompt:verifyFollowup});
+  const retry=guard.beforeAgentFinalize({},next)?.retry;
+  assert.ok(retry);
+  guard.observeRun(next,'pixel',{prompt:retry.instruction});
+  call(guard,'read',{path:preview.relativeDirectory+'/index.html'},'read-current-unproven',
+    {content:[{type:'text',text:'<!doctype html><button>Show details</button>'}]},next);
+  const prepared=guard.beforeToolCall({toolName:'pixel_ods_workspace_preview',
+    params:{relativeDirectory:preview.relativeDirectory},toolCallId:'blocked-unproven'},
+    {...next,toolName:'pixel_ods_workspace_preview',toolCallId:'blocked-unproven'});
+  assert.equal(prepared?.block,true);
+  assert.match(prepared.blockReason,/owner request is unavailable|prohibits displaying a preview/);
+  // Withdrawn publication is no longer an active preview-verification task.
+  assert.equal(guard.verificationForRun(next.runId).status,'none');
 });

@@ -194,6 +194,8 @@ PREVIEW_FAILURE_CODES = {
     "preview is too large": "snapshot_too_large",
     "unsafe preview file": "unsafe_file",
     "unsafe preview directory": "unsafe_directory",
+    "conditional entry unchanged": "conditional_entry_unchanged",
+    "conditional prior unverified": "conditional_prior_unverified",
 }
 
 
@@ -252,7 +254,8 @@ def parse_request(payload: bytes) -> dict[str, Any]:
         or not isinstance(value.get("action"), str)
         or set(value) != {"schemaVersion", "action", "relativeDirectory", *_profile_fields(),
                            *({"siteId", "sha256"} if value.get("action") == "verify-current" else set()),
-                           *({'sourceDirectory'} if value.get('action') == 'publish' and 'sourceDirectory' in value else set())}
+                           *({'sourceDirectory'} if value.get('action') == 'publish' and 'sourceDirectory' in value else set()),
+                           *({'ifEntryUnchanged'} if value.get('action') == 'publish' and 'ifEntryUnchanged' in value else set())}
         or type(value.get("schemaVersion")) is not int or value.get("schemaVersion") != SCHEMA_VERSION
         or value.get("action") not in {"publish", "verify-current"}
         or (PROFILE_ID is not None and value.get("profileId") != PROFILE_ID)
@@ -263,6 +266,19 @@ def parse_request(payload: bytes) -> dict[str, Any]:
         _parts(value['sourceDirectory'])
         if PROFILE_ID is not None or not (value['relativeDirectory'] == value['sourceDirectory']
                 or value['relativeDirectory'].startswith(value['sourceDirectory'] + '/')):
+            raise PreviewError('invalid preview request')
+    # The trusted guard's repeat-publication condition: the prior verified
+    # snapshot of this directory and its named index.html. Not for profiles or
+    # source review, whose correspondence this comparison does not cover.
+    if 'ifEntryUnchanged' in value:
+        prior = value['ifEntryUnchanged']
+        if (PROFILE_ID is not None or 'sourceDirectory' in value or not isinstance(prior, dict)
+                or set(prior) != {'siteId', 'sha256', 'entrySha256'}
+                or not all(isinstance(prior[key], str) for key in prior)
+                or SITE_ID.fullmatch(prior['siteId']) is None
+                or re.fullmatch(r'[a-f0-9]{64}', prior['sha256']) is None
+                or re.fullmatch(r'[a-f0-9]{64}', prior['entrySha256']) is None
+                or prior['siteId'] != 'site-' + prior['sha256'][:24]):
             raise PreviewError('invalid preview request')
     if value["action"] == "verify-current" and (
         not isinstance(value.get("siteId"), str) or SITE_ID.fullmatch(value["siteId"]) is None
@@ -668,10 +684,15 @@ def publish_snapshot(
     relative_directory: str,
     owner_uid: int,
     source_directory: str | None = None,
+    if_entry_unchanged: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     _safe_root(previews, owner_uid)
     if source_directory is not None and not (relative_directory == source_directory or relative_directory.startswith(source_directory + '/')):
         raise PreviewError('invalid preview request')
+    if if_entry_unchanged is not None:
+        if source_directory is not None or PROFILE_ID is not None:
+            raise PreviewError('invalid preview request')
+        _verify_prior_snapshot(previews, if_entry_unchanged)
     captured_source = _capture_review_source(workspace, source_directory, owner_uid, relative_directory) if source_directory is not None else None
     sources = _source_files(workspace, relative_directory, owner_uid)
     captured: list[tuple[str, bytes]] = []
@@ -692,6 +713,9 @@ def publish_snapshot(
         captured.append((relative, data))
     full_digest = digest.hexdigest()
     site_id = f"site-{full_digest[:24]}"
+    if if_entry_unchanged is not None:
+        return _conditional_publication(previews, site_id, captured, full_digest, total, relative_directory,
+                                        owner_uid, if_entry_unchanged)
     if captured_source is None:
         return _publish_captured_snapshot(previews, site_id, captured, full_digest, total, relative_directory, owner_uid)
     result = {}
@@ -699,6 +723,39 @@ def publish_snapshot(
         result.update(_publish_captured_snapshot(previews, site_id, captured, full_digest, total, relative_directory, owner_uid))
     source_receipt = _publish_review_source(previews, site_id, captured_source, owner_uid, before_commit=publish_output)
     return {**result, 'source': source_receipt}
+
+
+def _verify_prior_snapshot(previews: pathlib.Path, prior: dict[str, str]) -> None:
+    """Rehash the owned immutable snapshot a conditional publication compares with."""
+    try:
+        manifest = json.loads(snapshot_manifest(previews, prior["siteId"]))
+    except (PreviewError, OSError, ValueError, KeyError):
+        raise PreviewError("conditional prior unverified") from None
+    entry = next((item for item in manifest["files"] if item["path"] == "index.html"), None)
+    if manifest["sha256"] != prior["sha256"] or entry is None or entry["sha256"] != prior["entrySha256"]:
+        raise PreviewError("conditional prior unverified")
+
+
+def _conditional_publication(previews, site_id, captured, full_digest, total, relative_directory, owner_uid, prior):
+    """Decide a repeat publication from this one capture, never a second read.
+
+    Unchanged named entry and directory: reverify and reuse the prior snapshot,
+    creating nothing. Changed entry: publish exactly these captured bytes.
+    Unchanged entry beside other changed files: publish nothing. The decision
+    is point-in-time; it does not show that later writes cannot follow.
+    """
+    entry_sha256 = hashlib.sha256(dict(captured)["index.html"]).hexdigest()
+    if entry_sha256 == prior["entrySha256"]:
+        if full_digest != prior["sha256"] or site_id != prior["siteId"]:
+            raise PreviewError("conditional entry unchanged")
+        try:
+            receipt = _verified_snapshot_receipt(previews, site_id, captured, full_digest, total,
+                                                 relative_directory, owner_uid)
+        except FileNotFoundError:
+            raise PreviewError("conditional prior unverified") from None
+        return {**receipt, "conditionalPublication": "reused"}
+    return {**_publish_captured_snapshot(previews, site_id, captured, full_digest, total, relative_directory, owner_uid),
+            "conditionalPublication": "published"}
 
 
 def _publish_captured_snapshot(previews, site_id, captured, full_digest, total, relative_directory, owner_uid):
@@ -733,6 +790,14 @@ def _publish_captured_snapshot(previews, site_id, captured, full_digest, total, 
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
+    return _verified_snapshot_receipt(previews, site_id, captured, full_digest, total, relative_directory,
+                                      owner_uid, overwritten)
+
+
+def _verified_snapshot_receipt(previews, site_id, captured, full_digest, total, relative_directory, owner_uid,
+                               overwritten=False):
+    """Verify an existing snapshot holds exactly the captured bytes; create nothing."""
+    destination = previews / site_id
     destination_info = destination.lstat()
     if (
         not stat.S_ISDIR(destination_info.st_mode)
@@ -1656,6 +1721,7 @@ def _serve_connection(
                     request["relativeDirectory"],
                     owner_uid,
                     source_directory=request.get('sourceDirectory'),
+                    if_entry_unchanged=request.get('ifEntryUnchanged'),
                 )
                 _verify_http(port, response["siteId"], response["entrySha256"])
                 response.update(

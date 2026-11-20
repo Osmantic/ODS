@@ -6,6 +6,7 @@
 // (plugin/preview-explanation.mjs and tool-loop-guard.mjs); its tests keep
 // this list equal to the plugin's.
 export const DELIVERY_NOTES = Object.freeze([
+  "Portal read existing website files, but hasn't verified new or changed files for this request. There is no preview to open yet. Ask Portal to finish the changes and publish the preview.",
   "Portal couldn't test every control automatically. Try it, and tell Portal if something isn't right.",
   "Portal couldn't confirm everything automatically. Have a look, and tell Portal if something isn't right.",
   "Portal's checks were still running when it replied. Have a look, and tell Portal if something isn't right.",

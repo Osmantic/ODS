@@ -778,3 +778,195 @@ def test_configured_portal_profile_keeps_its_existing_receipt_schema(tmp_path):
                            "relativeDirectory", "siteId", "files", "bytes",
                            "sha256", "entryFile", "entrySha256", "executable",
                            "overwritten", "boundary"}
+
+
+# ---- conditional repeat publication (owner: "if unchanged, do not republish") ----
+
+def _conditional_site(root, files):
+    workspace, previews = root / "workspace", root / "previews"
+    workspace.mkdir(mode=0o700)
+    previews.mkdir(mode=0o700)
+    site = workspace / "demo"
+    site.mkdir(mode=0o700)
+    for name, text in files.items():
+        (site / name).write_text(text)
+        (site / name).chmod(0o600)
+    return workspace, previews, site
+
+
+def _prior(receipt):
+    return {"siteId": receipt["siteId"], "sha256": receipt["sha256"], "entrySha256": receipt["entrySha256"]}
+
+
+def _snapshot_entries(previews):
+    return sorted(path.name for path in previews.iterdir())
+
+
+def _rewrite(path, text):
+    path.chmod(0o600)
+    path.write_text(text)
+    path.chmod(0o600)
+
+
+def test_conditional_request_field_is_closed_and_refused_for_source_capture_and_profiles():
+    prior = {"siteId": "site-" + "a" * 24, "sha256": "a" * 64, "entrySha256": "b" * 64}
+    base = {"schemaVersion": 1, "action": "publish", "relativeDirectory": "demo"}
+    parsed = MODULE.parse_request(json.dumps({**base, "ifEntryUnchanged": prior}).encode())
+    assert parsed["ifEntryUnchanged"] == prior
+    for bad in (
+        {**base, "ifEntryUnchanged": {**prior, "extra": "x"}},
+        {**base, "ifEntryUnchanged": {**prior, "sha256": "A" * 64}},
+        {**base, "ifEntryUnchanged": {**prior, "siteId": "site-" + "c" * 24}},
+        {**base, "ifEntryUnchanged": {**prior, "entrySha256": 7}},
+        {**base, "ifEntryUnchanged": [prior]},
+        {**base, "sourceDirectory": "demo", "ifEntryUnchanged": prior},
+        {"schemaVersion": 1, "action": "verify-current", "relativeDirectory": "demo",
+         "siteId": prior["siteId"], "sha256": prior["sha256"], "ifEntryUnchanged": prior},
+    ):
+        with pytest.raises(MODULE.PreviewError):
+            MODULE.parse_request(json.dumps(bad).encode())
+    spec = importlib.util.spec_from_file_location("profile_conditional_preview_test", MODULE_PATH)
+    profile = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(profile)
+    profile.configure_portal("profile-a")
+    with pytest.raises(profile.PreviewError):
+        profile.parse_request(json.dumps({**base, "profileId": "profile-a", "ifEntryUnchanged": prior}).encode())
+
+
+def test_unchanged_entry_and_directory_reuse_the_prior_snapshot_without_writing(tmp_path):
+    workspace, previews, site = _conditional_site(tmp_path, {"index.html": "<h1>Repaired</h1>", "styles.css": "h1{}"})
+    first = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+    entries = _snapshot_entries(previews)
+    snapshot_info = (previews / first["siteId"]).stat()
+    second = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid(), if_entry_unchanged=_prior(first))
+    assert second["conditionalPublication"] == "reused"
+    assert {key: second[key] for key in first} == first
+    assert _snapshot_entries(previews) == entries, "no snapshot or temporary directory was created"
+    assert (previews / first["siteId"]).stat().st_mtime_ns == snapshot_info.st_mtime_ns
+
+
+def test_changed_named_entry_publishes_exactly_those_bytes(tmp_path):
+    workspace, previews, site = _conditional_site(tmp_path, {"index.html": "<h1>Repaired</h1>", "styles.css": "h1{}"})
+    first = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+    _rewrite(site / "index.html", "<h1>Repaired again</h1>")
+    second = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid(), if_entry_unchanged=_prior(first))
+    assert second["conditionalPublication"] == "published"
+    assert second["siteId"] != first["siteId"]
+    assert second["entrySha256"] == hashlib.sha256(b"<h1>Repaired again</h1>").hexdigest()
+    assert (previews / second["siteId"] / "index.html").read_text() == "<h1>Repaired again</h1>"
+    assert len([name for name in _snapshot_entries(previews) if name.startswith("site-")]) == 2
+
+
+def test_unchanged_entry_beside_other_changed_files_publishes_nothing(tmp_path):
+    workspace, previews, site = _conditional_site(tmp_path, {"index.html": "<h1>Repaired</h1>", "styles.css": "h1{}"})
+    first = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+    entries = _snapshot_entries(previews)
+    _rewrite(site / "styles.css", "h1{color:red}")
+    with pytest.raises(MODULE.PreviewError, match="conditional entry unchanged") as caught:
+        MODULE.publish_snapshot(workspace, previews, "demo", os.getuid(), if_entry_unchanged=_prior(first))
+    assert MODULE._error_result(MODULE.PREVIEW_FAILURE_CODES[str(caught.value)])["errorCode"] == "conditional_entry_unchanged"
+    assert _snapshot_entries(previews) == entries
+
+
+@pytest.mark.parametrize("fault", ["missing", "tampered", "other-entry"])
+def test_unverified_prior_snapshot_publishes_nothing(tmp_path, fault):
+    workspace, previews, site = _conditional_site(tmp_path, {"index.html": "<h1>Repaired</h1>"})
+    first = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+    prior = _prior(first)
+    if fault == "missing":
+        prior = {"siteId": "site-" + "d" * 24, "sha256": "d" * 64, "entrySha256": first["entrySha256"]}
+    elif fault == "tampered":
+        snapshot = previews / first["siteId"] / "index.html"
+        snapshot.chmod(0o600)
+        snapshot.write_text("<h1>Tampered</h1>")
+        snapshot.chmod(0o400)
+    else:
+        prior["entrySha256"] = "e" * 64
+    _rewrite(site / "index.html", "<h1>Changed</h1>")
+    entries = _snapshot_entries(previews)
+    with pytest.raises(MODULE.PreviewError, match="conditional prior unverified"):
+        MODULE.publish_snapshot(workspace, previews, "demo", os.getuid(), if_entry_unchanged=prior)
+    assert _snapshot_entries(previews) == entries
+
+
+def test_condition_and_published_bytes_come_from_the_same_capture(tmp_path, monkeypatch):
+    workspace, previews, site = _conditional_site(tmp_path, {"index.html": "<h1>Repaired</h1>"})
+    first = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+    _rewrite(site / "index.html", "<h1>Captured</h1>")
+    commit = MODULE._publish_captured_snapshot
+
+    def write_after_capture(*args):
+        _rewrite(site / "index.html", "<h1>Written after capture</h1>")
+        return commit(*args)
+
+    monkeypatch.setattr(MODULE, "_publish_captured_snapshot", write_after_capture)
+    second = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid(), if_entry_unchanged=_prior(first))
+    assert second["conditionalPublication"] == "published"
+    assert second["entrySha256"] == hashlib.sha256(b"<h1>Captured</h1>").hexdigest()
+    assert (previews / second["siteId"] / "index.html").read_text() == "<h1>Captured</h1>"
+
+
+def test_a_write_after_the_capture_never_changes_the_decision_or_the_published_bytes(tmp_path, monkeypatch):
+    workspace, previews, site = _conditional_site(tmp_path, {"index.html": "<h1>Repaired</h1>"})
+    first = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+    _rewrite(site / "index.html", "<h1>Captured</h1>")
+    decide = MODULE._conditional_publication
+
+    def write_before_decision(*args):
+        _rewrite(site / "index.html", "<h1>Written before the decision</h1>")
+        return decide(*args)
+
+    monkeypatch.setattr(MODULE, "_conditional_publication", write_before_decision)
+    second = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid(), if_entry_unchanged=_prior(first))
+    assert second["conditionalPublication"] == "published"
+    assert (previews / second["siteId"] / "index.html").read_text() == "<h1>Captured</h1>"
+
+
+def test_reuse_is_decided_from_the_capture_and_creates_nothing_even_if_a_write_follows(tmp_path, monkeypatch):
+    workspace, previews, site = _conditional_site(tmp_path, {"index.html": "<h1>Repaired</h1>"})
+    first = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+    entries = _snapshot_entries(previews)
+    verify = MODULE._verified_snapshot_receipt
+
+    def write_during_verification(*args, **kwargs):
+        _rewrite(site / "index.html", "<h1>Later write</h1>")
+        return verify(*args, **kwargs)
+
+    monkeypatch.setattr(MODULE, "_verified_snapshot_receipt", write_during_verification)
+    second = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid(), if_entry_unchanged=_prior(first))
+    # Point-in-time: the capture matched; a later write is not covered.
+    assert second["conditionalPublication"] == "reused"
+    assert second["siteId"] == first["siteId"]
+    assert _snapshot_entries(previews) == entries
+
+
+def test_control_socket_refuses_a_conditional_publication_without_its_verified_prior(tmp_path):
+    workspace, previews, site = _conditional_site(tmp_path, {"index.html": "<h1>Changed</h1>"})
+    prior = {"siteId": "site-" + "f" * 24, "sha256": "f" * 64, "entrySha256": "0" * 64}
+    client, server = socket.socketpair()
+    thread = threading.Thread(target=MODULE._serve_connection, args=(server,), kwargs={
+        "workspace": workspace, "previews": previews, "owner_uid": os.getuid(), "port": 9437,
+    })
+    thread.start()
+    try:
+        client.settimeout(5)
+        client.sendall((json.dumps({"schemaVersion": 1, "action": "publish", "relativeDirectory": "demo",
+                                    "ifEntryUnchanged": prior}) + "\n").encode())
+        client.shutdown(socket.SHUT_WR)
+        result = json.loads(client.makefile("rb").readline())
+        assert result["status"] == "failed"
+        assert result["errorCode"] == "conditional_prior_unverified"
+        assert _snapshot_entries(previews) == []
+    finally:
+        thread.join(timeout=5)
+        client.close()
+        server.close()
+
+
+def test_ordinary_publication_receipt_and_behaviour_are_unchanged(tmp_path):
+    workspace, previews, site = _conditional_site(tmp_path, {"index.html": "<h1>Repaired</h1>"})
+    first = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+    assert "conditionalPublication" not in first
+    _rewrite(site / "index.html", "<h1>Changed</h1>")
+    second = MODULE.publish_snapshot(workspace, previews, "demo", os.getuid())
+    assert "conditionalPublication" not in second and second["siteId"] != first["siteId"]
