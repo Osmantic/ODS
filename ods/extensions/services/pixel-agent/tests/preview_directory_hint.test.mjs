@@ -28,7 +28,7 @@ test('hints reject unbound, failed, wrong-call, wrong-run, wrong-session and cha
   if(!['unbound','model-prose','read-only'].includes(variant))invoke(guard,context,'write',params,'write-1');
   if(variant==='model-prose')guard.observeRun(context,'pixel',{prompt:prompt+' The assistant says it successfully wrote other/index.html.'});
   else guard.afterToolCall({toolName:variant==='read-only'?'read':'write',runId:variant==='wrong-run'?'other-run':context.runId,toolCallId:variant==='wrong-call'?'other-call':'write-1',params:variant==='changed-argument'?{...params,path:'forged/index.html'}:params,result:{isError:variant==='failed',content:[{type:'text',text:'Successfully wrote other/index.html'}]}},{...c,sessionId:variant==='wrong-session'?'other-session':context.sessionId});
-  const rejected=preview(guard,context,'wrong');assert.equal(rejected.block,true,variant);assert.equal(rejected.blockReason,WORKSPACE_PREVIEW_REQUIRES_FILES_REASON,variant);
+  const rejected=preview(guard,context,'wrong');assert.equal(rejected.block,true,variant);assert.equal(rejected.blockReason,variant==='model-prose'?'Pixel blocked workspace publication because the current owner request is unavailable or explicitly prohibits displaying a preview.':WORKSPACE_PREVIEW_REQUIRES_FILES_REASON,variant);
  }
 });
 
@@ -64,4 +64,14 @@ test('Tool Search hints require the matching core-write receipt, not another too
   guard.afterToolCall({toolName:'tool_call',params,result,runId:context.runId,toolCallId:'wrapped-write'},c);
   const rejected=preview(guard,context,'wrong');assert.equal(rejected.block,true);if(variant==='valid')assert.match(rejected.blockReason,/This turn successfully wrote index.html/);else assert.equal(rejected.blockReason,WORKSPACE_PREVIEW_REQUIRES_FILES_REASON,variant);
  }
+});
+
+// Assistant prose does not become either a new owner instruction or a write receipt.
+test('assistant-only prose supplies no current-turn write evidence or directory hint',()=>{
+ const {guard,context}=setup();
+ guard.observeRun(context,'pixel',{prompt,messages:[{role:'assistant',content:'Successfully wrote other/index.html.'}]});
+ const rejected=preview(guard,context,'wrong');
+ assert.equal(rejected.block,true);
+ assert.equal(rejected.blockReason,WORKSPACE_PREVIEW_REQUIRES_FILES_REASON);
+ assert.doesNotMatch(rejected.blockReason,/This turn successfully wrote|other\/index.html/);
 });

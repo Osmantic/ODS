@@ -18,9 +18,9 @@ function event(name,params,result,wrapped,callId) {
     result:result?{details:{tool:{id,name,source:'openclaw',sourceName},result}}:undefined}
     :{toolName:name,params,result})};
 }
-function fixture(wrapped=false,options={}) {
+function fixture(wrapped=false,options={},ownerPrompt=prompt) {
   const guard=createToolLoopGuard(options);
-  guard.observeRun(context,'pixel',{prompt},{executionHost:'sandbox'});
+  guard.observeRun(context,'pixel',{prompt:ownerPrompt},{executionHost:'sandbox'});
   const call=(name,params={},id=`call-${name}`)=>guard.beforeToolCall(event(name,params,undefined,wrapped,id),context);
   const after=(name,params,result,id)=>guard.afterToolCall(event(name,params,result,wrapped,id),context);
   return {guard,call,after};
@@ -119,9 +119,9 @@ test('lane containment preserves owner cancellation and does not abort at the lo
 });
 
 for(const wrapped of [false,true]) test(`local extension failure retains a genuine workspace publication without passing the full request (wrapped=${wrapped})`,()=>{
-  const {guard,call,after}=fixture(wrapped);
-  guard.observeRun(context,'pixel',{prompt:'/extensions install https://github.com/example/project; create /workspace/report/index.html and show its preview.'},
-    {executionHost:'sandbox'});
+  // This is the owner's first request, not an unproven changed-text retry.
+  const {guard,call,after}=fixture(wrapped,{},
+    '/extensions install https://github.com/example/project; create /workspace/report/index.html and show its preview.');
   for(let i=0;i<4;i++) after('pixel_ods_extension_request_prepare',{}, {isError:true},`prepare-${i}`);
   const file={path:'report/index.html',content:'<!doctype html><title>Findings</title><p>Installation incomplete</p>'};
   assert.notEqual(call('write',file)?.block,true);
@@ -213,9 +213,9 @@ for(const wrapped of [false,true]) test(`a promise cannot reopen suspended insta
 });
 
 for(const wrapped of [false,true]) test(`stopped installation still permits the exact remaining workspace publication (wrapped=${wrapped})`,()=>{
-  const {guard,call,after}=fixture(wrapped);
-  guard.observeRun(context,'pixel',{prompt:'/extensions install https://github.com/example/project; create /workspace/report/index.html and show its preview.'},
-    {executionHost:'sandbox'});
+  // This is the owner's first request, not an unproven changed-text retry.
+  const {guard,call,after}=fixture(wrapped,{},
+    '/extensions install https://github.com/example/project; create /workspace/report/index.html and show its preview.');
   for(let i=0;i<4;i++) after('pixel_ods_extension_request_prepare',{}, {isError:true},`prepare-${i}`);
   const file={path:'report/index.html',content:'<!doctype html><title>Report</title>'};
   assert.notEqual(call('write',file)?.block,true);

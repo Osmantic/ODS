@@ -570,6 +570,26 @@ def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_
         assert module.read_bytes() == original.encode()
 
 
+@pytest.mark.parametrize('manifest_name,previous_patched,markers', [
+    ('openclaw-yield-usage.json', 'd00804f960d617b6b3e2ae6b1691f3aa9866029c8da8772f236a35a6033b37f8',
+     ('const odsOwnerInputCell = createOdsOwnerInputCell(params.runId);', 'odsOwnerInputCell.terminate();')),
+    ('openclaw-compaction-budget.json', '2382052dd075b2eae2d6fee59d5485bc5b63a988286a1595cb9e122c0fd87d12',
+     ('ownerInputProvenance: params.odsOwnerInput', 'noteQueuedInput();', 'noteCancelled();')),
+])
+def test_owner_input_seam_composes_on_the_exact_previous_public_recipe(manifest_name, previous_patched, markers):
+    # The owner-input seam extends the existing source-bound chain; it never
+    # rewrites an earlier reviewed transformation or drops its predecessor.
+    manifest = json.loads((ROOT / 'host' / manifest_name).read_text())
+    previous = manifest['previousReplacements'][previous_patched]
+    assert manifest['replacements'][:len(previous)] == previous
+    seam = manifest['replacements'][len(previous):]
+    assert seam and manifest['patchedSha256'] != previous_patched
+    for marker in markers:
+        assert sum(new.count(marker) for _, new in seam) == 1
+        assert all(marker not in old for old, _ in manifest['replacements'])
+        assert all(marker not in new for _, new in previous)
+
+
 def test_utf8_output_cli_refuses_unreviewed_decoder_bytes(installation):
     runtime = installation[0]
     module = runtime / "dist" / repair_module.UTF8_OUTPUT_MODULE

@@ -1,7 +1,7 @@
 {
   "version": "2026.6.33",
   "sourceSha256": "0c9ce1028d7716ee14b091d790ee44f1cab952119bfca3d2963b5779877ebc96",
-  "patchedSha256": "d00804f960d617b6b3e2ae6b1691f3aa9866029c8da8772f236a35a6033b37f8",
+  "patchedSha256": "58e4a7fbf0aa762d13f700dac873bf838f9e223eef39d8cad6da95c671eac6ea",
   "replacements": [
     [
       "const lastAssistantUsage = normalizeUsage(sessionLastAssistant?.usage);",
@@ -38,6 +38,38 @@
     [
       "\t\t\t} finally {\n\t\t\t\tif (params.isFinalFallbackAttempt !== false)",
       "\t\t\t} finally {\n\t\t\t\t// Flush a pending precheck failure on every terminal recovery exit,\n\t\t\t\t// including thrown errors, aborts and exhausted compaction. A real\n\t\t\t\t// later attempt end clears it before publishing its own outcome.\n\t\t\t\tconst emitPreflightFailure = deferredPreflightAgentEnd;\n\t\t\t\tdeferredPreflightAgentEnd = void 0;\n\t\t\t\temitPreflightFailure?.();\n\t\t\t\tif (params.isFinalFallbackAttempt !== false)"
+    ],
+    [
+      "function buildBeforeAgentFinalizeRetryPrompt(reason) {\n\treturn `${BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX}\\n\\n${reason}`;\n}\nfunction resolveEmbeddedRunLaneTimeoutMs(timeoutMs) {\n\tif (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return;\n\treturn Math.floor(timeoutMs) + EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS;\n",
+      "function buildBeforeAgentFinalizeRetryPrompt(reason) {\n\treturn `${BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX}\\n\\n${reason}`;\n}\n//#region ODS candidate: host-only owner-input provenance\n/**\n* ODS: one host-minted input for one outer embedded run invocation. Attempts of\n* this invocation share it; a later invocation (even with a reused runId) mints\n* a new one. Only host code below can note a queued input, an external\n* cancellation or termination. Plugins receive a frozen projection through the\n* prompt-build hook context; prompt text, tool params and messages never feed it.\n*/\nfunction createOdsOwnerInputCell(runId) {\n\tconst inputId = randomBytes(16).toString(\"hex\");\n\tlet queuedInputs = 0;\n\tlet cancelled = false;\n\tlet terminated = false;\n\tconst status = () => Object.freeze({\n\t\tinputId,\n\t\tqueuedInputs,\n\t\tcancelled,\n\t\tterminated\n\t});\n\treturn Object.freeze({\n\t\tnoteQueuedInput: () => {\n\t\t\tqueuedInputs += 1;\n\t\t},\n\t\tnoteCancelled: () => {\n\t\t\tcancelled = true;\n\t\t},\n\t\tterminate: () => {\n\t\t\tterminated = true;\n\t\t},\n\t\tproject: (attempt) => Object.freeze({\n\t\t\tschema: \"ods.owner-input.v1\",\n\t\t\trunId,\n\t\t\tsessionId: attempt.sessionId,\n\t\t\tsessionKey: attempt.sessionKey,\n\t\t\tinputId,\n\t\t\tattempt: attempt.attempt,\n\t\t\tkind: attempt.kind,\n\t\t\tretryReasons: attempt.retryReasons,\n\t\t\tstatus\n\t\t})\n\t});\n}\n/**\n* ODS: classifies one attempt from host loop state only. The first attempt that\n* submits the invocation's own prompt unchanged is its run input; every other\n* attempt is a host retry with the host reasons that produced it.\n*/\nfunction classifyOdsOwnerInputAttempt(params) {\n\tconst present = (value) => typeof value === \"string\" && value.trim().length > 0;\n\tconst retryReasons = [];\n\tif (params.override !== null && params.override !== void 0) retryReasons.push(params.overrideReason ?? \"host_override\");\n\tif (present(params.reasoningOnly)) retryReasons.push(\"reasoning_only\");\n\tif (present(params.emptyResponse)) retryReasons.push(\"empty_response\");\n\tif (present(params.compaction)) retryReasons.push(\"compaction_continuation\");\n\tif (retryReasons.length === 0 && params.ordinal > 1) retryReasons.push(\"same_input_repeat\");\n\treturn Object.freeze({\n\t\tattempt: params.ordinal,\n\t\tkind: retryReasons.length === 0 ? \"run_input\" : \"host_retry\",\n\t\tretryReasons: Object.freeze(retryReasons)\n\t});\n}\n//#endregion\nfunction resolveEmbeddedRunLaneTimeoutMs(timeoutMs) {\n\tif (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return;\n\treturn Math.floor(timeoutMs) + EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS;\n"
+    ],
+    [
+      "\t\t\tlet emptyResponseRetryInstruction = null;\n\t\t\tlet compactionContinuationRetryInstruction = null;\n\t\t\tlet nextAttemptPromptOverride = null;\n\t\t\tlet rateLimitProfileRotations = 0;\n\t\t\tlet timeoutCompactionAttempts = 0;\n\t\t\tlet codexAppServerRecoveryRetries = 0;\n",
+      "\t\t\tlet emptyResponseRetryInstruction = null;\n\t\t\tlet compactionContinuationRetryInstruction = null;\n\t\t\tlet nextAttemptPromptOverride = null;\n\t\t\tlet nextAttemptPromptOverrideReason = null;\n\t\t\tconst odsOwnerInputCell = createOdsOwnerInputCell(params.runId);\n\t\t\tlet odsOwnerInputAttempts = 0;\n\t\t\tlet rateLimitProfileRotations = 0;\n\t\t\tlet timeoutCompactionAttempts = 0;\n\t\t\tlet codexAppServerRecoveryRetries = 0;\n"
+    ],
+    [
+      "\t\t\t};\n\t\t\tconst continueFromCurrentTranscript = () => {\n\t\t\t\tnextAttemptPromptOverride = MID_TURN_PRECHECK_CONTINUATION_PROMPT;\n\t\t\t\tsuppressNextUserMessagePersistence = true;\n\t\t\t};\n\t\t\tconst maybeEscalateRateLimitProfileFallback = (paramsLocal) => {\n",
+      "\t\t\t};\n\t\t\tconst continueFromCurrentTranscript = () => {\n\t\t\t\tnextAttemptPromptOverride = MID_TURN_PRECHECK_CONTINUATION_PROMPT;\n\t\t\t\tnextAttemptPromptOverrideReason = \"midturn_continuation\";\n\t\t\t\tsuppressNextUserMessagePersistence = true;\n\t\t\t};\n\t\t\tconst maybeEscalateRateLimitProfileFallback = (paramsLocal) => {\n"
+    ],
+    [
+      "\t\t\t\t\tattemptedThinking.add(thinkLevel);\n\t\t\t\t\tawait fs.mkdir(resolvedWorkspace, { recursive: true });\n\t\t\t\t\tif (!startupStagesEmitted) startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.workspace);\n\t\t\t\t\tconst basePrompt = nextAttemptPromptOverride ?? (provider === \"anthropic\" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt);\n\t\t\t\t\tnextAttemptPromptOverride = null;\n\t\t\t\t\tconst promptAdditions = [\n\t\t\t\t\t\treasoningOnlyRetryInstruction,\n\t\t\t\t\t\temptyResponseRetryInstruction,\n",
+      "\t\t\t\t\tattemptedThinking.add(thinkLevel);\n\t\t\t\t\tawait fs.mkdir(resolvedWorkspace, { recursive: true });\n\t\t\t\t\tif (!startupStagesEmitted) startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.workspace);\n\t\t\t\t\tconst odsOwnerInputAttempt = classifyOdsOwnerInputAttempt({\n\t\t\t\t\t\tordinal: odsOwnerInputAttempts += 1,\n\t\t\t\t\t\toverride: nextAttemptPromptOverride,\n\t\t\t\t\t\toverrideReason: nextAttemptPromptOverrideReason,\n\t\t\t\t\t\treasoningOnly: reasoningOnlyRetryInstruction,\n\t\t\t\t\t\temptyResponse: emptyResponseRetryInstruction,\n\t\t\t\t\t\tcompaction: compactionContinuationRetryInstruction\n\t\t\t\t\t});\n\t\t\t\t\tconst basePrompt = nextAttemptPromptOverride ?? (provider === \"anthropic\" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt);\n\t\t\t\t\tnextAttemptPromptOverride = null;\n\t\t\t\t\tnextAttemptPromptOverrideReason = null;\n\t\t\t\t\tconst promptAdditions = [\n\t\t\t\t\t\treasoningOnlyRetryInstruction,\n\t\t\t\t\t\temptyResponseRetryInstruction,\n"
+    ],
+    [
+      "\t\t\t\t\t\tcontextWindowInfo: ctxInfo,\n\t\t\t\t\t\tskillsSnapshot: params.skillsSnapshot,\n\t\t\t\t\t\tprompt,\n\t\t\t\t\t\ttranscriptPrompt: params.transcriptPrompt,\n\t\t\t\t\t\tuserTurnTranscriptRecorder: params.userTurnTranscriptRecorder,\n\t\t\t\t\t\tcurrentInboundEventKind: params.currentInboundEventKind,\n",
+      "\t\t\t\t\t\tcontextWindowInfo: ctxInfo,\n\t\t\t\t\t\tskillsSnapshot: params.skillsSnapshot,\n\t\t\t\t\t\tprompt,\n\t\t\t\t\t\todsOwnerInput: {\n\t\t\t\t\t\t\tcell: odsOwnerInputCell,\n\t\t\t\t\t\t\tattempt: odsOwnerInputAttempt\n\t\t\t\t\t\t},\n\t\t\t\t\t\ttranscriptPrompt: params.transcriptPrompt,\n\t\t\t\t\t\tuserTurnTranscriptRecorder: params.userTurnTranscriptRecorder,\n\t\t\t\t\t\tcurrentInboundEventKind: params.currentInboundEventKind,\n"
+    ],
+    [
+      "\t\t\t\t\t\t\t\tif (preflightRecovery?.source === \"mid-turn\") continueFromCurrentTranscript();\n\t\t\t\t\t\t\t\telse if (params.currentMessageId !== void 0 && params.currentMessageId === lastPersistedCurrentMessageId) {\n\t\t\t\t\t\t\t\t\tnextAttemptPromptOverride = MID_TURN_PRECHECK_CONTINUATION_PROMPT;\n\t\t\t\t\t\t\t\t\tsuppressNextUserMessagePersistence = true;\n\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\tcontinue;\n",
+      "\t\t\t\t\t\t\t\tif (preflightRecovery?.source === \"mid-turn\") continueFromCurrentTranscript();\n\t\t\t\t\t\t\t\telse if (params.currentMessageId !== void 0 && params.currentMessageId === lastPersistedCurrentMessageId) {\n\t\t\t\t\t\t\t\t\tnextAttemptPromptOverride = MID_TURN_PRECHECK_CONTINUATION_PROMPT;\n\t\t\t\t\t\t\t\t\tnextAttemptPromptOverrideReason = \"midturn_continuation\";\n\t\t\t\t\t\t\t\t\tsuppressNextUserMessagePersistence = true;\n\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\tcontinue;\n"
+    ],
+    [
+      "\t\t\t\t\tif (beforeAgentFinalizeRevisionReason && shouldHonorBeforeAgentFinalizeRevision) {\n\t\t\t\t\t\tbeforeAgentFinalizeRevisionAttempts += 1;\n\t\t\t\t\t\tnextAttemptPromptOverride = buildBeforeAgentFinalizeRetryPrompt(beforeAgentFinalizeRevisionReason);\n\t\t\t\t\t\tsuppressNextUserMessagePersistence = true;\n\t\t\t\t\t\treasoningOnlyRetryInstruction = null;\n\t\t\t\t\t\temptyResponseRetryInstruction = null;\n",
+      "\t\t\t\t\tif (beforeAgentFinalizeRevisionReason && shouldHonorBeforeAgentFinalizeRevision) {\n\t\t\t\t\t\tbeforeAgentFinalizeRevisionAttempts += 1;\n\t\t\t\t\t\tnextAttemptPromptOverride = buildBeforeAgentFinalizeRetryPrompt(beforeAgentFinalizeRevisionReason);\n\t\t\t\t\t\tnextAttemptPromptOverrideReason = \"finalize_revision\";\n\t\t\t\t\t\tsuppressNextUserMessagePersistence = true;\n\t\t\t\t\t\treasoningOnlyRetryInstruction = null;\n\t\t\t\t\t\temptyResponseRetryInstruction = null;\n"
+    ],
+    [
+      "\t\t\t\temitPreflightFailure?.();\n\t\t\t\tif (params.isFinalFallbackAttempt !== false) await maybeEmitFastModeAutoResetBestEffort();\n\t\t\t\tforgetPromptBuildDrainCacheForRun(params.runId);\n\t\t\t\tstopRuntimeAuthRefreshTimer();\n\t\t\t\tawait runAgentCleanupStep({\n\t\t\t\t\trunId: params.runId,\n",
+      "\t\t\t\temitPreflightFailure?.();\n\t\t\t\tif (params.isFinalFallbackAttempt !== false) await maybeEmitFastModeAutoResetBestEffort();\n\t\t\t\tforgetPromptBuildDrainCacheForRun(params.runId);\n\t\t\t\todsOwnerInputCell.terminate();\n\t\t\t\tstopRuntimeAuthRefreshTimer();\n\t\t\t\tawait runAgentCleanupStep({\n\t\t\t\t\trunId: params.runId,\n"
     ]
   ],
   "previousReplacements": {
@@ -65,6 +97,44 @@
       [
         "import { n as derivePromptTokens, o as normalizeUsage } from \"./usage-C67Kbb7n.js\";",
         "import { i as hasNonzeroUsage, n as derivePromptTokens, o as normalizeUsage } from \"./usage-C67Kbb7n.js\";"
+      ]
+    ],
+    "d00804f960d617b6b3e2ae6b1691f3aa9866029c8da8772f236a35a6033b37f8": [
+      [
+        "const lastAssistantUsage = normalizeUsage(sessionLastAssistant?.usage);",
+        "// A yield has no visible final assistant; its attempt-bound native model\n\t\t\t\t\t// message excludes projected nested tool calls and historical turns.\n\t\t\t\t\tconst yieldAssistant = attempt.yieldDetected ? currentAttemptAssistant : void 0;\n\t\t\t\t\tconst yieldUsage = normalizeUsage(yieldAssistant?.usage);\n\t\t\t\t\tconst lastAssistantUsage = attempt.yieldDetected ? hasNonzeroUsage(yieldUsage) ? yieldUsage : void 0 : normalizeUsage(sessionLastAssistant?.usage);"
+      ],
+      [
+        "lastRunPromptUsage = lastAssistantUsage ?? attemptUsage;",
+        "lastRunPromptUsage = lastAssistantUsage ?? (attempt.yieldDetected ? void 0 : attemptUsage);"
+      ],
+      [
+        "lastTurnTotal = lastAssistantUsage?.total ?? attemptUsage?.total;",
+        "lastTurnTotal = lastAssistantUsage?.total ?? (attempt.yieldDetected ? void 0 : attemptUsage?.total);"
+      ],
+      [
+        "lastAssistantUsage: sessionLastAssistant?.usage,",
+        "lastAssistantUsage: attempt.yieldDetected ? lastAssistantUsage : sessionLastAssistant?.usage,"
+      ],
+      [
+        "\t\t\t\t\tconst reportedModelRef = resolveReportedModelRef({",
+        "\t\t\t\t\t// A yielded turn without measured context must not fabricate one from billing.\n\t\t\t\t\tif (attempt.yieldDetected) usageMeta.lastCallUsage = lastAssistantUsage;\n\t\t\t\t\tconst reportedModelRef = resolveReportedModelRef({"
+      ],
+      [
+        "import { n as derivePromptTokens, o as normalizeUsage } from \"./usage-C67Kbb7n.js\";",
+        "import { i as hasNonzeroUsage, n as derivePromptTokens, o as normalizeUsage } from \"./usage-C67Kbb7n.js\";"
+      ],
+      [
+        "\t\t\ttry {\n\t\t\t\tconst resolveActiveHookContext",
+        "\t\t\tlet deferredPreflightAgentEnd;\n\t\t\ttry {\n\t\t\t\tconst resolveActiveHookContext"
+      ],
+      [
+        "\t\t\t\t\tconst rawAttempt = await runEmbeddedAttemptWithBackend({",
+        "\t\t\t\t\tconst rawAttempt = await runEmbeddedAttemptWithBackend({\n\t\t\t\t\t\tdeferPreflightAgentEnd: (emit) => { deferredPreflightAgentEnd = emit; },"
+      ],
+      [
+        "\t\t\t} finally {\n\t\t\t\tif (params.isFinalFallbackAttempt !== false)",
+        "\t\t\t} finally {\n\t\t\t\t// Flush a pending precheck failure on every terminal recovery exit,\n\t\t\t\t// including thrown errors, aborts and exhausted compaction. A real\n\t\t\t\t// later attempt end clears it before publishing its own outcome.\n\t\t\t\tconst emitPreflightFailure = deferredPreflightAgentEnd;\n\t\t\t\tdeferredPreflightAgentEnd = void 0;\n\t\t\t\temitPreflightFailure?.();\n\t\t\t\tif (params.isFinalFallbackAttempt !== false)"
       ]
     ]
   }

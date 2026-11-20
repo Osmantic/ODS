@@ -17,11 +17,18 @@ const promise = "Now I'll copy the file to the new folder and then make the repa
 const sourcePublish = /Call tool_call now with id pixel_ods_workspace_preview and args \{"relativeDirectory":"source-demo"\}/;
 
 function replay(prompt, {reads = ['source-demo/index.html'], write, edit, editFailed = false, readFailed = false, nativeRevision = false,
-  revisionWrite, revisionEdit, revisionEnding, probePreview = false, ending = promise} = {}) {
+  revisionWrite, revisionEdit, revisionEnding, probePreview = false, retryProvenance = true, ending = promise} = {}) {
   const guard = createToolLoopGuard();
   const context = {agentId:'pixel', trigger:'user', runId:'copy-order-run', sessionId:'copy-order-session',
     sessionKey:'agent:pixel:openai-user:ods-' + 'a'.repeat(64)};
-  guard.observeRun(context, 'pixel', {prompt}, {executionHost:'sandbox', workspaceRoot:'/home/owner/.openclaw/workspace-pixel'});
+  // Native revisions are host retries of this input, not new owner messages.
+  let attempt=0;
+  const status=()=>Object.freeze({inputId:'a'.repeat(32),queuedInputs:0,cancelled:false,terminated:false});
+  const promptContext=(kind)=>nativeRevision && retryProvenance
+    ? {...context,ownerInputProvenance:Object.freeze({schema:'ods.owner-input.v1',runId:context.runId,
+      sessionId:context.sessionId,sessionKey:context.sessionKey,inputId:'a'.repeat(32),attempt:++attempt,kind,
+      retryReasons:Object.freeze(kind==='run_input'?[]:['finalize_revision']),status})} : context;
+  guard.observeRun(promptContext('run_input'), 'pixel', {prompt}, {executionHost:'sandbox', workspaceRoot:'/home/owner/.openclaw/workspace-pixel'});
   const calls = [];
   function observe(toolName, path, failed = false) {
     const toolCallId = 'fixture-' + calls.length;
@@ -49,7 +56,7 @@ function replay(prompt, {reads = ['source-demo/index.html'], write, edit, editFa
   const revision = 'Before accepting the previous final answer, apply this revision request and produce the revised final answer. ' +
     'Do not repeat completed work or rerun tools unless the request explicitly requires it.\n\n' +
     firstDecision.reason + '\n\n' + firstDecision.retry.instruction;
-  guard.observeRun(context, 'pixel', {prompt:revision,messages:[{role:'user',content:[{type:'text',text:prompt}]}]},
+  guard.observeRun(promptContext('host_retry'), 'pixel', {prompt:revision,messages:[{role:'user',content:[{type:'text',text:prompt}]}]},
     {executionHost:'sandbox',workspaceRoot:'/home/owner/.openclaw/workspace-pixel'});
   if (revisionWrite) observe('write', revisionWrite);
   if (revisionEdit) observe('edit', revisionEdit);
@@ -349,4 +356,12 @@ test('owner cancellation and another run receive no publication coaching', async
   assert.doesNotMatch(other?.retry?.instruction ?? '', /pixel_ods_workspace_preview/);
   await guard.abortUserRun('ods-' + 'a'.repeat(64));
   assert.doesNotMatch(finalize()?.retry?.instruction ?? '', /pixel_ods_workspace_preview/);
+});
+
+// Keep the old unmarked changed-text form as a refusal companion.
+test('an unproven native revision cannot regain publication coaching or admission',()=>{
+ const {decision,previewAdmission}=replay(owner,{nativeRevision:true,retryProvenance:false,
+   revisionWrite:'service-copy/index.html',revisionEnding:ready,probePreview:true});
+ assert.equal(previewAdmission?.block,true);
+ assert.doesNotMatch(decision?.retry?.instruction??'',/Call tool_call now.*pixel_ods_workspace_preview/);
 });

@@ -1304,13 +1304,21 @@ test('verification after gateway restart requires fresh publication and browser 
   const {preview}=setup({prompt:'Build a packing checklist website in site and show me a working preview.'});
   const guard=createToolLoopGuard({workspacePreviewInspectionAvailable:true});
   const next={...context,runId:'after-restart'};
-  guard.observeRun(next,'pixel',{prompt:verifyFollowup,messages:[
+  // Reconciled: the changed prompt below comes from beforeAgentFinalize,
+  // not from a new owner. Carry the same test host input through that retry.
+  const inputId=createHash('sha256').update('restart-finalize-test-input').digest('hex').slice(0,32);
+  const status=()=>Object.freeze({inputId,queuedInputs:0,cancelled:false,terminated:false});
+  const hostContext=(kind,attempt)=>({...next,ownerInputProvenance:Object.freeze({
+    schema:'ods.owner-input.v1',runId:next.runId,sessionId:next.sessionId,sessionKey:next.sessionKey,
+    inputId,attempt,kind,retryReasons:Object.freeze(kind==='run_input'?[]:['finalize_revision']),status
+  })});
+  guard.observeRun(hostContext('run_input',1),'pixel',{prompt:verifyFollowup,messages:[
     {role:'assistant',content:'The previous preview passed all six checks.'}
   ]});
   assert.equal(guard.verificationForRun(next.runId).status,'failed','prior prose cannot satisfy a new verification request');
   const retry=guard.beforeAgentFinalize({},next)?.retry;
   assert.ok(retry,'no-tool answer must request fresh work');
-  guard.observeRun(next,'pixel',{prompt:retry.instruction});
+  guard.observeRun(hostContext('host_retry',2),'pixel',{prompt:retry.instruction});
   call(guard,'read',{path:preview.relativeDirectory+'/index.html'},'read-current',{content:[{type:'text',text:'<!doctype html><button>Show details</button><p hidden>Details</p>'}]},next);
   call(guard,'pixel_ods_workspace_preview',{relativeDirectory:preview.relativeDirectory},'fresh-publish',{details:preview},next);
   assert.equal(guard.verificationForRun(next.runId).status,'failed','HTTP readback alone is insufficient after restart');
@@ -1553,4 +1561,24 @@ test('ordinary pending-inspection guidance cannot replace failed final file equa
  assert.equal(await f.guard.revalidateWorkspacePreview({},context),false);
  assert.equal(f.comparisons(),1);
  assert.notEqual(f.guard.verificationForRun('run').status,'passed');
+});
+
+// The historical unmarked changed-text form is retained as a refusal case.
+test('verification after restart cannot publish after an unproven finalize retry',()=>{
+  const {preview}=setup({prompt:'Build a packing checklist website in site and show me a working preview.'});
+  const guard=createToolLoopGuard({workspacePreviewInspectionAvailable:true});
+  const next={...context,runId:'after-restart-without-provenance'};
+  guard.observeRun(next,'pixel',{prompt:verifyFollowup});
+  const retry=guard.beforeAgentFinalize({},next)?.retry;
+  assert.ok(retry);
+  guard.observeRun(next,'pixel',{prompt:retry.instruction});
+  call(guard,'read',{path:preview.relativeDirectory+'/index.html'},'read-current-unproven',
+    {content:[{type:'text',text:'<!doctype html><button>Show details</button>'}]},next);
+  const prepared=guard.beforeToolCall({toolName:'pixel_ods_workspace_preview',
+    params:{relativeDirectory:preview.relativeDirectory},toolCallId:'blocked-unproven'},
+    {...next,toolName:'pixel_ods_workspace_preview',toolCallId:'blocked-unproven'});
+  assert.equal(prepared?.block,true);
+  assert.match(prepared.blockReason,/owner request is unavailable|prohibits displaying a preview/);
+  // Withdrawn publication is no longer an active preview-verification task.
+  assert.equal(guard.verificationForRun(next.runId).status,'none');
 });

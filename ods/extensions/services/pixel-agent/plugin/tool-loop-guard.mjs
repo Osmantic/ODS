@@ -8718,6 +8718,102 @@ export function createToolLoopGuard({
   // The exception is owned by one original request and complete run/session
   // identity. It narrows publication to the named copy, never the original,
   // an enclosing directory, or a model-supplied source-review root.
+  // Owner-input provenance. The pinned runtime supplies a frozen projection of
+  // one host-minted outer-run input on the prompt-build context only (tool hook
+  // contexts are rebuilt from a fixed field list). Prompt text, tool params,
+  // messages and model output are never read for it. A projection that fails
+  // any check is treated as absent, and absence never grants or widens.
+  // Closed, versioned shapes: an unknown property refuses the whole projection.
+  const OWNER_INPUT_KEYS = 'attempt,inputId,kind,retryReasons,runId,schema,sessionId,sessionKey,status';
+  const OWNER_INPUT_STATUS_KEYS = 'cancelled,inputId,queuedInputs,terminated';
+  const OWNER_INPUT_RETRY_REASONS = new Set(['midturn_continuation', 'finalize_revision', 'host_override',
+    'reasoning_only', 'empty_response', 'compaction_continuation', 'same_input_repeat']);
+  function hostOwnerInputStatus(input) {
+    let status;
+    try { status = input.status(); } catch { return undefined; }
+    return status && typeof status === 'object' && Object.isFrozen(status) &&
+      Reflect.ownKeys(status).map(String).sort().join(',') === OWNER_INPUT_STATUS_KEYS && status.inputId === input.inputId &&
+      Number.isSafeInteger(status.queuedInputs) && status.queuedInputs >= 0 &&
+      typeof status.cancelled === 'boolean' && typeof status.terminated === 'boolean' ? status : undefined;
+  }
+  function hostOwnerInput(context) {
+    const input = context?.ownerInputProvenance;
+    if (!input || typeof input !== 'object' || !Object.isFrozen(input) || input.schema !== 'ods.owner-input.v1' ||
+        Reflect.ownKeys(input).map(String).sort().join(',') !== OWNER_INPUT_KEYS ||
+        typeof input.runId !== 'string' || !input.runId || input.runId !== context.runId ||
+        input.sessionId !== context.sessionId || input.sessionKey !== context.sessionKey ||
+        typeof input.inputId !== 'string' || !/^[0-9a-f]{32}$/.test(input.inputId) ||
+        !Number.isSafeInteger(input.attempt) || input.attempt < 1 || typeof input.status !== 'function' ||
+        !Array.isArray(input.retryReasons) || !Object.isFrozen(input.retryReasons)) return undefined;
+    const reasons = input.retryReasons;
+    // A dense list of own indexed entries, no extra properties, bounded by the
+    // closed reason set (array iteration helpers skip holes).
+    if (reasons.length > OWNER_INPUT_RETRY_REASONS.size || Reflect.ownKeys(reasons).length !== reasons.length + 1 ||
+        !Array.from({length: reasons.length}, (_, index) => Object.hasOwn(reasons, index)).every(Boolean)) return undefined;
+    if (input.kind === 'run_input' ? input.attempt !== 1 || reasons.length !== 0
+      : input.kind !== 'host_retry' || reasons.length === 0 ||
+        reasons.some(reason => !OWNER_INPUT_RETRY_REASONS.has(reason))) return undefined;
+    return hostOwnerInputStatus(input) ? input : undefined;
+  }
+  // Withdrawn publication authority is sticky for the current owner input:
+  // a later automatic retry never revives it.
+  function supersedeOwnerInput(state, reason) {
+    state.ownerInputSuperseded ??= reason;
+    state.workspacePreviewForbidden = true;
+  }
+  function bindOwnerInput(state, input) {
+    state.ownerInputHost = Object.freeze({input, queuedInputs: hostOwnerInputStatus(input).queuedInputs});
+  }
+  // A queued input or an external cancellation withdraws the bound owner
+  // input; a terminated invocation can no longer publish under it.
+  function ownerInputWithdrawn(state) {
+    if (!state) return false;
+    const bound = state.ownerInputHost;
+    if (bound) {
+      const status = hostOwnerInputStatus(bound.input);
+      if (!status) supersedeOwnerInput(state, 'host_status_unavailable');
+      else if (status.cancelled) supersedeOwnerInput(state, 'host_cancelled');
+      else if (status.queuedInputs !== bound.queuedInputs) supersedeOwnerInput(state, 'queued_input');
+      else if (status.terminated && !state.ownerInputSuperseded) return true;
+    }
+    return Boolean(state.ownerInputSuperseded);
+  }
+  // The run-wide sticky stops admission already enforces for every tool. An
+  // admitted publication honours them again at execution, in every lane, so a
+  // late owner cancellation never depends on a separate host mirror.
+  function pendingPublicationStopped(state) {
+    return Boolean(state?.clientCancelled || state?.odsAborted || state?.recursiveDeleteDenied ||
+      state?.progressBudget?.exhausted);
+  }
+  // A run whose owner request carries complete identity publishes only under
+  // that identity: a conflicting observation or call identity refuses.
+  function ownerIdentityConflict(state, context = undefined) {
+    const source = state?.ownerRequestSource;
+    if (!source?.sessionId || !source.sessionKey) return false;
+    return Boolean(state.artifactIdentityConflict) ||
+      (context !== undefined && ((typeof context?.sessionId === 'string' && context.sessionId && context.sessionId !== source.sessionId) ||
+        (typeof context?.sessionKey === 'string' && context.sessionKey && context.sessionKey !== source.sessionKey)));
+  }
+  // How one prompt build relates to the run's recorded owner input.
+  function ownerInputRelation(ownerSource, sameOwnerSession, hostInput, promptText, firstPromptBuild, sessionId, sessionKey) {
+    if (!ownerSource) return firstPromptBuild ? (hostInput?.kind === 'host_retry' ? 'unbound_retry' : 'first') : 'none';
+    if (!sameOwnerSession) {
+      const conflicting = Boolean(ownerSource.sessionId && ownerSource.sessionKey) &&
+        ((typeof sessionId === 'string' && sessionId && sessionId !== ownerSource.sessionId) ||
+         (typeof sessionKey === 'string' && sessionKey && sessionKey !== ownerSource.sessionKey));
+      if (conflicting) return 'foreign';
+      return promptText && promptText !== ownerSource.text ? 'ambiguous' : 'skip';
+    }
+    if (!promptText) return 'skip';
+    if (hostInput && ownerSource.inputId) {
+      if (hostInput.inputId === ownerSource.inputId) {
+        return hostInput.kind === 'host_retry' || promptText === ownerSource.text ? 'retry' : 'ambiguous';
+      }
+      if (hostInput.kind === 'run_input') return promptText === ownerSource.text ? 'rebound_repeat' : 'new_input';
+    }
+    return promptText === ownerSource.text ? 'retry' : 'ambiguous';
+  }
+
   function copyPublicationCurrent(state, runId) {
     const origin = state.workspaceCopyPublicationBinding, identity = state.artifactOwnerContext;
     return origin && !state.clientCancelled && !state.artifactIdentityConflict &&
@@ -8735,6 +8831,10 @@ export function createToolLoopGuard({
         other.workspaceRepublicationCondition.relativeDirectory === params?.relativeDirectory) ? REFUSE_PUBLICATION : undefined;
     }
     if (!state || bound.some(([, run]) => run.runId !== runId)) return REFUSE_PUBLICATION;
+    if (pendingPublicationStopped(state) || ownerInputWithdrawn(state) || ownerIdentityConflict(state) ||
+        bound.some(([, run]) => (run.ownerInputGeneration ?? 0) !== (state.ownerInputGeneration ?? 0))) {
+      return REFUSE_PUBLICATION;
+    }
     const copied = state.workspaceCopyPublicationPolicy;
     if (copied && (!copyPublicationCurrent(state, runId) ||
         params?.relativeDirectory !== copied.relativeDirectory || Object.keys(params ?? {}).join(',') !== 'relativeDirectory' ||
@@ -8871,6 +8971,7 @@ export function createToolLoopGuard({
     }
     pendingToolRuns.set(toolCallId, {
       runId,
+      ownerInputGeneration: state?.ownerInputGeneration ?? 0,
       // The model round of the call (stoppedExcerptShare).
       round: state?.operationsPromptRound,
       selectedToolName,
@@ -10136,7 +10237,7 @@ export function createToolLoopGuard({
         return {block:true, blockReason:
           'The owner requested a downloadable document. Do not call pixel_ods_workspace_preview for documents. Call tool_call with id pixel_ods_workspace_artifact and args {"relativePath":"<exact existing workspace-relative document path>"} instead.'};
       }
-      if (!state?.ownerIntentObserved || state.workspacePreviewForbidden) {
+      if (ownerInputWithdrawn(state) || !state?.ownerIntentObserved || state.workspacePreviewForbidden) {
         return {
           block: true,
           blockReason:
@@ -10223,6 +10324,12 @@ export function createToolLoopGuard({
           return { block: true, blockReason: `Read ${directory}/index.html before publishing that exact directory. Preserve existing files; a different directory's readback cannot verify this target.` };
         }
         return { block: true, blockReason: workspacePreviewMissingEntryReason(state, directory) };
+      }
+      // After every existing refusal: a call under another identity than the
+      // run's complete owner identity never reaches publication.
+      if (ownerIdentityConflict(state, context)) {
+        return {block: true, blockReason:
+          "Pixel blocked workspace publication because the current owner request is unavailable or explicitly prohibits displaying a preview."};
       }
       state.workspacePreviewDirectory = directory;
       const publicationArgs = {relativeDirectory:directory};
@@ -11777,13 +11884,77 @@ export function createToolLoopGuard({
       }
       // The first attempt carries the owner's message; a later attempt of the
       // same run carries a harness retry prompt instead.
-      if (ownerIntent) state.ownerRequestText ??= ownerIntent;
+      // Workspace, preview, mutation and path obligations stay those of that
+      // first owner message (a compaction continuation, overflow retry or
+      // finalize revision is not an owner request). They are derived again
+      // from it only in the session identity it was fully made in. Any later
+      // attempt without that complete, identical identity (an identity the
+      // first hook lacked, or another session) keeps the obligations already
+      // derived: it neither receives the request nor replaces them, and a
+      // later harness prompt never becomes the owner source.
+      const ownerSource = state.ownerRequestSource;
+      const firstPromptBuild = freshPromptBuild && !state.ownerPromptBuildSeen;
+      if (freshPromptBuild) state.ownerPromptBuildSeen = true;
+      const sameOwnerSession = Boolean(ownerSource?.sessionId && ownerSource.sessionKey) &&
+        ownerSource.sessionId === sessionId && ownerSource.sessionKey === context.sessionKey;
+      // Only a fresh prompt build is an input event. A retry keeps the owner's
+      // words only with host proof or identical text; changed text without
+      // that proof, a foreign identity or a retry of an unrecorded input fails
+      // closed for publication. A host-proven new run input is a new request.
+      const hostInput = freshPromptBuild ? hostOwnerInput(context) : undefined;
+      const promptText = currentUserText(event?.messages, event?.prompt);
+      const inputRelation = freshPromptBuild ? ownerInputRelation(ownerSource, sameOwnerSession, hostInput, promptText,
+        firstPromptBuild, sessionId, context.sessionKey) : 'replay';
+      if (inputRelation === 'foreign' || inputRelation === 'unbound_retry') {
+        supersedeOwnerInput(state, inputRelation === 'foreign' ? 'foreign_identity' : 'unbound_retry');
+      }
+      // Changed words without host retry proof are ambiguous, including in
+      // compatibility mode. They retain no pending publication permission.
+      // This does not classify wording as an owner instruction or as a retry:
+      // a host-proven retry is the only changed-text continuation that retains
+      // publication authority. The identical-text legacy case is unchanged.
+      if (inputRelation === 'ambiguous') {
+        supersedeOwnerInput(state, 'unproven_changed_restriction');
+      }
+      if (inputRelation === 'rebound_repeat' || inputRelation === 'new_input') {
+        // Withdrawal of the previous invocation's input carries over to an
+        // identical repeat; calls admitted under it never execute later.
+        if (inputRelation === 'rebound_repeat') ownerInputWithdrawn(state);
+        else state.ownerInputSuperseded = undefined;
+        state.ownerInputGeneration = (state.ownerInputGeneration ?? 0) + 1;
+        bindOwnerInput(state, hostInput);
+        if (inputRelation === 'new_input') {
+          state.ownerRequestText = ownerIntent || undefined;
+          state.workspaceCopyPublicationPolicy = undefined;
+          state.workspaceCopyPublicationBinding = undefined;
+        }
+        state.ownerRequestSource = Object.freeze({text: inputRelation === 'new_input' ? promptText : ownerSource.text,
+          sessionId: ownerSource.sessionId, sessionKey: ownerSource.sessionKey, inputId: hostInput.inputId});
+      }
+      if (inputRelation === 'retry' && state.ownerInputHost) ownerInputWithdrawn(state);
+      const obligationEvent = inputRelation === 'new_input' ? event
+        : inputRelation === 'foreign' || inputRelation === 'unbound_retry' ? undefined
+        : ownerSource ? (sameOwnerSession ? {prompt: ownerSource.text, messages: []} : undefined)
+        : firstPromptBuild ? event : undefined;
+      if (ownerIntent && inputRelation !== 'unbound_retry') state.ownerRequestText ??= ownerIntent;
+      if (ownerIntent && !ownerSource && firstPromptBuild && inputRelation !== 'unbound_retry') {
+        state.ownerRequestSource = Object.freeze({text: currentUserText(event?.messages, event?.prompt),
+          sessionId: typeof sessionId === "string" && sessionId ? sessionId : null,
+          sessionKey: typeof context.sessionKey === "string" && context.sessionKey ? context.sessionKey : null,
+          ...(hostInput?.kind === 'run_input' ? {inputId: hostInput.inputId} : {})});
+        if (hostInput?.kind === 'run_input') bindOwnerInput(state, hostInput);
+      }
       if (ownerWords) state.managedOwnerWords ??= ownerWords;
       takeOwnerCancellation(state, runId, context, agentId);
       takeOutputLimit(state, runId, context, agentId);
       takePendingClarification(state, runId, context, agentId, ownerIntent);
-      if (currentUserText(event?.messages, event?.prompt)) {
-        state.ownerIntentObserved = true;
+      if (currentUserText(event?.messages, event?.prompt)) state.ownerIntentObserved = true;
+      if (currentUserText(event?.messages, event?.prompt) && obligationEvent) {
+        // Owner words come only from the obligation source; this session's
+        // previews are still read on every attempt, and evidence-based flags
+        // (successful visual mutations, verification requests) stay sticky.
+        const event = obligationEvent;
+        const ownerIntent = currentOwnerIntentText(event.messages, event.prompt);
         const previousPreview = typeof sessionId === "string" && sessionId
           ? sessionPreviews.get(sessionId)
           : undefined;
@@ -11820,7 +11991,7 @@ export function createToolLoopGuard({
               sessionKey: typeof context.sessionKey === "string" && context.sessionKey ? context.sessionKey : undefined});
           }
         }
-        state.workspacePreviewForbidden = previewStance === "forbidden";
+        state.workspacePreviewForbidden = previewStance === "forbidden" || Boolean(state.ownerInputSuperseded);
         state.workspacePreviewOptional = previewStance === "optional";
         state.workspaceDocumentDeliveryRequested = userMessageRequestsWorkspaceDocumentDelivery(event?.messages, event?.prompt);
         // A failed verification in a later turn cannot erase an immutable
@@ -11986,6 +12157,8 @@ export function createToolLoopGuard({
             /\b(?:(?:run|execute)\s+(?:the\s+)?(?:unit\s*)?tests?|test\s+suite)\b/i.test(
               currentOwnerIntentText(event?.messages, event?.prompt) ?? ""
             ));
+      }
+      if (currentUserText(event?.messages, event?.prompt)) {
         state.recursiveDeleteAuthorized = userMessageAuthorizesRecursiveDelete(
           event?.messages,
           event?.prompt
