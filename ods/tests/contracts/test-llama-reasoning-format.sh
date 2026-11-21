@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# Contract: every native llama.cpp launcher pins --reasoning-format.
+# Contract: every native llama.cpp launcher applies LLAMA_REASONING.
 #
 # LLAMA_REASONING is documented in .env.schema.json as "off (default) | auto |
 # on. Off prevents thinking models from consuming the entire token budget on
 # internal reasoning." llama.cpp has its own default, so a launcher that never
-# passes --reasoning-format does not merely ignore the operator's setting -- it
-# leaves reasoning at whatever the llama.cpp build prefers, which is the
-# behaviour the default exists to prevent.
+# applies the runtime's reasoning control leaves thinking at whatever the
+# llama.cpp build prefers, which is the behaviour the default exists to prevent.
 #
 # Docker is exempt: docker-compose.base.yml passes LLAMA_ARG_REASONING into the
 # container environment. The CPU image must support that setting; b8248 did
@@ -26,8 +25,8 @@
 # --reasoning-format on older ones (b8248), plus --reasoning-budget 0 for off
 # where the binary has it, which is what disables thinking on b8248. A legacy
 # installation maps LLAMA_REASONING in native-llama-legacy.ps1
-# (Get-ODSNativeLlamaLegacyTuning), and a registered model-store profile keeps
-# --reasoning-format. The Portal task has no .env on Windows and pins off,
+# (Get-ODSNativeLlamaLegacyTuning). Registered model-store profiles use the same
+# helper against their own executable. The Portal task has no .env and pins off,
 # Docker's default. New-ODSNativeLlamaLaunchArguments passes the choice on and
 # Assert-ODSNativeLlamaOptions admits only those shapes. The host agent and
 # scripts/bootstrap-upgrade.sh relaunch the Windows runtime through
@@ -113,8 +112,9 @@ check_windows "$win_legacy" Get-ODSNativeLlamaLegacyTuning \
     "the legacy pinned launch passes --reasoning on runtimes that have it"
 check_windows "$win_legacy" New-ODSNativeLlamaLegacyLaunch 'ReasoningArguments = $tuning.ReasoningArguments' \
     "the legacy pinned launch carries the .env reasoning choice"
-check_windows "$win_legacy" New-ODSNativeLlamaLegacyLaunch "'--reasoning-format', \$reasoningFormat" \
-    "a registered model-store profile pins --reasoning-format from LLAMA_REASONING"
+check_windows "$win_legacy" New-ODSNativeLlamaLegacyLaunch \
+    'Get-ODSNativeReasoningArgs -Executable $executable -Mode $reasoning.Mode -FallbackFormat $reasoning.Format' \
+    "a registered model-store profile qualifies LLAMA_REASONING against its own runtime"
 check_windows "$win_portal" New-ODSPortalRuntimeOptions \
     "Get-ODSNativeReasoningArgs -Executable \$Runtime.ExecutablePath -Mode 'off'" \
     "the Portal task pins thinking off, as Docker's default does"
