@@ -92,6 +92,20 @@ test('never lets deferred tool truncation turn partial wheel evidence into ready
     list: [{id: 'pixel', contextLimits: {toolResultMaxChars: 7000}}]}}, 'pixel'), 7000);
 });
 
+test('the configured cap is found as OpenClaw finds an agent, and an unreadable config means the 4000 floor', () => {
+  const cap = toolResultMaxChars => ({contextLimits: {toolResultMaxChars}});
+  // OpenClaw compares agent IDs trimmed and lowercased (normalizeAgentId).
+  assert.equal(projectCapabilityOutputLimit({agents: {list: [{id: ' Pixel ', ...cap(1200)}]}}, 'pixel'), 1200);
+  assert.equal(projectCapabilityOutputLimit({agents: {list: [{id: 'pixel', ...cap(1300)}]}}, 'PIXEL'), 1300);
+  // An agent's contextLimits replace the defaults' object.
+  assert.equal(projectCapabilityOutputLimit({agents: {defaults: cap(2000), list: [{id: 'pixel'}]}}, 'pixel'), 2000);
+  assert.equal(projectCapabilityOutputLimit({agents: {defaults: cap(2000), list: [{id: 'pixel', contextLimits: {}}]}}, 'pixel'), 4000);
+  for (const config of [undefined, null, {agents: null}, {agents: {list: {pixel: cap(1200)}}}, {agents: {list: 'pixel'}},
+    {agents: {list: [null, 'pixel', 7, {id: 'pixel', ...cap('1200')}]}}, {agents: {list: [{id: 'pixel', ...cap(0)}]}}]) {
+    assert.equal(projectCapabilityOutputLimit(config, 'pixel'), 4000, JSON.stringify(config));
+  }
+});
+
 test('actual pinned Linux CPython image evidence fits the 4000-character deferred envelope with all 913 tags', async () => {
   // Captured by the real offline Docker probe on 2026-09-30; the fixture keeps
   // its exact immutable image/Python identity. It is a captured regression,

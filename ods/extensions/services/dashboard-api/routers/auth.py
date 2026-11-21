@@ -130,7 +130,8 @@ async def hermes_session(request: Request):
         raise HTTPException(status_code=503, detail="Hermes sign-in is unavailable") from exc
     if cookies is not None and not any(c.key == "hermes_session_at" and c.value for c in cookies):
         raise HTTPException(status_code=503, detail="Hermes did not issue a login session")
-    response = RedirectResponse("/", status_code=303)
+    # Land in Hermes's chat; its root opens an empty Sessions list.
+    response = RedirectResponse("/chat", status_code=303)
     response.headers["Cache-Control"] = "no-store"
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
     allowed = {"hermes_session_at", "hermes_session_rt", "hermes_session_provider"}

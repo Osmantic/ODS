@@ -25,6 +25,11 @@ const token=(value,maximum=100_000_000)=>Number.isSafeInteger(value) && value>=0
 const text=(value,max)=>typeof value==='string' && value.length>0 && value.length<=max && !/[\u0000-\u001f\u007f]/.test(value)
 const routeFingerprint=value=>typeof value==='string' && value.length===64 && /^[a-f0-9]{64}$/.test(value)
 const contextRetryDelays=[2000,5000,10000]
+// An unconfirmed last turn is checked again on a growing interval, never every
+// second. Each check asks the server to settle the chat if it proves idle.
+const historyRecheckDelays=[1000,2000,4000,8000,15000,30000,60000]
+export const CONTINUE_FAILED='Portal could not confirm this chat is free yet. Try again in a moment.'
+export const STOP_UNCONFIRMED='Portal could not confirm the stop yet. Try Stop again in a moment.'
 export function parseConversationContext(value) {
   if(!value || value.schemaVersion!==1 || !['ready','missing','busy','unavailable'].includes(value.status))return null
   const {context,compaction,history,model}=value
@@ -54,8 +59,12 @@ function requestId() {
 }
 
 /** Compaction belongs to the server session. The browser retains only its request
- * identity; neither the transcript nor an inferred model summary is replaced. */
-export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIdentity,capacity,initialRequestId,blocked,onPendingChange}) {
+ * identity; neither the transcript nor an inferred model summary is replaced.
+ * `blocked` refuses every mutation. `held` means the page is still settling its
+ * own interrupted turn: compaction and automatic checks wait for it, but the
+ * owner's explicit Continue stays usable, because that is when it is needed. */
+export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIdentity,capacity,initialRequestId,blocked:blockedMutation,held=false,onPendingChange}) {
+  const blocked=Boolean(blockedMutation || held)
   const acceptedModel=useRef(null)
   const runtime=useRef({chatId,identity:{model:'',source:'',provider:'',routeFingerprint:''},epoch:0})
   const typed=runtimeIdentity!==undefined
@@ -79,14 +88,15 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     if(!sameChat)acceptedModel.current=null
   }
   const runtimeKey=typed?`identity-${runtime.current.epoch}`:legacyRuntimeKey
-  const [view,setView]=useState({chatId,runtimeKey,context:null,observedCapacity:null,phase:initialRequestId?'checking':'idle',notice:'',historyUnknown:false,resolving:false,recoveryNotice:'',readUnavailable:false})
+  const [view,setView]=useState({chatId,runtimeKey,context:null,observedCapacity:null,phase:initialRequestId?'checking':'idle',notice:'',historyUnknown:false,historyChecking:true,historyActive:false,resolving:false,recoveryNotice:'',recoveryFailed:false,readUnavailable:false})
   const current=useRef({}),pending=useRef(initialRequestId || null),requests=useRef(new Set()),query=useRef(null),mutation=useRef(false)
-  const refreshQueued=useRef(false)
+  const refreshQueued=useRef(false),historyAttempts=useRef(0),historyPaused=useRef(false)
   const generation=useRef(0),lastQuery=useRef(0),priorRuntime=useRef(runtimeKey)
   const priorChat=useRef(chatId),lastMeasurement=useRef(null),invalidatedMeasurement=useRef(null)
   const lastManual=useRef(initialRequestId || null),observedCompaction=useRef(null)
   const contextRetries=useRef(0),priorAvailability=useRef({chatId,runtimeKey,blocked})
-  current.current={chatId,runtimeKey,runtimeIdentity:typed?runtime.current.identity:null,capacity,blocked,onPendingChange,historyUnknown:view.chatId===chatId && view.runtimeKey===runtimeKey && view.historyUnknown,
+  current.current={chatId,runtimeKey,runtimeIdentity:typed?runtime.current.identity:null,capacity,blocked,explicitBlocked:Boolean(blockedMutation),onPendingChange,historyUnknown:view.chatId===chatId && view.runtimeKey===runtimeKey && view.historyUnknown,
+    historyActive:view.chatId===chatId && view.runtimeKey===runtimeKey && view.historyActive,
     readUnavailable:view.chatId===chatId && view.runtimeKey===runtimeKey && view.readUnavailable}
   const publish=useCallback(update=>setView(previous=>({...previous,...update,chatId:current.current.chatId,runtimeKey:current.current.runtimeKey})),[])
   const persist=useCallback(id=>{current.current.onPendingChange(id,current.current.chatId);pending.current=id},[])
@@ -132,7 +142,8 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     const historyUnknown=snapshot.history.status==='unknown'
     const readUnavailable=snapshot.status==='unavailable'
     if(!readUnavailable)contextRetries.current=0
-    publish({context,phase,notice,historyUnknown,readUnavailable,observedModel:modelMatches && ['ready','missing','busy'].includes(snapshot.status)?snapshot.model || null:null,...(snapshot.model?{observedCapacity:modelMatches?snapshot.model.contextWindow:null}:{}),...(!historyUnknown?{recoveryNotice:''}:{})})
+    if(!historyUnknown)historyAttempts.current=0
+    publish({context,phase,notice,historyUnknown,readUnavailable,observedModel:modelMatches && ['ready','missing','busy'].includes(snapshot.status)?snapshot.model || null:null,...(snapshot.model?{observedCapacity:modelMatches?snapshot.model.contextWindow:null}:{}),...(!historyUnknown?{recoveryNotice:'',recoveryFailed:false,historyChecking:true,historyActive:false}:{})})
   },[persist,publish])
 
   const refresh=useCallback(async(force=false)=>{
@@ -168,6 +179,36 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     return run
   },[accept,publish])
 
+  // An unconfirmed last turn usually means a restart cut it off. The server
+  // settles the chat only when it proves nothing can still run there, and it
+  // never stops work, so this check may run without the owner. Work it finds
+  // still running is shown as such and waited for. Only a check that can tell
+  // neither asks the owner to act.
+  const settleHistory=useCallback(async()=>{
+    if(current.current.blocked || mutation.current || pending.current || !current.current.historyUnknown)return refresh(true)
+    const at=generation.current,identity=current.current.chatId,controller=new AbortController()
+    requests.current.add(controller)
+    const timer=setTimeout(()=>controller.abort(),15000)
+    let state='unknown'
+    try {
+      const response=await fetch('/api/pixel/chat/activity',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:identity}),signal:controller.signal})
+      const value=await response.json()
+      if(response.ok && value && Object.keys(value).length===1 && ['active','terminal','unknown'].includes(value.state))state=value.state
+    }catch {
+      // An unanswered check proves nothing; the owner can still continue.
+    }finally {clearTimeout(timer);requests.current.delete(controller)}
+    if(at!==generation.current)return
+    // A failed Stop or Continue is shown until the chat's state changes kind.
+    const changed=(state==='active')!==Boolean(current.current.historyActive)?{recoveryFailed:false,recoveryNotice:''}:{}
+    if(state==='active')publish({historyChecking:false,historyActive:true,...changed})
+    else if(state==='unknown')publish({historyChecking:false,historyActive:false,...changed})
+    await refresh(true)
+    // "Nothing runs" settles the history too. If an older Portal could not
+    // record that, its history stays unconfirmed, and then the owner can
+    // continue: nothing is running.
+    if(state==='terminal' && at===generation.current)setView(previous=>previous.historyUnknown?{...previous,historyChecking:false,historyActive:false}:previous)
+  },[publish,refresh])
+
   useEffect(()=>{
     generation.current+=1;requests.current.forEach(controller=>controller.abort());requests.current.clear();query.current=null;refreshQueued.current=false;mutation.current=false;lastQuery.current=0
     pending.current=initialRequestId || null
@@ -176,7 +217,8 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     else if(priorRuntime.current && priorRuntime.current!==runtimeKey)invalidatedMeasurement.current=lastMeasurement.current
     priorChat.current=chatId
     contextRetries.current=0
-    publish({context:null,observedCapacity:null,observedModel:null,phase:pending.current?'checking':'idle',notice:pending.current?'Checking compaction status…':'',historyUnknown:false,resolving:false,recoveryNotice:'',readUnavailable:false})
+    historyAttempts.current=0
+    publish({context:null,observedCapacity:null,observedModel:null,phase:pending.current?'checking':'idle',notice:pending.current?'Checking compaction status…':'',historyUnknown:false,historyChecking:true,historyActive:false,resolving:false,recoveryNotice:'',recoveryFailed:false,readUnavailable:false})
     priorRuntime.current=runtimeKey
     void refresh(true)
     return ()=>{generation.current+=1;requests.current.forEach(controller=>controller.abort());requests.current.clear();query.current=null;refreshQueued.current=false}
@@ -185,13 +227,25 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
 
   useEffect(()=>{
     if(view.chatId!==chatId || view.runtimeKey!==runtimeKey)return
-    const observingOperation=pending.current || observedCompaction.current && view.phase==='unknown' || ['running','busy'].includes(view.phase) || view.historyUnknown
-    const retryRead=!observingOperation && view.readUnavailable && contextRetries.current<contextRetryDelays.length
-    if(!observingOperation && !retryRead)return
-    const delay=retryRead?contextRetryDelays[contextRetries.current]:['unknown','unavailable'].includes(view.phase)?5000:2000
-    const timer=setTimeout(()=>{if(retryRead)contextRetries.current+=1;void refresh(true)},delay)
+    const operation=pending.current || observedCompaction.current && view.phase==='unknown' || ['running','busy'].includes(view.phase)
+    const historyOnly=!operation && view.historyUnknown
+    // While the page works or checks its own interrupted turn, it refreshes
+    // this context when it is done; resume checking promptly after that.
+    if(historyOnly && blocked){historyPaused.current=true;return}
+    if(historyPaused.current){historyPaused.current=false;historyAttempts.current=0}
+    const retryRead=!operation && !historyOnly && view.readUnavailable && contextRetries.current<contextRetryDelays.length
+    if(!operation && !historyOnly && !retryRead)return
+    // Work still running is checked at least every 15 s, so the chat frees
+    // itself soon after that work ends.
+    const delay=historyOnly?Math.min(historyRecheckDelays[Math.min(historyAttempts.current,historyRecheckDelays.length-1)],view.historyActive?15000:Infinity)
+      :retryRead?contextRetryDelays[contextRetries.current]:['unknown','unavailable'].includes(view.phase)?5000:2000
+    const timer=setTimeout(()=>{
+      if(retryRead)contextRetries.current+=1
+      if(historyOnly){historyAttempts.current+=1;void settleHistory()}
+      else void refresh(true)
+    },delay)
     return ()=>clearTimeout(timer)
-  },[view,chatId,runtimeKey,refresh])
+  },[view,chatId,runtimeKey,blocked,refresh,settleHistory])
 
   useEffect(()=>{
     const previous=priorAvailability.current
@@ -237,31 +291,40 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     }finally {clearTimeout(timer);requests.current.delete(controller);if(at===generation.current){mutation.current=false;if(requery)void refresh(true)}}
   },[accept,persist,publish,refresh])
 
-  const resolveInterrupted=useCallback(async()=>{
-    if(current.current.blocked || !current.current.historyUnknown || mutation.current || pending.current)return false
+  // Both owner actions on an unconfirmed history stop whatever runs for this
+  // chat. Continue is for a history Portal cannot tell about; Stop is for
+  // work the server reports still running. Merely loading a conversation or
+  // reading its context never cancels work, and the hold is released only
+  // after the server confirms nothing is running for this chat.
+  const releaseChat=useCallback(async stop=>{
+    if(current.current.explicitBlocked || !current.current.historyUnknown || Boolean(current.current.historyActive)!==stop || mutation.current || pending.current)return false
     generation.current+=1;requests.current.forEach(controller=>controller.abort());requests.current.clear();query.current=null;refreshQueued.current=false
     const at=generation.current,identity=current.current.chatId,controller=new AbortController()
     mutation.current=true;requests.current.add(controller)
-    publish({resolving:true,recoveryNotice:'Confirming the previous turn has stopped…'})
+    publish({resolving:true,recoveryFailed:false,recoveryNotice:stop?'Stopping…':'Making sure nothing is still running in this chat…'})
     const timer=setTimeout(()=>controller.abort(),30000)
     try {
-      // This explicit owner action resolves uncertain history. Merely loading
-      // a conversation or reading its context must never cancel work.
       const response=await fetch('/api/pixel/chat/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:identity}),signal:controller.signal})
       const result=await response.json()
       if(at!==generation.current)return false
       if(!response.ok || result?.aborted!==true)throw new Error('stop unconfirmed')
-      publish({recoveryNotice:'Stop confirmed. Checking conversation context…'})
+      publish({recoveryNotice:stop?'Stopping…':'Continuing in this chat…'})
       return true
     }catch {
-      if(at===generation.current)publish({recoveryNotice:'The stop could not be confirmed. Your conversation is preserved; check status or try again.'})
+      if(at===generation.current)publish({recoveryFailed:true,recoveryNotice:stop?STOP_UNCONFIRMED:CONTINUE_FAILED})
       return false
     }finally {
       clearTimeout(timer);requests.current.delete(controller)
       if(at===generation.current){mutation.current=false;publish({resolving:false});void refresh(true)}
     }
   },[publish,refresh])
+  // Continue stops whatever is left over, so it is never offered, nor sent,
+  // while the server reports work still running in this chat.
+  const resolveInterrupted=useCallback(()=>releaseChat(false),[releaseChat])
+  const stopHistory=useCallback(()=>releaseChat(true),[releaseChat])
 
-  const displayed=view.chatId===chatId && view.runtimeKey===runtimeKey?view:{context:null,observedCapacity:null,phase:initialRequestId?'checking':'idle',notice:'',historyUnknown:false,resolving:false,recoveryNotice:''}
-  return {...displayed,busy:displayed.resolving || ['requesting','checking','running','unknown'].includes(displayed.phase),canResolve:displayed.historyUnknown && !blocked && !pending.current && !displayed.resolving,compact,refresh,resolveInterrupted}
+  const displayed=view.chatId===chatId && view.runtimeKey===runtimeKey?view:{context:null,observedCapacity:null,phase:initialRequestId?'checking':'idle',notice:'',historyUnknown:false,historyChecking:true,historyActive:false,resolving:false,recoveryNotice:'',recoveryFailed:false}
+  const releasable=displayed.historyUnknown && !blockedMutation && !pending.current && !displayed.resolving
+  return {...displayed,busy:displayed.resolving || ['requesting','checking','running','unknown'].includes(displayed.phase),
+    canResolve:releasable && !displayed.historyActive,canStop:releasable && displayed.historyActive,compact,refresh,resolveInterrupted,stopHistory}
 }

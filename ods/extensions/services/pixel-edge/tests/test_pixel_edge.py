@@ -183,6 +183,19 @@ async def _upstream_health(_request):
     return web.json_response({"status": "ok"})
 
 
+async def _upstream_settle(request):
+    data = await request.json()
+    request.app["settle_users"].append(data.get("user"))
+    native = request.app["native_runs"].get(data.get("user"))
+    if native is not None and not native[1].done():
+        # The ingress reads its native session: a detached run is still busy.
+        return web.json_response({"state": "active"})
+    reply = request.app["settle_reply"]
+    if reply["status"] != 200:
+        return web.json_response({"error": "not found"}, status=reply["status"])
+    return web.json_response(reply["receipt"])
+
+
 async def _upstream_cancel(request):
     data = await request.json()
     request.app["cancel_users"].append(data.get("user"))
@@ -244,6 +257,8 @@ async def _start_upstream():
     app = web.Application(client_max_size=8 * 1024 * 1024 + 1)
     app["chat_requests"] = []
     app["cancel_users"] = []
+    app["settle_users"] = []
+    app["settle_reply"] = {"status": 200, "receipt": {"state": "settled"}}
     app["native_runs"] = {}
     app["stream_started"] = asyncio.Event()
     app["release_stream"] = asyncio.Event()
@@ -252,6 +267,7 @@ async def _start_upstream():
     app["preview_paths"] = []
     app.router.add_post("/v1/chat/completions", _upstream_chat)
     app.router.add_post("/v1/chat/cancel", _upstream_cancel)
+    app.router.add_post("/v1/chat/settle", _upstream_settle)
     app.router.add_get("/v1/models", _upstream_models)
     app.router.add_get("/health", _upstream_health)
     app.router.add_get("/{site_id}/{tail:.*}", _upstream_preview)
@@ -2186,6 +2202,78 @@ class TestChatActivity(BaseEdgeTest):
         async with self.client.post("http://localhost/v1/chat/cancel", headers=self.auth(), json={"user": user}) as resp:
             self.assertEqual(await resp.json(), {"aborted": False})
         self.assertEqual(await self.activity(user), {"state": "terminal"})
+
+
+class TestChatSettle(BaseEdgeTest):
+    """A restart leaves a chat unknown here; settling it never stops a run."""
+
+    async def activity(self, user):
+        async with self.client.post("http://localhost/v1/chat/activity", headers=self.auth(), json={"user": user}) as resp:
+            return await resp.json()
+
+    async def settle(self, user):
+        async with self.client.post("http://localhost/v1/chat/settle", headers=self.auth(), json={"user": user}) as resp:
+            return resp.status, resp.headers.get("Cache-Control"), await resp.json()
+
+    async def test_restart_unknown_chat_becomes_terminal_only_after_ingress_proves_idle(self):
+        # A restarted edge has no record of the turn the restart cut off.
+        self.assertEqual(await self.activity("restarted-chat"), {"state": "unknown"})
+        self.assertEqual(await self.settle("restarted-chat"), (200, "no-store", {"state": "settled"}))
+        self.assertEqual(self.up_runner.app["settle_users"], ["restarted-chat"])
+        self.assertEqual(await self.activity("restarted-chat"), {"state": "terminal"})
+        self.assertEqual(await self.activity("other-chat"), {"state": "unknown"})
+        self.assertEqual(self.up_runner.app["cancel_users"], [])
+        self.assertEqual(self.up_runner.app["chat_requests"], [])
+
+    async def test_stream_in_flight_is_active_without_asking_the_ingress(self):
+        async with self.client.post("http://localhost/v1/chat/completions", headers=self.auth(), json={
+            "model": "pixel/default", "messages": [], "stream": True,
+            "user": "live-chat", "trigger_cancel_wait": True,
+        }) as stream:
+            await asyncio.wait_for(self.up_runner.app["stream_started"].wait(), 1)
+            self.assertEqual(await self.settle("live-chat"), (200, "no-store", {"state": "active"}))
+            self.assertEqual(self.up_runner.app["settle_users"], [])
+            self.up_runner.app["release_stream"].set()
+            await stream.text()
+        self.assertEqual(self.up_runner.app["cancel_users"], [])
+
+    async def test_detached_native_run_stays_active_and_is_never_stopped(self):
+        user = "detached-settle"
+        stream = await self.client.post("http://localhost/v1/chat/completions", headers=self.auth(), json={
+            "model": "pixel/default", "messages": [], "stream": True,
+            "user": user, "trigger_detached_native": True,
+        })
+        await asyncio.wait_for(stream.content.readany(), 2)
+        stream.close()
+        async with async_timeout(2):
+            while self.edge_app[self.pe._CANCEL_EVENTS_KEY].get(user):
+                await asyncio.sleep(0.02)
+        self.assertEqual(await self.settle(user), (200, "no-store", {"state": "active"}))
+        self.assertFalse(self.up_runner.app["native_runs"][user][1].done())
+        self.assertEqual(await self.activity(user), {"state": "unknown"})
+        self.assertEqual(self.up_runner.app["cancel_users"], [])
+
+    async def test_unconfirmed_or_older_ingress_answers_leave_the_chat_unknown(self):
+        for status, receipt in ((200, {"state": "settled", "extra": True}), (200, {"state": "terminal"}),
+                                (200, {"aborted": True}), (404, None), (503, None)):
+            self.up_runner.app["settle_reply"].update(status=status, receipt=receipt)
+            code, _cache, body = await self.settle("uncertain-chat")
+            self.assertEqual(code, 502)
+            self.assertEqual(body, {"error": "Portal settle unconfirmed"})
+            self.assertEqual(await self.activity("uncertain-chat"), {"state": "unknown"})
+
+    async def test_settle_requires_exact_authenticated_bounded_request(self):
+        async with self.client.post("http://localhost/v1/chat/settle", json={"user": "safe"}) as resp:
+            self.assertEqual(resp.status, 401)
+        for raw in ('{}', '{"user":"safe","other":"secret"}', '{"user":"../escape"}',
+                    '{"user":true}', '{"user":"safe","user":"other"}', '{"user":"' + 'x' * 2048 + '"}'):
+            async with self.client.post("http://localhost/v1/chat/settle", headers={**self.auth(), "Content-Type": "application/json"}, data=raw) as resp:
+                self.assertEqual(resp.status, 400)
+        async with self.client.post("http://localhost/v1/chat/settle?user=other", headers=self.auth(), json={"user": "safe"}) as resp:
+            self.assertEqual(resp.status, 400)
+        async with self.client.post("http://localhost/v1/chat/settle", headers={**self.auth(), "Content-Type": "text/plain"}, data='{"user":"safe"}') as resp:
+            self.assertEqual(resp.status, 415)
+        self.assertEqual(self.up_runner.app["settle_users"], [])
 
 
 if __name__ == "__main__":

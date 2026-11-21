@@ -39,7 +39,8 @@ def setup(tmp_path, *, held=True, body_fault=None, bash=None):
     if body_fault == 'fd': command = 'export ODS_NATIVE_LIFECYCLE_FD=0\n' + command
     if body_fault == 'subshell': command = 'flags=$(' + command + ' --frozen-flags)\n[[ "$flags" == -f* ]]'
     if body_fault == 'action': command = command.replace('--action restart', '--action update')
-    gate = ('while [[ ! -f ' + shlex.quote(str(install / 'release-child')) + ' ]]; do sleep 0.02; done\n'
+    gate = ('umask 077\nprintf "%s\\n" "$$" > ' + shlex.quote(str(install / 'orphan-ready')) + '\n'
+        'while [[ ! -f ' + shlex.quote(str(install / 'release-child')) + ' ]]; do sleep 0.02; done\n'
         if body_fault == 'orphan' else 'sleep 0.1\n')
     cli.write_text('#!/bin/bash\nset -eu\n' + gate + command + '\nprintf "verified-body\\n"\n' + ('sleep 10\n' if body_fault == 'timeout' else ''))
     cli.chmod(0o700)
@@ -145,16 +146,21 @@ operation({},record,checkpoint)
     install = tmp_path / 'ods'
     journal = install / 'data/pixel-native/preparation' / ('ingress-refresh-' + 'a' * 32) / 'refresh.json'
     selected = None
+    child_ready = False
     try:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             try:
                 selected = json.loads(journal.read_text())
-                if selected.get('child'): break
+                # execute() journals its gated Python child before approving
+                # exec. Wait for the actual Bash PID, not just that journal.
+                if selected.get('child') and (install / 'orphan-ready').read_text().strip() == str(selected['child']['pid']):
+                    child_ready = True
+                    break
             except (OSError, ValueError): pass
             assert owner.poll() is None
             time.sleep(0.02)
-        assert selected and selected.get('child'), 'owner never recorded its actual Bash child'
+        assert child_ready, 'recorded child never entered the orphan Bash fixture'
         owner.terminate()
         owner.wait(timeout=5)
         descriptor = os.open(install / 'data/pixel-native/preparation/.selection.lock', os.O_RDWR)
@@ -176,6 +182,60 @@ operation({},record,checkpoint)
         (install / 'release-child').touch()
         if owner.poll() is None: owner.terminate()
         owner.wait(timeout=5)
+
+
+def test_owner_death_before_gate_approval_never_enters_body(tmp_path):
+    driver = '''import importlib.util,os,sys
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('fixture',sys.argv[1])
+fixture=importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
+install,descriptor,cli,record,checkpoint,operation=fixture.setup(Path(sys.argv[2]),body_fault='orphan')
+def blocked_checkpoint(value):
+    checkpoint(value)
+    if value.get('child'):
+        (install/'pre-gate-blocked').touch()
+        # Keep the owner before gate approval until the test terminates it.
+        # stdin is an open pipe held by the test; no timing delay is involved.
+        os.read(0, 1)
+operation({},record,blocked_checkpoint)
+'''
+    owner = subprocess.Popen([sys.executable, '-c', driver, str(Path(__file__)), str(tmp_path)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    install = tmp_path / 'ods'
+    journal = install / 'data/pixel-native/preparation' / ('ingress-refresh-' + 'a' * 32) / 'refresh.json'
+    try:
+        deadline = time.monotonic() + 10
+        while not (install / 'pre-gate-blocked').exists():
+            assert owner.poll() is None, 'owner exited before the controlled checkpoint'
+            assert time.monotonic() < deadline, 'owner never reached the controlled checkpoint'
+            time.sleep(0.02)
+        selected = json.loads(journal.read_text())
+        assert selected.get('child')
+        descriptor = os.open(install / 'data/pixel-native/preparation/.selection.lock', os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError): fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert not (install / 'orphan-ready').exists()
+            owner.terminate()
+            owner.wait(timeout=5)
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    assert time.monotonic() < deadline, 'unapproved child did not release its inherited lease'
+                    time.sleep(0.02)
+            # EOF at the unopened gate exits before Bash or verify_child.
+            # This is the valid empty-log path that the orphan test raced.
+            assert not (install / 'orphan-ready').exists()
+            assert Path(selected['child']['log']).read_text() == ''
+        finally:
+            os.close(descriptor)
+    finally:
+        if install.is_dir(): (install / 'release-child').touch()
+        if owner.poll() is None: owner.terminate()
+        owner.wait(timeout=5)
+        owner.stdin.close()
 
 
 def test_unconfirmed_preparation_requires_actual_previous_child_exit(tmp_path):

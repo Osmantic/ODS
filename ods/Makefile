@@ -72,6 +72,8 @@ test: ## Run unit and contract tests
 	@bash tests/test-ods-test-http-code.sh
 	@echo "=== ods-test.sh completes and reports when checks fail ==="
 	@bash tests/test-ods-test-complete-run.sh
+	@echo "=== ods-test.sh judges Tool Calling and LLM replies by their JSON ==="
+	@bash tests/test-ods-test-tool-calling.sh
 	@echo "=== phase 10 skips templated system units in the user scope ==="
 	@bash tests/test-phase10-skip-templated-user-units.sh
 	@echo "=== pre-download --tier is non-interactive ==="
@@ -183,6 +185,14 @@ test: ## Run unit and contract tests
 	@bash tests/test-validate-manifest-schema.sh
 	@echo "=== ComfyUI user directory is persisted ==="
 	@bash tests/test-comfyui-user-dir-persisted.sh
+	@echo "=== ComfyUI CUDA kernel cache is persisted ==="
+	@bash tests/test-comfyui-cuda-cache-persisted.sh
+	@bash tests/test-llama-cuda-cache-persisted.sh
+	@echo "=== vLLM engine service and its compose selection ==="
+	@bash tests/test-vllm-engine-service.sh
+	@echo "=== vLLM engine choice and installer phases ==="
+	@bash tests/test-vllm-installer-route.sh
+	@bash tests/test-vllm-installer-phases.sh
 	@echo "=== LocalAI backends directory is persisted ==="
 	@bash tests/test-localai-backends-persisted.sh
 	@echo ""

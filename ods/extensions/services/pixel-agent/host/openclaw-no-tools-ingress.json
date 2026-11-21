@@ -1,0 +1,16 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "f7b7e6d9226b06b2fb7ade362e8e521aada00e3f5bf5bf9b78f4c8231f7fc6e9",
+  "patchedSha256": "c9e8250a66745bb836972b04e5d2a62f6380d3e1fac5ba2f2ee93e345c24cc96",
+  "replacements": [
+    [
+      "\t\tclientTools: params.clientTools,\n\t\tmodel: params.modelOverride,",
+      "\t\tclientTools: params.clientTools,\n\t\tdisableTools: params.disableTools === true,\n\t\tmodel: params.modelOverride,"
+    ],
+    [
+      "\t\tclientTools: resolvedClientTools.length > 0 ? resolvedClientTools : void 0,\n\t\tmodelOverride,",
+      "\t\tclientTools: resolvedClientTools.length > 0 ? resolvedClientTools : void 0,\n\t\tdisableTools: payload.tool_choice === \"none\",\n\t\tmodelOverride,"
+    ]
+  ],
+  "previousReplacements": {}
+}

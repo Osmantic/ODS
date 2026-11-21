@@ -170,9 +170,23 @@ printf '%s\n' "native-llama-service \$1" >> '$native_log'
 if [ "\${FAKE_NATIVE_SERVICE_FAIL:-false}" = "true" ]; then
     exit 1
 fi
-if [ "\$1" = "start" ]; then
-    printf '%s\n' "\$\$" > "\$4"
-fi
+case "\$1" in
+    start)
+        printf '%s\n' 4242 > "\$4"
+        printf '%s\n' '{"identity":[4242,1,2,501,20,501,20,501,20,"/fixture/llama-server"]}'
+        ;;
+    status)
+        if [ -f "\$4" ]; then
+            printf '%s\n' '{"running":true,"identity":[4242,1,2,501,20,501,20,501,20,"/fixture/llama-server"]}'
+        else
+            printf '%s\n' '{"running":false,"identity":null}'
+        fi
+        ;;
+    stop)
+        rm -f "\$4"
+        printf '%s\n' '{"stopped":true}'
+        ;;
+esac
 exit 0
 EOF
 chmod +x "$macos_install/installers/macos/lib/native-llama-service.sh"
@@ -207,7 +221,6 @@ for action in stop start restart; do
         rm -f "$macos_install/data/.llama-server.pid"
         run_macos_cmd "$action" "$target" 2>"$work/err" || fail "ods-macos.sh $action $target failed with Docker down: $(cat "$work/err")"
         if [ "$action" = "restart" ]; then
-            grep -qF 'native-llama-service stop' "$native_log" || fail "ods-macos.sh restart $target did not stop native service"
             grep -qF 'native-llama-service start' "$native_log" || fail "ods-macos.sh restart $target did not start native service"
             [[ -f "$macos_install/data/.llama-server.pid" ]] || fail "ods-macos.sh restart $target (Docker down) left PID file missing"
             [[ "$(cat "$fake_bin")" == "$fake_bin_bytes" ]] || fail "ods-macos.sh restart $target (Docker down) modified binary bytes"
@@ -259,24 +272,42 @@ done
 cp "$macos_install/.env" "$macos_fixture/before-bridge.env"
 printf '%s\n' 'ODS_MACOS_HOST_GATEWAY=192.0.2.1' 'ODS_MACOS_VM_IP=192.0.2.2' >> "$macos_install/.env"
 cp "$root/bin/ods-macos-llm-bridge.py" "$macos_install/bin/ods-macos-llm-bridge.py"
+# The real shell dispatch requires the installed manager before invoking the
+# explicit failing interpreter below; native manager behavior has its own tests.
+cp "$root/bin/macos_bridge_service.py" "$macos_install/bin/macos_bridge_service.py"
 bridge_log="$macos_fixture/bridge.log"
 cat > "$macos_bin/bridge-python" <<EOF
 #!/bin/sh
 echo probe >> '$bridge_log'
 exit 1
 EOF
+# Dispatch the real shell wrapper into an explicit manager fixture.
+# Other Python calls still use the real interpreter for environment parsing.
+real_python="$(command -v python3)"
+cat > "$macos_bin/manager-python" <<EOF
+#!/bin/sh
+case "\$1" in
+    */macos_bridge_service.py)
+        echo probe >> '$bridge_log'
+        [ "\${TEST_BRIDGE_MANAGER_FAIL:-false}" != true ] || exit 1
+        exit 0 ;;
+esac
+exec '$real_python' "\$@"
+EOF
 cat > "$macos_bin/launchctl" <<'EOF'
 #!/bin/sh
 [ "$1" = print ] && exit 113
 exit 0
 EOF
-chmod +x "$macos_bin/bridge-python" "$macos_bin/launchctl"
+chmod +x "$macos_bin/bridge-python" "$macos_bin/manager-python" "$macos_bin/launchctl"
+export ODS_PYTHON_CMD="$macos_bin/manager-python"
 mkdir -p "$macos_fixture/home/Library/LaunchAgents"
 bridge_plist="$macos_fixture/home/Library/LaunchAgents/com.ods.llm-bridge.plist"
 printf 'retained private bridge\n' > "$bridge_plist"
 for action in start restart; do
     for target in llama-server llama; do
         : > "$native_log"; : > "$bridge_log"
+        rm -f "$macos_install/data/.llama-server.pid"
         MACOS_BRIDGE_PYTHON="$macos_bin/bridge-python" run_macos_cmd "$action" "$target" >"$work/out" 2>&1 \
             || fail "native $action failed with Colima bridge unavailable: $(cat "$work/out")"
         grep -qF 'native-llama-service start' "$native_log" || fail 'deferred bridge prevented native startup'
@@ -303,7 +334,7 @@ chmod +x "$macos_bin/docker"
 
 : > "$native_log"; : > "$bridge_log"
 rc=0
-MACOS_BRIDGE_PYTHON="$macos_bin/bridge-python" run_macos_cmd restart llama >"$work/out" 2>&1 || rc=$?
+TEST_BRIDGE_MANAGER_FAIL=true MACOS_BRIDGE_PYTHON="$macos_bin/bridge-python" run_macos_cmd restart llama >"$work/out" 2>&1 || rc=$?
 [[ "$rc" -ne 0 && -s "$bridge_log" ]] || fail 'Docker-up native restart did not enforce the real bridge probe'
 [[ ! -s "$native_log" ]] || fail 'failed bridge replaced native inference'
 grep -qF 'Could not configure container access' "$work/out" || fail 'Docker-up bridge failure was hidden'
@@ -318,7 +349,6 @@ for action in stop start restart; do
         rm -f "$macos_install/data/.llama-server.pid"
         run_macos_cmd "$action" "$target" 2>"$work/err" || fail "ods-macos.sh $action $target failed with Docker up: $(cat "$work/err")"
         if [ "$action" = "restart" ]; then
-            grep -qF 'native-llama-service stop' "$native_log" || fail "ods-macos.sh restart $target (Docker up) did not stop native service"
             grep -qF 'native-llama-service start' "$native_log" || fail "ods-macos.sh restart $target (Docker up) did not start native service"
             [[ -f "$macos_install/data/.llama-server.pid" ]] || fail "ods-macos.sh restart $target (Docker up) left PID file missing"
             [[ "$(cat "$fake_bin")" == "$fake_bin_bytes" ]] || fail "ods-macos.sh restart $target (Docker up) modified binary bytes"

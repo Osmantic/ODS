@@ -11,13 +11,14 @@ import os
 import re
 import stat
 from pathlib import Path
+from time import monotonic
 from typing import Any, Mapping
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
-from config import DATA_DIR, read_live_env_value
+from config import DATA_DIR, ODS_MODE_EFFECTIVE, normalize_ods_mode, read_live_env_value
 from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
@@ -50,6 +51,7 @@ _SAFE_PROJECTION_KEYS = {"publicModel", "gateway", "egressBaseUrl", "consumerRou
 _SSH_SUPERVISOR_SCHEMA = "ods.remote-provider-ssh-supervisor-plan.v1"
 _EGRESS_PROBE_SCHEMA = "ods.remote-provider-egress-probe.v1"
 _PROOF_RECORD_SCHEMA = "ods.remote-provider-proof-record.v1"
+_VISION_RECEIPT_SCHEMA = "ods.remote-provider-vision-receipt.v1"
 _SSH_CONTROL_TUNNEL_HOST = "remote-provider-ssh-tunnel"
 _SSH_CONTROL_TUNNEL_PORT = 18092
 _LOCAL_HOSTNAMES = {
@@ -191,12 +193,23 @@ async def _reconcile_activation_with_host(
         return activation
     async def read_host_status() -> Any:
         # A cold host cache answers without activeRuntime while it proves the
-        # runtime in the background; re-poll that gap as the dashboard does.
-        for attempt in range(4):
-            status = await async_request_agent_json("GET", "/v1/model/status", timeout=2.0)
-            if not awaiting_runtime_readback(status) or attempt == 3:
+        # runtime in the background. Four quick polls used only ~0.75s of the
+        # budget, shorter than a healthy native Mac readback. Use the existing
+        # three-second window without extending the proof's lifetime.
+        deadline = monotonic() + 3.0
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            status = await async_request_agent_json(
+                "GET", "/v1/model/status", timeout=min(2.0, remaining),
+            )
+            if not awaiting_runtime_readback(status):
                 return status
-            await asyncio.sleep(0.25)
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            await asyncio.sleep(min(0.25, remaining))
 
     try:
         host_status = await asyncio.wait_for(read_host_status(), timeout=3.0)
@@ -301,7 +314,22 @@ def _safe_probe_receipt(value: Any) -> dict[str, Any] | None:
     return receipt
 
 
-def _safe_route_status(value: Any) -> dict[str, Any]:
+def _safe_vision_receipt(value: Any, fingerprint: str | None) -> dict[str, str] | None:
+    """The host agent's vision verdict for the route, if it measured this one."""
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema") != _VISION_RECEIPT_SCHEMA
+        or value.get("imageInput") not in {"supported", "unsupported"}
+        or (fingerprint is not None and value.get("routeFingerprint") != fingerprint)
+    ):
+        return None
+    return {
+        "imageInput": value["imageInput"],
+        "verifiedAt": _safe_text(value.get("verifiedAt"), max_length=64),
+    }
+
+
+def _safe_route_status(value: Any, *, fingerprint: str | None = None) -> dict[str, Any]:
     status = value if isinstance(value, Mapping) else {}
     clean: dict[str, Any] = {
         "proven": bool(status.get("proven")),
@@ -310,6 +338,9 @@ def _safe_route_status(value: Any) -> dict[str, Any]:
     last_probe = _safe_probe_receipt(status.get("lastProbe"))
     if last_probe is not None:
         clean["lastProbe"] = last_probe
+    vision = _safe_vision_receipt(status.get("vision"), fingerprint)
+    if vision is not None:
+        clean["vision"] = vision
     return clean
 
 
@@ -334,7 +365,10 @@ def _state_response(
         "provider": _safe_provider(provider) if enabled else None,
         "peer": _safe_peer_metadata(peer) if enabled else None,
         "projection": _safe_string_map(projection, _SAFE_PROJECTION_KEYS),
-        "status": _safe_route_status(status),
+        # A verdict counts only for the route it measured; a paused route has none.
+        "status": _safe_route_status(
+            status, fingerprint=_route_fingerprint({"provider": provider}) if enabled else "",
+        ),
         "resumeAvailable": bool(resume_available),
         "errors": errors or [],
     }
@@ -882,6 +916,18 @@ def _safe_proof_record(payload: Any) -> dict[str, Any]:
             "model": _safe_text(activation.get("model"), max_length=256),
             "pixel": _safe_text(activation.get("pixel"), max_length=64),
         }
+    # A verdict this check measured but could not apply while Portal was busy.
+    image_check = payload.get("imageCheck")
+    if (
+        isinstance(image_check, Mapping)
+        and image_check.get("applied") is False
+        and image_check.get("imageInput") in {"supported", "unsupported"}
+    ):
+        result["imageCheck"] = {
+            "applied": False,
+            "imageInput": image_check["imageInput"],
+            "reason": _safe_text(image_check.get("reason"), max_length=64),
+        }
     return result
 
 
@@ -1152,6 +1198,35 @@ def _overall_status(
     return "ready"
 
 
+def _dashboard_mode() -> dict[str, Any]:
+    configured = normalize_ods_mode(read_live_env_value('ODS_MODE'))
+    return {'effectiveMode': ODS_MODE_EFFECTIVE, 'configuredMode': configured,
+            'matches': configured != 'unknown' and configured == ODS_MODE_EFFECTIVE}
+
+
+@router.get("/api/remote-provider/dashboard-mode", dependencies=[Depends(verify_api_key)])
+async def dashboard_mode_status() -> dict[str, Any]:
+    try:
+        result = await async_request_agent_json('GET', '/v1/remote-provider/dashboard-mode', timeout=30)
+    except AgentHTTPError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except (AgentUnavailable, AgentProtocolError) as exc:
+        raise HTTPException(status_code=503, detail='Dashboard refresh status is unavailable') from exc
+    mode = _dashboard_mode()
+    return {**result, **mode, 'ready': result.get('ready') is True and mode['matches']}
+
+
+@router.post("/api/remote-provider/dashboard-mode", dependencies=[Depends(verify_api_key)])
+async def reconcile_dashboard_mode() -> dict[str, Any]:
+    """Separate from provider mutation: this connection may close on recreation."""
+    try:
+        return await async_request_agent_json('POST', '/v1/remote-provider/dashboard-mode', timeout=600)
+    except AgentHTTPError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except (AgentUnavailable, AgentProtocolError) as exc:
+        raise HTTPException(status_code=503, detail='Dashboard refresh outcome is unknown; read its status before retrying') from exc
+
+
 @router.get("/api/remote-provider/status", dependencies=[Depends(verify_api_key)])
 async def remote_provider_status() -> dict[str, Any]:
     """Return sanitized remote-provider status without mutating configuration."""
@@ -1171,6 +1246,7 @@ async def remote_provider_status() -> dict[str, Any]:
         "sshSupervisor": ssh_supervisor,
         "peer": peer,
         "egress": egress,
+        "dashboardMode": _dashboard_mode(),
         "capabilities": {
             "inference": overall == "ready",
             "odsPeerLifecycle": bool(peer.get("ready")),
@@ -1271,6 +1347,7 @@ async def remote_provider_probe() -> dict[str, Any]:
     """Probe the configured remote provider through the internal egress boundary."""
     result = await _post_egress_probe()
     result["routeProof"] = await _record_egress_probe_proof(result)
+    result['dashboardMode'] = _dashboard_mode()
     return result
 
 
@@ -1329,6 +1406,7 @@ async def remote_provider_enable() -> dict[str, Any]:
     staged["applied"] = True
     staged["probe"] = proof.get("probe")
     staged["routeProof"] = proof.get("routeProof")
+    staged['dashboardMode'] = _dashboard_mode()
     return staged
 
 
@@ -1336,12 +1414,13 @@ async def remote_provider_enable() -> dict[str, Any]:
 async def remote_provider_apply(payload: dict[str, Any]) -> dict[str, Any]:
     """Apply a remote-provider lifecycle request through the host agent."""
     try:
-        return await async_request_agent_json(
+        result = await async_request_agent_json(
             "POST",
             "/v1/remote-provider/apply",
             payload=payload,
             timeout=LIFECYCLE_APPLY_TIMEOUT_SECONDS,
         )
+        return {**result, 'dashboardMode': _dashboard_mode()}
     except AgentHTTPError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except AgentUnavailable as exc:

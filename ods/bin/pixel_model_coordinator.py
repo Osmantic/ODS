@@ -273,7 +273,10 @@ def control(bridge, operation, request=None):
     if operation == "model-begin" and not checksum(request["revision"]): raise AccessError("invalid-model-request")
     if operation == "model-apply": target(request["target"])
     if operation == "model-finish" and request["outcome"] not in ("commit", "rollback"): raise AccessError("invalid-model-request")
-    with bridge.bounded(300), bridge.locked():
+    # Other controller requests can briefly own the lock during a model switch.
+    # Wait before entering a mutation, never replay its protected body.
+    wait_seconds = 0 if operation == "model-status" else 30
+    with bridge.bounded(300), bridge.locked(wait_seconds=wait_seconds):
         bridge.discover()
         if operation == "model-status": return _status(bridge)
         journal = bridge.pending()

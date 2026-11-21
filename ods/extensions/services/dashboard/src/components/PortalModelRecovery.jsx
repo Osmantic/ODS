@@ -2,7 +2,8 @@ import {useEffect,useRef,useState} from 'react'
 import HelpLink from './HelpLink'
 
 const phases=new Set(['idle','completed','prepared','held','applying','applied','committing','rolling-back','unavailable'])
-function recovery(value) {
+/** A validated /api/models/recovery receipt, or null. Portal's inline Recover reads it too. */
+export function recoveryReceipt(value) {
   if (!value || typeof value.pending!=='boolean' || !phases.has(value.phase)
       || value.pending !== !['idle','completed'].includes(value.phase)) return null
   if(value.transactionId!=null && (typeof value.transactionId!=='string'
@@ -31,7 +32,7 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
       // The API also projects validated pending receipts on 409/503. Other
       // failures are not recovery state and must never invent an outcome.
       if(!response.ok && ![409,503].includes(response.status))return
-      const value=recovery(await response.json())
+      const value=recoveryReceipt(await response.json())
       if(!controller.signal.aborted && value){
         setState(value);callbacks.current.onPendingChange?.(value.pending)
         if(value.pending)pendingTransaction.current=value.transactionId
@@ -53,7 +54,7 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
     try {
       const response=await fetch('/api/models/recovery',{method:'POST',headers:{'Content-Type':'application/json'},
         body:release?'{"releaseUnverified":true}':'{}',signal:controller.signal})
-      const value=recovery(await response.json())
+      const value=recoveryReceipt(await response.json())
       if(!mounted.current || controller.signal.aborted)return
       if(value){pendingTransaction.current=value.pending?value.transactionId:null;setState(value);callbacks.current.onPendingChange?.(value.pending)}
       if(response.ok && value && !value.pending){setReleasable(false);callbacks.current.onRecovered?.();return}

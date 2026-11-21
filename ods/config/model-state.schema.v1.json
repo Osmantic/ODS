@@ -57,7 +57,7 @@
               "additionalProperties": false,
               "properties": {
                 "kind": {
-                  "enum": ["llama-server", "lemonade", "hipfire", "unknown"],
+                  "enum": ["llama-server", "vllm", "lemonade", "hipfire", "unknown"],
                   "description": "lemonade names a pre-round-F route: readable for one release so the host agent can replace it, never written"
                 },
                 "endpointId": { "type": "string", "minLength": 1 },
