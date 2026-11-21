@@ -67,7 +67,7 @@
             }
           ]
         },
-        "body": "={{ {\n  \"model\": $env.LLM_MODEL || 'default',\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an AI image generation assistant. Convert the user's text description into a detailed, artistic image generation prompt for ComfyUI/FLUX. Include style, lighting, composition, and artistic details. Keep it under 500 characters.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": $('Validate Input').first().json.prompt\n    }\n  ],\n  \"max_tokens\": 500,\n  \"temperature\": 0.7\n} }}",
+        "body": "={{ {\n  \"model\": $env.LLM_MODEL || 'default',\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an AI image generation assistant. Convert the user's text description into a detailed, artistic image generation prompt for ComfyUI (SDXL Lightning). Include style, lighting, composition, and artistic details. Keep it under 500 characters.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": $('Validate Input').first().json.prompt\n    }\n  ],\n  \"max_tokens\": 500,\n  \"temperature\": 0.7\n} }}",
         "options": {
           "timeout": 60000
         }
@@ -92,7 +92,7 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.COMFYUI_HOST || 'localhost') + ':' + ($env.COMFYUI_PORT || '8188') + '/prompt' }}",
+        "url": "={{ 'http://' + ($env.COMFYUI_HOST || 'comfyui') + ':' + ($env.COMFYUI_PORT || '8188') + '/prompt' }}",
         "method": "POST",
         "headers": {
           "list": [
@@ -102,7 +102,7 @@
             }
           ]
         },
-        "body": "={{ {\n  \"prompt\": {\n    \"3\": {\n      \"inputs\": {\n        \"seed\": Math.floor(Math.random() * 9999999999),\n        \"steps\": 20,\n        \"cfg\": 8.0,\n        \"sampler_name\": \"euler\",\n        \"scheduler\": \"normal\",\n        \"denoise\": 1.0,\n        \"model\": [\"4\", 0],\n        \"positive\": [\"6\", 0],\n        \"negative\": [\"7\", 0],\n        \"latent_image\": [\"5\", 0]\n      },\n      \"class_type\": \"KSampler\"\n    },\n    \"4\": {\n      \"inputs\": {\n        \"ckpt_name\": $env.COMFYUI_MODEL_NAME || 'flux1-dev.safetensors'\n      },\n      \"class_type\": \"CheckpointLoaderSimple\"\n    },\n    \"5\": {\n      \"inputs\": {\n        \"width\": 1024,\n        \"height\": 1024,\n        \"batch_size\": 1\n      },\n      \"class_type\": \"EmptyLatentImage\"\n    },\n    \"6\": {\n      \"inputs\": {\n        \"text\": $('Process LLM Response').first().json.enhanced_prompt,\n        \"clip\": [\"4\", 1]\n      },\n      \"class_type\": \"CLIPTextEncode\"\n    },\n    \"7\": {\n      \"inputs\": {\n        \"text\": \"text, watermark, blurry, low quality\",\n        \"clip\": [\"4\", 1]\n      },\n      \"class_type\": \"CLIPTextEncode\"\n    },\n    \"8\": {\n      \"inputs\": {\n        \"samples\": [\"3\", 0],\n        \"vae\": [\"4\", 2]\n      },\n      \"class_type\": \"VAEDecode\"\n    },\n    \"9\": {\n      \"inputs\": {\n        \"filename_prefix\": 'llm_to_image_' + new Date().getTime(),\n        \"images\": [\"8\", 0]\n      },\n      \"class_type\": \"SaveImage\"\n    }\n  },\n  \"client_id\": 'n8n_llm_to_image_' + new Date().getTime()\n} }}",
+        "body": "={{ {\n  \"prompt\": {\n    \"3\": {\n      \"inputs\": {\n        \"seed\": Math.floor(Math.random() * 9999999999),\n        \"steps\": 4,\n        \"cfg\": 1.5,\n        \"sampler_name\": \"euler\",\n        \"scheduler\": \"sgm_uniform\",\n        \"denoise\": 1.0,\n        \"model\": [\"4\", 0],\n        \"positive\": [\"6\", 0],\n        \"negative\": [\"7\", 0],\n        \"latent_image\": [\"5\", 0]\n      },\n      \"class_type\": \"KSampler\"\n    },\n    \"4\": {\n      \"inputs\": {\n        \"ckpt_name\": $env.COMFYUI_MODEL_NAME || 'sdxl_lightning_4step.safetensors'\n      },\n      \"class_type\": \"CheckpointLoaderSimple\"\n    },\n    \"5\": {\n      \"inputs\": {\n        \"width\": 1024,\n        \"height\": 1024,\n        \"batch_size\": 1\n      },\n      \"class_type\": \"EmptyLatentImage\"\n    },\n    \"6\": {\n      \"inputs\": {\n        \"text\": $('Process LLM Response').first().json.enhanced_prompt,\n        \"clip\": [\"4\", 1]\n      },\n      \"class_type\": \"CLIPTextEncode\"\n    },\n    \"7\": {\n      \"inputs\": {\n        \"text\": \"text, watermark, blurry, low quality\",\n        \"clip\": [\"4\", 1]\n      },\n      \"class_type\": \"CLIPTextEncode\"\n    },\n    \"8\": {\n      \"inputs\": {\n        \"samples\": [\"3\", 0],\n        \"vae\": [\"4\", 2]\n      },\n      \"class_type\": \"VAEDecode\"\n    },\n    \"9\": {\n      \"inputs\": {\n        \"filename_prefix\": 'llm_to_image_' + new Date().getTime(),\n        \"images\": [\"8\", 0]\n      },\n      \"class_type\": \"SaveImage\"\n    }\n  },\n  \"client_id\": 'n8n_llm_to_image_' + new Date().getTime()\n} }}",
         "options": {
           "timeout": 120000
         }
@@ -140,7 +140,7 @@
     {
       "parameters": {
         "channel": "={{ $('Validate Input').first().json.channel || 'general' }}",
-        "text": "={{ '*Image Generation Failed* ❌\\n\\n**Error:** ' + (($json.error || $input.all()[0]?.error?.message || $input.all()[0]?.error?.description || 'Unknown error')).toString().slice(0, 997).trimEnd() + '\\n\\nPlease check:\\n- LLM service is running\\n- ComfyUI service is running\\n- FLUX.1 model is loaded\\n- API keys are correct (if configured)' }}"
+        "text": "={{ '*Image Generation Failed* ❌\\n\\n**Error:** ' + (($json.error || $input.all()[0]?.error?.message || $input.all()[0]?.error?.description || 'Unknown error')).toString().slice(0, 997).trimEnd() + '\\n\\nPlease check:\\n- LLM service is running\\n- ComfyUI service is running\\n- sdxl_lightning_4step.safetensors is in ComfyUI's checkpoints folder\\n- API keys are correct (if configured)' }}"
       },
       "id": "discord-error",
       "name": "Discord Error",

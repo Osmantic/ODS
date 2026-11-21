@@ -223,7 +223,8 @@ export default function Settings({ activeSection = 'all' }) {
       if (announce) {
         setNotice({
           type: !checked || versionData.update_available ? 'warn' : 'info',
-          text: !checked ? 'Could not confirm the latest release. Try checking again.' : versionData.update_available && versionData.latest ? `Update available: v${versionData.latest}` : 'You are on the latest available release or a newer development version.',
+          // A held check says why, e.g. a used-up GitHub request limit that "try again" cannot fix.
+          text: !checked ? (versionData.check_error ? `${versionData.check_error}.` : 'Could not confirm the latest release. Try checking again.') : versionData.update_available && versionData.latest ? `Update available: v${versionData.latest}` : 'You are on the latest available release or a newer development version.',
         })
         window.dispatchEvent(new Event('ods-version-checked'))
       }
@@ -329,12 +330,17 @@ export default function Settings({ activeSection = 'all' }) {
 
   const handleApplyEnv = async () => {
     if (envSaving || envApplying || envReloading || loading || !envApplyPlan?.supported || !envApplyPlan?.services?.length) return
+    const expectedEnvRevision = envApplyPlan?.envRevision
+    if (typeof expectedEnvRevision !== 'string' || !/^[0-9a-f]{64}$/.test(expectedEnvRevision)) {
+      setNotice({ type: 'warn', text: 'Reload the current settings, then review and save your changes before applying.' })
+      return
+    }
     setEnvApplying(true)
     try {
       const payload = await fetchPayload('/api/settings/env/apply', 180000, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service_ids: envApplyPlan.services }),
+        body: JSON.stringify({ service_ids: envApplyPlan.services, expected_env_revision: expectedEnvRevision }),
       })
       const { remainingPlan, followUpPlan } = settleSettingsApplyPlan(envApplyPlan)
       setEnvApplyPlan(remainingPlan)
@@ -348,7 +354,21 @@ export default function Settings({ activeSection = 'all' }) {
           : (payload?.message || 'Runtime changes applied successfully.'),
       })
     } catch (err) {
-      setNotice({ type: 'danger', text: getErrorText(err) })
+      if (err?.details?.code === 'model_lifecycle_busy') {
+        setNotice({ type: 'info', text: err.details.message || 'ODS is finishing another operation. Wait for it to finish, then choose Apply changes again. If settings changed, ODS will ask you to review them.' })
+      } else if (err?.details?.code === 'env_revision_mismatch') {
+        setEnvApplyPlan(null)
+        try {
+          const fresh = await fetchPayload('/api/settings/env', 10000)
+          applyEnvEditorPayload(fresh)
+          setNotice({ type: 'warn', text: 'Settings changed while you were waiting. The current values are shown below. Review and save your changes before applying.' })
+        } catch (refreshErr) {
+          setNotice({ type: 'danger', text: `Settings changed while you were waiting. Reload the current settings before saving or applying. (${getErrorText(refreshErr)})` })
+        }
+        return
+      } else {
+        setNotice({ type: 'danger', text: getErrorText(err) })
+      }
     } finally {
       setEnvApplying(false)
     }
@@ -417,7 +437,7 @@ export default function Settings({ activeSection = 'all' }) {
         onOpenEnvironment={handleOpenEnvironmentEditor}
       /></div>
 
-      {error ? <Banner tone="danger">{error} - <button className="underline" disabled={loading || envSaving || envApplying || envReloading} onClick={fetchSettings}>Retry</button></Banner> : null}
+      {error ? <Banner tone="danger">{error} - <button className="underline" disabled={loading || envSaving || envApplying || envReloading} onClick={() => fetchSettings({ preserveEnvChanges: envDirty })}>Retry</button></Banner> : null}
       {notice ? <Banner tone={notice.type} onClose={() => setNotice(null)}>{notice.text}</Banner> : null}
 
       <div className="w-full space-y-5">

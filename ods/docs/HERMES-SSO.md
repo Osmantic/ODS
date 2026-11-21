@@ -1,6 +1,6 @@
 # Hermes access and optional owner-card SSO
 
-Current ODS installs use Hermes 0.21.5's required dashboard authentication. The dashboard's Hermes link opens `/auth/ods` through `hermes-proxy` on port 9120, validates the existing ODS session, and signs into Hermes with server-held managed credentials. Only allowlisted HttpOnly cookies are returned, without a Domain attribute, and the destination is always `/` on the same origin. Direct visits can use Hermes's native login for operator-configured credentials. See [the current auth contract](HERMES.md#security-posture).
+Current ODS installs use Hermes 0.21.5's required dashboard authentication. The dashboard's Hermes link opens `/auth/ods` through `hermes-proxy` on port 9120, validates the existing ODS session, and signs into Hermes with server-held managed credentials. Only allowlisted HttpOnly cookies are returned, without a Domain attribute, and the destination is always Hermes's chat, `/chat`, on the same origin. Direct visits can use Hermes's native login for operator-configured credentials. See [the current auth contract](HERMES.md#security-posture).
 
 Operators who want the additional owner-card gate can set `HERMES_REQUIRE_OWNER_CARD=true` in the installed `.env` and recreate `hermes-proxy`. It defaults to `false` on Linux, Windows, and macOS. Keep direct access limited to a trusted network; enable the gate before publishing Hermes to untrusted users.
 

@@ -72,8 +72,8 @@ function run({wrapped = false, prompt = PROMPT} = {}) {
 
 test('the run failure limits and the node result allowance these pins assume', () => {
   assert.equal(RUN_PROGRESS_LIMITS.consecutiveFailures, 4);
-  assert.equal(RUN_PROGRESS_LIMITS.totalFailures, 12);
-  assert.ok(FREE_NODE_RESULTS_PER_RUN >= RUN_PROGRESS_LIMITS.totalFailures);
+  assert.equal(RUN_PROGRESS_LIMITS.recentFailures, 12);
+  assert.ok(FREE_NODE_RESULTS_PER_RUN >= RUN_PROGRESS_LIMITS.recentFailures);
 });
 
 for (const wrapped of [false, true]) {

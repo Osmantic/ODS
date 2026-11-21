@@ -453,6 +453,35 @@ try {
             Assert-Restart (-not $message -and ($script:stopCalls -join ',') -ceq 'disable,kill:101') 'a stopped wrapper recovers only its llama-server with the matching saved identity'
         } else { Assert-Restart ($message -and -not ($script:stopCalls -match '^kill')) "$case never treats stale PID evidence as process ownership" }
     }
+    # A separate application can take the old port after a reboot. The
+    # supported port override must be able to retire an already stopped task
+    # without killing that application or accepting an unidentified orphan.
+    foreach ($case in @('foreign-ready', 'foreign-disabled', 'unknown-pid', 'unreadable-path', 'same-binary', 'same-binary-elsewhere', 'wrapper-remains', 'unknown-wrapper', 'running-task')) {
+        Reset-LlamaStopFixture
+        $script:engineId = 0; $script:stopTask.State = 'Ready'; $script:portTaken = $true
+        $foreignPath = Join-Path $fixture 'unrelated-LemonadeServer.exe'
+        $script:processNodes = @([pscustomobject]@{ ProcessId = 9999; ParentProcessId = 5
+            ExecutablePath = $foreignPath; CommandLine = 'user Lemonade'; CreationDate = [datetime]'2026-01-01T00:00:00' })
+        switch ($case) {
+            'foreign-disabled' { $script:stopTask.State = 'Disabled'; Set-ODSPortalRuntimeIntent 'stopped' }
+            'unknown-pid' { $script:processNodes = @() }
+            'unreadable-path' { $script:processNodes[0].ExecutablePath = '' }
+            'same-binary' { $script:processNodes[0].ExecutablePath = $plan.ExecutablePath.ToUpperInvariant() }
+            'same-binary-elsewhere' { $script:processNodes += [pscustomobject]@{ ProcessId = 8888; ExecutablePath = $plan.ExecutablePath } }
+            'wrapper-remains' { $script:processNodes += [pscustomobject]@{ ProcessId = 8888; ExecutablePath = $script:fixtureShell; CommandLine = ('"' + $script:fixtureShell + '" ' + $wrapperArgs) } }
+            'unknown-wrapper' { $script:processNodes += [pscustomobject]@{ ProcessId = 8888; ExecutablePath = $script:fixtureShell; CommandLine = '' } }
+            'running-task' { $script:stopTask.State = 'Running' }
+        }
+        $message = ''
+        try { Stop-ODSPortalRuntime $plan.ExecutablePath } catch { $message = $_.Exception.Message }
+        if ($case -in @('foreign-ready', 'foreign-disabled')) {
+            Assert-Restart (-not $message -and ($script:stopCalls -join ',') -ceq 'disable' -and
+                -not (Test-ODSNativeLlamaWanted $intentPath)) "$case retires only the stopped task and leaves the unrelated listener untouched"
+        } else {
+            Assert-Restart ($message -and ($script:stopCalls -join ',') -ceq 'disable,enable' -and
+                (Test-ODSNativeLlamaWanted $intentPath)) "$case refuses without stopping a process and restores sign-in intent"
+        }
+    }
     foreach ($case in @('foreign-user', 'foreign-action', 'foreign-plan', 'lemonade-plan', 'duplicate-task', 'unrelated-root', 'old-child', 'old-child-other-case', 'recycled-pid', 'changed-task', 'queued-task', 'unknown-orphan')) {
         Reset-LlamaStopFixture
         switch ($case) {

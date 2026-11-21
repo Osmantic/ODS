@@ -38,7 +38,7 @@ SCRIPT_DIR="$ROOT_DIR"
 source "$ROOT_DIR/installers/lib/detection.sh"
 warn() { :; }
 _port_check_warned=false
-source <(sed -n '/^_phase04_current_install_owns_docker_port\s*()\s*{/,/^}/p;/^check_port_conflict\s*()\s*{/,/^}/p' \
+source <(sed -n '/^_phase04_current_install_owns_docker_port\s*()\s*{/,/^}/p;/^_phase04_docker_port_owner\s*()\s*{/,/^}/p;/^_phase04_name_docker_owner\s*()\s*{/,/^}/p;/^check_port_conflict\s*()\s*{/,/^}/p' \
     "$ROOT_DIR/installers/phases/04-requirements.sh")
 
 ods_windows_host_port_in_use 9000

@@ -62,6 +62,8 @@ SPEC_TYPES_BY_BUILD = {
 # must be checked against the pinned tag's source before it goes here.
 ENV_NAMES_BY_BUILD = {
     9014: {
+        # common/arg.cpp at b9014: --ubatch-size (:1214), --fit-target (:2379).
+        "LLAMA_ARG_UBATCH", "LLAMA_ARG_FIT_TARGET",
         "LLAMA_ARG_REASONING",
         "LLAMA_ARG_FLASH_ATTN",
         "LLAMA_ARG_CACHE_TYPE_K",
@@ -90,6 +92,8 @@ ENV_NAMES_BY_BUILD = {
         "LLAMA_ARG_CHAT_TEMPLATE_FILE",
     },
     11429: {
+        # common/arg.cpp at b11429: --ubatch-size (:1580), --fit-target (:2814).
+        "LLAMA_ARG_UBATCH", "LLAMA_ARG_FIT_TARGET",
         "LLAMA_ARG_REASONING", "LLAMA_ARG_FLASH_ATTN",
         "LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V", "LLAMA_ARG_N_CPU_MOE",
         "LLAMA_ARG_CTX_CHECKPOINTS", "LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT",

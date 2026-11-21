@@ -41,7 +41,8 @@ from config import (
     AGENT_HOST, AGENT_PORT, AGENT_URL, ODS_AGENT_KEY,
     _detect_container_default_gateway, _running_inside_container,
     _read_env_from_file,
-    normalize_ods_mode, read_live_env_value,
+    get_env_file_read_error,
+    normalize_ods_mode, read_live_env_value, LLM_BACKEND,
 )
 from models import (
     GPUInfo, ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus,
@@ -66,7 +67,7 @@ from host_agent_client import (
     async_request_json as async_request_agent_json,
     shutdown_clients as shutdown_agent_clients,
 )
-from runtime_projection import active_runtime_projection
+from runtime_projection import active_runtime_projection, awaiting_runtime_readback
 from cloud_telemetry import get_cloud_throughput
 from agent_monitor import collect_metrics
 from routers import (
@@ -95,7 +96,7 @@ from routers import (
     opencode_app,
 )
 from settings import (
-    _ENV_ASSIGNMENT_RE, _ENV_COMMENTED_ASSIGNMENT_RE, _SETTINGS_APPLY_ALLOWED_SERVICES, _parse_env_text, _read_env_map_from_path,
+    _ENV_ASSIGNMENT_RE, _ENV_COMMENTED_ASSIGNMENT_RE, _SETTINGS_APPLY_ALLOWED_SERVICES, _parse_env_text,
     _slugify,
     _build_env_fields, _validate_env_values, _serialize_form_values,
     _empty_value_unsets_env_key,
@@ -319,12 +320,21 @@ def _build_readiness_payload(
 
     llama_healthy = _service_is_healthy(service_statuses, "llama-server")
     chat_ready = bool(llama_healthy and loaded_model and context_size)
+    # LLM_BACKEND=vllm: the row probes vllm-server (config.py). A cold start
+    # loads the model and compiles kernels for up to 15 minutes; a restart
+    # would only start that over, so none is suggested while it starts.
+    engine = "vllm-server" if LLM_BACKEND == "vllm" else "llama-server"
+    llm_row = _service_by_id(service_statuses, "llama-server")
+    engine_starting = engine == "vllm-server" and bool(llm_row and llm_row.startup_pending)
     if chat_ready:
         chat_detail = f"{loaded_model} loaded with {context_size} context"
     elif bootstrap_info.active:
         chat_detail = f"Full model is {_bootstrap_activity(bootstrap_info.phase)}; bootstrap mode may be limited"
+    elif engine_starting:
+        chat_detail = ("The vLLM engine is starting: a first start loads the model and compiles "
+                       "kernels, which can take 15 minutes")
     elif not llama_healthy:
-        chat_detail = "llama-server is not healthy"
+        chat_detail = f"{engine} is not healthy"
     elif not loaded_model:
         chat_detail = "No loaded model reported by the inference server"
     else:
@@ -336,19 +346,34 @@ def _build_readiness_payload(
         ready=chat_ready,
         status="ready" if chat_ready else "blocked",
         detail=chat_detail,
-        repair="ods restart llama-server" if not chat_ready and not bootstrap_info.active else None,
+        repair=(f"ods restart {engine}"
+                if not chat_ready and not bootstrap_info.active and not engine_starting else None),
     ))
 
-    webui_ready = _service_is_healthy(service_statuses, "open-webui")
-    checks.append(_readiness_check(
-        check_id="open-webui",
-        name="Open WebUI",
-        required=True,
-        ready=webui_ready,
-        status="ready" if webui_ready else "blocked",
-        detail="Open WebUI is reachable" if webui_ready else "Open WebUI is not healthy",
-        repair="ods restart open-webui" if not webui_ready else None,
-    ))
+    webui = _service_by_id(service_statuses, "open-webui")
+    if webui is not None and webui.status == "not_deployed":
+        # The install switched Open WebUI off (ENABLE_OPEN_WEBUI; Portal is
+        # the chat app on fresh Pixel installs): nothing waits for it, and
+        # restarting a service the install leaves out repairs nothing.
+        checks.append(_readiness_check(
+            check_id="open-webui",
+            name="Open WebUI",
+            required=False,
+            ready=False,
+            status="disabled",
+            detail="Open WebUI is switched off in this install",
+        ))
+    else:
+        webui_ready = _service_is_healthy(service_statuses, "open-webui")
+        checks.append(_readiness_check(
+            check_id="open-webui",
+            name="Open WebUI",
+            required=True,
+            ready=webui_ready,
+            status="ready" if webui_ready else "blocked",
+            detail="Open WebUI is reachable" if webui_ready else "Open WebUI is not healthy",
+            repair="ods restart open-webui" if not webui_ready else None,
+        ))
 
     checks.append(_readiness_check(
         check_id="dashboard-api",
@@ -919,11 +944,17 @@ def _active_settings_apply_services() -> set[str]:
     return active
 
 
-def _call_agent_core_recreate(service_ids: list[str]) -> dict[str, Any]:
+def _call_agent_core_recreate(
+    service_ids: list[str],
+    expected_env_revision: Optional[str] = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"service_ids": service_ids}
+    if expected_env_revision is not None:
+        payload["expected_env_revision"] = expected_env_revision
     return request_agent_json(
         "POST",
         "/v1/core/recreate",
-        payload={"service_ids": service_ids},
+        payload=payload,
         timeout=180,
     )
 
@@ -938,6 +969,17 @@ def _call_agent_env_update(raw_text: str) -> dict[str, Any]:
     )
 
 
+def _read_settings_env_text(env_path: Path) -> str:
+    """An unavailable file is not an empty configuration or a safe merge base."""
+    try:
+        return env_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"message": "Current configuration could not be read. Try again shortly."},
+        ) from exc
+
+
 def _build_settings_env_payload(
     *,
     raw_text: Optional[str] = None,
@@ -946,10 +988,7 @@ def _build_settings_env_payload(
 ) -> dict:
     env_path = _resolve_runtime_env_path()
     if raw_text is None:
-        try:
-            raw_text = env_path.read_text(encoding="utf-8")
-        except OSError:
-            raw_text = ""
+        raw_text = _read_settings_env_text(env_path)
 
     values, parse_issues = _parse_env_text(raw_text)
     schema_properties, required_keys = _load_env_schema()
@@ -993,7 +1032,12 @@ def _relative_install_path(path: Path) -> str:
 def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     mode = payload.get("mode", "form")
     env_path = _resolve_runtime_env_path()
-    current_values, _ = _read_env_map_from_path(env_path)
+    current_values, parse_issues = _parse_env_text(_read_settings_env_text(env_path))
+    if parse_issues or not current_values:
+        raise HTTPException(
+            status_code=503,
+            detail={"message": "Current configuration is empty or invalid. No changes were saved."},
+        )
     schema_properties, required_keys = _load_env_schema()
 
     if mode != "form":
@@ -1497,7 +1541,7 @@ async def api_status(api_key: str = Depends(verify_api_key)):
         cloud_mode = normalize_ods_mode(read_live_env_value("ODS_MODE")) == "cloud"
         if cloud_mode:
             last_inference = {}
-        return {
+        fallback = {
             "gpu": None, "services": [], "model": None,
             "bootstrap": None, "uptime": 0,
             "version": app.version, "tier": "Cloud" if cloud_mode else "Unknown",
@@ -1515,9 +1559,13 @@ async def api_status(api_key: str = Depends(verify_api_key)):
                           "throughputSampledAt": last_inference.get("throughput_sampled_at"),
                           "throughputModel": last_inference.get("throughput_model"),
                           "inferenceActive": None,
-                          "loadedModel": None, "contextSize": None},
+                          "loadedModel": None, "loadedModelDisplayName": None, "contextSize": None},
             "manifest_errors": _public_manifest_errors(),
         }
+        env_file_read_error = get_env_file_read_error()
+        if env_file_read_error:
+            fallback["envFileReadError"] = env_file_read_error
+        return fallback
 
 
 @app.get("/api/readiness")
@@ -1560,7 +1608,7 @@ async def _get_dashboard_remote_runtime() -> dict[str, object] | None:
             runtime = active_runtime_projection(status)
             if runtime:
                 return runtime if runtime["source"] == "remote-provider" else None
-            if not isinstance(status, dict) or "activeRuntime" in status or status.get("status") not in {"idle", "complete"}:
+            if not awaiting_runtime_readback(status):
                 return None
             if attempt < 3:
                 await asyncio.sleep(0.25)
@@ -1681,6 +1729,11 @@ async def _build_api_status() -> dict:
         }
 
     loaded_model_name = None if remote_runtime or cloud_mode else loaded_model or (model_data["name"] if model_data else None)
+    # The served id is a file name; the dashboard shows the Models page's name.
+    loaded_model_display_name = (
+        await asyncio.to_thread(models_router.loaded_model_display_name, loaded_model_name)
+        if loaded_model_name else None
+    )
     current_model_name = remote_runtime["model"] if remote_runtime else loaded_model_name
     configured_model_name = model_data["configuredModel"] if model_data else model_info.name if model_info else None
 
@@ -1706,14 +1759,23 @@ async def _build_api_status() -> dict:
             "throughputModel": llama_metrics_data.get("throughput_model"),
             "inferenceActive": llama_metrics_data.get("inference_active"),
             "loadedModel": loaded_model_name,
+            "loadedModelDisplayName": loaded_model_display_name,
             "contextSize": context_size or (model_data["contextLength"] if model_data else None),
         },
         "manifest_errors": _public_manifest_errors(),
     }
+    env_file_read_error = get_env_file_read_error()
+    if env_file_read_error:
+        result["envFileReadError"] = env_file_read_error
     return result
 
 
 # --- Settings ---
+
+# Sidebar names where the manifest name describes plumbing rather than the
+# application the link opens. Health matching keeps the manifest name.
+_SIDEBAR_LABELS = {"hermes-proxy": "Hermes"}
+
 
 @app.get("/api/external-links")
 async def get_external_links(api_key: str = Depends(verify_api_key)):
@@ -1724,7 +1786,7 @@ async def get_external_links(api_key: str = Depends(verify_api_key)):
         if not ext_port or sid == "dashboard-api" or cfg.get("external_link") is False:
             continue
         links.append({
-            "id": sid, "label": cfg.get("name", sid), "port": ext_port,
+            "id": sid, "label": _SIDEBAR_LABELS.get(sid, cfg.get("name", sid)), "port": ext_port,
             "ui_path": cfg.get("ui_path", "/"),
             "public_url": cfg.get("public_url", ""),
             "icon": SIDEBAR_ICONS.get(sid, "ExternalLink"),
@@ -1857,6 +1919,24 @@ async def api_settings_env_save(
                 saved_values[key] = value
         saved_raw_text = _render_env_from_values(saved_values)
 
+    # Bind the authoritative post-write digest to the plan. Without it the
+    # plan cannot be applied safely: the host agent may have enforced values
+    # or another writer may have touched .env between save and apply.
+    env_revision = agent_resp.get("env_revision")
+    if isinstance(apply_plan, dict):
+        if isinstance(env_revision, str) and re.fullmatch(r"[0-9a-f]{64}", env_revision):
+            apply_plan = {**apply_plan, "envRevision": env_revision}
+        elif apply_plan.get("supported") and apply_plan.get("services"):
+            apply_plan = {
+                **apply_plan,
+                "status": "unsupported",
+                "supported": False,
+                "envRevision": None,
+                "summary": (
+                    "Update ODS, then reload the current settings, review your changes, and save again before applying."
+                ),
+            }
+
     _clear_settings_caches()
     result = await asyncio.to_thread(
         _build_settings_env_payload,
@@ -1880,6 +1960,14 @@ async def api_settings_env_apply(
             detail={"message": "service_ids must be a non-empty list."},
         )
 
+    expected_env_revision = payload.get("expected_env_revision")
+    if expected_env_revision is not None:
+        if not isinstance(expected_env_revision, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_env_revision):
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "expected_env_revision must be a 64-character lowercase hex digest."},
+            )
+
     normalized: list[str] = []
     for service_id in sorted(set(service_ids)):
         if not isinstance(service_id, str) or service_id not in _SETTINGS_APPLY_ALLOWED_SERVICES:
@@ -1890,7 +1978,10 @@ async def api_settings_env_apply(
         normalized.append(service_id)
 
     try:
-        await asyncio.to_thread(_call_agent_core_recreate, normalized)
+        if expected_env_revision is None:
+            await asyncio.to_thread(_call_agent_core_recreate, normalized)
+        else:
+            await asyncio.to_thread(_call_agent_core_recreate, normalized, expected_env_revision)
         _clear_settings_caches()
         return {
             "success": True,
@@ -1898,8 +1989,29 @@ async def api_settings_env_apply(
             "message": f"Applied runtime changes to {', '.join(normalized)}.",
         }
     except AgentHTTPError as exc:
-        detail = exc.detail
-        raise HTTPException(status_code=503, detail={"message": detail}) from exc
+        if exc.status_code == 409:
+            try:
+                body = json.loads(exc.response_text) if exc.response_text else None
+            except (ValueError, TypeError):
+                body = None
+            if isinstance(body, dict) and body.get("code") == "model_lifecycle_busy":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "model_lifecycle_busy",
+                        "message": "ODS is finishing another operation. Wait for it to finish, then choose Apply changes again. If settings changed, ODS will ask you to review them.",
+                    },
+                ) from exc
+            if isinstance(body, dict) and body.get("code") == "env_revision_mismatch":
+                _clear_settings_caches()
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "env_revision_mismatch",
+                        "message": "Settings changed while you were waiting. Reload the current settings, then review and save your changes before applying.",
+                    },
+                ) from exc
+        raise HTTPException(status_code=503, detail={"message": exc.detail}) from exc
     except AgentUnavailable as exc:
         raise HTTPException(
             status_code=503,

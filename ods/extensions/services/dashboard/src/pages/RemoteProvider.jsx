@@ -47,6 +47,7 @@ const INITIAL_FORM = {
 
 const STATUS_META = {
   ready: { label: 'Connected', dot: 'bg-emerald-400', text: 'text-emerald-300' },
+  switching: { label: 'Switching', dot: 'bg-theme-text-secondary', text: 'text-theme-text-secondary' },
   disabled: { label: 'Off', dot: 'bg-zinc-500', text: 'text-zinc-400' },
   // An update (or a mode change) kept ODS on the model on this computer.
   paused: { label: 'Paused', dot: 'bg-zinc-500', text: 'text-zinc-400' },
@@ -255,7 +256,12 @@ async function fetchJson(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   try {
     const response = await fetch(url, { ...options, signal: controller.signal })
     const payload = await responsePayload(response)
-    if (!response.ok) throw new Error(errorMessage(payload, `Request failed (${response.status})`))
+    if (!response.ok) {
+      const error = new Error(errorMessage(payload, `Request failed (${response.status})`))
+      error.httpStatus = response.status
+      error.code = payload?.detail?.code || payload?.code
+      throw error
+    }
     return payload
   } catch (err) {
     if (err?.name === 'AbortError') throw new Error('Request timed out')
@@ -424,6 +430,8 @@ export default function RemoteProvider({ compact = false }) {
   const [connectStep, setConnectStep] = useState('')
   const [connectNotice, setConnectNotice] = useState(null)
   const [lifecycleNote, setLifecycleNote] = useState('')
+  const [refreshingDashboard, setRefreshingDashboard] = useState(false)
+  const [dashboardRefreshError, setDashboardRefreshError] = useState(null)
 
   const loadStatus = useCallback(async ({ quiet = false } = {}) => {
     if (!quiet) setLoading(true)
@@ -499,17 +507,66 @@ export default function RemoteProvider({ compact = false }) {
     }))
   }
 
+  const reconcileDashboard = useCallback(async () => {
+    setRefreshingDashboard(true)
+    setDashboardRefreshError(null)
+    let requestError = null
+    try {
+      // The provider request has already completed. Recreating its API may
+      // disconnect this separate request; no provider mutation is replayed.
+      try {
+        await fetchJson('/api/remote-provider/dashboard-mode', { method: 'POST' })
+      } catch (err) {
+        requestError = err
+        if (err?.httpStatus === 409 || err?.code === 'dashboard_refresh_failed') throw err
+      }
+      const deadline = Date.now() + 180000
+      while (Date.now() < deadline) {
+        try {
+          const state = await fetchJson('/api/remote-provider/dashboard-mode')
+          if (state.ready === true && state.matches === true) {
+            await loadStatus({ quiet: true })
+            return true
+          }
+          if (state.pending && !state.reconciling && !state.lifecycleActive) {
+            throw new Error('Recover the model switch in Models before refreshing the dashboard.')
+          }
+          if (!state.reconciling && !state.lifecycleActive && (state.running === false || state.healthy === false)) {
+            throw new Error('Start or repair the dashboard service, then refresh its status.')
+          }
+        } catch (err) {
+          // A transport error is unknown, never success. A later ready
+          // response must prove both process mode and released maintenance.
+          if (/^(Recover the model switch|Start or repair the dashboard service)/.test(err?.message || '')) throw err
+        }
+        await new Promise(resolve => setTimeout(resolve, SETTLE_POLL_MS))
+      }
+      throw requestError || new Error('Dashboard refresh was not confirmed. Check that ODS is idle, then select Refresh dashboard.')
+    } catch (err) {
+      setDashboardRefreshError(err?.message || 'Dashboard refresh was not confirmed.')
+      return false
+    } finally {
+      setRefreshingDashboard(false)
+    }
+  }, [loadStatus])
+
   // After a change, ODS and Portal switch over for a few seconds; re-check
-  // before calling that gap a problem.
-  const settleAfterAction = useCallback(async () => {
+  // before calling that gap a problem. A consumer that is briefly unavailable
+  // while it restarts is the same kind of gap as drift.
+  const settleAfterAction = useCallback(async ({ refreshDashboard = false } = {}) => {
+    const settlingReasons = new Set(['consumer_drift', 'consumer_status_unavailable'])
     for (let poll = 0; poll < SETTLE_POLLS; poll += 1) {
       const payload = await loadStatus({ quiet: true })
-      if (payload?.activation?.reason !== 'consumer_drift') break
+      if (refreshDashboard && payload?.dashboardMode?.matches === false) {
+        await reconcileDashboard()
+        break
+      }
+      if (!settlingReasons.has(payload?.activation?.reason)) break
       setSettling(true)
       await new Promise(resolve => setTimeout(resolve, SETTLE_POLL_MS))
     }
     setSettling(false)
-  }, [loadStatus])
+  }, [loadStatus, reconcileDashboard])
 
   const runProbe = async () => {
     setTesting(true)
@@ -520,7 +577,7 @@ export default function RemoteProvider({ compact = false }) {
       setTestResult(payload)
       // A real failure: say it in the error banner, with its help link.
       if (payload?.routeProof?.reason === 'provider_not_serving') setTestError(notServingSummary(payload.routeProof))
-      await settleAfterAction()
+      await settleAfterAction({ refreshDashboard: payload?.routeProof?.recorded === true })
     } catch (err) {
       setTestError(err?.message || 'The connection check failed')
     } finally {
@@ -543,6 +600,7 @@ export default function RemoteProvider({ compact = false }) {
     setTestError(null)
     setConnectNotice(null)
     let saved = false
+    let activated = false
     try {
       const submittedRevision = formEdit.current.revision
       setConnectStep('Saving the API settings…')
@@ -556,6 +614,7 @@ export default function RemoteProvider({ compact = false }) {
       const proof = await fetchJson('/api/remote-provider/probe', { method: 'POST' }, PROBE_TIMEOUT_MS)
       setTestResult(proof)
       if (proof?.routeProof?.recorded) {
+        activated = true
         setConnectNotice(`Connected. ODS and Portal now use ${model} from ${host}.`)
       } else if (proof?.routeProof?.reason === 'provider_not_serving') {
         // The route is in use; the API itself fails chats.
@@ -572,7 +631,7 @@ export default function RemoteProvider({ compact = false }) {
     } finally {
       setConnectStep('')
       setConnecting(false)
-      await settleAfterAction()
+      await settleAfterAction({ refreshDashboard: activated })
     }
   }
 
@@ -611,7 +670,7 @@ export default function RemoteProvider({ compact = false }) {
         setForm(current => ({ ...current, apiKey: '' }))
         formEdit.current.dirty = false
       }
-      await settleAfterAction()
+      await settleAfterAction({ refreshDashboard: result?.applied === true })
     } catch (err) {
       setLifecycleError(err?.message || `The ${action} step failed`)
     } finally {
@@ -665,8 +724,9 @@ export default function RemoteProvider({ compact = false }) {
   const peer = statusData?.peer || {}
   const testEnabled = Boolean(statusData?.availableActions?.test)
   const enableAvailable = Boolean(statusData?.availableActions?.enable)
-  const statusMeta = STATUS_META[statusData?.status] || STATUS_META.unknown
-  const lifecycleBusy = planning || Boolean(applyingAction) || connecting
+  const displayStatus = settling ? 'switching' : statusData?.status
+  const statusMeta = STATUS_META[displayStatus] || STATUS_META.unknown
+  const lifecycleBusy = planning || Boolean(applyingAction) || connecting || refreshingDashboard
   const contextLength = Number(form.contextLength)
   const maxTokens = Number(form.maxTokens)
   const configureReady = Boolean(
@@ -721,7 +781,7 @@ export default function RemoteProvider({ compact = false }) {
           <p className="mt-1 text-sm text-theme-text-muted">{headline}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {statusData && <StatusPill status={statusData.status} />}
+          {statusData && <StatusPill status={displayStatus} />}
           <button
             type="button"
             onClick={() => loadStatus()}
@@ -775,6 +835,15 @@ export default function RemoteProvider({ compact = false }) {
         </div>
       )}
       {lifecycleError && <ErrorBanner message={lifecycleError} note={lifecycleNote} />}
+      {dashboardRefreshError && <ErrorBanner message={dashboardRefreshError} note="Your model choice is saved. Refresh the status before trying again." />}
+      {(statusData?.dashboardMode?.matches === false || dashboardRefreshError || refreshingDashboard) && (
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-theme-border p-3 text-sm" role="status">
+          <span>{refreshingDashboard ? 'Refreshing the dashboard for the selected model route…' : 'The model route changed. Refresh the dashboard to finish updating its controls.'}</span>
+          <ActionButton icon={RefreshCw} onClick={reconcileDashboard} disabled={lifecycleBusy || testing}>
+            Refresh dashboard
+          </ActionButton>
+        </div>
+      )}
       {settling && (
         <div className="mb-4 flex items-center gap-2 rounded-lg border border-theme-border bg-theme-text-secondary/10 px-4 py-3 text-sm text-theme-text-secondary" role="status">
           <Loader2 className="animate-spin" size={16} />

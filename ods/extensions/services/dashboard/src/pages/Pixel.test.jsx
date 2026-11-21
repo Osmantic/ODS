@@ -14,6 +14,7 @@ const previewManifests=new Map()
 // The repository's base ESLint profile does not mark JSX identifiers as uses.
 // eslint-disable-next-line no-unused-vars
 import Pixel, {
+  NO_REPLY_NOTICE,
   OperationsApprovalCard,
   formatElapsed,
   isCleanContextRecoveryFrame,
@@ -28,6 +29,8 @@ const response = (body, status = 200) => ({
   status,
   json: async () => body,
 })
+// The calm line a reply ends with once the server proved its turn is over.
+const CUT_OFF = (_content, node) => node?.tagName === 'EM' && node.textContent === NO_REPLY_NOTICE
 
 it('resolves old cards to the latest verified version of their own project',()=>{
   const publication=(letter,directory)=>{
@@ -76,15 +79,20 @@ const sseResponse = (frames, { status = 200, chunks } = {}) => {
 }
 
 describe('Pixel', () => {
+  // What the host answers when the page asks which turns offer "Put back
+  // files"; a test that needs a button sets its own.
+  let restoreOptionsAnswer
   beforeEach(() => {
     previewManifests.clear()
-    // Stream fixtures are independent of background context reads. The full
-    // context lifecycle is exercised in PixelCompaction.test.jsx; retain all
-    // network observations here without consuming the next SSE fixture.
+    // Stream fixtures are independent of background context and turn-undo
+    // reads. The full context lifecycle is exercised in PixelCompaction.test.jsx;
+    // retain all network observations here without consuming the next SSE fixture.
+    restoreOptionsAnswer=()=>response({schemaVersion:1,projects:[]})
     const responses=vi.fn()
     const fetchMock=vi.fn((url,...args)=>previewManifests.has(url)?Promise.resolve(previewManifestResponse(previewManifests.get(url))):url==='/api/pixel/chat/context'
       ? Promise.resolve(response({schemaVersion:1,status:'missing',sessionRevision:null,context:null,model:null,
         compaction:{status:'idle',count:0},history:{revision:null,acknowledgedMessages:0}}))
+      : url==='/api/pixel/projects/restore-options' ? Promise.resolve(restoreOptionsAnswer())
       : responses(url,...args))
     for(const method of ['mockResolvedValue','mockResolvedValueOnce','mockRejectedValue','mockRejectedValueOnce','mockImplementation','mockImplementationOnce']) {
       fetchMock[method]=(...args)=>{responses[method](...args);return fetchMock}
@@ -161,6 +169,48 @@ describe('Pixel', () => {
     expect(screen.queryByRole('button',{name:'Reuse prompt'})).toBeNull()
     expect(screen.queryByText(/(?:Live|Recorded) activity ·/)).toBeNull()
     expect(screen.queryByRole('button',{name:'Copy Markdown'})).toBeNull()
+  })
+
+  it('offers Put back files under the turn the host lists for a project, and its Undo after that', async () => {
+    const runId = 'chatcmpl_12345678-1234-1234-1234-123456789012', later = 'chatcmpl_22345678-1234-1234-1234-123456789012'
+    const undo = 'restore_99999999-2222-4333-8444-555555555555'
+    const project = (name, observedAt) => ({schemaVersion:1,kind:'ods-workspace-project',relativeDirectory:`Playground/${name}`,observedAt})
+    const task = (id, startedAt, finishedAt, projects) => ({schemaVersion:4,runId:id,startedAt,finishedAt,state:'completed',calls:1,failures:0,blocked:0,truncated:false,
+      activities:[{kind:'run',calls:1,failures:0,blocked:0}],events:[{sequence:1,kind:'run',state:'completed',startedAt,finishedAt,display:null}],context:null,goal:null,projects})
+    localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'undo-chat',messages:[
+      {role:'user',content:'Make the elves faster'},
+      {role:'assistant',content:'The elves are faster.',task:task(runId,'2026-10-30T12:00:00.000Z','2026-10-30T12:05:00.000Z',
+        [project('game','2026-10-30T12:03:00.000Z')])},
+      {role:'user',content:'What did you change?'},
+      {role:'assistant',content:'I changed chars.js.',task:task(later,'2026-10-30T12:10:00.000Z','2026-10-30T12:11:00.000Z',
+        [project('game','2026-10-30T12:03:00.000Z')])},
+    ]}))
+    let restored = false
+    restoreOptionsAnswer = () => response({schemaVersion:1,projects:[{project:'Playground/game',snapshot:runId,late:false,
+      restore:restored ? {undo,side:'before'} : null}]})
+    fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/projects/restore') {
+        restored = true
+        return response({schemaVersion:2,status:'restored',project:'Playground/game',snapshot:runId,written:1,removed:0,left:[],leftCount:0,
+          failed:[],failedCount:0,failure:null,late:false,undo,confirm:null})
+      }
+      return response({available:true,model:'pixel/default'})
+    })
+    render(<Pixel/>)
+    await waitFor(()=>expect(screen.getByText('Available')).toBeInTheDocument())
+    // The host names the latest turn that changed the project; the later question gets nothing.
+    const buttons = await screen.findAllByRole('button',{name:'Put back files from before this turn'})
+    expect(buttons).toHaveLength(1)
+    const [, asked] = fetch.mock.calls.find(([url])=>url==='/api/pixel/projects/restore-options')
+    expect(JSON.parse(asked.body)).toEqual({runs:[runId,later]})
+    fireEvent.click(buttons[0])
+    await waitFor(()=>expect(fetch.mock.calls.some(([url])=>url==='/api/pixel/projects/restore')).toBe(true))
+    const [, options] = fetch.mock.calls.find(([url])=>url==='/api/pixel/projects/restore')
+    expect(JSON.parse(options.body)).toEqual({chat_id:'undo-chat',project:'Playground/game',snapshot:runId})
+    expect(await screen.findByText("Playground/game is back to how it was before this turn: 1 file written back. A preview of this project may still show this turn's version until Portal publishes it again.")).toBeVisible()
+    expect(screen.getByRole('button',{name:'Undo putting back Playground/game'})).toBeEnabled()
+    // The host is asked again, so a reload would offer the same Undo.
+    await waitFor(()=>expect(fetch.mock.calls.filter(([url])=>url==='/api/pixel/projects/restore-options').length).toBe(2))
   })
 
   it('accepts only the fixed approval receipt grammar', () => {
@@ -1166,9 +1216,10 @@ describe('Pixel', () => {
     expect(send).toBeEnabled()
   })
 
-  // RTX Spark Elf of Doom: a failed preview check now keeps the agent's own
-  // explanation ahead of Portal's note instead of replacing it.
-  it('renders a kept agent explanation and the failed-check note as Markdown with the preview card', async () => {
+  // RTX Spark Elf of Doom: a failed preview check keeps the agent's own
+  // explanation, and (2026-10-25) Portal's line after it is one calm, muted
+  // sentence above a preview that works, never error-looking text.
+  it('renders a kept agent explanation as Markdown, then Portal\'s muted line, with the preview card', async () => {
     const matchMedia = globalThis.matchMedia
     vi.stubGlobal('matchMedia', query => query === '(prefers-reduced-motion: reduce)'
       ? { matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }
@@ -1178,13 +1229,10 @@ describe('Pixel', () => {
     const preview = {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', relativeDirectory: 'elf-of-doom', siteId, port: 9437,
       url: `http://${siteId}.localhost:9437/${siteId}/`, files: 3, bytes: 4096, sha256, entrySha256: 'd'.repeat(64)}
     previewManifests.set(`/pixel-preview/${siteId}/__ods_manifest__.json`, preview)
+    const note = "Portal couldn't test every control automatically. Try it, and tell Portal if something isn't right."
     const content = 'The cause is `ui.js:748`: a canvas is not a valid `fillStyle`, so the previous colour stays set.\n\n' +
       '- The last full-viewport fill covers the arena.\n\n' +
-      "**Portal check:** The reply above is the agent's own account, not a verified result. " +
-      "This request did not pass Portal's checks.\n\n" +
-      'Latest browser inspection of this preview: step 2 (assert-painted) on `#arena` captured one color only (#8fce3a).\n\n' +
-      'The attempted preview interaction checks have not passed browser inspection. ' +
-      'The published preview is available, but those checks remain unverified.\n\n' +
+      `${note}\n\n` +
       `Your preview is ready.\n\n[Open preview](${preview.url})\n\nPublished from your workspace.`
     globalThis.fetch.mockResolvedValueOnce(response({ available: true, model: 'pixel/default', detail: 'local' }))
     globalThis.fetch.mockResolvedValueOnce(sseResponse([
@@ -1193,25 +1241,134 @@ describe('Pixel', () => {
         pixel_outcome: { schemaVersion: 1, status: 'failed' } }),
       '[DONE]',
     ]))
-    render(<Pixel />)
+    const {container} = render(<Pixel />)
     await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
     fireEvent.change(screen.getByPlaceholderText('Message Portal...'), { target: { value: 'Fix the arena, then look at the preview.' } })
     fireEvent.click(screen.getByTitle('Send'))
 
-    const label = await screen.findByText('Portal check:')
-    expect(label.closest('strong')).not.toBeNull()
+    const line = await screen.findByText(note)
+    expect(line.closest('p')).toHaveClass('portal-delivery-note')
     expect(screen.getByText('ui.js:748').closest('code')).not.toBeNull()
     expect(screen.getByText('The last full-viewport fill covers the arena.').closest('li')).not.toBeNull()
-    expect(screen.getByText(/did not pass Portal's checks/)).toBeVisible()
-    expect(screen.getByText('#arena').closest('code')).not.toBeNull()
-    expect(screen.getByText(/attempted preview interaction checks have not passed browser inspection/)).toBeVisible()
+    expect(screen.getByText(/^The cause is/).closest('p')).not.toHaveClass('portal-delivery-note')
+    const reply = line.closest('[data-pixel-response]')
+    expect(reply.textContent).not.toMatch(/failed|did not pass|not verified|unverified|error|Portal check/i)
+    expect(within(reply).queryByRole('alert')).toBeNull()
+    expect(reply.querySelector('[class*="red-"]')).toBeNull()
     expect(screen.queryByText('Your preview is ready.')).toBeNull()
     expect(screen.queryByText(/Published from your workspace/)).toBeNull()
     expect(screen.queryByRole('link', { name: 'Open preview' })).toBeNull()
+    expect(within(reply).getByRole('button', { name: /Web preview/ })).toBeVisible()
     expect(await screen.findByTitle('Interactive Portal preview')).toHaveAttribute('src', `/pixel-preview/${siteId}/__ods_view__.html`)
+    expect(container.querySelector('.portal-embed-note')).toBeNull()
     // The stored reply and the model's history keep the full delivered text.
     await waitFor(() => expect(JSON.parse(globalThis.localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1))
       .toMatchObject({ role: 'assistant', content, publication: preview }))
+  })
+
+  // RTX Spark, 2026-10-25: "Draw me a picture of a dragon" published an SVG
+  // site that the preview card showed, and the reply ended with the model's
+  // own embed of that site. Portal said it could not display it.
+  it.each([
+    ['after the reply', "Here's your dragon, curled around a mountain peak.\n\n"],
+    ['as the whole reply', ''],
+  ])('leaves out the embed of the preview its card shows, %s, and copies the original text', async (_name, prose) => {
+    const matchMedia = globalThis.matchMedia
+    vi.stubGlobal('matchMedia', query => query === '(prefers-reduced-motion: reduce)'
+      ? { matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }
+      : matchMedia?.(query) ?? { matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })
+    const sha256 = 'fca81965eeec4e16e761822a' + 'b'.repeat(40)
+    const siteId = `site-${sha256.slice(0, 24)}`
+    const preview = {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', relativeDirectory: 'Playground/dragon', siteId, port: 9437,
+      url: `http://${siteId}.localhost:9437/${siteId}/`, files: 1, bytes: 2048, sha256, entrySha256: 'e'.repeat(64)}
+    previewManifests.set(`/pixel-preview/${siteId}/__ods_manifest__.json`, preview)
+    const content = `${prose}[embed ref="${siteId}" title="Dragon" height="560" /]\n\n` +
+      `Your preview is ready.\n\n[Open preview](${preview.url})\n\nCreated by Portal.\n` +
+      'Publication scope: this receipt verifies the published snapshot, not functional behavior or completion of other requested work.'
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    try {
+      globalThis.fetch.mockResolvedValueOnce(response({ available: true, model: 'pixel/default', detail: 'local' }))
+      globalThis.fetch.mockResolvedValueOnce(sseResponse([
+        JSON.stringify({ choices: [{ delta: { content } }] }),
+        JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], pixel: { schemaVersion: 1, preview },
+          pixel_outcome: { schemaVersion: 1, status: 'passed' } }),
+        '[DONE]',
+      ]))
+      const {container} = render(<Pixel />)
+      await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
+      fireEvent.change(screen.getByPlaceholderText('Message Portal...'), { target: { value: 'Draw me a picture of a dragon' } })
+      fireEvent.click(screen.getByTitle('Send'))
+      expect(await screen.findByTitle('Interactive Portal preview')).toHaveAttribute('src', `/pixel-preview/${siteId}/__ods_view__.html`)
+      const reply = [...container.querySelectorAll('[data-pixel-response]')].at(-1)
+      expect(await within(reply).findByRole('button', { name: /Web preview/ })).toBeVisible()
+      if (prose) expect(await within(reply).findByText("Here's your dragon, curled around a mountain peak.")).toBeVisible()
+      await waitFor(() => expect(within(reply).getByRole('button', { name: 'Copy response' })).toBeVisible())
+      expect(reply.textContent).not.toMatch(/\[embed|embedded view|can’t display|Your preview is ready/)
+      expect(container.querySelector('.portal-embed-note')).toBeNull()
+      fireEvent.click(within(reply).getByRole('button', { name: 'Copy response' }))
+      await waitFor(() => expect(writeText).toHaveBeenCalledOnce())
+      expect(writeText.mock.calls[0][0]).toContain(`[embed ref="${siteId}" title="Dragon" height="560" /]`)
+      await waitFor(() => expect(JSON.parse(globalThis.localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1))
+        .toMatchObject({ role: 'assistant', content, publication: preview }))
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, 'clipboard', clipboard)
+      else delete navigator.clipboard
+    }
+  })
+
+  it('shows nothing, not a note, for a later reply of only an embed of a preview the chat already shows', async () => {
+    // Reveal replies at once, so a note would already show.
+    const matchMedia = globalThis.matchMedia
+    vi.stubGlobal('matchMedia', query => query === '(prefers-reduced-motion: reduce)'
+      ? { matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }
+      : matchMedia?.(query) ?? { matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })
+    const sha256 = 'fca81965eeec4e16e761822a' + 'b'.repeat(40)
+    const siteId = `site-${sha256.slice(0, 24)}`
+    const preview = {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', relativeDirectory: 'Playground/dragon', siteId, port: 9437,
+      url: `http://${siteId}.localhost:9437/${siteId}/`, files: 1, bytes: 2048, sha256, entrySha256: 'e'.repeat(64)}
+    const embed = `[embed ref="${siteId}" title="Dragon" height="560" /]`
+    globalThis.localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({schema: 1, chatId: 'dragon-chat', messages: [
+      {role: 'user', content: 'Draw me a picture of a dragon'},
+      {role: 'assistant', content: `Here's your dragon.\n\nYour preview is ready.\n\n[Open preview](${preview.url})\n\nCreated by Portal.`,
+        publication: preview},
+    ]}))
+    globalThis.fetch.mockImplementation(async url => url === '/api/pixel/chat/stream'
+      ? sseResponse([JSON.stringify({choices: [{delta: {content: embed}}]}),
+        JSON.stringify({choices: [{delta: {}, finish_reason: 'stop'}], pixel_outcome: {schemaVersion: 1, status: 'none'}}), '[DONE]'])
+      : response({available: true, model: 'pixel/default'}))
+    const {container} = render(<Pixel />)
+    await screen.findByText('Available')
+    expect(screen.getByText("Here's your dragon.")).toBeVisible()
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target: {value: 'Show it to me again'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await waitFor(() => expect(JSON.parse(globalThis.localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1))
+      .toMatchObject({role: 'assistant', content: embed}))
+    await waitFor(() => expect(within([...container.querySelectorAll('[data-pixel-response]')].at(-1))
+      .getByRole('button', {name: 'Copy response'})).toBeVisible())
+    expect(container.textContent).not.toMatch(/embedded view|can’t display|\[embed/)
+  })
+
+  // Seen live: "what is 12 squared?" was answered exactly "144.", which
+  // Markdown reads as an ordered list that starts at 144 with one empty item.
+  // Without its start number the reply showed an empty "1." and lost the answer.
+  it.each([
+    ['what is 12 squared?', '144.', '144', ['']],
+    ['what is left?', 'Steps 1 and 2 are done.\n\n3. Run the tests\n4. Open the pull request', '3', ['Run the tests', 'Open the pull request']],
+  ])('keeps the ordered-list start number in the reply to %j', async (question, content, start, items) => {
+    globalThis.fetch.mockResolvedValueOnce(response({available:true}))
+    globalThis.fetch.mockResolvedValueOnce(sseResponse([JSON.stringify({choices:[{delta:{content}}]}),'[DONE]']))
+    const {container}=render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:question}})
+    fireEvent.click(screen.getByTitle('Send'))
+    // Read the list once the whole reply is revealed. The reveal animation can
+    // outlast the default one-second DOM wait on Windows CI.
+    await waitFor(()=>expect(container.querySelector('.portal-streaming-text')).toHaveAttribute('aria-busy','false'),{timeout:5000})
+    const list=container.querySelector('.portal-streaming-text ol')
+    expect(list).toHaveAttribute('start',start)
+    expect(within(list).getAllByRole('listitem').map(item=>item.textContent)).toEqual(items)
   })
 
   it('preserves earlier file changes across another message and reload without sending UI metadata to the model', async () => {
@@ -1937,10 +2094,11 @@ describe('Pixel', () => {
     await act(async () => {})
     for (let reload = 0; reload < 2; reload += 1) {
       const restored = render(<Pixel />)
-      await screen.findByText('Activity unknown')
+      await screen.findByText('Portal can’t confirm your last request has finished.')
+      expect(screen.getByRole('button', { name: 'Continue in this chat' })).toBeEnabled()
       expect(screen.getByText('Create a report, then verify it.')).toBeInTheDocument()
       expect(screen.getByText('Created report.md; checking its contents.')).toBeInTheDocument()
-      expect(screen.getByText(/Completion was not confirmed/)).toBeInTheDocument()
+      expect(screen.queryByText(/Activity unknown|Completion was not confirmed/)).not.toBeInTheDocument()
       expect(screen.queryByText(/Stopped by you/)).not.toBeInTheDocument()
       expect(screen.queryByTitle('Stop')).not.toBeInTheDocument()
       expect(globalThis.fetch.mock.calls.filter(([url]) => url === '/api/pixel/chat/stream')).toHaveLength(1)
@@ -2095,9 +2253,10 @@ describe('Pixel', () => {
     expect(signals).toHaveLength(1)
     await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
     expect(signals[0].aborted).toBe(true)
-    expect(screen.getByRole('button',{name:'Check activity again'})).toBeEnabled()
+    expect(screen.getByRole('button',{name:'Continue in this chat'})).toBeEnabled()
     expect(screen.getByText('Saved partial result')).toBeVisible()
-    await act(async () => { fireEvent.click(screen.getByRole('button',{name:'Check activity again'})) })
+    // The next check starts by itself, with a fresh deadline.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
     expect(signals).toHaveLength(2)
     expect(signals[1]).not.toBe(signals[0])
     expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
@@ -2117,15 +2276,25 @@ describe('Pixel', () => {
     render(<Pixel />)
     await screen.findByText('Working in this chat')
     expect(screen.getByTitle('Stop')).toBeEnabled()
-    expect(screen.getByPlaceholderText('Message Portal...')).toBeDisabled()
-    expect(screen.getByTitle('Start a new chat')).toBeDisabled()
+    // The draft stays editable; only sending and New chat wait, with a reason.
+    expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+    expect(screen.queryByTitle('Send')).toBeNull()
+    expect(screen.getByRole('button', {name:'New chat'})).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('button', {name:'New chat'})).toHaveAttribute('title', expect.stringContaining('Portal is finishing the current task'))
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
+    // No receipt brings this turn's answer back here, so the line never promises it.
+    expect(screen.getByText('Portal is still working on your last request. When it’s done, ask Portal what it did. You can stop it.')).toBeVisible()
+    expect(screen.queryByRole('button', {name:'Continue in this chat'})).not.toBeInTheDocument()
     state = 'terminal'
-    await screen.findByText(/previous request is no longer active/, {}, { timeout: 3000 })
+    // The server proved the turn is over: the reply settles calmly, it is
+    // never claimed as the owner's Stop, and the composer is free again.
+    await screen.findByText(CUT_OFF, {}, { timeout: 3000 })
     expect(screen.queryByTitle('Stop')).not.toBeInTheDocument()
-    expect(screen.queryByText('Response stopped')).not.toBeInTheDocument()
-    expect(screen.getByText(/final response was not recovered/)).toBeInTheDocument()
+    expect(screen.queryByText(/Stopped by you|no longer active|was not recovered/)).not.toBeInTheDocument()
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
+    expect(screen.queryByRole('status', { name: 'Last message' })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'), { target: { value: 'What did you change?' } })
+    expect(screen.getByTitle('Send')).toBeEnabled()
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
   })
 
@@ -2139,11 +2308,12 @@ describe('Pixel', () => {
       return response({state:chat_id === 'second_interrupted' ? 'active' : 'terminal'})
     })
     render(<Pixel />)
-    await screen.findByText(/previous request is no longer active/)
+    await screen.findByText(CUT_OFF)
     act(()=>window.dispatchEvent(new CustomEvent('ods:pixel-select-conversation',{detail:'second_interrupted'})))
     await screen.findByText('Working in this chat')
     expect(fetch).toHaveBeenCalledWith('/api/pixel/chat/activity',expect.objectContaining({body:JSON.stringify({chat_id:'second_interrupted'})}))
-    expect(screen.getByPlaceholderText('Message Portal...')).toBeDisabled()
+    expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+    expect(screen.queryByTitle('Send')).toBeNull()
     expect(screen.getByTitle('Stop')).toBeEnabled()
   })
 
@@ -2159,11 +2329,11 @@ describe('Pixel', () => {
       return response({ aborted })
     })
     render(<Pixel />)
-    await screen.findByText('Activity unknown')
+    await screen.findByText('Portal can’t confirm your last request has finished.')
     expect(screen.queryByTitle('Stop')).not.toBeInTheDocument()
     state = 'active'
-    fireEvent.click(screen.getByText('Check activity again'))
-    await screen.findByText('Working in this chat')
+    // The next check, on a growing interval, finds the work still running.
+    await screen.findByText('Working in this chat', {}, { timeout: 3000 })
     expect(screen.getByRole('textbox')).toBeDisabled()
     fireEvent.click(screen.getByTitle('Stop'))
     await screen.findByRole('alert')
@@ -2190,9 +2360,11 @@ describe('Pixel', () => {
     await screen.findByTitle('Stop')
     fireEvent.click(screen.getByTitle('Stop'))
     state = 'terminal'
-    await screen.findByText(/previous request is no longer active/, {}, { timeout: 3000 })
+    await screen.findByText(CUT_OFF, {}, { timeout: 3000 })
     await act(async () => { finishCancel(response({ aborted: true })) })
-    expect(screen.queryByText('Response stopped')).not.toBeInTheDocument()
+    // The late acknowledgement never rewrites the settled reply as a Stop.
+    expect(screen.queryByText(/Stopped by you/)).not.toBeInTheDocument()
+    expect(screen.getByText(CUT_OFF)).toBeInTheDocument()
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
     expect(screen.queryByTitle('Stop')).not.toBeInTheDocument()
   })
@@ -2209,15 +2381,15 @@ describe('Pixel', () => {
       return response({ state: 'active' })
     })
     render(<Pixel />)
-    await screen.findByText('Activity unknown')
-    fireEvent.click(screen.getByText('Check activity again'))
-    await screen.findByText('Activity unknown')
+    await screen.findByText('Portal can’t confirm your last request has finished.')
+    // Neither a failed lookup nor global activity counts as this chat's work.
+    await waitFor(() => expect(calls).toBe(2), { timeout: 3000 })
+    expect(screen.getByText('Portal can’t confirm your last request has finished.')).toBeVisible()
     expect(screen.queryByTitle('Stop')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByText('Check activity again'))
-    await screen.findByText('Working in this chat')
+    await screen.findByText('Working in this chat', {}, { timeout: 4000 })
   })
 
-  it('restored unknown activity permits an explicit exact-chat stop attempt without replay or false stopped claims', async () => {
+  it('restored unknown activity permits an explicit exact-chat Continue without replay, and says stopped only once confirmed', async () => {
     saveInterruptedChat()
     let aborted = false
     globalThis.fetch.mockImplementation(async (url, options) => {
@@ -2228,15 +2400,19 @@ describe('Pixel', () => {
       return response({ aborted })
     })
     render(<Pixel />)
-    await screen.findByText('Activity unknown')
+    await screen.findByText('Portal can’t confirm your last request has finished.')
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/cancel')).toBe(false)
-    fireEvent.click(screen.getByText('Try Stop previous work'))
-    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: 'Continue in this chat' }))
+    await screen.findByText('Portal could not confirm this chat is free yet. Try again in a moment.')
     expect(screen.queryByText('Response stopped')).not.toBeInTheDocument()
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
     aborted = true
-    fireEvent.click(screen.getByText('Try Stop previous work'))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue in this chat' }))
+    // Continue stops anything left over: only its confirmation says stopped,
+    // and the reply never claims Portal finished.
     await screen.findByText('Response stopped')
+    expect(screen.getByText(/Stopped by you/)).toBeInTheDocument()
+    expect(screen.queryByText(CUT_OFF)).not.toBeInTheDocument()
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
   })
@@ -2269,11 +2445,11 @@ describe('Pixel', () => {
     fireEvent.click(screen.getByTitle('Send'))
 
     // During streaming the Send button is replaced by a Stop button;
-    // the textarea itself is disabled.
+    // the textarea stays editable for the next message.
     await waitFor(() => {
       expect(screen.queryByTitle('Send')).not.toBeInTheDocument()
       const ta = screen.getByPlaceholderText('Message Portal...')
-      expect(ta).toBeDisabled()
+      expect(ta).toBeEnabled()
       expect(screen.getByText('Working')).toBeInTheDocument()
       expect(screen.getAllByText(/0:00 elapsed/).length).toBeGreaterThan(0)
       expect(screen.getByText('Thinking…')).toBeInTheDocument()
@@ -2577,7 +2753,7 @@ describe('Pixel', () => {
     expect(screen.queryByText(/private-upstream-secret/)).toBeNull()
   })
 
-  it('marks a stream that closes without DONE as interrupted', async () => {
+  it('keeps a stream that closes without DONE calm and checks it instead of calling it failed', async () => {
     globalThis.fetch.mockResolvedValueOnce(
       response({ available: true, model: 'pixel/default', detail: 'local' })
     )
@@ -2590,8 +2766,12 @@ describe('Pixel', () => {
     fireEvent.change(screen.getByPlaceholderText('Message Portal...'), { target: { value: 'test' } })
     fireEvent.click(screen.getByTitle('Send'))
 
-    await waitFor(() => expect(screen.getByText('Response interrupted.')).toBeInTheDocument())
+    expect(await screen.findByRole('status', { name: 'Last message' })).toBeVisible()
     expect(screen.getByText('Partial answer')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Continue in this chat' })).toBeEnabled()
+    expect(screen.queryByText(/Response interrupted|Connection interrupted|could not be received|Ended early/)).not.toBeInTheDocument()
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))).toMatchObject({ interrupted: true }))
+    expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).status).toBeUndefined()
   })
 
   it('preserves partial answers and ignores late content after an upstream error', async () => {

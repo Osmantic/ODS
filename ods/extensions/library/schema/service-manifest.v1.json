@@ -142,6 +142,26 @@
           "items": { "type": "string", "enum": ["amd", "nvidia", "apple", "cpu", "none", "all"] },
           "minItems": 1
         },
+        "host_requirements": {
+          "type": "object",
+          "description": "Hosts the service's image can run on, for an image upstream does not build for every CPU architecture or kernel page size. Outside them the Dashboard marks the service incompatible and refuses to prepare or enable it. Docker Desktop on macOS runs amd64 images under Rosetta 2, so architectures do not apply there.",
+          "properties": {
+            "architectures": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["amd64", "arm64"] },
+              "minItems": 1,
+              "uniqueItems": true,
+              "description": "Docker architectures the image runs on natively."
+            },
+            "max_page_size": {
+              "type": "integer",
+              "enum": [4096, 16384, 65536],
+              "description": "Largest kernel page size, in bytes, the image runs with (4096 for a jemalloc built for 4 KB pages)."
+            }
+          },
+          "minProperties": 1,
+          "additionalProperties": false
+        },
         "compose_file": {
           "type": "string",
           "description": "Relative path to compose fragment (e.g. compose.yaml)"

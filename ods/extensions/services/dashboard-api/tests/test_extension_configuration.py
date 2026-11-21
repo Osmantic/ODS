@@ -1,8 +1,11 @@
 import asyncio
+import base64
 import json
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+import yaml
 from fastapi import HTTPException
 from starlette.requests import Request
 
@@ -63,6 +66,48 @@ def test_invalid_requests_never_echo_secrets_or_reach_host(monkeypatch, payload,
         asyncio.run(extensions.extension_configure('demo', request(payload), 'test'))
     assert error.value.status_code == code
     assert 'private' not in str(error.value.detail)
+    host.assert_not_called()
+
+
+@pytest.fixture
+def langflow_definition(monkeypatch):
+    path = Path(__file__).resolve().parents[3] / 'library/services/langflow/manifest.yaml'
+    service = yaml.safe_load(path.read_text(encoding='utf-8'))['service']
+    monkeypatch.setattr(extensions, '_installation_plan_service', lambda service_id: service)
+
+
+@pytest.mark.parametrize('secret_key', [
+    # The shape produced by upstream secrets.token_urlsafe(32), including
+    # non-hex characters. Re-saving must not rotate or re-encode this key.
+    base64.urlsafe_b64encode(b'\xfb' * 32).decode().rstrip('='),
+    'a' * 64,
+])
+def test_langflow_existing_and_generated_keys_reach_host_unchanged(
+        monkeypatch, langflow_definition, secret_key):
+    values = {'LANGFLOW_SECRET_KEY': secret_key}
+    host = Mock(return_value={'service_id': 'langflow', 'status': 'saved',
+                              'saved_keys': ['LANGFLOW_SECRET_KEY']})
+    monkeypatch.setattr(extensions, 'request_agent_json', host)
+    response = asyncio.run(extensions.extension_configure(
+        'langflow', request({'values': values}), 'test'))
+    assert response.status_code == 200
+    assert response.headers['cache-control'] == 'no-store'
+    assert secret_key.encode() not in response.body
+    host.assert_called_once_with('POST', '/v1/extensions/configure',
+                                payload={'service_id': 'langflow', 'values': values}, timeout=30)
+
+
+@pytest.mark.parametrize('secret_key', ['', 'short-private-key', 'x' * 31])
+def test_langflow_short_keys_are_refused_before_host(monkeypatch, langflow_definition, secret_key):
+    host = Mock()
+    monkeypatch.setattr(extensions, 'request_agent_json', host)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(extensions.extension_configure(
+            'langflow', request({'values': {'LANGFLOW_SECRET_KEY': secret_key}}), 'test'))
+    assert error.value.status_code == 422
+    assert error.value.detail['code'] == 'invalid_configuration'
+    if secret_key:
+        assert secret_key not in json.dumps(error.value.detail)
     host.assert_not_called()
 
 
