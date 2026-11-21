@@ -13,40 +13,54 @@ $windowsDir = Join-Path $root "installers\windows"
 $python = Get-Command python.exe -ErrorAction SilentlyContinue
 if (-not $python) { $python = Get-Command python3.exe -ErrorAction Stop }
 
-$dir = Join-Path ([IO.Path]::GetTempPath()) ("ods agent spaced " + [guid]::NewGuid())
-$installDir = Join-Path $dir "John O'Smith\ods"
-New-Item -ItemType Directory -Path (Join-Path $installDir "bin") -Force | Out-Null
+function Assert-HostAgentArgv([string]$InstallLeaf) {
+    $dir = Join-Path ([IO.Path]::GetTempPath()) ("ods agent spaced " + [guid]::NewGuid())
+    $installDir = (Join-Path $dir "John O'Smith") + '' + $InstallLeaf
+    New-Item -ItemType Directory -Path (Join-Path $installDir "bin") -Force | Out-Null
+    try {
+        $agentScript = Join-Path $installDir "bin\ods-host-agent.py"
+        $pidFile = Join-Path $installDir "data\host agent.pid"
+        [IO.File]::WriteAllText($agentScript,
+            "import json, sys`nopen(sys.argv[2] + '.argv', 'w', encoding='utf-8').write(json.dumps(sys.argv[1:]))`n",
+            [Text.UTF8Encoding]::new($false))
+
+        $line = ConvertTo-ODSHostAgentArgumentLine -PrefixArgs @() -AgentScript $agentScript `
+            -Port 7710 -PidFile $pidFile -InstallDir $installDir
+
+        # Reproduce the generated task script: the line is embedded as a
+        # single-quoted literal and handed to Start-Process in a child powershell.
+        $literal = "'" + ($line -replace "'", "''") + "'"
+        $pyLiteral = "'" + ($python.Source -replace "'", "''") + "'"
+        $command = "`$agentArgs = $literal`nStart-Process -FilePath $pyLiteral -ArgumentList `$agentArgs -Wait -WindowStyle Hidden"
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded
+        if ($LASTEXITCODE -ne 0) { throw "launcher child exited $LASTEXITCODE" }
+
+        # argv[2] is the port, so the record lands at a fixed path.
+        $argvPath = "7710.argv"
+        if (-not (Test-Path -LiteralPath $argvPath)) {
+            throw "host agent did not start for install dir [$installDir] (no argv record)"
+        }
+        $got = @([IO.File]::ReadAllText((Resolve-Path $argvPath)) | ConvertFrom-Json) | ForEach-Object { $_ }
+        Remove-Item -LiteralPath $argvPath -Force
+        $expected = @('--port', '7710', '--pid-file', $pidFile, '--install-dir', $installDir)
+        if (($got -join '|') -cne ($expected -join '|')) {
+            throw "host agent argv split: got [$($got -join '|')], expected [$($expected -join '|')]"
+        }
+    } finally {
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Push-Location ([IO.Path]::GetTempPath())
 try {
-    $agentScript = Join-Path $installDir "bin\ods-host-agent.py"
-    $pidFile = Join-Path $installDir "data\host agent.pid"
-    $outFile = Join-Path $dir "argv.json"
-    [IO.File]::WriteAllText($agentScript,
-        "import json, sys`nopen(sys.argv[-1] + '.argv', 'w', encoding='utf-8').write(json.dumps(sys.argv[1:]))`n",
-        [Text.UTF8Encoding]::new($false))
-
-    $line = ConvertTo-ODSHostAgentArgumentLine -PrefixArgs @() -AgentScript $agentScript `
-        -Port 7710 -PidFile $pidFile -InstallDir $installDir
-
-    # Reproduce the generated task script: the line is embedded as a
-    # single-quoted literal and handed to Start-Process in a child powershell.
-    $literal = "'" + ($line -replace "'", "''") + "'"
-    $pyLiteral = "'" + ($python.Source -replace "'", "''") + "'"
-    $command = "`$agentArgs = $literal`nStart-Process -FilePath $pyLiteral -ArgumentList `$agentArgs -Wait -WindowStyle Hidden"
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded
-    if ($LASTEXITCODE -ne 0) { throw "launcher child exited $LASTEXITCODE" }
-
-    $argvPath = "$installDir.argv"
-    if (-not (Test-Path -LiteralPath $argvPath)) {
-        throw "host agent did not receive its install dir intact (no argv record at $argvPath)"
-    }
-    $got = @([IO.File]::ReadAllText($argvPath) | ConvertFrom-Json) | ForEach-Object { $_ }
-    $expected = @('--port', '7710', '--pid-file', $pidFile, '--install-dir', $installDir)
-    if (($got -join '|') -cne ($expected -join '|')) {
-        throw "host agent argv split: got [$($got -join '|')], expected [$($expected -join '|')]"
-    }
+    Assert-HostAgentArgv 'ods'
+    # Plus signs and a trailing backslash must reach python unchanged (CRT rules
+    # double only the backslashes that precede a quote).
+    Assert-HostAgentArgv 'ods+'
+    Assert-HostAgentArgv 'ods'
 } finally {
-    Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    Pop-Location
 }
 
 foreach ($rel in @("ods.ps1", "phases\07-devtools.ps1")) {

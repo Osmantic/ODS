@@ -59,6 +59,6 @@ function ConvertTo-ODSHostAgentArgumentLine {
     )
     $values = @($PrefixArgs) + @($AgentScript, '--port', [string]$Port, '--pid-file', $PidFile, '--install-dir', $InstallDir)
     return (@($values | ForEach-Object {
-        '"' + [regex]::Replace([regex]::Replace([string]$_, '(\*)"', '$1$1\"'), '(\+)$', '$1$1') + '"'
+        '"' + [regex]::Replace([regex]::Replace([string]$_, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
     }) -join ' ')
 }
