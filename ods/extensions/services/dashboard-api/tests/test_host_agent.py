@@ -2794,7 +2794,7 @@ class TestUpdateWire:
         monkeypatch.setattr(
             _mod,
             "_run_update_script",
-            lambda action, *args, timeout: subprocess.CompletedProcess(
+            lambda action, *args, timeout, lifecycle_fd=None: subprocess.CompletedProcess(
                 ["ods-update", action, *args],
                 2,
                 "update available\n",
@@ -2842,7 +2842,7 @@ class TestUpdateWire:
         monkeypatch.setattr(
             _mod,
             "_run_update_script",
-            lambda action, *args, timeout: subprocess.CompletedProcess(
+            lambda action, *args, timeout, lifecycle_fd=None: subprocess.CompletedProcess(
                 ["ods-update", action, *args],
                 0,
                 "updated\n",
@@ -2934,7 +2934,7 @@ class TestUpdateWire:
         install_dir = tmp_path / "ods"
         install_dir.mkdir()
 
-        def fail_update(action, *args, timeout):
+        def fail_update(action, *args, timeout, lifecycle_fd=None):
             raise ValueError("boom")
 
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)

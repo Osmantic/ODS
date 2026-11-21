@@ -30,6 +30,10 @@ class BackupPublicationTests(unittest.TestCase):
         self.install.mkdir()
         (self.install / "scripts").mkdir()
         shutil.copy2(ODS / "ods-update.sh", self.install / "ods-update.sh")
+        (self.install / 'installers/lib').mkdir(parents=True)
+        (self.install / 'bin').mkdir()
+        shutil.copy2(ODS / 'installers/lib/model-lifecycle-lock.sh', self.install / 'installers/lib/')
+        shutil.copy2(ODS / 'bin/model_lifecycle_lock.py', self.install / 'bin/')
         shutil.copy2(HELPER, self.install / "scripts" / HELPER.name)
         (self.install / ".env").write_text("ODS_VERSION=2.0.0\n")
         (self.install / ".version").write_text('{"version":"2.0.0"}\n')
@@ -53,6 +57,8 @@ class BackupPublicationTests(unittest.TestCase):
         # CLI; the test injects a contender only at the final syscall boundary.
         script = f'''#!{sys.executable}
 import os,pathlib,subprocess,sys
+if pathlib.Path(sys.argv[0]).name=='python3' and sys.argv[1].endswith('/model_lifecycle_lock.py'):
+ os.execv({sys.executable!r},[{sys.executable!r},*sys.argv[1:]])
 source,destination=map(pathlib.Path,sys.argv[-2:])
 mode={mode!r}
 if mode=='directory':

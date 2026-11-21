@@ -32,6 +32,9 @@ ENV
     cp "$install/.env" "$tmp/$mode/env-before"
     if [[ "$mode" == real_failure || "$mode" == retention_zero ]]; then
         cp "$root_dir/ods-update.sh" "$install/ods-update.sh"
+        mkdir -p "$install/installers/lib" "$install/bin"
+        cp "$root_dir/installers/lib/model-lifecycle-lock.sh" "$install/installers/lib/"
+        cp "$root_dir/bin/model_lifecycle_lock.py" "$install/bin/"
         if [[ "$mode" == real_failure ]]; then : > "$env_home/.ods"; fi
     elif [[ "$mode" == success ]]; then
         cat > "$install/ods-update.sh" <<'BACKUP'
@@ -112,6 +115,7 @@ CURL
         return 1
     fi
     if [[ "$mode" == real_failure ]] && ! grep -q 'Creating backup:' "$tmp/$mode/update.log"; then
+        cat "$tmp/$mode/update.log" >&2
         printf '[FAIL] shipped snapshot helper was not reached\n' >&2
         return 1
     fi

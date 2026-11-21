@@ -123,6 +123,16 @@ def test_qwen_turns_thinking_off_with_its_own_template_argument(vllm):
     assert vllm.calls[-1][2]["payload"]["chat_template_kwargs"] == {"enable_thinking": False}
 
 
+def test_portal_contract_uses_the_real_vllm_readiness_path_without_gguf(vllm):
+    contract = {"model": ENV["LLM_MODEL"], "contextLength": 131072,
+                "maxTokens": 8192, "reasoning": False}
+    assert agent._prove_pixel_model_contract(ENV, contract)
+    assert [call[1] for call in vllm.calls] == ["/health", "/v1/models", "/v1/chat/completions"]
+    assert vllm.calls[-1][2]["payload"]["model"] == SERVED
+    vllm.answer = completion("Other-Model")
+    assert not agent._prove_pixel_model_contract(ENV, contract)
+
+
 def test_a_short_or_missing_served_context_never_proves_the_route(vllm):
     for listed in (models(context=32768), json.dumps({"data": [{"id": SERVED}]}), models("Other-Model")):
         vllm.listed, vllm.calls = listed, []

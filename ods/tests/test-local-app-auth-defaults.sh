@@ -81,9 +81,9 @@ require 'service.*open-webui.*network_access_is_enabled' "$MACOS_CLI" \
 require 'proxy_is_enabled \|\| bind_is_network' "$MACOS_CLI" \
     "macOS must require Open WebUI sign-in for a network BIND_ADDRESS as well as the proxy"
 # `update` recreates every container, Open WebUI included.
-require_before "$LINUX_CLI" cmd_update 'if _ods_cli_network_access_enabled; then' 'up -d --force-recreate' \
+require_before "$LINUX_CLI" _ods_cli_do_update 'if _ods_cli_network_access_enabled; then' 'up -d --force-recreate' \
     "Linux update must check network access before recreating Open WebUI"
-require_before "$LINUX_CLI" cmd_update '^ +_ods_cli_require_proxy_auth$' 'up -d --force-recreate' \
+require_before "$LINUX_CLI" _ods_cli_do_update '^ +_ods_cli_require_proxy_auth$' 'up -d --force-recreate' \
     "Linux update must enforce sign-in before recreating Open WebUI"
 require_before "$MACOS_CLI" cmd_update 'if network_access_is_enabled; then' '^ +dashboard_compose_up "\$flags" update \|\| return 1$' \
     "macOS update must check network access before recreating Open WebUI"

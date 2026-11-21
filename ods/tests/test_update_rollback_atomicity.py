@@ -47,6 +47,10 @@ class RollbackAtomicity(unittest.TestCase):
         self.root = Path(self.temp.name) / 'install with spaces'
         self.root.mkdir()
         shutil.copy2(TARGET, self.root / 'ods-update.sh')
+        (self.root / 'installers/lib').mkdir(parents=True)
+        (self.root / 'bin').mkdir()
+        shutil.copy2(ROOT / 'installers/lib/model-lifecycle-lock.sh', self.root / 'installers/lib/')
+        shutil.copy2(ROOT / 'bin/model_lifecycle_lock.py', self.root / 'bin/')
         # Real reviewed native guard, without importing code from the fixture target.
         (self.root / 'scripts').mkdir()
         (self.root / 'scripts/source-update-preflight.py').symlink_to(ROOT / 'scripts/source-update-preflight.py')
@@ -66,7 +70,7 @@ class RollbackAtomicity(unittest.TestCase):
         (self.snap / 'config-litellm/config.yaml').write_text('SNAPSHOT')
         (self.snap / 'config-litellm/link.yaml').symlink_to('config.yaml')
         self.bin = self.root / 'bin'
-        self.bin.mkdir()
+        self.bin.mkdir(exist_ok=True)
         for tool in ('cp', 'mv'):
             path = self.bin / tool
             path.write_text('#!' + sys.executable + '\n' + WRAPPER)

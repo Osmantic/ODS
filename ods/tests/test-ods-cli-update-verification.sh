@@ -26,7 +26,10 @@ trap 'rm -rf "$tmp_dir"' EXIT
 mkdir -p "$install_dir/data" "$bin_dir"
 cp "$root_dir/docker-compose.base.yml" "$install_dir/docker-compose.base.yml"
 cp "$root_dir/manifest.json" "$install_dir/manifest.json"
-mkdir -p "$install_dir/installers/lib"
+mkdir -p "$install_dir/installers/lib" "$install_dir/bin"
+cp "$root_dir/installers/lib/model-lifecycle-lock.sh" "$install_dir/installers/lib/"
+cp "$root_dir/bin/model_lifecycle_lock.py" "$install_dir/bin/"
+export ODS_MODEL_LIFECYCLE_LOCK_ROOT="$tmp_dir/locks"
 cp "$root_dir/installers/lib/compose-images.sh" "$install_dir/installers/lib/compose-images.sh"
 printf '%s\n' '-f docker-compose.base.yml' > "$install_dir/.compose-flags"
 
@@ -142,10 +145,20 @@ exit 0
 SLEEP
 
 chmod +x "$bin_dir/docker" "$bin_dir/sleep"
+for command_name in systemctl launchctl sudo; do
+    cat > "$bin_dir/$command_name" <<'SERVICE'
+#!/bin/sh
+printf '%s\n' "$0 $*" >> "${TEST_HOST_SERVICE_CALLS:?}"
+exit 90
+SERVICE
+    chmod +x "$bin_dir/$command_name"
+done
+export TEST_HOST_SERVICE_CALLS="$tmp_dir/host-service-calls"
 : > "$docker_log"
 
 PATH="$bin_dir:$PATH" \
 INSTALL_DIR="$install_dir" ODS_HOME="$install_dir" \
+ODS_AGENT_FORCE_SESSION=true \
 NO_COLOR=1 \
 TEST_DOCKER_LOG="$docker_log" \
 TEST_DOCKER_PULL_COUNT="$pull_count_file" \
@@ -163,6 +176,10 @@ grep -q 'Update complete' "$tmp_dir/update.out" || {
     printf '[FAIL] update did not reach completion\n' >&2
     exit 1
 }
+if [[ -s "$TEST_HOST_SERVICE_CALLS" ]]; then
+    printf '[FAIL] fixture update attempted to control an installed host service\n' >&2
+    exit 1
+fi
 
 grep -q -- 'pull ghcr.io/open-webui/open-webui:main' "$docker_log" || {
     cat "$docker_log" >&2

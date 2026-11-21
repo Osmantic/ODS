@@ -1875,6 +1875,8 @@ class TestComposeRestartLlamaServer:
             lambda: ["--env-file", ".env", "-f", "docker-compose.base.yml"],
         )
         monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(_mod, "_compose_stage_engine", lambda service, flags: calls.append(
+            ["docker", "compose", *flags, "up", "-d", "--force-recreate", "--no-deps", service]))
 
         _compose_restart_llama_server({"GPU_BACKEND": backend})
 
@@ -1913,6 +1915,24 @@ class TestComposeRestartLlamaServer:
                 "ROCR_VISIBLE_DEVICES": "0,1,2",
             }
         ]
+
+
+@pytest.mark.parametrize("backend,endpoint", [("llama-server", "llama-server-default"), ("vllm", "vllm-default")])
+def test_activation_publishes_proven_selected_backend(monkeypatch, tmp_path, backend, endpoint):
+    calls = []
+    monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(_mod._switchboard_state, "record_verified_route", lambda path, **kw: calls.append(kw))
+    env = {"LLM_BACKEND": backend, "VLLM_SERVED_MODEL": "nvidia/Qwen", "CTX_SIZE": "2048"}
+    proof = {"identity": "nvidia/Qwen", "contextLength": 2048, "contextVerified": True}
+    _mod._publish_activation_route(env, "catalog-model", proof, {"chat": True})
+    assert calls[0]["backend_kind"] == backend
+    assert calls[0]["endpoint_id"] == endpoint
+    assert calls[0]["runtime_model_id"] == "nvidia/Qwen"
+    assert calls[0]["context_length"] == 2048
+    if backend == "vllm":
+        with pytest.raises(RuntimeError, match="different vLLM served identity"):
+            _mod._publish_activation_route(env, "catalog-model", {**proof, "identity": "other/model"}, {})
+        assert len(calls) == 1
 
 
 class TestRecreateLlamaServerFromInspect:

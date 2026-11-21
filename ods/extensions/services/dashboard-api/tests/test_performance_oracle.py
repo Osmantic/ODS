@@ -19,7 +19,9 @@ from performance_oracle import (
     read_env_file_value,
     read_env_value,
     read_persisted_env_value,
+    vllm_model_row,
 )
+from model_vllm import model_dir_name, require_valid
 
 
 def _gpu(name="NVIDIA GeForce RTX 4060", total_mb=8192, backend="nvidia"):
@@ -2524,3 +2526,222 @@ def test_memory_budget_discrete_gpu_remains_bounded_by_vram(tmp_path, data_dir, 
     payload, entry, plan = _memory_budget_payload(tmp_path, data_dir, monkeypatch, ram=128, backend="nvidia", total_mb=16384)
     assert entry["fitsVram"] is False
     assert payload["gpu"]["modelMemoryBudgetGb"] == plan["capacity_gb"] == 16
+
+
+def _vllm_entry(entry_id="vllm-test", *, files=None, revision="a" * 40):
+    entry = {
+        "id": entry_id,
+        "name": f"vLLM {entry_id}",
+        "runtime": "vllm",
+        "hf_repo": "owner/model",
+        "revision": revision,
+        "served_model_name": entry_id,
+        "llm_model_name": entry_id,
+        "context_length": 32768,
+        "min_gpu_mib": 8192,
+        "compute_capability": ["8.0"],
+        "reasoning": "off",
+        "tool_call_parser": "hermes",
+        "reasoning_parser": "hermes",
+        "thinking_template_kwargs": {
+            "off": {"enable_thinking": False},
+            "low": {"enable_thinking": True},
+            "medium": {"enable_thinking": True},
+            "high": {"enable_thinking": True},
+        },
+        "vllm_args": [
+            "--max-model-len=32768",
+            "--tool-call-parser=hermes",
+            "--reasoning-parser=hermes",
+            "--enable-auto-tool-choice",
+        ],
+        "selection": {"discrete": 0, "unified": 0, "cpu": 0, "vllm": 1},
+        "files": files or [
+            {"path": "config.json", "size": 100, "git_blob_sha1": "b" * 40},
+            {"path": "model.safetensors", "size": 4096, "sha256": "c" * 64},
+        ],
+    }
+    require_valid(entry)
+    return entry
+
+
+def _write_vllm_snapshot(models_dir, entry, *, complete=True):
+    root = models_dir / model_dir_name(entry)
+    root.mkdir(parents=True, exist_ok=True)
+    for item in entry["files"]:
+        target = root / item["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        size = item["size"] if complete else max(item["size"] - 1, 0)
+        target.write_bytes(b"x" * size)
+    return root
+
+
+def test_vllm_rows_listed_on_every_runtime_exactly_once(data_dir, tmp_path):
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    entry = _vllm_entry()
+    for runtime in ("llama-server", "vllm", "turboquant"):
+        (install_dir / ".env").write_text(f"LLM_BACKEND={runtime}\n", encoding="utf-8")
+        payload = build_models_payload(
+            _gpu(), None, 0, install_dir, data_dir,
+            catalog=[entry], evidence=[], downloaded_files_override={},
+        )
+        rows = [m for m in payload["models"] if m["id"] == entry["id"]]
+        assert len(rows) == 1, runtime
+        row = rows[0]
+        assert row["metadata"]["source"] == "ods"
+        assert row["metadata"]["runtime"] == "vllm"
+        assert row["fitsVram"] is None
+        assert row["activationSupport"]["available"] is False
+        assert "contextOptions" not in row
+        assert row["status"] == "available"
+        assert row["configured"] is False
+        assert row["metadata"]["canDownload"] is True
+        assert row["metadata"]["canDelete"] is False
+
+
+def test_vllm_row_status_tracks_snapshot_presence(data_dir, tmp_path):
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    (install_dir / ".env").write_text("LLM_BACKEND=vllm\n", encoding="utf-8")
+    entry = _vllm_entry()
+    models_dir = data_dir / "models"
+    models_dir.mkdir(parents=True)
+
+    missing = build_models_payload(
+        _gpu(), None, 0, install_dir, data_dir,
+        catalog=[entry], evidence=[], downloaded_files_override={},
+    )
+    assert missing["models"][0]["status"] == "available"
+    assert missing["models"][0]["metadata"]["snapshotState"] == "missing"
+
+    _write_vllm_snapshot(models_dir, entry, complete=False)
+    partial = build_models_payload(
+        _gpu(), None, 0, install_dir, data_dir,
+        catalog=[entry], evidence=[], downloaded_files_override={},
+    )
+    assert partial["models"][0]["status"] == "available"
+    assert partial["models"][0]["metadata"]["snapshotState"] == "partial"
+    assert partial["models"][0]["metadata"]["canDelete"] is True
+
+    _write_vllm_snapshot(models_dir, entry, complete=True)
+    complete = build_models_payload(
+        _gpu(), None, 0, install_dir, data_dir,
+        catalog=[entry], evidence=[], downloaded_files_override={},
+    )
+    row = complete["models"][0]
+    assert row["status"] == "downloaded"
+    assert row["metadata"]["snapshotState"] == "complete"
+    assert row["metadata"]["manifestBytes"] == 4196
+    assert row["metadata"]["canDelete"] is True
+
+
+def test_vllm_row_unsafe_snapshot_blocks_download_and_delete(data_dir, tmp_path):
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    (install_dir / ".env").write_text("LLM_BACKEND=vllm\n", encoding="utf-8")
+    entry = _vllm_entry()
+    models_dir = data_dir / "models"
+    root = models_dir / model_dir_name(entry)
+    root.mkdir(parents=True)
+    (root / "config.json").write_bytes(b"x" * 100)
+    (root / "model.safetensors").mkdir()
+
+    payload = build_models_payload(
+        _gpu(), None, 0, install_dir, data_dir,
+        catalog=[entry], evidence=[], downloaded_files_override={},
+    )
+    row = payload["models"][0]
+    assert row["metadata"]["snapshotState"] == "unsafe"
+    assert row["status"] == "available"
+    assert row["metadata"]["canDownload"] is False
+    assert row["metadata"]["canDelete"] is False
+
+
+def test_vllm_configured_entry_loaded_only_when_runtime_matches(data_dir, tmp_path):
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    entry = _vllm_entry()
+    models_dir = data_dir / "models"
+    models_dir.mkdir(parents=True)
+    _write_vllm_snapshot(models_dir, entry, complete=True)
+
+    (install_dir / ".env").write_text(
+        "LLM_BACKEND=vllm\nLLM_MODEL=vllm-test\n", encoding="utf-8",
+    )
+    loaded = build_models_payload(
+        _gpu(), "vllm-test", 0, install_dir, data_dir,
+        catalog=[entry], evidence=[], downloaded_files_override={},
+    )
+    row = loaded["models"][0]
+    assert row["configured"] is True
+    assert row["status"] == "loaded"
+    assert row["metadata"]["canDownload"] is False
+    assert row["metadata"]["canDelete"] is False
+    assert loaded["currentModel"] == entry["id"]
+    assert loaded["configuredModel"] == entry["id"]
+
+    # Configured but not loaded: still protected, still downloaded.
+    idle = build_models_payload(
+        _gpu(), None, 0, install_dir, data_dir,
+        catalog=[entry], evidence=[], downloaded_files_override={},
+    )
+    assert idle["models"][0]["status"] == "downloaded"
+    assert idle["models"][0]["configured"] is True
+    assert idle["models"][0]["metadata"]["canDownload"] is False
+    assert idle["models"][0]["metadata"]["canDelete"] is False
+
+    # Loaded model alone does not make it configured on a non-vllm runtime.
+    (install_dir / ".env").write_text("LLM_BACKEND=llama-server\n", encoding="utf-8")
+    other = build_models_payload(
+        _gpu(), "vllm-test", 0, install_dir, data_dir,
+        catalog=[entry], evidence=[], downloaded_files_override={},
+    )
+    assert other["models"][0]["configured"] is False
+    assert other["models"][0]["status"] == "downloaded"
+
+
+def test_vllm_configured_entry_protected_even_when_snapshot_missing(data_dir, tmp_path):
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    (install_dir / ".env").write_text(
+        "LLM_BACKEND=vllm\nLLM_MODEL=vllm-test\n", encoding="utf-8",
+    )
+    entry = _vllm_entry()
+    payload = build_models_payload(
+        _gpu(), None, 0, install_dir, data_dir,
+        catalog=[entry], evidence=[], downloaded_files_override={},
+    )
+    row = payload["models"][0]
+    assert row["configured"] is True
+    assert row["status"] == "available"
+    assert row["metadata"]["canDownload"] is False
+    assert row["metadata"]["canDelete"] is False
+
+
+def test_vllm_unknown_external_model_remains_separate(data_dir, tmp_path):
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    (install_dir / ".env").write_text("LLM_BACKEND=vllm\n", encoding="utf-8")
+    entry = _vllm_entry()
+    payload = build_models_payload(
+        _gpu(), "external-model", 0, install_dir, data_dir,
+        catalog=[entry], evidence=[], downloaded_files_override={},
+    )
+    ids = [m["id"] for m in payload["models"]]
+    assert entry["id"] in ids
+    external = [m for m in payload["models"] if m["id"].startswith("runtime-")]
+    assert len(external) == 1
+    assert external[0]["name"] == "external-model"
+    assert external[0]["status"] == "loaded"
+    assert payload["currentModel"] is None
+
+
+def test_vllm_model_row_defaults_are_compatible(data_dir, tmp_path):
+    entry = _vllm_entry()
+    row = vllm_model_row(entry, None, None)
+    assert row["status"] == "available"
+    assert row["configured"] is False
+    assert row["fitsVram"] is None
+    assert row["metadata"]["source"] == "ods"
+    assert row["metadata"]["runtime"] == "vllm"
