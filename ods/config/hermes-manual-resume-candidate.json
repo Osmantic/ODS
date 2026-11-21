@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "status": "experimental-local-only",
+  "published": false,
+  "requiredOptIn": "ODS_TALK_DURABLE=true",
+  "localTag": "ods-hermes:talk8137-local",
+  "localImageId": "sha256:2c120142e731c9439cee9bb4336b3afac38246d3c5fe09c912a00d3a4ae9738d",
+  "localPlatform": "linux/amd64",
+  "upstreamImage": "nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7",
+  "upstreamSourceCommit": "f97608f178d1ffeca59860195ab7da295f7c8e5f",
+  "contracts": [
+    "session.resume.manual",
+    "session.create.manual"
+  ],
+  "patchSha256": "516e729a8bafa0941acb7c90113d47249e710490b501e97f282554161cc8dabe",
+  "sourceFiles": {
+    "tui_gateway/methods_session.py": {
+      "before": "6510098165745c41f92a53cbe35ec7bbf8cbbf6623ffc535f46e960b5a320623",
+      "after": "def2a92c6b03e033cfb848c4593d1bdc40128c87e4dff9550f66b53ae68f0857"
+    },
+    "tui_gateway/session_auto_continue.py": {
+      "before": "69dfb58c18fa365fb7c2e9f753e671ad49a071699502d534b2ef9b883573fc34",
+      "after": "7f6429767bb49539ea4cb122dbd9bb5e460fc90db3e93a1a269da76b88312f55"
+    },
+    "tui_gateway/server.py": {
+      "before": "164ad8a1b43671c2a47829502f9a40f4355fc8060f2f6c2506b8aec44f1c0a51",
+      "after": "cb134df5f3aebc2c98dea675bf96bc57795a69083484c05056b2fe8dab31254a"
+    },
+    "tui_gateway/contracts/sessions.py": {
+      "before": "d3fa2630e3bc571f42ca4b889af317c2409f4222967db23244587f6eab64fe1d",
+      "after": "cc59ca5428318a7e40cb540f229273057a8e002408a2585c020d16a18b67f803"
+    }
+  },
+  "generated": {
+    "apps/shared/src/gateway-contract.generated.ts": "8ab6681671856965ee29712f46a9ac30bfec25553e7fedfb0368394261d6d407",
+    "apps/shared/src/gateway-contract.openrpc.json": "adc18ec6bfda2b9df5322b8ab283edd72bf2ff2e57d2afc1e88dfe5bdd608697"
+  },
+  "licenseSha256": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6",
+  "defaultProductionImageChanged": false,
+  "qualifiedForRelease": false
+}
