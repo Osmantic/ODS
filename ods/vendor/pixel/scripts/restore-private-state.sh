@@ -274,7 +274,7 @@ if [[ -n "$receipt" ]]; then
   source_pixel=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("pixelVersion","")[:64])' "$audit")
   target_pixel=$(pixel_read_release_version "$ROOT")
   [[ "$source_pixel" == "3.2.2" ]] || pixel_die "Source Pixel version is not 3.2.2"
-  [[ "$target_pixel" == "4.3.33" ]] || pixel_die "Target Pixel version is not 4.3.33"
+  [[ "$target_pixel" == "4.3.34" ]] || pixel_die "Target Pixel version is not 4.3.34"
 fi
 
 mapfile -d '' roots < <(python3 - "$manifest_file" <<'PY'
@@ -634,6 +634,11 @@ if [[ -n "$migration_journal" && -n "$migration_spec" ]]; then
 else
   pixel_systemctl daemon-reload >/dev/null 2>&1 || true
   for unit in "${units[@]}"; do pixel_systemctl restart "$unit" >/dev/null; done
+fi
+# The timer refreshes later; refresh once now so the Source Broker's status.json exists
+# before verify (a backup from before 4.3.34 has none). A failed refresh fails restore.
+if [[ ${PIXEL_SOURCE_BROKER_ENABLED:-0} == 1 ]]; then
+  pixel_systemctl start "${PIXEL_SOURCE_BROKER_UNIT:-pixel-source-broker.service}" >/dev/null
 fi
 # Reader ACLs are target deployment policy, not authenticated legacy content. Rebuild
 # only the bounded public projections after broker startup has regenerated its files and

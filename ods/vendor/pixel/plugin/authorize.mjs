@@ -56,6 +56,8 @@ const server = createServer(async (request, response) => {
       client_id: client.client_id, client_secret: client.client_secret,
       refresh_token: token.refresh_token, token_uri: client.token_uri,
       scope: scopes.join(" "), email: account,
+      // Google's granular consent can grant fewer scopes than requested; the broker reads this.
+      ...(typeof token.scope === "string" ? { grantedScope: token.scope } : {}),
     });
     response.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end("Pixel authorization complete. You may close this tab.");
     console.log("Authorization complete; token stored outside the repository.");
