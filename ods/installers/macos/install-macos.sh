@@ -164,6 +164,19 @@ while [[ $# -gt 0 ]]; do
         --all)           ALL_FEATURES=true; shift ;;
         --cloud)         CLOUD_MODE=true; shift ;;
         --no-bootstrap)  NO_BOOTSTRAP=true; shift ;;
+        # The vLLM engine needs Linux and an NVIDIA datacenter GPU. macOS
+        # always runs llama.cpp, so llama-server is accepted and changes
+        # nothing (get-ods.sh passes the same options to every installer).
+        --llm-backend)
+            case "${2:-}" in
+                llama-server) shift 2 ;;
+                vllm)
+                    echo "--llm-backend vllm needs Linux with an NVIDIA GPU; macOS runs llama.cpp. Nothing was changed." >&2
+                    echo "Rerun without --llm-backend, or with --llm-backend llama-server." >&2
+                    echo "Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+                    exit 1 ;;
+                *) echo "--llm-backend requires vllm or llama-server" >&2; exit 1 ;;
+            esac ;;
         # API mode is not in this installer yet; say so and name the way
         # to connect an API after installing, not "Unknown option".
         --external-llm-url|--external-llm-provider|--external-llm-model|--external-llm-key-file|--external-llm-key-env|--no-external-llm|--reuse-external-llm)
@@ -898,6 +911,19 @@ _active_colima_hint_args() {
     fi
 }
 
+# Starting a stopped VM must keep its existing resource budget. Colima stop
+# can remove its Docker context, so an unresolved profile needs owner selection.
+_show_colima_start_hint() {
+    local profile_args
+    COLIMA_PROFILE=""
+    if ! _resolve_active_colima_profile; then
+        ai "Run \`colima list\` and start your existing Colima profile, then re-run this installer."
+        return 0
+    fi
+    profile_args="$(_active_colima_hint_args)"
+    ai "Run \`colima start${profile_args}\` then re-run this installer."
+}
+
 _detect_colima_private_network() {
     local status_json interface_name colima_config preferred_route
     COLIMA_VM_IP=""
@@ -1015,8 +1041,8 @@ _require_docker_cpu_budget() {
             colima)
                 local profile_args
                 profile_args="$(_active_colima_hint_args)"
-                ai "Stop and re-create the Colima VM with more CPUs:"
-                ai "    colima stop${profile_args} && colima start${profile_args} --cpu ${min_cpus} --memory 12 --disk 60"
+                ai "Restart the existing Colima VM with more CPUs:"
+                ai "    colima stop${profile_args} && colima start${profile_args} --cpu ${min_cpus}"
                 ai "Then re-run this installer."
                 ;;
             desktop)
@@ -1261,7 +1287,7 @@ if ! $DOCKER_RUNNING; then
     ai_err "Docker daemon is not responding."
     case "${DOCKER_BACKEND:-unknown}" in
         desktop)  ai "Start Docker Desktop from /Applications or the menu bar, then re-run this installer." ;;
-        colima)   ai "Run \`colima start\` (e.g. \`colima start --cpu 6 --memory 12 --disk 60\`) then re-run this installer." ;;
+        colima)   _show_colima_start_hint ;;
         rancher)  ai "Open Rancher Desktop and wait for the daemon to come up, then re-run this installer." ;;
         orbstack) ai "Open OrbStack and wait for the daemon to come up, then re-run this installer." ;;
         *)        ai "Start your docker daemon (Docker Desktop, Colima, Rancher Desktop, OrbStack, ...) and re-run this installer." ;;
@@ -2369,8 +2395,8 @@ else
         macos_install_native_llama "$LLAMA_SERVER_BIN" "$LLAMA_CPP_RELEASE_TAG" \
             "$LLAMA_CPP_MACOS_ASSET" "$LLAMA_CPP_MACOS_URL" || exit 1
 
-        # Start native llama-server with Metal
-        ai "Starting native llama-server (Metal)..."
+        # Resolve the exact launch profile before preparing dependent services.
+        ai "Preparing native llama-server (Metal)..."
         MODEL_FULL_PATH="$MACOS_NATIVE_MODEL_PATH"
 
         mkdir -p "$(dirname "$LLAMA_SERVER_PID_FILE")"
@@ -2379,6 +2405,10 @@ else
         # from consuming the entire token budget on internal reasoning)
         _reasoning=$(grep '^LLAMA_REASONING=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 || echo "")
         [[ -z "$_reasoning" ]] && _reasoning="off"
+        # Modes are case-insensitive, as in ods-host-agent.py; llama-server
+        # only accepts the lowercase spelling.
+        _reasoning_lower="$(printf '%s' "$_reasoning" | tr '[:upper:]' '[:lower:]')"
+        case "$_reasoning_lower" in off|on|auto) _reasoning="$_reasoning_lower" ;; esac
         # Map .env values (off/on/auto) to llama-server --reasoning-format values
         case "$_reasoning" in
             off)  _reasoning_fmt="none" ;;
@@ -2431,58 +2461,60 @@ else
 
         _macos_stop_install_owned_native_llama \
             "Stopping prior install-owned native inference before replacement..."
-        bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" start \
-            "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE" "${_llama_args[@]}"
-        LLAMA_PID="$(cat "$LLAMA_SERVER_PID_FILE")"
+        _macos_start_prepared_native_llama() {
+            bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" start \
+                "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE" "${_llama_args[@]}"
+            LLAMA_PID="$(cat "$LLAMA_SERVER_PID_FILE")"
 
-        # Wait for health endpoint
-        ai "Waiting for llama-server to load model..."
-        MAX_WAIT=180
-        WAITED=0
-        HEALTHY=false
-        while [[ "$WAITED" -lt "$MAX_WAIT" ]]; do
-            sleep 2
-            WAITED=$((WAITED + 2))
-            if curl -sf --max-time 10 "http://${_llama_probe_host}:${_native_llama_port}/health" >/dev/null 2>&1; then
-                HEALTHY=true
-                break
-            fi
-            # Check if process died
-            if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
-                ai_err "llama-server process died. Check logs:"
-                ai "  tail -50 ${LLAMA_SERVER_LOG}"
-                exit 1
-            fi
-            if (( WAITED % 10 == 0 )); then
-                ai "  Still loading... (${WAITED}s)"
-            fi
-        done
+            # Wait for health endpoint
+            ai "Waiting for llama-server to load model..."
+            MAX_WAIT=180
+            WAITED=0
+            HEALTHY=false
+            while [[ "$WAITED" -lt "$MAX_WAIT" ]]; do
+                sleep 2
+                WAITED=$((WAITED + 2))
+                if curl -sf --max-time 10 "http://${_llama_probe_host}:${_native_llama_port}/health" >/dev/null 2>&1; then
+                    HEALTHY=true
+                    break
+                fi
+                # Check if process died
+                if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
+                    ai_err "llama-server process died. Check logs:"
+                    ai "  tail -50 ${LLAMA_SERVER_LOG}"
+                    exit 1
+                fi
+                if (( WAITED % 10 == 0 )); then
+                    ai "  Still loading... (${WAITED}s)"
+                fi
+            done
 
-        if $HEALTHY; then
-            ai_ok "Native llama-server healthy (PID ${LLAMA_PID})"
+            if $HEALTHY; then
+                ai_ok "Native llama-server healthy (PID ${LLAMA_PID})"
 
-            # ── Pre-warm the LLM slot ──
-            # /health returning 200 only means the model is mmap'd. The
-            # FIRST chat completion still has to materialize KV cache and
-            # JIT compile fused kernels — during that, llama-server 503s
-            # concurrent requests. Hermes Agent's default 3-retry / 120s
-            # budget burns out on this on slower hardware, so we force
-            # the slot through cold path here while we're already in the
-            # "this may take a minute" install context. Bounded by curl
-            # --max-time so a stalled llama-server can't hang the install.
-            _prewarm_url="http://${_llama_probe_host}:${_native_llama_port}/v1/chat/completions"
-            _prewarm_model="${GGUF_FILE:-default}"
-            _prewarm_body="{\"model\":\"${_prewarm_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}"
-            if curl -sf --max-time 120 -X POST "$_prewarm_url" \
-                -H "Content-Type: application/json" \
-                -d "$_prewarm_body" >/dev/null 2>&1; then
-                ai_ok "LLM slot pre-warmed (first real chat will be fast)"
+                # ── Pre-warm the LLM slot ──
+                # /health returning 200 only means the model is mmap'd. The
+                # FIRST chat completion still has to materialize KV cache and
+                # JIT compile fused kernels — during that, llama-server 503s
+                # concurrent requests. Hermes Agent's default 3-retry / 120s
+                # budget burns out on this on slower hardware, so we force
+                # the slot through cold path here while we're already in the
+                # "this may take a minute" install context. Bounded by curl
+                # --max-time so a stalled llama-server can't hang the install.
+                _prewarm_url="http://${_llama_probe_host}:${_native_llama_port}/v1/chat/completions"
+                _prewarm_model="${GGUF_FILE:-default}"
+                _prewarm_body="{\"model\":\"${_prewarm_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}"
+                if curl -sf --max-time 120 -X POST "$_prewarm_url" \
+                    -H "Content-Type: application/json" \
+                    -d "$_prewarm_body" >/dev/null 2>&1; then
+                    ai_ok "LLM slot pre-warmed (first real chat will be fast)"
+                else
+                    ai_warn "LLM pre-warm timed out — first Hermes prompt may need a retry while the slot warms."
+                fi
             else
-                ai_warn "LLM pre-warm timed out — first Hermes prompt may need a retry while the slot warms."
+                ai_warn "llama-server did not become healthy within ${MAX_WAIT}s. It may still be loading."
             fi
-        else
-            ai_warn "llama-server did not become healthy within ${MAX_WAIT}s. It may still be loading."
-        fi
+        }
     fi
 
     # ── Assemble Docker Compose flags ──
@@ -3056,6 +3088,14 @@ for service in (data.get("services") or {}).values():
         _macos_add_example_projects
     fi
 
+    # Keep model weights and KV allocation out of Docker builds and Pixel
+    # preparation. Start the unchanged profile after activation, before any
+    # detached bootstrap promotion can replace its listener.
+    if ! $CLOUD_MODE; then
+        ai "Starting native llama-server after service preparation (Metal)..."
+        _macos_start_prepared_native_llama
+    fi
+
     # ── Launch background model upgrade ──────────────────────────────────
     if [[ "$_BOOTSTRAP_ACTIVE" == "true" ]]; then
         ai "Launching background download for $FULL_LLM_MODEL..."
@@ -3240,6 +3280,36 @@ if mkdir -p "${_setup_config_dir}" 2>/dev/null \
     ai_ok "Setup wizard pre-marked complete"
 else
     ai_warn "Could not write ${_setup_complete_file} (non-fatal)"
+fi
+
+# ── Verified local route before reporting installation success ──
+# Native /health does not prove that Portal can use the model. Status polls
+# schedule the existing host-agent proof after Pixel activation has settled.
+if ! $CLOUD_MODE && ! $DRY_RUN; then
+    _route_backend="$(read_env_value "$INSTALL_DIR/.env" "LLM_BACKEND")"
+    _route_switchboard="$(read_env_value "$INSTALL_DIR/.env" "ODS_MODEL_SWITCHBOARD")"
+    if [[ "${_route_backend:-llama-server}" == "llama-server" && "${_route_switchboard:-enabled}" == "enabled" ]]; then
+        _route_helper="${LIB_DIR}/first-chat-readiness.py"
+        [[ -f "$_route_helper" ]] || { ai_err "Local route readiness helper is missing"; exit 1; }
+        _route_host="$(read_env_value "$INSTALL_DIR/.env" "ODS_AGENT_HOST")"
+        _route_port="$(read_env_value "$INSTALL_DIR/.env" "ODS_AGENT_PORT")"
+        [[ -n "$_route_host" ]] || _route_host="host.docker.internal"
+        [[ "$_route_port" =~ ^[0-9]+$ ]] || _route_port="7710"
+        ai "Verifying the local model route..."
+        # Source enters through stdin; credentials stay in the container's env.
+        if ! docker exec -i ods-dashboard-api python3 - \
+            --agent-url "http://${_route_host}:${_route_port}" \
+            --dashboard-url "http://127.0.0.1:3002" \
+            --router-url "http://model-router:9099" \
+            --env-file /ods/.env --timeout 180 --interval 3 \
+            < "$_route_helper" >>"$ODS_LOG_FILE" 2>&1; then
+            ai_err "The local model route is not ready; installation could not be verified."
+            ai "  Inspect the installer log and ods-host-agent.log for readiness details."
+            exit 1
+        fi
+        ai_ok "Local model route verified"
+    fi
+    unset _route_backend _route_switchboard _route_helper _route_host _route_port
 fi
 
 # ── Success card ──

@@ -491,7 +491,12 @@ if ($dryRun) {
         # and gpu_backends before including a service's compose file.
         $extDir        = Join-Path (Join-Path $installDir "extensions") "services"
         $currentBackend = $(if ($cloudMode) { "none" } else { $gpuInfo.Backend })
+        $planEnv = Get-WindowsODSEnvMap -InstallDir $installDir
+        $planSwitchboardMode = Get-WindowsODSEnvValue -EnvMap $planEnv -Keys @("ODS_MODEL_SWITCHBOARD") -Default "enabled"
         $servicePlan = New-ODSWindowsServicePlan `
+            -SwitchboardMode $planSwitchboardMode `
+            -CloudMode $cloudMode `
+            -GpuBackend $currentBackend `
             -EnableRecommended $enableRecommended `
             -EnableVoice $enableVoice `
             -EnableWorkflows $enableWorkflows `

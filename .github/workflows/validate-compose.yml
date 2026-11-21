@@ -128,6 +128,31 @@ jobs:
           fi
           exit "$failed"
 
+      - name: Validate vLLM engine overlay stack (base + nvidia + vllm)
+        env:
+          WEBUI_SECRET: ci-placeholder
+          SEARXNG_SECRET: ci-placeholder
+          N8N_USER: ci@example.com
+          N8N_PASS: ci-placeholder
+          LITELLM_KEY: ci-placeholder
+          VLLM_MODEL_DIR: "example--Model-NVFP4@0123abcd"
+          VLLM_SERVED_MODEL: "Model-NVFP4"
+          VLLM_GPU_UUID: "GPU-ci-vllm"
+          VLLM_ARGS: "--max-model-len 8192 --kv-cache-dtype fp8"
+        working-directory: ods
+        run: |
+          set -e
+          stack=(-f docker-compose.base.yml -f docker-compose.nvidia.yml -f docker-compose.vllm.yml)
+          docker compose "${stack[@]}" config --quiet
+          services="$(docker compose "${stack[@]}" config --services)"
+          grep -qx vllm-server <<<"$services" || { echo "FAIL: vllm-server is not in the stack"; exit 1; }
+          if grep -qx llama-server <<<"$services"; then echo "FAIL: llama-server is still enabled"; exit 1; fi
+          # A missing installer value stops Compose and names the variable.
+          if VLLM_GPU_UUID= docker compose "${stack[@]}" config --quiet 2>missing.err; then
+            echo "FAIL: the vLLM stack accepted an empty VLLM_GPU_UUID"; exit 1
+          fi
+          grep -q VLLM_GPU_UUID missing.err || { cat missing.err; exit 1; }
+
       - name: Validate resolver output for AMD multi-GPU
         working-directory: ods
         run: |

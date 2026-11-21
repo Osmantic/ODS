@@ -6,17 +6,22 @@ import PortalInlineCitation from './PortalInlineCitation'
 import {useMemo,useLayoutEffect} from 'react'
 import {useResponseReveal} from '../lib/useResponseReveal'
 import {EMBED_NOTES} from '../lib/embedDisplay'
+import {DELIVERY_NOTES} from '../lib/portalDeliveryNotes'
 import {parseDeliveredArtifacts} from '../lib/pixelDeliveredArtifacts'
 import {suppressDeliveredMediaLines} from '../lib/deliveredMediaDisplay'
 
-// Portal's own note, in its own paragraph where an embed it can't display
-// was, reads as a muted aside rather than as the model's words.
-function muteEmbedNotes() {
+// Portal's own notes, each in a paragraph of its own (a reply of embeds it
+// can't display, or its line about a preview after the reply), read as muted
+// asides rather than as the model's words. Never an alert.
+const NOTE_CLASSES=new Map([...EMBED_NOTES.map(note=>[note,'portal-embed-note']),
+  ...DELIVERY_NOTES.map(note=>[note,'portal-delivery-note'])])
+function mutePortalNotes() {
   return tree=>{
     function visit(node) {
       for(const child of node.children || []) {
         const text=child.tagName==='p' && child.children.length===1 && child.children[0]
-        if(text?.type==='text' && EMBED_NOTES.includes(text.value)) child.properties={...child.properties,className:['portal-embed-note']}
+        const className=text?.type==='text' && NOTE_CLASSES.get(text.value)
+        if(className) child.properties={...child.properties,className:[className]}
         else visit(child)
       }
     }
@@ -42,6 +47,13 @@ function revealNewText() {
 }
 
 function StreamSpan({node,...props}) {return <span {...props}/>}
+// ReactMarkdown passes renderers the URL after its normal security filtering.
+// An invented attachment:// screenshot therefore has no usable source. Keep
+// that absence visible without loading an empty URL or changing Markdown/code.
+function PortalImage({renderer:Renderer='img',node,src,alt,...props}) {
+  if(!src) return <span className="portal-delivery-note">Image unavailable{alt ? `: ${alt}` : ''}</span>
+  return <Renderer {...props} {...(typeof Renderer==='string' ? {} : {node})} src={src} alt={alt}/>
+}
 const EMPTY_COMPONENTS={}
 
 // Inspect Markdown structure before reveal wrappers are added. Download labels
@@ -97,7 +109,7 @@ function markDocumentDownloads() {
     visit(tree)
   }
 }
-const PLUGINS=[rehypeHighlight,muteEmbedNotes,markDocumentDownloads,revealNewText]
+const PLUGINS=[rehypeHighlight,mutePortalNotes,markDocumentDownloads,revealNewText]
 export default function PortalStreamingText({children, active=false, animate=active, instant=false, onReveal, components=EMPTY_COMPONENTS, artifacts=null}) {
   const fullSource=String(children ?? '')
   // Once a completed answer has verified files, show its complete Markdown.
@@ -108,10 +120,11 @@ export default function PortalStreamingText({children, active=false, animate=act
   const source=useResponseReveal(fullSource,{animate,instant:instant || delivered})
   const revealing=source!==fullSource
   const plugins=useMemo(()=>delivered && !revealing
-    ? [rehypeHighlight,muteEmbedNotes,markDocumentDownloads,[suppressDeliveredMediaLines,{source,artifacts}],revealNewText]
+    ? [rehypeHighlight,mutePortalNotes,markDocumentDownloads,[suppressDeliveredMediaLines,{source,artifacts}],revealNewText]
     : PLUGINS,[delivered,revealing,source,artifacts])
   useLayoutEffect(()=>{onReveal?.()},[source,onReveal])
-  const renderers=useMemo(()=>({...components,a:props=><PortalInlineCitation {...props} artifacts={artifacts}/>,span:StreamSpan}),[components,artifacts])
+  const renderers=useMemo(()=>({...components,a:props=><PortalInlineCitation {...props} artifacts={artifacts}/>,
+    img:props=><PortalImage {...props} renderer={components.img}/>,span:StreamSpan}),[components,artifacts])
   return <div className={`portal-streaming-text ${active || revealing?'is-streaming':''}`} aria-busy={active || revealing}>
     <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={plugins} components={renderers}>{source}</ReactMarkdown>
     {(active || revealing) && <span className="portal-stream-cursor" aria-hidden="true"/>}

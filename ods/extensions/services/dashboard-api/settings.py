@@ -61,6 +61,7 @@ _OPEN_WEBUI_APPLY_KEYS = {
     "AUDIO_STT_MODEL", "AUDIO_TTS_ENGINE", "AUDIO_TTS_OPENAI_API_BASE_URL",
     "AUDIO_TTS_OPENAI_API_KEY", "AUDIO_TTS_MODEL", "AUDIO_TTS_VOICE",
     "RAG_EMBEDDING_MODEL", "RAG_OPENAI_API_BASE_URL", "RAG_OPENAI_API_KEY",
+    "BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL",
 }
 _TOKEN_SPY_APPLY_KEYS = {
     "TOKEN_SPY_URL", "TOKEN_SPY_API_KEY",
@@ -105,6 +106,7 @@ _READ_ONLY_ENV_FIELDS = {
     "GGUF_SHA256": "Model integrity metadata is managed by Model Manager.",
     "CTX_SIZE": "The active context is managed by Model Manager so the runtime and every model consumer remain synchronized.",
     "MAX_CONTEXT": "The active context is managed by Model Manager so the runtime and every model consumer remain synchronized.",
+    "LLAMA_PARALLEL": "Changing request slots also changes per-request context. This requires coordinated runtime and model-consumer updates and is not supported by the Settings editor.",
     "MODEL_RUNTIME_PROFILE": "The runtime profile is selected and managed during model activation.",
     "MODEL_RUNTIME_PROFILE_LABEL": "The runtime profile is selected and managed during model activation.",
     "MODEL_RUNTIME_PROFILE_SOURCE": "The runtime profile is selected and managed during model activation.",
@@ -425,6 +427,7 @@ def _empty_value_unsets_env_key(key: str, field: dict[str, Any]) -> bool:
     if key in _RETIRED_ENV_KEYS:
         return True
     return key.startswith("LLAMA_ARG_") or key in {
+        "LLAMA_LOG_VERBOSITY",
         "RAG_EMBEDDING_MODEL",
         "RAG_OPENAI_API_BASE_URL",
     }

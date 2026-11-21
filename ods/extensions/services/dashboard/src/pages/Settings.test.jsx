@@ -129,6 +129,16 @@ describe('Settings', () => {
     expect(await screen.findByText('Could not confirm the latest release. Try checking again.')).toBeVisible()
     expect(screen.queryByText('Current release')).toBeNull()
   })
+
+  it('says why a held release check has no answer instead of asking to try again', async () => {
+    // Workstation06 (2026-10-27): the site's address had used up GitHub's unauthenticated requests.
+    const reason = "GitHub's request limit for this network is used up; try again in 12 min"
+    renderSettings(url => String(url).startsWith('/api/version') ? response({ current:'3.0.0', latest:null, update_available:false, check_status:'unavailable', checked_at:null, check_error:reason }) : null)
+    expect(await screen.findByText('Update check unavailable')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', {name:'Check', exact:true}))
+    expect(await screen.findByText(`${reason}.`)).toBeVisible()
+    expect(screen.queryByText('Could not confirm the latest release. Try checking again.')).toBeNull()
+  })
   it('does not invent uptime or a live state when uptime is missing', async () => {
     renderSettings(url => url === '/api/settings/summary' ? response({...summary,uptime:undefined}) : null)
     const label = await screen.findByText('Uptime')

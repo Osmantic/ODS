@@ -24,9 +24,10 @@ installer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installer)
 
 
+@pytest.mark.parametrize('held', [False, True])
 @pytest.mark.parametrize('fault', [None, 'pending', 'phase', 'operation', 'owner', 'source', 'hold',
     'settings', 'bundle', 'disabled', 'access', 'mode', 'services', 'stops', 'admission', 'process', 'journal-change'])
-def test_initial_completion_proof_requires_unchanged_protected_state_without_mutations(tmp_path, monkeypatch, fault):
+def test_initial_completion_proof_requires_unchanged_protected_state_without_mutations(tmp_path, monkeypatch, fault, held):
     import copy
     import pixel_access_bridge
     import pixel_macos_custody
@@ -83,20 +84,43 @@ def test_initial_completion_proof_requires_unchanged_protected_state_without_mut
     monkeypatch.setattr(installer, '_ready_access_relay', lambda *args: check('relay'))
     monkeypatch.setattr(installer, '_verify_new_services', lambda plan: check('services'))
     monkeypatch.setattr(installer, '_migration_edge_request', lambda *args: dict(
-        capability='available', phase='idle', admission_blocked=fault == 'admission'))
+        capability='available', phase='held' if held else 'idle', revision='d' * 64,
+        streams=0, admission_blocked=not held if fault == 'admission' else held))
+    options = {'held_revision': 'd' * 64} if held else {}
     def forbidden(*args, **kwargs):
         raise AssertionError('Read-only verification attempted a mutation')
     for name in ('install', '_activate', '_command', '_write_exact', '_reprove_installed_access'):
         monkeypatch.setattr(installer, name, forbidden)
     if fault:
         with pytest.raises(installer.InstallError):
-            installer.verify_initial_install(plan)
+            installer.verify_initial_install(plan, **options)
     else:
-        assert installer.verify_initial_install(plan) == {
-            'status': 'active', 'runtimeDigest': 'a' * 64, 'serviceDigest': 'b' * 64}
+        assert installer.verify_initial_install(plan, **options) == {
+            'status': 'active-under-hold' if held else 'active', 'runtimeDigest': 'a' * 64, 'serviceDigest': 'b' * 64}
         assert events.count('bundle') == 2
         assert events.count('definition') == 6
         assert len(identity_calls) == 9
+
+
+@pytest.mark.parametrize('fault', ['revision', 'streams', 'phase', 'late-revision', 'invalid-revision'])
+def test_initial_held_proof_rejects_foreign_or_changed_admission(tmp_path, monkeypatch, fault):
+    # Reuse the full protected-state fixture, but corrupt only the real verifier's
+    # admission samples. It must not turn a caller's revision into authority.
+    original = installer.verify_initial_install
+    def check(plan, *, held_revision):
+        calls = 0
+        def status(*args):
+            nonlocal calls
+            calls += 1
+            return dict(capability='available', phase='idle' if fault == 'phase' else 'held',
+                admission_blocked=True, streams=1 if fault == 'streams' else 0,
+                revision='e' * 64 if fault == 'revision' or fault == 'late-revision' and calls > 1 else 'd' * 64)
+        monkeypatch.setattr(installer, '_migration_edge_request', status)
+        return original(plan, held_revision='invalid' if fault == 'invalid-revision' else held_revision)
+    monkeypatch.setattr(installer, 'verify_initial_install', check)
+    with pytest.raises(installer.InstallError):
+        test_initial_completion_proof_requires_unchanged_protected_state_without_mutations(
+            tmp_path, monkeypatch, None, True)
 
 
 def test_migration_docker_child_drops_supplementary_groups(monkeypatch):
@@ -494,7 +518,7 @@ def test_initial_plan_requires_bundle_and_does_not_adopt_installed_agent(deploym
         installer.make_plan(**dict(bundled_deployment, source_plist=str(agent)), initial_install=True)
 
 
-@pytest.mark.parametrize('fault', [None, 'loaded', 'unknown', 'timeout', 'definition', 'registered', 'port'])
+@pytest.mark.parametrize('fault', [None, 'loaded', 'unknown', 'timeout', 'definition', 'registered', 'port', 'option', 'listen'])
 def test_initial_absence_is_explicit_and_closes_every_probe_socket(tmp_path, monkeypatch, fault):
     source = SimpleNamespace(target='gui/501/fixture', verify_definition=Mock(
         side_effect=installer.InstallError('changed-template') if fault == 'definition' else None))
@@ -514,6 +538,8 @@ def test_initial_absence_is_explicit_and_closes_every_probe_socket(tmp_path, mon
     def create(*args):
         listener = Mock()
         if fault == 'port' and sockets: listener.bind.side_effect = OSError('busy')
+        if fault == 'option': listener.setsockopt.side_effect = OSError('unavailable')
+        if fault == 'listen': listener.listen.side_effect = OSError('busy')
         sockets.append(listener)
         return listener
     monkeypatch.setattr(installer.socket, 'socket', create)
@@ -522,9 +548,13 @@ def test_initial_absence_is_explicit_and_closes_every_probe_socket(tmp_path, mon
             installer._require_initial_absence(plan, source)
     else:
         installer._require_initial_absence(plan, source)
-        assert len(sockets) == 2
-        sockets[0].bind.assert_called_once_with(('127.0.0.1', 18789))
-        sockets[1].bind.assert_called_once_with(('127.0.0.1', 18790))
+        assert len(sockets) == 4
+        sockets[0].bind.assert_called_once_with(('0.0.0.0', 18789))
+        sockets[1].bind.assert_called_once_with(('127.0.0.1', 18789))
+        sockets[2].bind.assert_called_once_with(('0.0.0.0', 18790))
+        sockets[3].bind.assert_called_once_with(('127.0.0.1', 18790))
+        sockets[0].listen.assert_not_called()
+        sockets[2].listen.assert_not_called()
     for listener in sockets: listener.close.assert_called_once()
 
 
@@ -537,6 +567,57 @@ def test_initial_absence_rejects_actual_occupied_loopback_port(tmp_path, monkeyp
         listener.bind(('127.0.0.1', 0))
         plan = {'owner': SimpleNamespace(pw_dir=str(tmp_path)),
                 'access_settings': {'gateway_port': listener.getsockname()[1]}, 'access_port': 18790}
+        with pytest.raises(installer.InstallError, match='initial-install-port-unavailable'):
+            installer._require_initial_absence(plan, source)
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX server restart semantics')
+def test_initial_absence_allows_retired_server_time_wait(tmp_path, monkeypatch):
+    import errno
+    import socket
+    source = SimpleNamespace(target='gui/501/fixture', verify_definition=Mock())
+    monkeypatch.setattr(installer, '_command', Mock(side_effect=
+        installer.InstallError('host-command-failed', returncode=113)))
+    with socket.socket() as server:
+        server.settimeout(2)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(('127.0.0.1', 0))
+        address = server.getsockname()
+        server.listen(1)
+        with socket.create_connection(address, timeout=2) as client:
+            accepted, _ = server.accept()
+            # The server closes first, leaving TIME_WAIT on its listening port.
+            accepted.close()
+            assert client.recv(1) == b''
+    with socket.socket() as bare_probe:
+        with pytest.raises(OSError) as busy:
+            bare_probe.bind(address)
+        assert busy.value.errno == errno.EADDRINUSE
+    plan = {'owner': SimpleNamespace(pw_dir=str(tmp_path)),
+            'access_settings': {'gateway_port': address[1]}, 'access_port': 0}
+    installer._require_initial_absence(plan, source)
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX server restart semantics')
+@pytest.mark.parametrize('address', ['127.0.0.1', '0.0.0.0'])
+@pytest.mark.parametrize('mode', ['bound', 'listen', 'reuseaddr', 'reuseport'])
+def test_initial_absence_rejects_live_port_owners(tmp_path, monkeypatch, address, mode):
+    import socket
+    source = SimpleNamespace(target='gui/501/fixture', verify_definition=Mock())
+    monkeypatch.setattr(installer, '_command', Mock(side_effect=
+        installer.InstallError('host-command-failed', returncode=113)))
+    with socket.socket() as owner:
+        if mode in ('reuseaddr', 'reuseport'):
+            owner.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if mode == 'reuseport':
+            if not hasattr(socket, 'SO_REUSEPORT'):
+                pytest.skip('SO_REUSEPORT unavailable')
+            owner.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        owner.bind((address, 0))
+        if mode != 'bound':
+            owner.listen(1)
+        plan = {'owner': SimpleNamespace(pw_dir=str(tmp_path)),
+                'access_settings': {'gateway_port': owner.getsockname()[1]}, 'access_port': 0}
         with pytest.raises(installer.InstallError, match='initial-install-port-unavailable'):
             installer._require_initial_absence(plan, source)
 
@@ -1079,30 +1160,36 @@ def test_dry_run_output_contains_no_environment_or_credentials(deployment, capsy
     assert "ProgramArguments" not in output
 
 
+@pytest.mark.parametrize('operation', ['--verify-initial', '--inspect-initial-recovery', '--complete-initial'])
 @pytest.mark.parametrize('extra', [['--install'], ['--activate-upgrade'], ['--current-bundle-digest', 'd' * 64]])
-def test_initial_verification_cli_refuses_mutation_flags(monkeypatch, capsys, extra):
+def test_initial_verification_cli_refuses_mutation_flags(monkeypatch, capsys, extra, operation):
     planner = Mock()
     monkeypatch.setattr(installer, 'make_plan', planner)
     assert installer.main(['--source', '/source', '--openclaw-bin', '/bin/openclaw',
-        '--gateway-plist', '/owner/gateway.plist', '--initial-install', '--verify-initial',
+        '--gateway-plist', '/owner/gateway.plist', '--initial-install', operation,
         '--services-bundle', '/services', '--services-digest', 'b' * 64,
         '--pixel-source-ref', 'c' * 40, *extra]) == 1
     planner.assert_not_called()
     assert capsys.readouterr().err == 'error: native-initial-recovery-proof-failed\n'
 
 
+@pytest.mark.parametrize('operation,method', [
+    ('--verify-initial', 'verify_initial_install'),
+    ('--inspect-initial-recovery', 'inspect_initial_recovery'),
+    ('--complete-initial', 'complete_initial_install'),
+])
 @pytest.mark.parametrize('failure', [False, True])
-def test_initial_verification_cli_dispatch_is_read_only_and_redacted(monkeypatch, capsys, failure):
+def test_initial_verification_cli_dispatch_is_explicit_and_redacted(monkeypatch, capsys, failure, operation, method):
     plan = {'initial_install': True}
     monkeypatch.setattr(installer, 'make_plan', Mock(return_value=plan))
     monkeypatch.setattr(installer, 'bind_initial_services', Mock())
     result = dict(status='active', runtimeDigest='a' * 64, serviceDigest='b' * 64)
     proof = Mock(return_value=result, side_effect=ValueError('private-fixture-value') if failure else None)
-    monkeypatch.setattr(installer, 'verify_initial_install', proof)
+    monkeypatch.setattr(installer, method, proof)
     mutate = Mock(side_effect=AssertionError('readback must never activate'))
     monkeypatch.setattr(installer, 'install', mutate)
     assert installer.main(['--source', '/source', '--openclaw-bin', '/bin/openclaw',
-        '--gateway-plist', '/owner/gateway.plist', '--initial-install', '--verify-initial',
+        '--gateway-plist', '/owner/gateway.plist', '--initial-install', operation,
         '--runtime-bundle', '/runtime', '--bundle-digest', 'a' * 64,
         '--services-bundle', '/services', '--services-digest', 'b' * 64,
         '--pixel-source-ref', 'c' * 40]) == int(failure)
@@ -1115,6 +1202,35 @@ def test_initial_verification_cli_dispatch_is_read_only_and_redacted(monkeypatch
     else:
         assert json.loads(captured.out) == result
         assert captured.err == ''
+
+
+@pytest.mark.parametrize('extra', [
+    ['--verify-initial'], ['--held-admission-revision', 'd' * 64],
+])
+def test_interrupted_inspection_cannot_select_active_verification(monkeypatch, capsys, extra):
+    planner = Mock()
+    monkeypatch.setattr(installer, 'make_plan', planner)
+    assert installer.main(['--source', '/source', '--openclaw-bin', '/bin/openclaw',
+        '--gateway-plist', '/owner/gateway.plist', '--initial-install',
+        '--inspect-initial-recovery', '--services-bundle', '/services',
+        '--services-digest', 'b' * 64, '--pixel-source-ref', 'c' * 40, *extra]) == 1
+    planner.assert_not_called()
+    assert capsys.readouterr().err == 'error: native-initial-recovery-proof-failed\n'
+
+
+@pytest.mark.parametrize('extra', [
+    ['--inspect-initial-recovery'], ['--verify-initial'], ['--held-admission-revision', 'd' * 64],
+])
+def test_initial_completion_cli_rejects_other_proof_operations(monkeypatch, capsys, extra):
+    planner = Mock()
+    monkeypatch.setattr(installer, 'make_plan', planner)
+    assert installer.main(['--source', '/source', '--openclaw-bin', '/bin/openclaw',
+        '--gateway-plist', '/owner/gateway.plist', '--initial-install', '--complete-initial',
+        '--runtime-bundle', '/runtime', '--bundle-digest', 'a' * 64,
+        '--services-bundle', '/services', '--services-digest', 'b' * 64,
+        '--pixel-source-ref', 'c' * 40, *extra]) == 1
+    planner.assert_not_called()
+    assert capsys.readouterr().err == 'error: native-initial-recovery-proof-failed\n'
 
 
 @pytest.mark.parametrize('kind', ['stream-progress', 'workspace-root'])
@@ -2996,9 +3112,12 @@ def test_candidate_stop_witness_cleanup_is_exact_and_idempotent(tmp_path, monkey
     monkeypatch.setattr(custody, 'protected_directory', directory)
     real_stat = os.fstat
     def root_stat(fd):
+        # Keep every real field and fake only the owner: os.fstat is replaced
+        # process-wide, and on some macOS runner images Python itself reads
+        # st_size through it while this test runs.
         value = real_stat(fd)
-        return SimpleNamespace(st_mode=value.st_mode, st_nlink=value.st_nlink,
-                               st_uid=501 if fault == 'owner' else 0)
+        fields = {name: getattr(value, name) for name in dir(value) if name.startswith('st_')}
+        return SimpleNamespace(**{**fields, 'st_uid': 501 if fault == 'owner' else 0})
     monkeypatch.setattr(os, 'fstat', root_stat)
     monkeypatch.setattr(custody, '_require_no_acl', Mock(side_effect=
         custody.CustodyError('acl') if fault == 'acl' else None))

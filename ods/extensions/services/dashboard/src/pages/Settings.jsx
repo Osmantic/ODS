@@ -223,7 +223,8 @@ export default function Settings({ activeSection = 'all' }) {
       if (announce) {
         setNotice({
           type: !checked || versionData.update_available ? 'warn' : 'info',
-          text: !checked ? 'Could not confirm the latest release. Try checking again.' : versionData.update_available && versionData.latest ? `Update available: v${versionData.latest}` : 'You are on the latest available release or a newer development version.',
+          // A held check says why, e.g. a used-up GitHub request limit that "try again" cannot fix.
+          text: !checked ? (versionData.check_error ? `${versionData.check_error}.` : 'Could not confirm the latest release. Try checking again.') : versionData.update_available && versionData.latest ? `Update available: v${versionData.latest}` : 'You are on the latest available release or a newer development version.',
         })
         window.dispatchEvent(new Event('ods-version-checked'))
       }

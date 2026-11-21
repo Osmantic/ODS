@@ -172,6 +172,12 @@ def test_selection_priorities_cover_every_memory_class():
         assert {"discrete", "unified", "cpu"} <= set(selection), model["id"]
         for memory_class in ("discrete", "unified", "cpu"):
             assert isinstance(selection[memory_class], int) and selection[memory_class] >= 0, model["id"]
+        if model.get("runtime") == "vllm":
+            # vLLM entries never enter a llama.cpp pick; only --llm-runtime
+            # vllm reads their "vllm" priority (tests/test-model-library-vllm.py).
+            assert set(selection) == {"discrete", "unified", "cpu", "vllm"}, model["id"]
+            assert not any(selection[c] for c in ("discrete", "unified", "cpu")), model["id"]
+            continue
         assert set(selection) <= {"discrete", "unified", "cpu", "min_capacity_gib"}, model["id"]
         if model["id"] not in GEMMA_EXEMPT and any(selection[c] for c in ("discrete", "unified", "cpu")):
             assert _installable(model), model["id"]

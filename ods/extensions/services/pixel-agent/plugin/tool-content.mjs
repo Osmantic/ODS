@@ -22,11 +22,16 @@ function freshness(value) {
   return value ? "stale" : "current";
 }
 
+function appDescription({ name, status, display_name: displayName, purpose, url }) {
+  if (!displayName || !purpose) return `${name} (${status})`;
+  // An app without a host port (the vLLM engine) has no local URL.
+  return url
+    ? `${displayName} [${name}] (${status}; ${purpose}; ${url})`
+    : `${displayName} [${name}] (${status}; ${purpose})`;
+}
+
 function appList(apps) {
-  return apps.map(({ name, status, display_name: displayName, purpose, url }) => {
-    if (!displayName || !purpose || !url) return `${name} (${status})`;
-    return `${displayName} [${name}] (${status}; ${purpose}; ${url})`;
-  }).join(", ");
+  return apps.map(appDescription).join(", ");
 }
 
 export function statusToolText(projection) {
@@ -54,10 +59,7 @@ export function appsToolText(projection) {
   if (projection.app_count === 0) {
     return `ODS reports 0 of 0 applications online in its ${freshness(projection.stale)} projection at ${projection.timestamp}. ${EVIDENCE_BOUNDARY}`;
   }
-  const first = projection.apps[0];
-  const firstDescription = first.display_name
-    ? `${first.display_name} [${first.name}] (${first.status}; ${first.purpose}; ${first.url})`
-    : `${first.name} (${first.status})`;
+  const firstDescription = appDescription(projection.apps[0]);
   return [
     `ODS reports ${projection.online_app_count} of ${projection.app_count} applications online in its ${freshness(projection.stale)} projection at ${projection.timestamp}.`,
     `The first is ${firstDescription}.`,

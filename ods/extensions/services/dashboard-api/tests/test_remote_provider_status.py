@@ -308,19 +308,64 @@ def test_activation_reconciliation_waits_out_a_cold_host_readback(monkeypatch):
 def test_activation_reconciliation_reports_a_still_cold_readback_as_unverified(monkeypatch):
     from routers import remote_provider_status as rps
 
-    async def cold_runtime(*_args, **_kwargs):
+    clock = [0.0]
+    calls = []
+
+    async def cold_runtime(*_args, **kwargs):
+        calls.append(clock[0])
+        assert 0 < kwargs["timeout"] <= min(2.0, 3.0 - clock[0])
         return {"status": "idle", "modelTransactionPending": False}
 
-    async def no_sleep(_delay):
-        return None
+    async def advance(delay):
+        assert 0 < delay <= 0.25
+        clock[0] += delay
 
+    monkeypatch.setattr(rps, "monotonic", lambda: clock[0], raising=False)
     monkeypatch.setattr(rps, "async_request_agent_json", cold_runtime)
-    monkeypatch.setattr(rps.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(rps.asyncio, "sleep", advance)
     result = asyncio.run(rps._reconcile_activation_with_host(_reconciled_activation()))
 
+    assert clock[0] == 3.0
+    assert len(calls) == 12
+    assert max(calls) < 3.0
     assert result["valid"] is False
+    assert result["proven"] is False
     assert result["reason"] == "consumer_status_unavailable"
     assert result["pixel"] == "unverified"
+
+
+@pytest.mark.parametrize("ready_after", [1.5, 2.5])
+def test_activation_reconciliation_uses_full_cold_readback_window(monkeypatch, ready_after):
+    from routers import remote_provider_status as rps
+
+    clock = [0.0]
+    calls = []
+    activation = _reconciled_activation()
+
+    async def warming_runtime(*_args, **kwargs):
+        calls.append(clock[0])
+        assert 0 < kwargs["timeout"] <= min(2.0, 3.0 - clock[0])
+        status = {"status": "idle", "modelTransactionPending": False}
+        if clock[0] >= ready_after:
+            status.update(activeAgentViable=True, activeRuntime={
+                "source": "remote-provider",
+                **{key: activation[key] for key in
+                   ("model", "contextLength", "maxTokens", "reasoning")},
+            })
+        return status
+
+    async def advance(delay):
+        assert 0 < delay <= 0.25
+        clock[0] += delay
+
+    monkeypatch.setattr(rps, "monotonic", lambda: clock[0], raising=False)
+    monkeypatch.setattr(rps, "async_request_agent_json", warming_runtime)
+    monkeypatch.setattr(rps.asyncio, "sleep", advance)
+    result = asyncio.run(rps._reconcile_activation_with_host(activation))
+
+    assert result == activation
+    assert clock[0] == ready_after
+    assert calls[-1] == ready_after
 
 
 @pytest.mark.parametrize("malformed_status", [[], {}])
@@ -1484,6 +1529,7 @@ def test_remote_provider_probe_posts_to_egress_and_sanitizes_receipt(
     assert resp.status_code == 200
     assert body == {
         "schema": "ods.remote-provider-egress-probe.v1",
+        "dashboardMode": rps._dashboard_mode(),
         "ok": True,
         "transport": "ssh",
         "probe": {
@@ -1916,3 +1962,55 @@ def test_remote_provider_enable_reports_unexpected_rollback_failure(
     assert body["detail"]["error"] == "remote_provider_enable_failed"
     assert body["detail"]["rollback"] == {"attempted": True, "ok": False}
     assert actions == ["enable", "disable"]
+
+
+def _vision_status(state, **receipt):
+    from routers import remote_provider_status as rps
+
+    return {"proven": True, "reason": "provider-handshake-ok", "vision": {
+        "schema": "ods.remote-provider-vision-receipt.v1", "imageInput": "supported",
+        "routeFingerprint": rps._route_fingerprint(state), "verifiedAt": "2026-10-30T12:00:00+00:00",
+        **receipt}}
+
+
+@pytest.mark.parametrize("receipt, shown", [
+    ({}, {"imageInput": "supported", "verifiedAt": "2026-10-30T12:00:00+00:00"}),
+    ({"imageInput": "unsupported"}, {"imageInput": "unsupported", "verifiedAt": "2026-10-30T12:00:00+00:00"}),
+    # Measured on another route, or not a verdict: nothing is shown.
+    ({"routeFingerprint": "f" * 64}, None),
+    ({"imageInput": "unknown"}, None),
+    ({"schema": "ods.remote-provider-probe-receipt.v1"}, None),
+])
+def test_remote_provider_status_shows_the_vision_verdict_of_its_own_route(
+    test_client, monkeypatch, tmp_path, receipt, shown,
+):
+    state = _route_state()
+    state["status"] = _vision_status(state, **receipt)
+    state_path = tmp_path / "routing-state.json"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    rps = _patch_state_path(monkeypatch, state_path)
+
+    async def fake_fetch():
+        return {"reachable": True, "valid": True, "ready": True, "status": "ok", "reason": "ready",
+                "secret": {"configured": True, "bytes": 24}, "resolution": {"ok": True, "addressCount": 1}}
+
+    monkeypatch.setattr(rps, "_fetch_egress_health", fake_fetch)
+
+    body = test_client.get("/api/remote-provider/status", headers=test_client.auth_headers).json()
+
+    assert body["routeState"]["status"].get("vision") == shown
+    assert "routeFingerprint" not in json.dumps(body["routeState"]["status"])
+
+
+def test_a_proof_record_keeps_the_vision_verdict_and_a_deferred_image_check():
+    from routers import remote_provider_status as rps
+
+    status = _vision_status(_route_state())
+    record = {"schema": "ods.remote-provider-proof-record.v1", "recorded": True, "status": status,
+              "imageCheck": {"applied": False, "imageInput": "supported", "reason": "portal-busy", "raw": "x"}}
+    clean = rps._safe_proof_record(record)
+    assert clean["status"]["vision"] == {"imageInput": "supported", "verifiedAt": "2026-10-30T12:00:00+00:00"}
+    assert clean["imageCheck"] == {"applied": False, "imageInput": "supported", "reason": "portal-busy"}
+    for image_check in ({"applied": True, "imageInput": "supported"}, {"applied": False, "imageInput": "unknown"},
+                        "portal-busy"):
+        assert "imageCheck" not in rps._safe_proof_record({**record, "imageCheck": image_check})

@@ -21,6 +21,7 @@ import {
   MessageSquare, Workflow, Boxes, Loader2, AlertCircle, Copy,
   QrCode, Share2,
 } from 'lucide-react'
+import odsMark from '../assets/ods-mark.png'
 
 const PROGRESS_KEY = 'ods-firstboot-progress'
 
@@ -263,7 +264,7 @@ export default function FirstBoot({ onComplete }) {
   return (
     <div className="pixel-app pixel-setup min-h-screen bg-theme-bg flex flex-col">
       <header className="px-6 pt-8 pb-4 flex items-center justify-between">
-        <img src="/osmantic-isolated-os.png" alt="ODS" className="h-12 w-20 object-contain grayscale mix-blend-screen" />
+        <img src={odsMark} alt="ODS" className="h-12 w-20 object-contain grayscale mix-blend-screen" />
         {!invite && <StepDots step={step} total={TOTAL_STEPS} />}
       </header>
 

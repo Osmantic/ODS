@@ -445,11 +445,57 @@ _doctor_check_llama_server() {
     fi
 }
 
+# LLM_BACKEND=vllm (docker-compose.vllm.yml): vllm-server serves the model on
+# the ODS network without a host port, and the in-stack llama-server is off.
+# Docker's healthcheck asks vLLM's /health, which answers only once the model
+# is loaded, so its state is the engine's status. A cold start loads the
+# weights and compiles kernels for up to 15 minutes: that is starting, not a
+# fault. A llama-server container left by an earlier install still running
+# would compete for the GPU.
+_doctor_check_vllm_engine() {
+    local inspect="" state="" health=""
+    LLM_PROVIDER="vLLM"
+    LLM_URL="http://vllm-server:8000 (ODS network only)"
+    LLM_MODEL="${VLLM_SERVED_MODEL:-}"
+    LLM_RECOVERY=""
+    LLM_LOCAL_WARNING="false"
+    if [[ "$DOCKER_DAEMON" == "true" ]] && inspect=$(docker inspect --format \
+        '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+        ods-vllm-server 2>&1); then
+        read -r state health <<<"$inspect"
+    fi
+    if [[ "$state" == "running" && "$health" == "healthy" ]]; then
+        LLM_STATUS="ok"
+        log_ok "LLM backend: vLLM (local) — responding"
+        [[ -z "$LLM_MODEL" ]] || log_ok "  Model    : $LLM_MODEL"
+    elif [[ "$state" == "running" && "$health" == "starting" ]]; then
+        LLM_STATUS="starting"
+        log_info "LLM backend: vLLM (local) — starting: a first start loads the model and compiles kernels, which can take 15 minutes"
+        log_info "  Follow   : ods logs llm"
+    else
+        LLM_STATUS="fail"
+        if [[ "$state" == "running" ]]; then
+            LLM_RECOVERY="ods restart vllm-server"
+            log_fail "LLM backend: vLLM (local) — container running but not healthy"
+        else
+            LLM_RECOVERY="ods start vllm-server"
+            log_fail "LLM backend: vLLM (local) — container not running"
+        fi
+        log_info "  Recovery : $LLM_RECOVERY (see why with: ods logs llm)"
+    fi
+    if [[ "$DOCKER_DAEMON" == "true" ]] && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'ods-llama-server'; then
+        LLM_LOCAL_WARNING="true"
+        log_warn "  Note     : A llama-server container from an earlier install is running beside vLLM; stop it with: docker stop ods-llama-server"
+    fi
+}
+
 _doctor_check_llm_backend() {
     local ext_url="${EXTERNAL_LLM_URL:-}"
     local ext_provider="${EXTERNAL_LLM_PROVIDER:-}"
     local ext_model="${EXTERNAL_LLM_MODEL:-}"
     local mode="${ODS_MODE:-local}"
+    local backend
+    backend=$(printf '%s' "${LLM_BACKEND:-}" | tr '[:upper:]' '[:lower:]')
 
     if [ -n "$ext_url" ]; then
         # External LLM mode — skip llama-server check
@@ -457,6 +503,8 @@ _doctor_check_llm_backend() {
             "$ROOT_DIR/config/litellm/external-upstream.key"
     elif [[ -n "${NATIVE_LLM_BASE_URL:-}" ]]; then
         _doctor_check_host_native_llm
+    elif [[ "$backend" == "vllm" && "$mode" != "cloud" ]]; then
+        _doctor_check_vllm_engine
     elif [[ "$mode" == "cloud" ]]; then
         local cloud_url="${LLM_API_URL:-}"
         if [ -n "$cloud_url" ]; then
@@ -509,7 +557,31 @@ _doctor_check_llm_backend() {
     fi
 }
 
-_doctor_check_llm_backend
+export ODS_DOCTOR_REMOTE_PROVIDER_REPORT="$DOCTOR_WORK_DIR/remote-provider.json"
+if [[ -f "$ROOT_DIR/scripts/doctor-remote-provider.py" ]]; then
+    python3 "$ROOT_DIR/scripts/doctor-remote-provider.py" "$ROOT_DIR" "$ODS_DOCTOR_REMOTE_PROVIDER_REPORT"
+else
+    printf '{"state":"absent","ready":false}\n' > "$ODS_DOCTOR_REMOTE_PROVIDER_REPORT"
+fi
+_remote_provider_state="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$ODS_DOCTOR_REMOTE_PROVIDER_REPORT")"
+if [[ "$_remote_provider_state" != absent ]]; then
+    LLM_PROVIDER="remote-provider"
+    LLM_URL="http://litellm:4000 (ODS network only)"
+    LLM_LOCAL_WARNING="false"
+    if [[ "$_remote_provider_state" == ready ]]; then
+        LLM_STATUS="ok"
+        LLM_MODEL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["model"])' "$ODS_DOCTOR_REMOTE_PROVIDER_REPORT")"
+        LLM_RECOVERY=""
+        log_ok "LLM backend: managed remote provider — active route and consumer proof verified"
+    else
+        LLM_STATUS="fail"
+        LLM_MODEL=""
+        LLM_RECOVERY="Check Settings > Remote model; reconnect only after reviewing its diagnostics."
+        log_fail "LLM backend: managed remote provider — readiness could not be proven"
+    fi
+else
+    _doctor_check_llm_backend
+fi
 
 export LLM_STATUS
 export LLM_PROVIDER
@@ -597,6 +669,50 @@ if [[ "$_doctor_gpu_backend" == "nvidia" ]] && command -v nvidia-smi >/dev/null 
     fi
 fi
 
+# An installed registry scaffold is not necessarily runnable on this host.
+# Only exclude an exact empty stub with explicitly unsupported hardware and
+# no potentially applicable overlay. Unknown configuration remains a fault.
+_doctor_unsupported_extension_stub() {
+    "${PYTHON_CMD:-python3}" - "$1" "$2" "$3" 2>/dev/null <<'PY_EXTENSION_STUB'
+import sys
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    sys.exit(1)
+
+try:
+    class UniqueLoader(yaml.SafeLoader):
+        def construct_mapping(self, node, deep=False):
+            keys = [self.construct_object(key, deep=deep) for key, _ in node.value]
+            if len(keys) != len(set(keys)):
+                raise ValueError("duplicate mapping key")
+            return super().construct_mapping(node, deep=deep)
+
+    path, backend, declared = Path(sys.argv[1]), sys.argv[2], set(sys.argv[3].split())
+    known = {"apple", "cpu", "amd", "nvidia"}
+    if backend not in known or not declared or not declared <= known or backend in declared:
+        sys.exit(1)
+    if yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueLoader) != {"services": {}}:
+        sys.exit(1)
+    foreign_overlays = {
+        f"compose.{prefix}{other}.{suffix}"
+        for other in known - {backend}
+        for prefix in ("", "multigpu-", "standalone.")
+        for suffix in ("yaml", "yml")
+    }
+    for sibling in path.parent.iterdir():
+        if sibling.name == path.name:
+            continue
+        if sibling.name.startswith("compose") and sibling.suffix in {".yaml", ".yml"}:
+            if sibling.name not in foreign_overlays:
+                sys.exit(1)
+except (OSError, ValueError, TypeError, yaml.YAMLError):
+    sys.exit(1)
+PY_EXTENSION_STUB
+}
+
 # Collect extension diagnostics (wrapped in function to allow local variables)
 collect_extension_diagnostics() {
     # Use outer GPU_BACKEND or default to nvidia (don't make local to avoid set -u issues)
@@ -624,6 +740,10 @@ collect_extension_diagnostics() {
                 container_state="$inspect_output"
             else
                 container_state="not_found"
+                if _doctor_unsupported_extension_stub "$compose_file" "$backend" "${SERVICE_GPU_BACKENDS[$sid]:-}"; then
+                    EXT_DIAG_ITEMS+=("{\"id\":\"$sid\",\"container_state\":\"not_found\",\"health_status\":\"not_applicable\",\"applicability_reason\":\"unsupported_backend_stub\",\"issues\":[]}")
+                    continue
+                fi
             fi
 
             # Check health endpoint if container running
@@ -786,7 +906,7 @@ import re
 import shlex
 import sys
 from datetime import datetime, timezone
-from urllib import error, request
+from urllib import error, parse, request
 
 cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg, webui_enabled = sys.argv[1:]
 # Passed in the environment so callers of this block keep its argument list.
@@ -1096,19 +1216,30 @@ def _looks_like_litellm_route(value):
 
 
 def _looks_like_local_llama_route(value):
-    lowered = (value or "").lower()
-    if not lowered:
+    value = (value or "").strip()
+    if not value:
         return False
-    return (
-        "llama-server" in lowered
-        or "ods-llama-server" in lowered
-        or "localhost:8080" in lowered
-        or "127.0.0.1:8080" in lowered
-        or "host.docker.internal:8080" in lowered
-        or "localhost:11434" in lowered
-        or "127.0.0.1:11434" in lowered
-        or "host.docker.internal:11434" in lowered
-    )
+    try:
+        route = parse.urlsplit(value if "://" in value or value.startswith("//") else "//" + value)
+        hostname = (route.hostname or "").lower().rstrip(".")
+        port = route.port
+    except ValueError:
+        return False
+    # A provider path or query can contain a local URL without selecting it.
+    # Diagnose the actual destination rather than matching text anywhere.
+    if hostname in {"llama-server", "ods-llama-server", "model-router", "ods-model-router"}:
+        return True
+    return hostname in {"localhost", "127.0.0.1", "::1", "host.docker.internal"} and port in {
+        8080, 9099, 11434,
+    }
+
+
+def _url_hostname(value):
+    """The lower-case host of a URL, or "" when it names none."""
+    try:
+        return (parse.urlsplit(value.strip()).hostname or "").lower() if "://" in value else ""
+    except ValueError:
+        return ""
 
 
 def _source(path):
@@ -1143,8 +1274,10 @@ def _inference_issue(issue_id, severity, source, detail):
     }
 
 
-def _collect_inference_contract():
+def _collect_inference_contract(remote_provider=None):
     env_values = _env_file_values()
+    remote_provider = remote_provider or {}
+    remote_ready = remote_provider.get("ready") is True
 
     def env_get(name, default=""):
         return env_values.get(name) or _clean_env(name, default)
@@ -1191,8 +1324,12 @@ def _collect_inference_contract():
 
     generic_external = bool(external_llm_url.strip()) or llm_backend.strip().lower() == "external"
     external_inference = ods_mode == "cloud" or generic_external
+    # LLM_BACKEND=vllm: vllm-server serves the model behind model-router;
+    # llama-server is off and clients use the LiteLLM gateway.
+    vllm_engine = llm_backend.strip().lower() == "vllm" and not external_inference
+    vllm_overlay = _has_compose_file(compose_files, "docker-compose.vllm.yml")
     expected_owner = "external" if external_inference else "ods"
-    expected_gateway = "litellm" if external_inference or host_native else "llama-server"
+    expected_gateway = "litellm" if external_inference or host_native or vllm_engine else "llama-server"
 
     issues = []
     if lemonade_era:
@@ -1215,7 +1352,11 @@ def _collect_inference_contract():
         )
 
     if ods_mode == "cloud":
-        if compose_flags_exists and not cloud_overlay:
+        if remote_provider.get("state") in {"unavailable", "unproven"}:
+            issues.append(_inference_issue(
+                "ODS-RUNTIME-REMOTE-PROVIDER-NOT-READY", "blocker", "Remote model status API",
+                "The managed remote-provider route or its active consumer could not be proven. Check Settings > Remote model."))
+        if compose_flags_exists and not cloud_overlay and not remote_ready:
             issues.append(
                 _inference_issue(
                     "ODS-RUNTIME-CLOUD-OVERLAY-MISSING",
@@ -1233,7 +1374,7 @@ def _collect_inference_contract():
                     f"ODS_MODE=cloud but LLM_API_URL points at local llama-server ({llm_api_url}).",
                 )
             )
-        if _looks_like_local_llama_route(hermes_base_url):
+        if _looks_like_local_llama_route(hermes_base_url) and remote_provider.get("hermesDisabled") is not True:
             issues.append(
                 _inference_issue(
                     "ODS-RUNTIME-CLOUD-HERMES-LOCAL-ROUTE",
@@ -1290,7 +1431,27 @@ def _collect_inference_contract():
                 )
             )
 
-    if ods_mode == "local" and not host_native and not generic_external and not lemonade_era:
+    if vllm_engine:
+        if compose_flags_exists and not vllm_overlay:
+            issues.append(
+                _inference_issue(
+                    "ODS-RUNTIME-VLLM-OVERLAY-MISSING",
+                    "blocker",
+                    ".compose-flags",
+                    "LLM_BACKEND=vllm but docker-compose.vllm.yml is not in the resolved compose stack.",
+                )
+            )
+        if _url_hostname(llm_api_url) in {"llama-server", "ods-llama-server"}:
+            issues.append(
+                _inference_issue(
+                    "ODS-RUNTIME-VLLM-LLAMA-ROUTE",
+                    "blocker",
+                    ".env",
+                    f"The vLLM engine serves the model, but LLM_API_URL points at the in-stack llama-server ({llm_api_url}), which is off.",
+                )
+            )
+
+    if ods_mode == "local" and not host_native and not generic_external and not lemonade_era and not vllm_engine:
         if compose_flags_exists and cloud_overlay:
             issues.append(
                 _inference_issue(
@@ -1324,6 +1485,8 @@ def _collect_inference_contract():
         "ODS-RUNTIME-HOST-NATIVE-KEY-MISSING": "The Windows llama-server route has no API key",
         "ODS-RUNTIME-LOCAL-CLOUD-OVERLAY": "Local mode still has the cloud compose overlay",
         "ODS-RUNTIME-LOCAL-LITELLM-ROUTE": "Local mode routes through LiteLLM unexpectedly",
+        "ODS-RUNTIME-VLLM-OVERLAY-MISSING": "The vLLM route is missing its compose overlay",
+        "ODS-RUNTIME-VLLM-LLAMA-ROUTE": "The vLLM route still sends clients to the in-stack llama-server",
     }
     next_steps = {
         "ODS-RUNTIME-CLOUD-OVERLAY-MISSING": [
@@ -1365,6 +1528,12 @@ def _collect_inference_contract():
         "ODS-RUNTIME-MODE-UNKNOWN": [
             "Set ODS_MODE to local, cloud, or hybrid.",
         ],
+        "ODS-RUNTIME-VLLM-OVERLAY-MISSING": [
+            "Run `ods restart`: the CLI resolves the compose stack again from LLM_BACKEND=vllm.",
+        ],
+        "ODS-RUNTIME-VLLM-LLAMA-ROUTE": [
+            "Run `ods mode local` to point LLM_API_URL at the LiteLLM gateway, then `ods restart`.",
+        ],
     }
     for issue in issues:
         diagnoses.append(
@@ -1395,6 +1564,8 @@ def _collect_inference_contract():
             "host_native_overlay": host_native_overlay,
             "local_inference_overlay": local_inference_overlay,
             "native_key_configured": native_key_configured,
+            "vllm_engine": vllm_engine,
+            "vllm_overlay": vllm_overlay,
         },
         "issues": issues,
         "issue_counts": {
@@ -1659,7 +1830,10 @@ def _collect_install_diagnoses(artifacts):
 
 
 install_artifacts = _collect_install_artifacts()
-inference_contract = _collect_inference_contract()
+remote_report_path = os.environ.get("ODS_DOCTOR_REMOTE_PROVIDER_REPORT")
+remote_provider = (json.loads(pathlib.Path(remote_report_path).read_text())
+                   if remote_report_path else {"state": "absent", "ready": False})
+inference_contract = _collect_inference_contract(remote_provider)
 diagnoses = _collect_install_diagnoses(install_artifacts) + inference_contract.get("diagnoses", [])
 inference_contract_public = dict(inference_contract)
 inference_contract_public.pop("diagnoses", None)
@@ -1673,6 +1847,7 @@ report = {
     "install_artifacts": install_artifacts,
     "diagnoses": diagnoses,
     "runtime": {
+        "remote_provider": remote_provider,
         "docker_cli": docker_cli == "true",
         "docker_daemon": docker_daemon == "true",
         "docker_access_denied": docker_access_denied == "true",
@@ -1738,6 +1913,7 @@ report = {
         "runtime_ready": (docker_daemon == "true" and compose_cli == "true"),
         "extensions_total": len(ext_diagnostics),
         "extensions_healthy": sum(1 for e in ext_diagnostics if e.get("health_status") == "healthy"),
+        "extensions_not_applicable": sum(1 for e in ext_diagnostics if e.get("health_status") == "not_applicable"),
         "extensions_issues": sum(1 for e in ext_diagnostics if len(e.get("issues", [])) > 0),
     },
 }
@@ -1775,14 +1951,20 @@ llm_local_warn = os.environ.get("LLM_LOCAL_WARNING", "false") == "true"
 llm_failure = os.environ.get("LLM_FAILURE", "")
 
 if llm_status == "fail" and llm_recovery:
-    if llm_provider != "llama-server" and llm_failure in ("key-refused", "key-required"):
+    if llm_provider == "vLLM":
+        fix_hints.append(f"The vLLM engine (vllm-server) is not serving the model. Hint: {llm_recovery}")
+    elif llm_provider != "llama-server" and llm_failure in ("key-refused", "key-required"):
         fix_hints.append(f"External LLM backend ({llm_provider}) answered but did not accept a stored API key. Hint: {llm_recovery}")
     elif llm_provider != "llama-server":
         fix_hints.append(f"External LLM backend ({llm_provider}) is unreachable. Hint: {llm_recovery}")
     else:
         fix_hints.append(f"Local llama-server is unreachable. Hint: {llm_recovery}")
 
-if llm_local_warn:
+if llm_local_warn and llm_provider == "vLLM":
+    # `ods stop llama-server` names vllm-server on this route; stop the container itself.
+    fix_hints.append("A llama-server container from an earlier install is running beside the vLLM engine "
+                     "and competes for its GPU. Stop it with: docker stop ods-llama-server")
+elif llm_local_warn:
     fix_hints.append("External LLM is configured but the local llama-server container is still running. Stop it with: ods stop llama-server")
 # Rootless daemon without (enough) subordinate IDs: images fail to extract
 # with "uid/gid map out of range" long after doctor reports healthy Docker.
@@ -1903,9 +2085,12 @@ summary = data.get("summary", {})
 ext_total = summary.get("extensions_total", 0)
 ext_healthy = summary.get("extensions_healthy", 0)
 ext_issues = summary.get("extensions_issues", 0)
+ext_not_applicable = summary.get("extensions_not_applicable", 0)
 
 if ext_total > 0:
     print(f"  Extensions:    {ext_healthy}/{ext_total} healthy, {ext_issues} with issues")
+    if ext_not_applicable:
+        print(f"                 {ext_not_applicable} not applicable to this hardware (not counted as healthy)")
 
 dgx_check = data.get("runtime", {}).get("dgx_spark_cuda_arch_check", {})
 if dgx_check.get("status") == "warn":

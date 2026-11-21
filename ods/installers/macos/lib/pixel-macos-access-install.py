@@ -1583,9 +1583,21 @@ def _require_initial_absence(plan, source):
     sockets = []
     try:
         for port in (plan['access_settings']['gateway_port'], plan['access_port']):
+            # Darwin permits a reusable loopback bind beside a wildcard owner.
+            # Check that exact address too, without ever listening publicly.
+            wildcard = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                wildcard.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                wildcard.bind(('0.0.0.0', port))
+            finally:
+                wildcard.close()
             listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sockets.append(listener)
+            # Match server restart semantics: retired TIME_WAIT connections are
+            # not owners. Never enable SO_REUSEPORT to share a live listener.
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(('127.0.0.1', port))
+            listener.listen(1)
     except OSError:
         raise InstallError('initial-install-port-unavailable') from None
     finally:
@@ -2942,7 +2954,32 @@ def _execute_upgrade_install(plan, source):
     return 'active'
 
 
-def verify_initial_install(plan):
+def _initial_recovery(plan, *, complete=False):
+    """Dispatch an explicit initial inspection or completion operation."""
+    from types import SimpleNamespace
+    sys.path.insert(0, str(HERE.parents[2] / 'bin'))
+    spec = importlib.util.spec_from_file_location(
+        'pixel_initial_recovery', HERE / 'pixel-initial-recovery.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        operation = module.complete if complete else module.inspect
+        return operation(plan, SimpleNamespace(**globals()))
+    except module.RecoveryError as error:
+        raise InstallError('native-initial-recovery-inspection-failed') from error
+
+
+def inspect_initial_recovery(plan):
+    """Inspect an interrupted initial activation without changing its state."""
+    return _initial_recovery(plan)
+
+
+def complete_initial_install(plan):
+    """Complete a proved initial activation without replaying service startup."""
+    return _initial_recovery(plan, complete=True)
+
+
+def verify_initial_install(plan, *, held_revision=None):
     """Read back a completed protected initial install without activating it.
 
     Owner-side final-health failure is not authority to replay root activation.
@@ -2952,6 +2989,8 @@ def verify_initial_install(plan):
     """
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise InstallError('macos-root-install-required')
+    if held_revision is not None and (type(held_revision) is not str or not re.fullmatch('[a-f0-9]{64}', held_revision)):
+        raise InstallError('native-initial-held-revision-invalid')
     if not plan.get('initial_install') or not plan.get('runtime_bundle') or not plan.get('native_services'):
         raise InstallError('complete-initial-service-selection-required')
     sys.path.insert(0, str(HERE.parents[2] / 'bin'))
@@ -2997,8 +3036,14 @@ def verify_initial_install(plan):
     _ready_access_relay(services[2], plan)
     def admission_ready():
         value = _migration_edge_request(plan, edge['container'])
-        if (value.get('capability') != 'available' or value.get('phase') != 'idle'
-                or value.get('admission_blocked') is not False):
+        # The owner-side ingress transaction authenticates its exact hold before
+        # and after this read-only proof. Release rotates the revision, so a
+        # different hold cannot satisfy either sample. This proves protected
+        # runtime readiness under that hold, not readiness for public admission.
+        held = held_revision is not None
+        if (value.get('capability') != 'available' or value.get('phase') != ('held' if held else 'idle')
+                or value.get('admission_blocked') is not held
+                or held and (value.get('revision') != held_revision or value.get('streams') != 0)):
             raise InstallError('native-initial-admission-not-ready')
     admission_ready()
     service_path = state / 'service-installation.json'
@@ -3026,7 +3071,8 @@ def verify_initial_install(plan):
     if [_upgrade_service_identity(service) for service in services] != identities:
         raise InstallError('native-initial-activation-changed')
     no_transition()
-    return {'status': 'active', 'runtimeDigest': plan['runtime_bundle']['digest'],
+    return {'status': 'active-under-hold' if held_revision is not None else 'active',
+            'runtimeDigest': plan['runtime_bundle']['digest'],
             'serviceDigest': plan['native_services']['expected_digest']}
 
 
@@ -3319,13 +3365,35 @@ def main(argv=None):
     parser.add_argument("--install", action="store_true")
     parser.add_argument('--verify-initial', action='store_true',
                         help='Read-only proof of an already active initial installation')
+    parser.add_argument('--held-admission-revision',
+                        help='With --verify-initial only: prove the runtime under this authenticated owner transaction revision')
     parser.add_argument('--initial-install', action='store_true',
                         help='Plan a new deployment from an unloaded --gateway-plist template, not a migration')
+    parser.add_argument('--complete-initial', action='store_true',
+                        help='Complete a proved interrupted initial activation without replaying service startup')
+    parser.add_argument('--inspect-initial-recovery', action='store_true',
+                        help='Inspect interrupted initial activation without service or state changes')
     parser.add_argument('--activate-upgrade', action='store_true',
                         help='Commit a qualified runtime replacement; requires --current-bundle-digest')
     args = parser.parse_args(argv)
     try:
         service_options = (args.services_bundle, args.services_digest, args.pixel_source_ref)
+        if args.complete_initial and (args.install or args.verify_initial or args.inspect_initial_recovery
+                or args.activate_upgrade or args.current_bundle_digest
+                or args.held_admission_revision is not None):
+            raise InstallError('initial-completion-conflicts-with-activation')
+        if args.complete_initial and (not args.initial_install or not all(service_options)
+                or not args.gateway_plist or not args.runtime_bundle or not args.bundle_digest):
+            raise InstallError('complete-initial-service-selection-required')
+        if args.inspect_initial_recovery and (args.install or args.verify_initial
+                or args.activate_upgrade or args.current_bundle_digest
+                or args.held_admission_revision is not None):
+            raise InstallError('initial-recovery-inspection-conflicts-with-activation')
+        if args.inspect_initial_recovery and (not args.initial_install
+                or not all(service_options) or not args.gateway_plist):
+            raise InstallError('complete-initial-service-selection-required')
+        if args.held_admission_revision is not None and not args.verify_initial:
+            raise InstallError('held-admission-requires-initial-verification')
         if args.verify_initial and (not args.initial_install or not all(service_options)
                                     or args.install or args.activate_upgrade or args.current_bundle_digest):
             raise InstallError('initial-verification-conflicts-with-activation')
@@ -3356,8 +3424,13 @@ def main(argv=None):
         if args.services_bundle:
             bind_initial_services(plan, bundle=args.services_bundle, digest=args.services_digest,
                 source_ref=args.pixel_source_ref)
-        if args.verify_initial:
-            print(json.dumps(verify_initial_install(plan), sort_keys=True, separators=(',', ':')))
+        if args.complete_initial:
+            print(json.dumps(complete_initial_install(plan), sort_keys=True, separators=(',', ':')))
+        elif args.inspect_initial_recovery:
+            print(json.dumps(inspect_initial_recovery(plan), sort_keys=True, separators=(',', ':')))
+        elif args.verify_initial:
+            options = {'held_revision': args.held_admission_revision} if args.held_admission_revision is not None else {}
+            print(json.dumps(verify_initial_install(plan, **options), sort_keys=True, separators=(',', ':')))
         elif args.activate_upgrade:
             outcome = upgrade_install(plan, args.source)
             print(json.dumps({'operation': 'runtime-upgrade', 'status': outcome,
@@ -3394,7 +3467,7 @@ def main(argv=None):
         print("error: native-service-command-failed", file=sys.stderr)
         return 1
     except (InstallError, KeyError, OSError, ValueError) as error:
-        if args.verify_initial:
+        if args.verify_initial or args.inspect_initial_recovery or args.complete_initial:
             # This command is consumed by the owner recovery coordinator.
             # Detailed configuration/OS errors must not become public logs.
             print('error: native-initial-recovery-proof-failed', file=sys.stderr)

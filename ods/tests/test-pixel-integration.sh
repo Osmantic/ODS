@@ -707,7 +707,7 @@ fi
 
 section "Pixel .env schema contract"
 if python3 - "$SCRIPT_DIR/../.env.schema.json" <<'PY'
-import json, sys
+import json, re, sys
 
 properties = json.load(open(sys.argv[1], encoding="utf-8"))["properties"]
 expected = {
@@ -720,8 +720,22 @@ assert expected <= properties.keys()
 assert properties["PIXEL_SOURCE_REF"]["pattern"] == "^[0-9a-f]{40}$"
 assert properties["PIXEL_OPENWEBUI_KEY"]["minLength"] == 64
 assert properties["PIXEL_OPENWEBUI_KEY"]["maxLength"] == 64
-assert properties["PIXEL_PREVIEW_RUNTIME_DIR"]["enum"] == ["/run/ods-pixel-preview", "/mnt/wsl/ods-portal-runtime/preview"]
-assert properties["PIXEL_INGRESS_RUNTIME_DIR"]["enum"] == ["/run/ods-pixel", "/mnt/wsl/ods-portal-runtime/ingress"]
+for kind in ("ingress", "preview"):
+    prop = properties[f"PIXEL_{kind.upper()}_RUNTIME_DIR"]
+    linux = "/run/ods-pixel" + ("-preview" if kind == "preview" else "")
+    native = f"/Users/Example Owner/ods/data/pixel-native/unused-docker-{kind}"
+    accepted = (linux, f"/mnt/wsl/ods-portal-runtime/{kind}", native,
+                native.replace("/unused-docker-", "/home/unused-docker-"))
+    other = "preview" if kind == "ingress" else "ingress"
+    rejected = (f"/mnt/wsl/ods-portal-runtime/{other}",
+                native.replace(f"unused-docker-{kind}", f"unused-docker-{other}"),
+                native + "/", native + "\n", native.lstrip("/"),
+                native.replace("/ods/", "/../"), native.replace("/ods/", "/./"),
+                native.replace("/ods/", "//"))
+    for value in accepted:
+        assert re.search(prop["pattern"], value), f"{kind} rejected {value!r}"
+    for value in rejected:
+        assert not re.search(prop["pattern"], value), f"{kind} accepted {value!r}"
 assert properties["PIXEL_RUNTIME_BIND_PROPAGATION"]["enum"] == ["rprivate", "rshared"]
 assert properties["PIXEL_INGRESS_GID"]["minimum"] == 1
 assert "PIXEL_LICENSE_ACCEPTED" not in properties

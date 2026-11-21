@@ -255,6 +255,22 @@ docker compose logs llama-server
 curl http://localhost:11434/metrics
 ```
 
+### Temporary container diagnostics
+
+In Settings, set `LLAMA_LOG_VERBOSITY` and apply changes to `llama-server`.
+The container entrypoint translates this optional 0–5 setting to
+`--log-verbosity`, avoiding the different upstream environment names in
+b9014 (`LLAMA_LOG_VERBOSITY`) and b11429 (`LLAMA_ARG_LOG_VERBOSITY`).
+On b11429, level 4 exposes library allocation logs, including the effective
+microbatch size and GPU offload. Capture the logs for that exact container
+start before interpreting a tuning comparison; configured values alone do
+not prove effective allocation.
+
+Log levels differ across builds, and verbose logs can include request content.
+Clear the field and apply changes when finished to return to the upstream
+default. No diagnostic level is enabled by default. This setting applies to
+containers; native launchers are unchanged. Reinstallation may reset it.
+
 ## License
 
 Part of ODS — Local AI Infrastructure

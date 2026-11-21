@@ -54,16 +54,16 @@ afterEach(() => {
 it.each(['prepared', 'idle'])('shows the launch link after cached health catches up with %s image progress', async progressStatus => {
   const { state, fetchMock } = await show({ progressStatus })
   expect(screen.queryByRole('button', { name: 'Add Open WebUI' })).toBeNull()
-  expect(screen.queryByRole('link', { name: ':3000' })).toBeNull()
+  expect(screen.queryByRole('link', { name: 'Open Open WebUI' })).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Details for Open WebUI' }))
   expect(within(screen.getByRole('dialog')).getByText('disabled')).toBeVisible()
 
   await tick()
-  expect(screen.queryByRole('link', { name: ':3000' })).toBeNull()
+  expect(screen.queryByRole('link', { name: 'Open Open WebUI' })).toBeNull()
   state.health = 'enabled'
   await tick()
 
-  expect(screen.getByRole('link', { name: ':3000' })).toHaveAttribute('href', 'http://localhost:3000')
+  expect(screen.getByRole('link', { name: 'Open Open WebUI' })).toHaveAttribute('href', 'http://localhost:3000')
   expect(within(screen.getByRole('dialog')).getByText('enabled')).toBeVisible()
   expect(screen.getByText('Extension installed and started.')).toBeVisible()
   const completedCount = requestCount(fetchMock, '/api/extensions/catalog')
@@ -79,7 +79,7 @@ it('does not report ready while the selected container is unhealthy', async () =
   await tick()
   expect(screen.getByText('Open WebUI selected. Waiting for its service to become ready.')).toBeVisible()
   expect(screen.queryByText('Extension installed and started.')).toBeNull()
-  expect(screen.queryByRole('link', { name: ':3000' })).toBeNull()
+  expect(screen.queryByRole('link', { name: 'Open Open WebUI' })).toBeNull()
   expect(requestCount(fetchMock, '/api/webui/selection', 'POST')).toBe(1)
 })
 
@@ -89,7 +89,7 @@ it('surfaces a terminal startup error and stops polling without another Add requ
   state.progress = { status: 'error', error: 'Open WebUI startup failed' }
   await tick()
   expect(screen.getAllByText(/Open WebUI startup failed/).length).toBeGreaterThan(0)
-  expect(screen.queryByRole('link', { name: ':3000' })).toBeNull()
+  expect(screen.queryByRole('link', { name: 'Open Open WebUI' })).toBeNull()
   const completedCount = requestCount(fetchMock, '/api/extensions/open-webui/progress')
   await tick()
   expect(requestCount(fetchMock, '/api/extensions/open-webui/progress')).toBe(completedCount)
