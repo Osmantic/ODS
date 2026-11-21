@@ -7,6 +7,10 @@ services:
       - no-new-privileges:true
     environment:
       - FORGE_PORT_HOST=7861
+      # The image's Caddy proxy on 7861 redirects unauthenticated requests to the
+      # serviceportal login on :1111, which is disabled below and never published.
+      # The port is bound to 127.0.0.1, so turn the proxy auth gate off.
+      - WEB_ENABLE_AUTH=false
       - FORGE_ARGS=--api --listen
       - AUTO_UPDATE=false
       - SUPERVISOR_NO_AUTOSTART=${SUPERVISOR_NO_AUTOSTART:-syncthing,quicktunnel,serviceportal,sshd,jupyter}

@@ -193,6 +193,8 @@ test: ## Run unit and contract tests
 	@echo "=== vLLM engine choice and installer phases ==="
 	@bash tests/test-vllm-installer-route.sh
 	@bash tests/test-vllm-installer-phases.sh
+	@echo "=== Forge proxy reachable without serviceportal ==="
+	@bash tests/test-forge-proxy-auth-reachable.sh
 	@echo ""
 	@echo "=== macOS ods config show secret-mask ==="
 	@bash tests/test-macos-config-show-secret-mask.sh
