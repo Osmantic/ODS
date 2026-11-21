@@ -707,7 +707,7 @@ export default function ODSTalk() {
     const assistantId = makeId('assistant')
     setMessages(items => [
       ...items,
-      { id: userId, role: 'user', text: 'Voice message', status: 'pending' },
+      { id: userId, role: 'user', text: 'Voice message', status: 'pending', audioForRetry: file },
       { id: assistantId, role: 'assistant', text: '', status: 'pending' },
     ])
 
@@ -736,7 +736,10 @@ export default function ODSTalk() {
       const failure = failedOutcomeMessage(data.status)
       if (failure) {
         setMessages(items => items.map(item => {
-          if (item.id === userId) return { ...item, text: transcript, status: 'done' }
+          // Retries add a new turn; release the same recording from earlier
+          // failed attempts too once its transcript has been received.
+          if (item.audioForRetry === file) item = { ...item, audioForRetry: null }
+          if (item.id === userId) return { ...item, text: transcript, status: 'done', audioForRetry: null }
           if (item.id === assistantId) return { ...item, text: data.text || '', errorDetail: failure, status: 'error' }
           return item
         }))
@@ -744,7 +747,8 @@ export default function ODSTalk() {
       }
       const reply = data.text || 'I did not get a response back.'
       setMessages(items => items.map(item => {
-        if (item.id === userId) return { ...item, text: transcript, status: 'done' }
+        if (item.audioForRetry === file) item = { ...item, audioForRetry: null }
+        if (item.id === userId) return { ...item, text: transcript, status: 'done', audioForRetry: null }
         if (item.id === assistantId) return { ...item, text: reply, status: 'done', warning: data.warning || null }
         return item
       }))
@@ -855,7 +859,8 @@ export default function ODSTalk() {
 
   const retryLast = () => {
     const lastUser = [...messages].reverse().find(message => message.role === 'user' && message.status !== 'pending')
-    if (lastUser) sendText(lastUser.text, { attachment: lastUser.attachmentForRetry || null })
+    if (lastUser?.audioForRetry) sendAudioFile(lastUser.audioForRetry)
+    else if (lastUser) sendText(lastUser.text, { attachment: lastUser.attachmentForRetry || null })
   }
 
   // Send is enabled either with text OR an attachment (an image alone is a
