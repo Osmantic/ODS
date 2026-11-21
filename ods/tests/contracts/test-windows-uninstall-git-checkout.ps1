@@ -12,6 +12,8 @@ if (-not $definition) { throw 'ods.ps1 no longer defines Assert-ODSInstallDirSaf
 . ([scriptblock]::Create($definition.Extent.Text))
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ("ods-uninstall-git-" + [guid]::NewGuid().ToString('N'))
+# The guard compares against the user profile; pwsh on Linux runners has none.
+if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { $env:USERPROFILE = [IO.Path]::GetTempPath() }
 try {
     $InstallDir = Join-Path $root 'ods'
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
