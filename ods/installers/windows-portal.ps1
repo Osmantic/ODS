@@ -1,5 +1,6 @@
 # Windows entry point for the existing Linux Pixel installer.
 param(
+    [ValidateSet('auto', 'cuda')][string]$WindowsLlmBackend = 'auto',
     [string]$Distro = "",  # empty: reuse the single existing Ubuntu, else Ubuntu-24.04
     [switch]$DryRun,
     [switch]$Force,

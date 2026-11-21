@@ -65,6 +65,41 @@ containers is not a remedy for this discovery error.
 
 ## Options and location
 
+### Optional NVIDIA inference on Windows (x64)
+
+NVIDIA GPUs keep the Ubuntu/WSL CUDA inference route by default. On x64
+Windows, explicitly select the pinned Windows CUDA server with:
+
+```powershell
+& $odsEntry -WindowsLlmBackend cuda
+```
+
+This option requires a detected NVIDIA GPU and a catalog model that fits its
+reported memory. Portal, Ubuntu and Docker Desktop are still required. Setup
+checks that one unambiguous NVIDIA GPU is present and that its Windows driver
+and compute capability are supported by the pinned CUDA build before preparing
+prerequisites or downloading a runtime. A matching compiled GPU target is a
+compatibility check, not a fleet or performance certification. Setup
+refuses specialized catalog runtime profiles whose launch settings have not
+been qualified for this CUDA route, and refuses a disabled or unavailable
+catalog fit rather than using a tier fallback. Setup
+asks for consent before preparing prerequisites, qualifies the pinned CUDA
+runtime against the NVIDIA adapter, and uses the existing authenticated native
+model binding. Declining or failing qualification stops this choice rather
+than silently selecting CPU inference. It cannot be combined with `-Cloud`,
+`-ExternalLlmUrl` or `-NoExternalLlm`. AMD and Windows on Arm retain their
+existing routes.
+
+After successful activation, rerunning setup without this option preserves
+the saved NVIDIA CUDA choice, model and private runtime task. The restart
+continuation also retains the option. Explicit `-WindowsLlmBackend auto`
+does not migrate an installed CUDA route back to Ubuntu: setup refuses
+before changing prerequisites or its model binding. Continue with the option
+omitted or `-WindowsLlmBackend cuda`. A missing or invalid saved runtime/model
+must be restored before retrying. Keep its task, model and runtime files;
+deleting them is not a supported migration. Automatic return to container
+inference is not provided by this option.
+
 Use `wsl -l -v` to find distribution names. For an existing Ubuntu:
 
 ```powershell
