@@ -128,9 +128,12 @@ function Invoke-ODSDockerCompose {
             -InstallDir $InstallDir -UserDockerConfigDir $userDockerConfigDir
         $dockerClientArgs = @("--config", $dockerConfigDir)
         $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = 'SilentlyContinue'
+        # Compose writes progress and errors to stderr. 'Continue' keeps a
+        # NativeCommandError from terminating; Windows PowerShell 5.1 discards
+        # merged stderr records under 'SilentlyContinue', hiding all of it.
+        $ErrorActionPreference = 'Continue'
         $env:DOCKER_CONFIG = $dockerConfigDir
-        & docker @dockerClientArgs compose @ComposeFlags @ComposeArgs 2>&1 | ForEach-Object { Write-Host "  $_" }
+        & docker @dockerClientArgs compose @ComposeFlags @ComposeArgs 2>&1 | ForEach-Object { Write-Host "  $($_.ToString())" }
         $exitCode = $LASTEXITCODE
         $ErrorActionPreference = $prevEAP
         return $exitCode
@@ -456,7 +459,9 @@ function Write-ODSComposeDiagnostics {
     Push-Location -LiteralPath $InstallDir
     try {
         $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = 'SilentlyContinue'
+        # 'Continue', not 'SilentlyContinue': PS 5.1 drops merged stderr under
+        # the latter, which is exactly the error text these sections exist for.
+        $ErrorActionPreference = 'Continue'
 
         Write-Host "  --- docker version ---" -ForegroundColor DarkGray
         $dv = & docker version 2>&1 | ForEach-Object { $_.ToString() }
