@@ -471,6 +471,11 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-amd-memory-detection.ps1
 
+      - name: Windows Docker Preflight Timeout
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-docker-preflight-timeout.ps1
+
       - name: Windows Hermes SOUL Refresh
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
