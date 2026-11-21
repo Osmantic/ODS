@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -37,10 +38,21 @@ NATIVE_RESIDUE_PATHS = tuple(Path(value) for value in (
         'native-promoter', 'native-operations')),
 ))
 RETAINED_OPS_HOME = Path('/private/var/lib/pixel-ops-broker')
+HELP = 'Need help? https://discord.gg/4ntNp9MAwC'
+START_OVER = ('run the one-line installer with --force --keep-models: '
+    'curl -fsSL https://install.osmantic.com/ods.sh | bash -s -- --force --keep-models')
 ERROR_GUIDANCE = {
     'native-apple-silicon-owner-required': 'Run as the signed-in owner on Apple Silicon, not with sudo.',
     'existing-native-pixel-requires-migration-or-recovery':
-        'Existing native Pixel state was found. This initial-install path cannot migrate or resume it; leave it intact.',
+        'An earlier ODS installation in this folder still has native Pixel files, for example from an '
+        'install that stopped during Pixel setup, and this installer cannot reuse them. To start over, '
+        + START_OVER + '. It moves that Pixel\'s protected files to a backup instead of deleting them, '
+        'keeps your downloaded models and replaces the installation folder. ' + HELP,
+    'existing-native-pixel-system-state':
+        'Native Pixel system files from an earlier installation are still on this Mac, for example after '
+        'an install stopped during Pixel setup or the ODS folder was deleted while Pixel was installed, '
+        'and this installer cannot reuse them. Run the command below to move them to a backup (nothing '
+        'is deleted), then run this installer again. ' + HELP,
     'native-node-or-homebrew-required': 'Install native Node.js 22+ with npm, or Homebrew for automatic Node setup.',
     'local-docker-socket-required': 'Select a local Docker Desktop Unix-socket context.',
     'native-identity-authorization-required':
@@ -75,10 +87,17 @@ ERROR_GUIDANCE = {
     'retained-pixel-identity-rejected':
         'The retained _ods_pixel_ops account did not pass the identity-only check; the reason is shown above. '
         'For operations-identity-process-active or operations-home-not-empty-or-owned, macOS per-user agents '
-        'for that account are usually running and writing Library/ into its home: stop them with '
-        'sudo launchctl bootout user/$(id -u _ods_pixel_ops). Its home /private/var/lib/pixel-ops-broker '
-        'must be empty for an identity-only reinstall. Keep other Pixel state intact.',
+        'for that account are usually running and writing Library/ into its home /private/var/lib/pixel-ops-broker, '
+        'which must be empty for an identity-only reinstall. The command below stops them '
+        '(launchctl bootout user/$(id -u _ods_pixel_ops)), moves what they wrote to a backup and checks '
+        'the account again; then run this installer again. Keep other Pixel state intact. ' + HELP,
 }
+# Follows the per-service health detail of native-compose-health-timeout.
+FINAL_HEALTH_RECOVERY = ('If they become healthy later, docs/PIXEL.md ("Retained initial installation '
+    'stopped at final health") shows how to finish this stage without reinstalling; to start over '
+    'instead, ' + START_OVER + '. ' + HELP)
+# These refusals end with the one command that retires the leftovers (moved, never deleted).
+RETIREMENT_COMMAND_CODES = frozenset(('existing-native-pixel-system-state', 'retained-pixel-identity-rejected'))
 REJECTION_PREFIX = 'Native Pixel Operations identity verification rejected'
 
 # These labels and instructions are static. Exception messages, paths and
@@ -116,6 +135,12 @@ def helper(name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def retirement_command(install_dir):
+    """The supported command that moves leftover native Pixel state to a backup."""
+    return ('sudo /usr/bin/python3 -I ' + shlex.quote(str(HERE / 'pixel-native-uninstall.py'))
+        + ' --install-dir ' + shlex.quote(str(install_dir)) + ' --owner "$(id -un)"')
 
 
 def command(args, *, env=None, timeout=60):
@@ -178,14 +203,16 @@ def preflight(install_dir, *, prompt_for_sudo=False):
     # System Policy can prohibit unlinking that home even after its contents are
     # retired; the root helper proves it is empty, owned and has no live jobs.
     retained_home = os.path.lexists(RETAINED_OPS_HOME)
-    for path in (install_dir / 'data/pixel-native', *NATIVE_RESIDUE_PATHS):
+    if os.path.lexists(install_dir / 'data/pixel-native'):
+        raise ValueError('existing-native-pixel-requires-migration-or-recovery')
+    for path in NATIVE_RESIDUE_PATHS:
         if path == RETAINED_OPS_HOME:
             continue
         if os.path.lexists(path):
-            raise ValueError('existing-native-pixel-requires-migration-or-recovery')
+            raise ValueError('existing-native-pixel-system-state')
     retained_identity = os.path.lexists('/private/var/lib/ods-pixel-access')
     if retained_home and not retained_identity:
-        raise ValueError('existing-native-pixel-requires-migration-or-recovery')
+        raise ValueError('existing-native-pixel-system-state')
     if retained_identity and not retained_identity_only(
             empty_home=retained_home, prompt_for_sudo=prompt_for_sudo):
         raise ValueError('retained-pixel-identity-rejected')
@@ -360,6 +387,9 @@ def main():
             detail = helper('compose').health_diagnostic(error)
             if detail:
                 guidance += ' ' + detail
+            guidance += ' ' + FINAL_HEALTH_RECOVERY
+        if code in RETIREMENT_COMMAND_CODES:
+            guidance += '\n  ' + retirement_command(args.install_dir)
         print('Native Pixel installation stopped (' + type(error).__name__ + '). ' + guidance, file=sys.stderr)
         return 1
     return 0

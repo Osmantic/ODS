@@ -5,10 +5,13 @@ import base64
 import copy
 from contextlib import contextmanager
 import hashlib
+import io
+import itertools
 import json
 import os
 import plistlib
 from pathlib import Path
+import shutil
 import tempfile
 import sys
 import subprocess
@@ -688,6 +691,362 @@ class RetirementRebootIntegration(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'reboot-preparation-required'):
             self.run_retire(resume_stopped_recovery=True)
         self.assertFalse(any(args[1] == 'bootout' for args in self.calls))
+
+
+class InactiveRetirement(unittest.TestCase):
+    """A failed initial activation (#7071) on a disposable host tree.
+
+    Renames and receipts are real. Custody, launchd, ps and directory records
+    are fixtures, so this is not privileged macOS evidence.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        owners = {'ods-pixel-manager': (501, 20), 'pixel-ops-broker': (700, 700)}
+        class FixturePath(type(Path())):
+            def lstat(path):
+                value = super().lstat()
+                uid, gid = owners.get(path.name, (0, 0))
+                return SimpleNamespace(st_mode=value.st_mode, st_uid=uid, st_gid=gid)
+        def mapped(value):
+            value = str(value)
+            if value.startswith(('/private/var/lib/', '/private/var/run/',
+                                 '/private/etc/ods', '/usr/local/libexec/', '/Library/LaunchDaemons')):
+                return FixturePath(self.root / 'host' / value.lstrip('/'))
+            return FixturePath(value)
+        self.path = mapped
+        self.install = mapped(self.root / 'ods')
+        (self.install / 'data/models').mkdir(parents=True)
+        (self.install / 'data/models/retained.gguf').write_bytes(b'retained-model-fixture')
+        (self.install / 'data/pixel-native/preparation').mkdir(parents=True)
+        (self.install / 'data/pixel-native/preparation/activation.json').write_text('{"status": "error"}')
+        self.state = mapped('/private/var/lib/ods-pixel-access')
+        self.state.mkdir(parents=True)
+        self.settings = mapped('/private/etc/ods/pixel-access.json')
+        self.settings.parent.mkdir(parents=True)
+        # The state a reporter's host kept (#7071): no probe or run directory.
+        for name in ('/private/var/lib/ods-pixel-manager', '/private/var/lib/ods-pixel-artifact-promoter',
+                     '/private/var/lib/ods-pixel-native-config/501', '/usr/local/libexec/ods-pixel-access',
+                     '/usr/local/libexec/ods-pixel-services', '/usr/local/libexec/ods-pixel-runtimes/' + 'a' * 64):
+            mapped(name).mkdir(parents=True)
+        self.broker = mapped('/private/var/lib/pixel-ops-broker')
+        (self.broker / 'Library/Preferences').mkdir(parents=True)
+        (self.broker / 'Library/Preferences/agent.plist').write_bytes(b'macos-agent-state')
+        (self.broker / 'requests').mkdir()
+        self.plists = [mapped('/Library/LaunchDaemons') / ('com.ods.pixel-' + label + '.plist')
+                       for label in retirement.LABELS]
+        self.plists[0].parent.mkdir(parents=True)
+        self.definitions = {}
+        for label, path in zip(retirement.LABELS, self.plists):
+            user = ('root' if label in ('access', 'native-promoter') else
+                    '_ods_pixel_ops' if label == 'native-operations' else 'owner')
+            path.write_bytes(plistlib.dumps({'Label': path.stem, 'UserName': user,
+                'ProgramArguments': ['/usr/bin/env', '-i', 'HOME=' + str(self.install / 'data/pixel-native/home')]}))
+            if label in ('native-manager', 'native-promoter', 'native-operations'):
+                self.definitions[label.removeprefix('native-')] = {'path': str(path),
+                    'body': base64.b64encode(path.read_bytes()).decode()}
+        self.settings.write_text(json.dumps({'owner': 'owner', 'install_dir': str(self.install),
+            'settings_data_dir': str(self.install / 'data'), 'state_dir': str(self.state),
+            'gateway_binding': {'definition': 'fixture'}}))
+        self.installation, self.services = self.records()
+        self.write_records()
+        (self.state / 'installation-edge.json').write_text('{"schemaVersion": 1, "phase": "held"}')
+        (self.state / 'ops-identity.json').write_text('{}')
+        (self.state / 'ops-identity.lock').touch()
+        # The access bridge never ran, so it never created its lock.
+        self.disabled = {'com.ods.pixel-' + label for label in retirement.LABELS} | {'com.apple.ftpd'}
+        self.loaded, self.agents, self.calls, self.verified = set(), [], [], []
+        self.on_bootout = self.agents.clear
+        custody = SimpleNamespace(protected_directory=self.directory,
+            protected_bytes=lambda path, **kw: path.read_bytes(),
+            protected_tree_metadata=lambda path: None, _verify_fd=lambda *a, **kw: None)
+        modules = {'pixel_macos_custody': custody,
+            'pixel_macos_process': SimpleNamespace(process_tree_snapshot=None, process_birth=None,
+                ProcessIdentityError=OSError),
+            'pixel_gateway_service': SimpleNamespace(launchd_definition_digest=lambda *a: 'fixture'),
+            'pixel_access_bridge': SimpleNamespace(atomic_json=None)}
+        account = SimpleNamespace(validate_intent=lambda value: {'id': 700},
+            verify_record=lambda *a, **kw: None, read_record=lambda *a: {},
+            expected_attributes=lambda *a: {},
+            verify_identity_only=lambda: self.verify_identity(empty_home=False),
+            verify_empty_home_only=lambda: self.verify_identity(empty_home=True))
+        helper = retirement.helper
+        def selected_helper(name):
+            if name == 'pixel-native-ops-account': return account
+            if name == 'pixel-runtime-bundle': return SimpleNamespace(verify=lambda *a, **kw: None)
+            return helper(name)
+        def no_sandboxes(*args, **kwargs):
+            raise AssertionError('admission stayed held, so a failed activation has no sandbox')
+        patches = [patch.dict(sys.modules, modules), patch.object(retirement, 'Path', side_effect=mapped),
+            patch.object(retirement, 'STATE', self.state), patch.object(retirement, 'SETTINGS', self.settings),
+            patch.object(retirement, 'BROKER', self.broker),
+            patch.object(retirement, 'helper', side_effect=selected_helper),
+            patch.object(retirement, 'NativeSandboxes', side_effect=no_sandboxes),
+            patch.object(retirement.sys, 'platform', 'darwin'), patch.object(retirement.os, 'geteuid', return_value=0),
+            patch.object(retirement.pwd, 'getpwnam', return_value=SimpleNamespace(pw_name='owner', pw_uid=501,
+                pw_gid=20, pw_dir=str(self.root / 'home'))),
+            patch.object(retirement, 'command', side_effect=self.command)]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def records(self):
+        attempted = ['manager', 'promoter', 'operations']
+        installation = {'schemaVersion': 1, 'phase': 'staging', 'owner': 501, 'operation': 'initial-install',
+            'source': str(self.root / 'home/Library/LaunchAgents/ai.openclaw.gateway.plist')}
+        services = {'schemaVersion': 1, 'owner': 501,
+            'selection': {'bundle': str(self.install / 'data/pixel-native/preparation/services')},
+            'progress': {'phase': 'activation-failed', 'attempted': attempted,
+                         'stopUnconfirmed': [], 'requiresRecovery': True},
+            'requiresGatewayProof': True, 'recovery': {'definitions': self.definitions},
+            'stopWitnesses': {}, 'attempted': attempted, 'requiresRecovery': True}
+        return installation, services
+
+    def write_records(self):
+        (self.state / 'installation.json').write_text(json.dumps(self.installation))
+        (self.state / 'service-installation.json').write_text(json.dumps(self.services))
+
+    @contextmanager
+    def directory(self, path, create=False):
+        if create: path.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try: yield fd
+        finally: os.close(fd)
+
+    def command(self, args):
+        self.calls.append(args)
+        if args[:2] == ['/bin/launchctl', 'print']:
+            return SimpleNamespace(returncode=0 if args[2] in self.loaded else 113, stdout='')
+        if args == ['/bin/launchctl', 'print-disabled', 'system']:
+            body = ''.join('\t"' + label + '" => disabled\n' for label in sorted(self.disabled))
+            return SimpleNamespace(returncode=0, stdout='disabled services = {\n' + body + '}\n')
+        if args[:2] == ['/bin/launchctl', 'enable']:
+            self.disabled.discard(args[2].removeprefix('system/'))
+            return SimpleNamespace(returncode=0, stdout='')
+        if args == ['/bin/ps', '-axo', 'uid=']:
+            return SimpleNamespace(returncode=0, stdout=''.join('  %d\n' % uid for uid in [0, 501, *self.agents]))
+        if args == ['/bin/launchctl', 'bootout', 'user/700']:
+            self.on_bootout()
+            return SimpleNamespace(returncode=0, stdout='')
+        self.fail('unexpected host command: %r' % (args,))
+
+    def verify_identity(self, *, empty_home):
+        """Check on disk what the real identity proof checks."""
+        self.verified.append('empty-home' if empty_home else 'identity')
+        if set(os.listdir(self.state)) != retirement.RETAIN:
+            raise ValueError('operations-identity-not-only-protected-state')
+        if self.agents:
+            raise ValueError('operations-identity-process-active')
+        if self.loaded:
+            raise ValueError('operations-identity-service-loaded-or-ambiguous')
+        if empty_home and any(self.broker.iterdir()):
+            raise ValueError('operations-home-not-empty-or-owned')
+
+    def run_retire(self, **kwargs):
+        return retirement.retire(str(self.install), 'owner', **kwargs)
+
+    def archives(self):
+        root = self.path('/private/var/lib/ods-pixel-retired')
+        return sorted(root.iterdir()) if root.exists() else []
+
+    def assert_untouched(self):
+        self.assertEqual(self.archives(), [])
+        self.assertTrue(self.settings.exists() and all(path.exists() for path in self.plists))
+        self.assertEqual((self.broker / 'Library/Preferences/agent.plist').read_bytes(), b'macos-agent-state')
+        self.assertTrue((self.state / 'installation.json').exists())
+        self.assertIn('com.ods.pixel-native-gateway', self.disabled)
+        self.assertFalse(any(args[1] in ('bootout', 'enable') for args in self.calls))
+
+    def test_failed_activation_without_lock_is_archived(self):
+        self.assertFalse((self.state / 'lock').exists())
+        result = self.run_retire()
+        self.assertEqual(result['status'], 'retired')
+        receipt = json.loads((Path(result['archive']) / 'receipt.json').read_text())
+        self.assertEqual(receipt['status'], 'retired')
+        self.assertTrue(all(move['done'] for move in receipt['moves']))
+        moved = {move['source']: move['archive'] for move in receipt['moves']}
+        for path in [self.settings, *self.plists, self.path('/usr/local/libexec/ods-pixel-runtimes'),
+                     self.path('/private/var/lib/ods-pixel-manager'), self.state / 'installation.json',
+                     self.state / 'service-installation.json', self.state / 'lock']:
+            self.assertIn(str(path), moved)
+            self.assertFalse(os.path.lexists(path))
+        # Nothing is deleted: the agents' files sit in the archive.
+        library = Path(moved[str(self.broker / 'Library')])
+        self.assertEqual((library / 'Preferences/agent.plist').read_bytes(), b'macos-agent-state')
+        self.assertEqual(sorted(os.listdir(self.state)), sorted(retirement.RETAIN))
+        self.assertEqual(list(self.broker.iterdir()), [])
+        self.assertEqual(self.disabled, {'com.apple.ftpd'})
+        self.assertEqual(self.verified, ['empty-home'])
+        self.assertFalse(any(args[1] == 'bootout' for args in self.calls))
+        # The install tree is the uninstaller's to remove, per its own flags.
+        self.assertEqual((self.install / 'data/models/retained.gguf').read_bytes(), b'retained-model-fixture')
+        self.assertTrue((self.install / 'data/pixel-native/preparation/activation.json').exists())
+
+    def test_rolled_back_activation_with_lock_is_archived(self):
+        self.installation['phase'] = 'initial-stopped'
+        self.services['progress']['phase'] = 'services-stopped'
+        self.write_records()
+        (self.state / 'lock').touch()
+        self.assertEqual(self.run_retire()['status'], 'retired')
+        self.assertEqual(sorted(os.listdir(self.state)), sorted(retirement.RETAIN))
+        self.assertEqual(self.disabled, {'com.apple.ftpd'})
+
+    def test_unconfirmed_interrupted_or_foreign_state_is_refused_before_any_change(self):
+        cases = [
+            ('installation', {'phase': 'recovery-required'}, 'inactive-stop-unconfirmed'),
+            ('installation', {'phase': 'rolling-back'}, 'inactive-stop-unconfirmed'),
+            ('installation', {'phase': 'starting-gateway'}, 'inactive-stop-unconfirmed'),
+            ('installation', {'operation': 'migration'}, 'custody-mismatch'),
+            ('installation', {'owner': 502}, 'custody-mismatch'),
+            ('progress', {'stopUnconfirmed': ['operations']}, 'inactive-stop-unconfirmed'),
+            ('progress', {'phase': 'stopping-services'}, 'inactive-stop-unconfirmed'),
+            ('progress', {'phase': 'services-active'}, 'inactive-stop-unconfirmed'),
+            ('services', {'attempted': ['promoter']}, 'inactive-stop-unconfirmed'),
+            ('services', {'owner': 502}, 'custody-mismatch'),
+            ('services', {'selection': {'bundle': '/Users/other/ods/data/pixel-native/services'}},
+             'service-root-mismatch'),
+        ]
+        for kind, change, code in cases:
+            with self.subTest(kind=kind, change=change):
+                self.installation, self.services = self.records()
+                target = {'installation': self.installation, 'services': self.services,
+                          'progress': self.services['progress']}[kind]
+                target.update(change)
+                self.write_records()
+                with self.assertRaisesRegex(ValueError, code):
+                    self.run_retire()
+                self.assert_untouched()
+
+    def test_another_installation_folder_is_refused(self):
+        settings = json.loads(self.settings.read_text())
+        settings['install_dir'] = str(self.root / 'ods-other')
+        self.settings.write_text(json.dumps(settings))
+        with self.assertRaisesRegex(ValueError, 'custody-mismatch'):
+            self.run_retire()
+        self.assert_untouched()
+
+    def test_a_loaded_job_is_refused(self):
+        self.loaded.add('system/com.ods.pixel-native-gateway')
+        with self.assertRaisesRegex(ValueError, 'inactive-job-loaded'):
+            self.run_retire()
+        self.assert_untouched()
+
+    def test_validate_only_moves_nothing(self):
+        self.agents.append(700)
+        self.assertEqual(self.run_retire(validate_only=True)['status'], 'validated')
+        self.assert_untouched()
+
+    def test_maintainer_reboot_modes_do_not_apply(self):
+        for mode in ('prepare_stopped_recovery', 'resume_stopped_recovery'):
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, 'inactive-uses-plain-retirement'):
+                self.run_retire(**{mode: True})
+        self.assert_untouched()
+
+    def test_operations_agents_stop_before_the_home_moves(self):
+        self.agents.append(700)
+        def bootout():
+            self.assertTrue(self.settings.exists() and (self.broker / 'Library').exists())
+            self.agents.clear()
+        self.on_bootout = bootout
+        self.assertEqual(self.run_retire()['status'], 'retired')
+        self.assertIn(['/bin/launchctl', 'bootout', 'user/700'], self.calls)
+        self.assertEqual(list(self.broker.iterdir()), [])
+        self.assertEqual(self.verified, ['empty-home'])
+
+    def test_agents_that_survive_bootout_stop_retirement_before_any_move(self):
+        self.agents.append(700)
+        self.on_bootout = lambda: None
+        with patch.object(retirement.time, 'monotonic', side_effect=itertools.count(0, 10)), \
+                patch.object(retirement.time, 'sleep'):
+            with self.assertRaisesRegex(ValueError, 'operations-identity-process-active'):
+                self.run_retire()
+        self.assertEqual(self.archives(), [])
+        self.assertTrue(self.settings.exists() and (self.broker / 'Library').exists())
+
+    def test_failure_before_the_identity_existed_archives_the_whole_state(self):
+        self.services = {**self.services, 'progress': {'phase': 'provisioning-identity'},
+                         'attempted': [], 'recovery': None}
+        self.write_records()
+        for name in ('ops-identity.json', 'ops-identity.lock'):
+            (self.state / name).unlink()
+        shutil.rmtree(self.broker)
+        for path in self.plists[3:]:
+            path.unlink()
+        self.assertEqual(self.run_retire()['status'], 'retired')
+        self.assertFalse(os.path.lexists(self.state))
+        self.assertEqual(self.verified, [])
+        self.assertEqual(self.disabled, {'com.apple.ftpd'})
+
+    def reduce_to_retained_identity(self):
+        """What a completed retirement leaves (tests set up the host directly)."""
+        for name in os.listdir(self.state):
+            if name not in retirement.RETAIN:
+                (self.state / name).unlink()
+        for path in [self.settings, *self.plists]:
+            path.unlink()
+        for name in retirement.DIRECTORIES:
+            if self.path(name).exists():
+                shutil.rmtree(self.path(name))
+
+    def test_retained_identity_home_written_by_macos_agents_is_archived(self):
+        self.reduce_to_retained_identity()
+        self.agents.append(700)
+        self.assertEqual(self.run_retire(), {'status': 'absent'})
+        self.assertIn(['/bin/launchctl', 'bootout', 'user/700'], self.calls)
+        self.assertEqual(list(self.broker.iterdir()), [])
+        self.assertEqual(sorted(os.listdir(self.state)), sorted(retirement.RETAIN))
+        self.assertEqual(self.disabled, {'com.apple.ftpd'})
+        self.assertEqual(self.verified, ['empty-home'])
+        archive, = self.archives()
+        receipt = json.loads((archive / 'receipt.json').read_text())
+        self.assertEqual(receipt['status'], 'retired')
+        library = Path(next(m['archive'] for m in receipt['moves'] if m['source'] == str(self.broker / 'Library')))
+        self.assertEqual((library / 'Preferences/agent.plist').read_bytes(), b'macos-agent-state')
+
+    def test_clean_retained_identity_needs_no_change(self):
+        self.reduce_to_retained_identity()
+        shutil.rmtree(self.broker)
+        self.broker.mkdir()
+        self.disabled = {'com.apple.ftpd'}
+        self.assertEqual(self.run_retire(), {'status': 'absent'})
+        self.assertEqual(self.archives(), [])
+        self.assertFalse(any(args[1] in ('bootout', 'enable') for args in self.calls))
+
+    def test_retained_identity_validation_changes_nothing(self):
+        self.reduce_to_retained_identity()
+        self.agents.append(700)
+        with self.assertRaisesRegex(ValueError, 'operations-identity-process-active'):
+            self.run_retire(validate_only=True)
+        self.assertTrue((self.broker / 'Library').exists())
+        self.assertFalse(any(args[1] in ('bootout', 'enable') for args in self.calls))
+
+
+class RetirementGuidance(unittest.TestCase):
+    def refuse(self, error):
+        argv = ['pixel-native-uninstall.py', '--install-dir', '/Users/owner/ods', '--owner', 'owner']
+        with patch.object(retirement, 'retire', side_effect=error), patch.object(retirement.sys, 'argv', argv), \
+                patch.object(retirement.sys, 'stderr', new_callable=io.StringIO) as stderr:
+            self.assertEqual(retirement.main(), 1)
+        return stderr.getvalue()
+
+    def test_every_refusal_names_a_next_step_and_where_to_get_help(self):
+        for error in (ValueError('native-retirement-inactive-stop-unconfirmed'),
+                      ValueError('native-retirement-unbound-residue'),
+                      ValueError('native-retirement-docker-command-failed'),
+                      ValueError('unlisted-reason'), FileNotFoundError(2, 'No such file or directory')):
+            with self.subTest(error=error):
+                lines = self.refuse(error).splitlines()
+                self.assertEqual(len(lines), 3)
+                self.assertTrue(lines[0].startswith('Native Pixel retirement refused ('))
+                self.assertTrue(lines[1].strip())
+                self.assertEqual(lines[2], '  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC')
+
+    def test_stopped_job_refusal_keeps_the_maintainer_procedure(self):
+        output = self.refuse(ValueError('native-retirement-stopped-job-needs-witness'))
+        self.assertIn('MACOS_PIXEL_RETIREMENT_RECOVERY.md', output)
+        self.assertIn('https://discord.gg/4ntNp9MAwC', output)
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and os.environ.get('ODS_TEST_LAUNCHD_QUARANTINE') == '1',
