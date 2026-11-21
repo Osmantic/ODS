@@ -25,10 +25,10 @@ const MARKDOWN_COMPONENTS = {
   a: ({ href, children }) => (
     <a href={href} target="_blank" rel="noreferrer" className="underline decoration-zinc-400 underline-offset-2 hover:decoration-zinc-700">{children}</a>
   ),
-  code: ({ inline, children }) => inline
-    ? <code className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-[13px] text-zinc-800">{children}</code>
-    : <code className="block whitespace-pre-wrap break-words rounded bg-zinc-100 p-2 font-mono text-[13px] text-zinc-800">{children}</code>,
-  pre: ({ children }) => <pre className="my-2 overflow-x-auto rounded bg-zinc-100">{children}</pre>,
+  // react-markdown no longer supplies an `inline` prop. The pre wrapper
+  // distinguishes fenced blocks, including fences without a language tag.
+  code: ({ children, className }) => <code className={`rounded bg-zinc-100 px-1 py-0.5 font-mono text-[13px] text-zinc-800 ${className || ''}`}>{children}</code>,
+  pre: ({ children }) => <pre className="my-2 overflow-x-auto rounded bg-zinc-100 [&>code]:block [&>code]:whitespace-pre-wrap [&>code]:break-words [&>code]:p-2">{children}</pre>,
   blockquote: ({ children }) => <blockquote className="my-2 border-l-2 border-zinc-300 pl-3 italic text-zinc-700">{children}</blockquote>,
   hr: () => <hr className="my-3 border-zinc-200" />,
 }
