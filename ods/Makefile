@@ -215,6 +215,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-backup-integrity.sh
 	@bash tests/test-backup-restore-roundtrip.sh
 	@bash tests/test-backup-macos-appledouble.sh
+	@bash tests/test-backup-delete-id-shape.sh
 	@python3 tests/test-rsync-transfer-failures.py
 	@echo ""
 	@echo "=== ods-update.sh rollback picks the newest backup ==="
