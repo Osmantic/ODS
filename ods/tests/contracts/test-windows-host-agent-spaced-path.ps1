@@ -68,7 +68,7 @@ foreach ($rel in @("ods.ps1", "phases\07-devtools.ps1")) {
     if ($src -notmatch 'ConvertTo-ODSHostAgentArgumentLine') {
         throw "$rel must build the host agent argument line with ConvertTo-ODSHostAgentArgumentLine"
     }
-    if ($src -match "_agentScriptLiteral|-ArgumentList @\(\`$agentScript") {
+    if ($src -match "_agentScriptLiteral|-ArgumentList @\(\`$_?agentScript") {
         throw "$rel still passes the host agent paths as an unquoted -ArgumentList array"
     }
 }

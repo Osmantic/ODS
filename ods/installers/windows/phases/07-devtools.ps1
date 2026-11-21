@@ -524,7 +524,7 @@ WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hid
             } catch {
                 Write-AIError "Failed to set up alternative startup persistence: $_"
                 Write-AIWarn "Starting host agent directly for this session..."
-                Start-Process -FilePath $_python3.FilePath -ArgumentList @($_agentScript, '--port', "$($script:ODS_AGENT_PORT)", '--pid-file', $script:ODS_AGENT_PID_FILE, '--install-dir', $installDir) -WorkingDirectory $installDir -WindowStyle Hidden -RedirectStandardError $script:ODS_AGENT_LOG_FILE
+                Start-Process -FilePath $_python3.FilePath -ArgumentList $_agentArgLine -WorkingDirectory $installDir -WindowStyle Hidden -RedirectStandardError $script:ODS_AGENT_LOG_FILE
             }
         }
     } else {
