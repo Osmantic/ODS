@@ -12,7 +12,7 @@
 #          HOST_ARCH, MODEL_PROFILE_EFFECTIVE (or MODEL_PROFILE)
 # Provides: ODS_HERMES_MIN_CONTEXT, ods_model_selector_python,
 #           ods_run_catalog_selector, ods_run_vllm_selector,
-#           ods_catalog_fit_check
+#           ods_catalog_fit_check, ods_llm_fit_need_mb
 #
 # This file is sourced; it must not change the caller's shell options.
 # ============================================================================
@@ -105,4 +105,17 @@ ods_catalog_fit_check() {
         --host-arch "${HOST_ARCH:-unknown}" \
         --check-fit --model-id "$model" --context "$context" \
         ${profile_args[@]+"${profile_args[@]}"}
+}
+
+# ods_llm_fit_need_mb PYTHON MODEL CONTEXT [RUNTIME_PROFILE]
+# Prints, in MiB, everything MODEL needs at CONTEXT (weights, KV cache and
+# buffers) by the catalog's estimate: the input of scripts/assign_gpus.py
+# --fit-need-mb, which keeps a model that fits the largest GPU on that GPU.
+# Prints nothing when the catalog does not list the model.
+ods_llm_fit_need_mb() {
+    local out status=0
+    out="$(ods_catalog_fit_check "$@" 2>>"${LOG_FILE:-/dev/null}")" || status=$?
+    # 0: fits this host, 3: does not; either way the JSON carries the estimate.
+    [[ "$status" == 0 || "$status" == 3 ]] || return 0
+    jq -r 'if (.required_gb // 0) > 0 then (.required_gb * 1024 | ceil | tostring) else empty end' <<< "$out"
 }
