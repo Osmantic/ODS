@@ -652,3 +652,74 @@ class TestParallelismModeSelection:
     def test_mem_util_pipeline_is_095(self):
         _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_4gpus_soc.json"), 100000)
         assert parallelism(out)["gpu_memory_utilization"] == 0.95
+
+
+# ── --pin-llm-gpu: the vLLM engine owns exactly one GPU ───────────────────────
+
+def run_pinned(topology_path, model_size_mb, uuid):
+    cmd = [sys.executable, SCRIPT, "--topology", str(topology_path),
+           "--model-size", str(model_size_mb), "--pin-llm-gpu", uuid]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    output = json.loads(result.stdout)["gpu_assignment"] if result.returncode == 0 else None
+    return result.returncode, output, result.stderr
+
+
+class TestPinnedLlmGpu:
+    GB300 = "GPU-aaaaaaaa-gb300"
+    RTX = "GPU-bbbbbbbb-rtx6000"
+
+    def dgx_station(self, tmp_path):
+        """GB300 (sm_103) beside an RTX PRO 6000 on PCIe, as on a DGX Station."""
+        topology = tmp_path / "dgx-station.json"
+        topology.write_text(json.dumps({
+            "vendor": "nvidia", "gpu_count": 2,
+            "gpus": [
+                {"index": 0, "uuid": self.GB300, "name": "NVIDIA GB300", "memory_gb": 250.7, "memory_free_gb": 250.0},
+                {"index": 1, "uuid": self.RTX, "name": "NVIDIA RTX PRO 6000", "memory_gb": 95.6, "memory_free_gb": 95.0},
+            ],
+            "links": [{"gpu_a": 0, "gpu_b": 1, "link_type": "SYS", "link_label": "SYS", "rank": 10}],
+        }))
+        return topology
+
+    def test_llm_gets_exactly_the_pinned_gpu_and_services_the_other(self, tmp_path):
+        code, out, err = run_pinned(self.dgx_station(tmp_path), 132735, self.GB300)
+        assert code == 0, err
+        assert llama(out)["gpus"] == [self.GB300]
+        for service in ("whisper", "comfyui", "embeddings"):
+            assert out["services"][service]["gpus"] == [self.RTX]
+        p = parallelism(out)
+        assert (p["mode"], p["tensor_parallel_size"], p["pipeline_parallel_size"]) == ("none", 1, 1)
+        assert "tensor_split" not in p
+
+    def test_without_the_pin_the_same_model_spans_both_gpus(self, tmp_path):
+        # The case the pin exists for: the llama.cpp search splits a model
+        # that fits the GB300 alone across both mismatched GPUs.
+        code, out, err = run(str(self.dgx_station(tmp_path)), 132735)
+        assert code == 0, err
+        assert len(llama(out)["gpus"]) == 2
+
+    def test_spare_gpus_never_join_the_pinned_gpu(self):
+        topology = fixture_path("nvidia_smi_topo_matrix_5gpus_nv12_with_mlx5.json")
+        pinned = "GPU-22222222-2222-2222-2222-222222222222"
+        code, out, err = run_pinned(topology, 300000, pinned)
+        assert code == 0, err
+        assert llama(out)["gpus"] == [pinned]
+        assert parallelism(out)["mode"] == "none"
+        others = {out["services"][s]["gpus"][0] for s in ("whisper", "comfyui", "embeddings")}
+        assert pinned not in others and len(others) == 3
+        assert out["strategy"] == "dedicated"
+
+    def test_single_gpu_uses_the_vllm_selectors_sizing(self):
+        topology = fixture_path("nvidia_smi_topo_matrix_1gpu_pcie.json")
+        uuid = TestSingleGpu.UUID
+        # The selector sized the model against total memory; free VRAM does not apply.
+        code, out, err = run_pinned(topology, 10**7, uuid)
+        assert code == 0, err
+        assert out["strategy"] == "single"
+        assert all(service["gpus"] == [uuid] for service in out["services"].values())
+        assert parallelism(out)["mode"] == "none"
+
+    def test_unknown_gpu_is_refused(self, tmp_path):
+        code, out, err = run_pinned(self.dgx_station(tmp_path), 132735, "GPU-not-here")
+        assert code == 1 and out is None
+        assert "--pin-llm-gpu GPU-not-here names 0 GPUs in the topology" in err

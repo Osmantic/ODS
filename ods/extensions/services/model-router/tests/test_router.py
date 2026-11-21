@@ -1344,6 +1344,272 @@ class TestForwarding:
         assert mod._inflight == 0
 
 
+_VLLM_MODEL = "GLM-5.3-Flash-NVFP4"
+_LOOKUP_TOOL = {"type": "function", "function": {"name": "lookup", "parameters": {
+    "type": "object", "additionalProperties": False, "required": ["key"],
+    "properties": {"key": {"type": "string"}}}}}
+_LOOKUP_MARKUP = ("<tool_call>\n<function=lookup>\n"
+                  "<parameter=key>\nok\n</parameter>\n</function>\n</tool_call>")
+
+
+def _write_route(tmp_path, write_state, kind):
+    """Publish a verified route of ``kind``; a vllm one at vllm-default."""
+    if kind == "llama-server":
+        write_state()
+        return "Concrete.gguf"
+    # The allowlist the renderer writes for LLM_BACKEND=vllm, plus the
+    # fixture's llama-server row so a wrong endpoint choice would still route.
+    (tmp_path / "endpoints.json").write_text(json.dumps({"endpoints": [
+        {"id": "llama-server-default", "baseUrl": "http://upstream:8080"},
+        {"id": "vllm-default", "baseUrl": "http://vllm-server:8000"},
+    ]}), encoding="utf-8")
+    write_state(runtime=_VLLM_MODEL, endpoint="vllm-default",
+                mutate=lambda doc: doc["active"]["backend"].update(kind=kind))
+    return _VLLM_MODEL
+
+
+def _use_upstream(mod, handler):
+    asyncio.run(mod.app.state.http.aclose())
+    mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+class TestVllmRoute:
+    """A vllm route is forwarded unchanged: vLLM parses tools and reasoning."""
+
+    def test_vllm_route_reaches_vllm_server_under_the_alias(self, router, tmp_path):
+        mod, client, write_state, calls = router
+        _write_route(tmp_path, write_state, "vllm")
+        recorder = _RecordingTelemetry()
+        mod.app.state.telemetry = recorder
+
+        resp = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "messages": [{"role": "user", "content": "hi"}],
+        })
+
+        assert resp.status_code == 200
+        assert calls[-1]["url"] == "http://vllm-server:8000/v1/chat/completions"
+        assert calls[-1]["model"] == _VLLM_MODEL
+        assert calls[-1]["auth"] is None
+        assert resp.json()["model"] == "ods/current"
+        assert resp.headers["X-ODS-Backend"] == "vllm"
+        assert resp.headers["X-ODS-Routed-Model"] == _VLLM_MODEL
+        assert client.get("/v1/models").json()["ods"]["backend"] == "vllm"
+        assert [event["provider_name"] for event in recorder.events] == ["vllm"]
+
+    @pytest.mark.parametrize("thinking", [False, True])
+    def test_vllm_tool_stream_is_forwarded_live(self, router, tmp_path, thinking):
+        mod, client, write_state, _calls = router
+        _write_route(tmp_path, write_state, "vllm")
+        sent = []
+        # A llama-server route buffers this unfinished tool decision and
+        # rejects it (test_incomplete_tool_stream_fails_without_nonstream_retry).
+        partial = {"model": _VLLM_MODEL, "choices": [{"index": 0, "delta": {
+            "role": "assistant", "tool_calls": [{
+                "index": 0, "id": "call-1", "type": "function",
+                "function": {"name": "lookup", "arguments": '{"key":"ok"}'}}]},
+            "finish_reason": None}]}
+
+        def handler(request):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, content=b"data: " + json.dumps(partial).encode() + b"\n\n",
+                                  headers={"content-type": "text/event-stream"})
+
+        _use_upstream(mod, handler)
+        body = {"model": "ods/current", "stream": True,
+                "messages": [{"role": "user", "content": "look up ok"}],
+                "tools": [_LOOKUP_TOOL]}
+        if thinking:
+            body["chat_template_kwargs"] = {"enable_thinking": True}
+        response = client.post("/v1/chat/completions", json=body)
+
+        assert response.status_code == 200
+        assert len(sent) == 1 and sent[0]["stream"] is True
+        assert "stream_options" not in sent[0]
+        assert sent[0].get("chat_template_kwargs") == body.get("chat_template_kwargs")
+        for header in ("x-ods-tool-stream-fallback", "x-ods-tool-stream-compatibility",
+                       "x-ods-tool-stream-repair"):
+            assert header not in response.headers
+        frames = [json.loads(item.removeprefix("data: "))
+                  for item in response.text.split("\n\n") if item]
+        assert frames == [{**partial, "model": "ods/current"}]
+
+    @pytest.mark.parametrize("kind,upstream_calls", [("llama-server", 2), ("vllm", 1)])
+    def test_only_llama_server_repairs_a_rejected_tool_decision(
+            self, router, tmp_path, kind, upstream_calls):
+        mod, client, write_state, _calls = router
+        runtime = _write_route(tmp_path, write_state, kind)
+        sent = []
+        # Names a function that was not offered; the offered one is lookup.
+        rejected = _LOOKUP_MARKUP.replace("function=lookup", "function=pixel_ods_lookup")
+
+        def handler(request):
+            sent.append(json.loads(request.content))
+            message = {"role": "assistant", "content": rejected}
+            reason = "stop"
+            if len(sent) > 1:
+                message = {"role": "assistant", "content": None, "tool_calls": [{
+                    "id": "call-1", "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"key":"ok"}'}}]}
+                reason = "tool_calls"
+            return httpx.Response(200, json={"model": runtime, "choices": [
+                {"index": 0, "message": message, "finish_reason": reason}]})
+
+        _use_upstream(mod, handler)
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": False,
+            "messages": [{"role": "user", "content": "look up ok"}],
+            "tools": [_LOOKUP_TOOL],
+        })
+
+        assert response.status_code == 200
+        assert len(sent) == upstream_calls
+        choice = response.json()["choices"][0]
+        if kind == "vllm":
+            assert choice == {"index": 0, "message": {"role": "assistant", "content": rejected},
+                              "finish_reason": "stop"}
+        else:
+            assert choice["message"]["tool_calls"][0]["function"]["name"] == "lookup"
+
+    @pytest.mark.parametrize("kind", ["llama-server", "vllm"])
+    def test_only_llama_server_converts_native_tool_markup(self, router, tmp_path, kind):
+        mod, client, write_state, _calls = router
+        runtime = _write_route(tmp_path, write_state, kind)
+        sent = []
+
+        def handler(request):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"model": runtime, "choices": [{"index": 0,
+                "message": {"role": "assistant", "content": _LOOKUP_MARKUP},
+                "finish_reason": "stop"}]})
+
+        _use_upstream(mod, handler)
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": False,
+            "messages": [{"role": "user", "content": "look up ok"}],
+            "tools": [_LOOKUP_TOOL],
+        })
+
+        assert response.status_code == 200
+        assert len(sent) == 1
+        choice = response.json()["choices"][0]
+        if kind == "vllm":
+            assert choice["finish_reason"] == "stop"
+            assert choice["message"] == {"role": "assistant", "content": _LOOKUP_MARKUP}
+        else:
+            assert choice["finish_reason"] == "tool_calls"
+            assert choice["message"]["content"] is None
+            assert json.loads(choice["message"]["tool_calls"][0]["function"]["arguments"]) == {
+                "key": "ok"}
+
+
+# The two catalog maps (config/model-library.json thinking_template_kwargs),
+# as render-runtime-configs.py writes them into the vllm endpoint.
+_GLM_THINKING = {"default": "medium", "templateKwargs": {
+    "off": {"reasoning_effort": "low"}, "low": {"reasoning_effort": "low"},
+    "medium": {"reasoning_effort": "high"}, "high": {}}}
+_QWEN_THINKING = {"default": "medium", "templateKwargs": {
+    "off": {"enable_thinking": False}, "low": {"reasoning_effort": "low"},
+    "medium": {"reasoning_effort": "medium"}, "high": {"reasoning_effort": "xhigh"}}}
+
+
+def _write_vllm_thinking_route(tmp_path, write_state, thinking):
+    (tmp_path / "endpoints.json").write_text(json.dumps({"endpoints": [
+        {"id": "vllm-default", "baseUrl": "http://vllm-server:8000", "thinking": thinking},
+    ]}), encoding="utf-8")
+    write_state(runtime=_VLLM_MODEL, endpoint="vllm-default",
+                mutate=lambda doc: doc["active"]["backend"].update(kind="vllm"))
+
+
+class TestVllmThinking:
+    """ODS thinking levels reach vLLM in the served model's own template terms."""
+
+    def _send(self, router, tmp_path, thinking, extra, kind="vllm"):
+        mod, client, write_state, _calls = router
+        if kind == "vllm":
+            _write_vllm_thinking_route(tmp_path, write_state, thinking)
+        else:
+            write_state()
+        sent = []
+
+        def handler(request):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"model": sent[-1]["model"], "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]})
+
+        _use_upstream(mod, handler)
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "messages": [{"role": "user", "content": "hi"}], **extra})
+        return response, sent
+
+    @pytest.mark.parametrize("thinking,extra,expected,level", [
+        # No hint: the catalog default, medium, which GLM spells "high".
+        (_GLM_THINKING, {}, {"reasoning_effort": "high"}, "medium"),
+        (_QWEN_THINKING, {}, {"reasoning_effort": "medium"}, "medium"),
+        # The ODS consumers' switch: false is off; GLM cannot stop thinking.
+        (_GLM_THINKING, {"chat_template_kwargs": {"enable_thinking": False}},
+         {"reasoning_effort": "low"}, "off"),
+        (_QWEN_THINKING, {"chat_template_kwargs": {"enable_thinking": False}},
+         {"enable_thinking": False}, "off"),
+        (_QWEN_THINKING, {"chat_template_kwargs": {"enable_thinking": True}},
+         {"reasoning_effort": "medium"}, "medium"),
+        # OpenAI's reasoning_effort, never forwarded literally: Qwen's
+        # template fails on "high" and GLM's thinks at max on "medium".
+        (_QWEN_THINKING, {"reasoning_effort": "high"}, {"reasoning_effort": "xhigh"}, "high"),
+        (_GLM_THINKING, {"reasoning_effort": "high"}, None, "high"),
+        (_GLM_THINKING, {"reasoning_effort": "low"}, {"reasoning_effort": "low"}, "low"),
+        (_QWEN_THINKING, {"reasoning_effort": "none"}, {"enable_thinking": False}, "off"),
+        (_QWEN_THINKING, {"reasoning_effort": "minimal"}, {"reasoning_effort": "low"}, "low"),
+        # vLLM hands chat_template_kwargs.reasoning_effort to the template
+        # like the top-level field, so it is translated the same way.
+        (_QWEN_THINKING, {"chat_template_kwargs": {"reasoning_effort": "high"}},
+         {"reasoning_effort": "xhigh"}, "high"),
+        (_GLM_THINKING, {"chat_template_kwargs": {"reasoning_effort": "medium"}},
+         {"reasoning_effort": "high"}, "medium"),
+        # A client's other template arguments are the model's own and stay.
+        (_QWEN_THINKING, {"chat_template_kwargs": {"enable_thinking": True, "preserve_thinking": True}},
+         {"reasoning_effort": "medium", "preserve_thinking": True}, "medium"),
+    ])
+    def test_level_becomes_the_models_template_arguments(
+            self, router, tmp_path, thinking, extra, expected, level):
+        response, sent = self._send(router, tmp_path, thinking, extra)
+
+        assert response.status_code == 200
+        assert len(sent) == 1
+        assert sent[0].get("chat_template_kwargs") == expected
+        assert "reasoning_effort" not in sent[0]
+        assert response.headers["X-ODS-Thinking-Level"] == level
+
+    def test_unknown_reasoning_effort_is_refused_before_vllm(self, router, tmp_path):
+        response, sent = self._send(router, tmp_path, _QWEN_THINKING, {"reasoning_effort": "max"})
+
+        assert response.status_code == 400
+        assert response.json()["error"]["type"] == "invalid_request_error"
+        assert sent == []
+
+    def test_non_object_template_arguments_are_refused(self, router, tmp_path):
+        response, sent = self._send(router, tmp_path, _GLM_THINKING, {"chat_template_kwargs": ["x"]})
+
+        assert response.status_code == 400
+        assert sent == []
+
+    def test_llama_server_route_forwards_thinking_unchanged(self, router, tmp_path):
+        extra = {"chat_template_kwargs": {"enable_thinking": False}, "reasoning_effort": "high"}
+        response, sent = self._send(router, tmp_path, None, extra, kind="llama-server")
+
+        assert response.status_code == 200
+        assert sent[0]["chat_template_kwargs"] == {"enable_thinking": False}
+        assert sent[0]["reasoning_effort"] == "high"
+        assert "X-ODS-Thinking-Level" not in response.headers
+
+    def test_malformed_thinking_map_fails_the_route_closed(self, router, tmp_path):
+        broken = {"default": "medium", "templateKwargs": {"off": {}, "low": {}, "medium": {}}}
+        response, sent = self._send(router, tmp_path, broken, {})
+
+        assert response.status_code == 503
+        assert response.json()["error"]["type"] == "endpoint_not_allowlisted"
+        assert sent == []
+
+
 class TestStateTrust:
     def test_schema_invalid_state_is_not_routable(self, router):
         mod, client, write_state, calls = router
@@ -1352,6 +1618,16 @@ class TestStateTrust:
             "model": "ods/current", "messages": [],
         })
         assert resp.status_code == 503
+        assert calls == []
+
+    def test_unlisted_backend_kind_is_not_routable(self, router):
+        mod, client, write_state, calls = router
+        write_state(mutate=lambda doc: doc["active"]["backend"].update(kind="sglang"))
+        resp = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "messages": [],
+        })
+        assert resp.status_code == 503
+        assert resp.json()["error"]["type"] == "no_active_route"
         assert calls == []
 
     @pytest.mark.parametrize("mutation", [

@@ -1,6 +1,8 @@
-"""Finish a retained initial Pixel installation after final Docker health failure.
+"""Finish a retained initial Pixel installation after interrupted activation.
 
-This verifies the completed protected activation twice; it never repeats it.
+This verifies completed protected activation twice; it never replays startup.
+Explicit --complete-protected first asks the root completion operation to
+prove and finish an already running initial service set.
 The original preparation and activation receipts remain untouched. A successful
 readback publishes the existing atomic owner-selection format, after consumers
 have been checked against the native stack.
@@ -22,6 +24,7 @@ HERE = Path(__file__).resolve().parent
 GUIDANCE = {
     'native-macos-owner-required': 'Run as the signed-in macOS owner; the proof requests sudo itself.',
     'retained-final-health-failure-required': 'Only an initial installation stopped after protected activation can use this recovery.',
+    'retained-protected-activation-required': 'Explicit protected completion requires an initial attempt interrupted during protected activation.',
     'retained-native-selection-mismatch': 'The preparation and activation identities disagree.',
     'native-recovery-selection-changed': 'The retained selection changed or a different update was published.',
     'native-initial-recovery-proof-failed': 'Protected activation could not be verified. The failed attempt remains intact.',
@@ -63,16 +66,24 @@ def helper(name):
     return module
 
 
-def selection(receipt, activation):
+def selection(receipt, activation, *, interrupted=False):
+    if interrupted:
+        eligible = (type(activation) is dict and activation.get('phase') == 'protected-activation'
+            and (activation.get('status') == 'activating'
+                 or activation.get('status') == 'error' and activation.get('requiresRecovery') is True))
+    else:
+        eligible = (type(activation) is dict and activation.get('status') == 'error'
+            and activation.get('requiresRecovery') is True
+            and activation.get('phase') in ('final-health', 'webui-routing'))
     if (type(receipt) is not dict or type(activation) is not dict
             or receipt.get('kind') == 'legacy-native'
             or receipt.get('status') != 'prepared' or receipt.get('requiresActivation') is not True
             or receipt.get('phase') != 'awaiting-protected-activation'
-            or activation.get('status') != 'error' or activation.get('requiresRecovery') is not True
-            or activation.get('phase') not in ('final-health', 'webui-routing')
+            or not eligible
             or type(activation.get('schemaVersion')) is not int or activation['schemaVersion'] != 1
             or not re.fullmatch('[a-f0-9]{40}', str(receipt.get('pixelSourceRef', '')))):
-        raise ValueError('retained-final-health-failure-required')
+        raise ValueError('retained-protected-activation-required' if interrupted
+                         else 'retained-final-health-failure-required')
     for key in ('runtimeDigest', 'serviceDigest'):
         if (not re.fullmatch('[a-f0-9]{64}', str(receipt.get(key, '')))
                 or activation.get(key) != receipt[key]):
@@ -82,7 +93,7 @@ def selection(receipt, activation):
 
 
 def finish(*, preparation, receipt, run, verify, compose, selected_services, restore_host_agent=None,
-           resume_model=None, restore_optional_tools=None, refresh_ingress=None):
+           resume_model=None, restore_optional_tools=None, refresh_ingress=None, complete_protected=None):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
     config = helper('pixel-native-config')
@@ -99,7 +110,7 @@ def finish(*, preparation, receipt, run, verify, compose, selected_services, res
             raise ValueError('private-native-selection-lock-required')
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         original = config.private_json(preparation / 'activation.json')
-        document = selection(receipt, original)
+        document = selection(receipt, original, interrupted=complete_protected is not None)
         body = (json.dumps(document, sort_keys=True) + '\n').encode()
         if len(body) > 2 * 1024 * 1024:
             raise ValueError('native-recovery-selection-too-large')
@@ -113,6 +124,14 @@ def finish(*, preparation, receipt, run, verify, compose, selected_services, res
             unchanged()
             expected = {'status': 'active', **{key: receipt[key] for key in ('runtimeDigest', 'serviceDigest')}}
             if verify() != expected:
+                raise ValueError('native-initial-recovery-proof-failed')
+            unchanged()
+        if complete_protected is not None:
+            # The explicit root operation proves and finishes the original
+            # service set. Preserve the interrupted owner receipt throughout.
+            unchanged()
+            expected = {'status': 'active', **{key: receipt[key] for key in ('runtimeDigest', 'serviceDigest')}}
+            if complete_protected() != expected:
                 raise ValueError('native-initial-recovery-proof-failed')
             unchanged()
         prove()
@@ -181,10 +200,11 @@ def finish(*, preparation, receipt, run, verify, compose, selected_services, res
 
 
 def recover(install_dir, ods_source, *, restore_host_agent=False, resume_model=False,
-            inspect_continuation=False, opencode_choice=None, restore_optional_tools=False):
+            inspect_continuation=False, opencode_choice=None, restore_optional_tools=False,
+            complete_protected=False):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
-    if inspect_continuation and (restore_host_agent or resume_model or restore_optional_tools):
+    if inspect_continuation and (restore_host_agent or resume_model or restore_optional_tools or complete_protected):
         raise ValueError('continuation-inspection-cannot-mutate')
     if opencode_choice is not None and not (inspect_continuation or restore_optional_tools):
         raise ValueError('opencode-choice-requires-optional-operation')
@@ -192,8 +212,9 @@ def recover(install_dir, ods_source, *, restore_host_agent=False, resume_model=F
     preparation = install_dir / 'data/pixel-native/preparation'
     config = helper('pixel-native-config')
     selection(config.private_json(preparation / 'preparation.json'),
-              config.private_json(preparation / 'activation.json'))
-    tokens = helper('pixel-native-finalize').compose_flags(install_dir, dict(os.environ), recovery=True)
+              config.private_json(preparation / 'activation.json'), interrupted=complete_protected)
+    tokens = helper('pixel-native-finalize').compose_flags(install_dir, dict(os.environ), recovery=True,
+        **({'complete_protected': True} if complete_protected else {}))
     fragments = [install_dir / path for path in helper('pixel-native-install').FRAGMENTS]
     files = []
     for value in tokens[1::2]:
@@ -205,6 +226,7 @@ def recover(install_dir, ods_source, *, restore_host_agent=False, resume_model=F
     return helper('pixel-native-activate').activate(preparation=preparation, install_dir=install_dir,
         ods_source=Path(ods_source).resolve(strict=True), compose_files=[*files, *fragments],
         resume_final_health=True, **({'restore_host_agent': True} if restore_host_agent else {}),
+        **({'complete_protected': True} if complete_protected else {}),
         **({'resume_model': True} if resume_model else {}),
         **({'inspect_continuation': True} if inspect_continuation else {}),
         **({'restore_optional_tools': True} if restore_optional_tools else {}),
@@ -215,6 +237,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--install-dir', required=True)
     parser.add_argument('--ods-source', default=str(HERE.parents[2]))
+    parser.add_argument('--complete-protected', action='store_true',
+        help='Explicitly prove and complete an initial attempt interrupted during protected activation; never replay service startup')
     parser.add_argument('--restore-host-agent', action='store_true',
         help='Also install the login host agent and verify its authenticated Dashboard route; not a full installer continuation')
     parser.add_argument('--resume-model', action='store_true',
@@ -226,12 +250,13 @@ def main():
     parser.add_argument('--opencode-choice', choices=('enabled', 'disabled'),
         help='Confirm a missing historical OpenCode choice for inspection or optional setup; never overrides a saved choice')
     args = parser.parse_args()
-    if args.inspect_continuation and (args.restore_host_agent or args.resume_model or args.restore_optional_tools):
+    if args.inspect_continuation and (args.restore_host_agent or args.resume_model or args.restore_optional_tools or args.complete_protected):
         parser.error('--inspect-continuation cannot be combined with setup options')
     if args.opencode_choice is not None and not (args.inspect_continuation or args.restore_optional_tools):
         parser.error('--opencode-choice requires --inspect-continuation or --restore-optional-tools')
     try:
         path = recover(args.install_dir, args.ods_source,
+            **({'complete_protected': True} if args.complete_protected else {}),
             **({'restore_host_agent': True} if args.restore_host_agent else {}),
             **({'resume_model': True} if args.resume_model else {}),
             **({'inspect_continuation': True} if args.inspect_continuation else {}),

@@ -55,5 +55,23 @@ try {
     assert.equal(fs.readFileSync(file,'utf8').includes('Historical canary'),sealed);
   }
   assert.equal(entry.totalTokensFresh,false);
+  // A verified delivery can differ from a draft in an existing conversation.
+  // Appending its correction must preserve the original paired tool receipt.
+  await withSessionTranscriptWriteLock({...scope,sessionId:entry.sessionId,config},async({appendMessage,publishUpdate})=>{
+    await appendMessage({message:{role:'assistant',content:[{type:'toolCall',id:'failed-exec',name:'exec',arguments:{command:'fixture-only'}}],timestamp:Date.now()}});
+    await appendMessage({message:{role:'toolResult',toolName:'exec',toolCallId:'failed-exec',isError:true,content:[{type:'text',text:'Syntax error; exit 2'}],timestamp:Date.now()}});
+    await appendMessage({message:{role:'assistant',content:[{type:'text',text:'Invented success'}],timestamp:Date.now()}});
+    await publishUpdate();
+  });
+  const before=await readSessionTranscriptEvents({...scope,sessionId:entry.sessionId});
+  const correction=[{role:'assistant',content:'Portal delivery record for completed request test: No execution succeeded. Historical data only.'}];
+  assert.equal((await hydrate({user,messages:correction})).appended,1);
+  assert.equal((await hydrate({user,messages:correction})).appended,0);
+  const after=await readSessionTranscriptEvents({...scope,sessionId:entry.sessionId});
+  assert.deepEqual(after.slice(0,before.length),before,'the native tool receipt and original draft remain immutable');
+  const additions=after.slice(before.length);
+  assert.equal(additions.filter(event=>event.message?.idempotencyKey?.startsWith('ods-history:')).length,1);
+  assert.equal(additions.filter(event=>event.message?.model==='delivery-mirror').length,1);
+  assert.equal(additions.filter(event=>event.message?.role==='toolResult').length,0,'history import cannot fabricate execution receipts');
   console.log('SDK hydration qualified: 2 archived messages, idempotent zero-usage receipt, actual startup preserves sealed history and erases unsealed negative control.');
 } finally {fs.rmSync(temporary,{recursive:true,force:true});}

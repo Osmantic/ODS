@@ -8,7 +8,10 @@ agent's context proof cannot pass and activation rolls back (tower2
 
 ``NATIVE_CONTEXT`` pins ``<arch>.context_length`` read from each catalog
 artifact's GGUF header (the first shard for split models) on 2026-09-25.
-Record the header value when adding or re-pinning an artifact.
+Record the header value when adding or re-pinning an artifact. A vLLM entry
+(``"runtime": "vllm"``) has no GGUF: record ``max_position_embeddings`` from
+the config.json at its pinned revision, which vLLM's ``--max-model-len`` may
+not exceed either.
 """
 
 from __future__ import annotations
@@ -81,6 +84,10 @@ NATIVE_CONTEXT = {
     "qwen3-coder-next-q4": 262144,
     "llama4-scout-q4": 10485760,
     "qwen3.5-122b-a10b-q4": 262144,
+    # vLLM entries: config.json text_config.max_position_embeddings (2026-10-27).
+    "qwen3.8-flash-next-nvfp4-vllm": 262144,
+    "glm-5.3-flash-nvfp4-vllm": 1048576,
+    "qwen3.6-35b-a3b-nvfp4-vllm": 262144,
 }
 
 

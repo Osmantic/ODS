@@ -1008,6 +1008,41 @@ test("requested document delivery receives a prioritized route on full and compa
   assert.ok(guide.length < 700);
 });
 
+// Workstation06, 2026-10-27: told Stop did not stop a stopwatch whose Stop
+// worked, the agent invented a cause and a "fix" without reproducing it.
+test("a reported defect in existing work gets the reproduce-first guide beside the owner turn", async () => {
+  const {ODS_DEFECT_REPORT_GUIDE: guide} = await import('../plugin/prompt-contract.mjs');
+  const {userMessageReportsDefect: reports} = await import('../plugin/tool-loop-guard.mjs');
+  for (const prompt of [
+    'In the stopwatch, the time keeps running after I press Stop. Can you fix it?',
+    "The game won't start since your last change. Please fix it.",
+    'The reset button in the habit tracker is broken, can you repair it?',
+    'My expense splitter crashes when I add a third person. Fix it please.',
+  ]) {
+    assert.equal(reports([], prompt), true, prompt);
+    for (const configuredLeanPrompt of [false, true]) {
+      const result = promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt}, {configuredLeanPrompt});
+      assert.equal(result.prependContext, guide, prompt);
+      // The reusable system contract stays the same as on any other turn.
+      assert.ok(result.appendSystemContext.startsWith(configuredLeanPrompt
+        ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT), prompt);
+      assert.ok(!result.appendSystemContext.includes(guide), prompt);
+    }
+  }
+  for (const prompt of [
+    'Build a stopwatch page as a new project, with start, stop and reset buttons that never drift.',
+    'In the bakery site, change the title to Golden Crust.',
+    'Why does my stopwatch not keep running in another tab?',
+    "Don't use any tools. The stopwatch doesn't stop; how would you fix it?",
+  ]) {
+    assert.equal(reports([], prompt), false, prompt);
+    assert.equal(promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt}).prependContext, undefined, prompt);
+  }
+  assert.match(guide, /Reproduce it before changing anything/);
+  assert.match(guide, /never invent a cause/);
+  assert.ok(guide.length < 400);
+});
+
 test("document route preserves ordinary, remote, informational and forbidden-tool requests", async () => {
   const {ODS_WORKSPACE_DOCUMENT_DELIVERY_GUIDE: guide} = await import('../plugin/prompt-contract.mjs');
   const {userMessageRequestsWorkspaceDocumentDelivery: selects} = await import('../plugin/tool-loop-guard.mjs');

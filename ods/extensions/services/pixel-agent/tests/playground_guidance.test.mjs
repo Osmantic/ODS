@@ -95,7 +95,7 @@ const ran = text => text.split('\n')[0] === 'ok';
 const stopped = text => [RUN_PROGRESS_STOP_REASON, PROGRESS_FINALIZATION_INSTRUCTION].includes(text);
 
 test('mac-mini d4a61f33 replay: refusals name the exact next path and the unchanged fuse still stops at call 4', () => {
-  assert.deepEqual({...RUN_PROGRESS_LIMITS}, {consecutiveFailures:4, totalFailures:12, roundsWithoutProgress:8, identicalSuccesses:2});
+  assert.deepEqual({...RUN_PROGRESS_LIMITS}, {consecutiveFailures:4, recentFailures:12, recentResults:40, roundsWithoutProgress:8, identicalSuccesses:2});
   assert.equal(FREE_CORRECTIONS_PER_KIND, 2);
   assert.equal(MACMINI.sessionFileSha256.slice(0, 8), '9e3eef73');
   const [recordedWrite, mkdirTouch, touch, list, listLong] = MACMINI.calls;
@@ -124,8 +124,14 @@ test('mac-mini d4a61f33 replay: refusals name the exact next path and the unchan
   // created, so the listing fails: the fourth consecutive failure.
   const listing = h.exec(list.args, 'Playground/photo-renamer-test', list.id);
   assert.notEqual(listing.decision?.block, true, listing.decision?.blockReason);
-  assert.equal(listing.text, RUN_PROGRESS_STOP_REASON, 'charged exactly as recorded: the fuse trips at call 4');
-  assert.ok(listing.text.startsWith(list.recorded.resultHead));
+  // The fuse trips at call 4, as recorded. The model read the stop text there
+  // (the recorded result head), and the refusal of call 5 was recorded the same
+  // way, so it never read the answer instruction; both now carry it.
+  assert.ok(RUN_PROGRESS_STOP_REASON.startsWith(list.recorded.resultHead));
+  assert.ok(RUN_PROGRESS_STOP_REASON.startsWith(listLong.recorded.resultHead));
+  // The listing ran, so its own error stays ahead of the instruction.
+  assert.ok(listing.text.endsWith(`\n${PROGRESS_FINALIZATION_INSTRUCTION}`), 'charged exactly as recorded: the fuse trips at call 4');
+  assert.match(listing.text, /^ls: cannot access 'Playground\/photo-renamer-test': No such file or directory/);
   const next = h.exec(listLong.args, 'Playground/photo-renamer-test', listLong.id);
   assert.equal(next.decision?.block, true);
   assert.equal(stopped(next.decision.blockReason), true);

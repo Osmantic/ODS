@@ -1,6 +1,7 @@
 """Read-only edge polls reuse transport, never availability or credentials."""
 import asyncio
 import json
+import time
 from unittest.mock import AsyncMock
 
 import httpx
@@ -69,7 +70,10 @@ async def test_status_reuses_connection_across_normal_poll_interval(monkeypatch,
                 writer.close()
                 await writer.wait_closed()
             await server.wait_closed()
-            # A reused connection is transport only: a stopped edge still fails.
+            # A reused connection is transport only: a stopped edge still fails,
+            # once the grace for a transient edge failure has run out.
+            now = time.monotonic()
+            monkeypatch.setattr(pixel.time, 'monotonic', lambda: now + pixel._STATUS_GRACE_SECONDS + 1)
             assert (await pixel.pixel_status())['available'] is False
     finally:
         server.close()

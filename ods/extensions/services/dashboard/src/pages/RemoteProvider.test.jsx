@@ -338,6 +338,94 @@ beforeEach(() => {
   globalThis.fetch = vi.fn()
 })
 
+test('refreshes stale dashboard after successful disable without replaying the route', async () => {
+  const mismatch = { ...disabledStatusPayload, dashboardMode: { effectiveMode: 'cloud', configuredMode: 'local', matches: false } }
+  const converged = { ...disabledStatusPayload, dashboardMode: { effectiveMode: 'local', configuredMode: 'local', matches: true } }
+  globalThis.fetch
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockResolvedValueOnce(response(disableApplyPayload))
+    .mockResolvedValueOnce(response(mismatch))
+    .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    .mockResolvedValueOnce(response({ ready: true, matches: true }))
+    .mockResolvedValueOnce(response(converged))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: /switch back to the local model/i }))
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(6))
+  expect(globalThis.fetch.mock.calls.map(([url, options]) => [url, options?.method || 'GET'])).toEqual([
+    ['/api/remote-provider/status', 'GET'],
+    ['/api/remote-provider/apply', 'POST'],
+    ['/api/remote-provider/status', 'GET'],
+    ['/api/remote-provider/dashboard-mode', 'POST'],
+    ['/api/remote-provider/dashboard-mode', 'GET'],
+    ['/api/remote-provider/status', 'GET'],
+  ])
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh dashboard' })).toBeNull())
+  expect(screen.getByText('Disable applied')).toBeInTheDocument()
+})
+
+test('offers explicit repair after refresh and preserves an unresolved model hold', async () => {
+  const mismatch = { ...disabledStatusPayload, dashboardMode: { effectiveMode: 'cloud', configuredMode: 'local', matches: false } }
+  globalThis.fetch
+    .mockResolvedValueOnce(response(mismatch))
+    .mockRejectedValueOnce(new TypeError('Connection reset'))
+    .mockResolvedValueOnce(response({ ready: false, matches: true, pending: true, reconciling: false }))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh dashboard' }))
+  expect(await screen.findByText('Recover the model switch in Models before refreshing the dashboard.')).toBeInTheDocument()
+  expect(globalThis.fetch.mock.calls.filter(([url]) => url.endsWith('/apply'))).toHaveLength(0)
+  expect(screen.getByRole('button', { name: 'Refresh dashboard' })).toBeEnabled()
+})
+
+test('reports a definite busy refusal without waiting through the refresh deadline', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response({ ...disabledStatusPayload, dashboardMode: { matches: false } }))
+    .mockResolvedValueOnce(response({ error: 'Another chat is active. Try again when it finishes.' }, 409))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh dashboard' }))
+  expect(await screen.findByText('Another chat is active. Try again when it finishes.')).toBeInTheDocument()
+  expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole('button', { name: 'Refresh dashboard' })).toBeEnabled()
+})
+
+test('reports a definite host refresh failure without treating it as a disconnect', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response({ ...disabledStatusPayload, dashboardMode: { matches: false } }))
+    .mockResolvedValueOnce(response({ detail: { code: 'dashboard_refresh_failed', error: 'Refresh failed; retry when idle.' } }, 500))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh dashboard' }))
+  expect(await screen.findByText('Refresh failed; retry when idle.')).toBeInTheDocument()
+  expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+})
+
+test('does not refresh the dashboard after an unconfirmed provider mutation', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockRejectedValueOnce(new TypeError('Connection lost'))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: /switch back to the local model/i }))
+  expect(await screen.findByText('Connection lost')).toBeInTheDocument()
+  expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+})
+
+test.each([
+  { pending: true, reconciling: true },
+  { pending: true, reconciling: false, lifecycleActive: true },
+])('waits for released maintenance after the API mode has already converged: %j', async held => {
+  const mismatch = { ...disabledStatusPayload, dashboardMode: { matches: false } }
+  globalThis.fetch
+    .mockResolvedValueOnce(response(mismatch))
+    .mockRejectedValueOnce(new TypeError('Connection reset'))
+    .mockResolvedValueOnce(response({ ready: false, matches: true, ...held }))
+    .mockResolvedValueOnce(response({ ready: true, matches: true }))
+    .mockResolvedValueOnce(response({ ...disabledStatusPayload, dashboardMode: { matches: true } }))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh dashboard' }))
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(3))
+  expect(screen.getByRole('button', { name: 'Refresh dashboard' })).toBeDisabled()
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(5), { timeout: 4500 })
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh dashboard' })).toBeNull())
+})
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
@@ -570,6 +658,90 @@ test('offers one-click reconciliation when the active consumer drifted', async (
     ])
   })
   expect(requestBody(1)).toEqual({ action: 'enable' })
+  expect(screen.getByText('Enable applied')).toBeInTheDocument()
+})
+
+test('enable retries a briefly unavailable consumer and settles to ready', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    const unavailableStatusPayload = {
+      ...driftedStatusPayload,
+      activation: {
+        ...driftedStatusPayload.activation,
+        reason: 'consumer_status_unavailable',
+      },
+    }
+    globalThis.fetch
+      .mockResolvedValueOnce(response(driftedStatusPayload))
+      .mockResolvedValueOnce(response(enableApplyPayload))
+      .mockResolvedValueOnce(response(unavailableStatusPayload))
+      .mockResolvedValueOnce(response(statusPayload))
+
+    render(createElement(RemoteProvider))
+    fireEvent.click(await screen.findByRole('button', { name: /^reconnect$/i }))
+
+    expect(await screen.findByText('Switching ODS and Portal over…')).toBeInTheDocument()
+    expect(screen.queryByText('Needs attention')).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(4))
+    await waitFor(() => expect(screen.queryByText('Switching ODS and Portal over…')).toBeNull())
+    expect(screen.queryByText('Needs attention')).toBeNull()
+    expect(screen.getByText('Enable applied')).toBeInTheDocument()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('a consumer that stays unavailable after the settle budget needs attention', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    const unavailableStatusPayload = {
+      ...driftedStatusPayload,
+      activation: {
+        ...driftedStatusPayload.activation,
+        reason: 'consumer_status_unavailable',
+      },
+    }
+    globalThis.fetch
+      .mockResolvedValueOnce(response(driftedStatusPayload))
+      .mockResolvedValueOnce(response(enableApplyPayload))
+    for (let poll = 0; poll < 5; poll += 1) {
+      globalThis.fetch.mockResolvedValueOnce(response(unavailableStatusPayload))
+    }
+
+    render(createElement(RemoteProvider))
+    fireEvent.click(await screen.findByRole('button', { name: /^reconnect$/i }))
+
+    expect(await screen.findByText('Switching ODS and Portal over…')).toBeInTheDocument()
+    for (let poll = 0; poll < 5; poll += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    }
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(7))
+    await waitFor(() => expect(screen.queryByText('Switching ODS and Portal over…')).toBeNull())
+    expect(screen.getAllByText('Needs attention').length).toBeGreaterThan(0)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('an invalid activation after enable is not retried', async () => {
+  const invalidStatusPayload = {
+    ...driftedStatusPayload,
+    activation: {
+      ...driftedStatusPayload.activation,
+      reason: 'invalid_activation_contract',
+    },
+  }
+  globalThis.fetch
+    .mockResolvedValueOnce(response(driftedStatusPayload))
+    .mockResolvedValueOnce(response(enableApplyPayload))
+    .mockResolvedValueOnce(response(invalidStatusPayload))
+
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: /^reconnect$/i }))
+
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(3))
+  expect(screen.queryByText('Switching ODS and Portal over…')).toBeNull()
   expect(screen.getByText('Enable applied')).toBeInTheDocument()
 })
 

@@ -55,7 +55,8 @@ jobs:
           bash tests/test-backup-restore-roundtrip.sh
 
   pixel-advice-host-stdlib:
-    runs-on: ubuntu-latest
+    # setup-python does not provide Python 3.9 builds for Ubuntu 26.04.
+    runs-on: ${{ matrix.python == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     strategy:
       matrix:
         python: ['3.9', '3.11', '3.12']
@@ -94,7 +95,7 @@ jobs:
       - name: GPU assignment capacity contracts
         run: python -m pytest tests/test-assign-gpus.py tests/test_gpu_spare_capacity.py -q
       - name: macOS TCP bridge lifecycle contracts
-        run: python -m pytest tests/test_macos_llm_bridge.py tests/test_macos_upsert_env_value.py tests/test_macos_pixel_ops_python.py tests/test_macos_pixel_access_timeout.py tests/test_macos_pixel_native_bootstrap.py -q
+        run: python -m pytest tests/test_macos_llm_bridge.py tests/test_macos_upsert_env_value.py tests/test_macos_pixel_ops_python.py tests/test_macos_pixel_access_timeout.py tests/test_macos_pixel_native_bootstrap.py tests/test_macos_first_chat_readiness.py -q
       - name: Sharing credential and owner control tests
         run: python -m pytest tests/pixel_inference -q
       - name: Inference perimeter and cancellation tests
@@ -358,6 +359,7 @@ jobs:
         run: |
           bash tests/test-ods-doctor.sh
           bash tests/test-doctor-native-lifecycle.sh
+          bash tests/test-doctor-extension-stubs.sh
 
       - name: Windows Report Command Tests
         run: bash tests/test-windows-report-command.sh
@@ -441,11 +443,19 @@ jobs:
       - name: Installer Created Container Ownership Tests
         run: bash tests/test-phase11-created-container-ownership.sh
 
+      - name: Installer Public Manifests and Containerd Device Policy
+        run: |
+          python3 tests/test_containerd_console_policy.py
+          sudo -n env ODS_MIXED_UID_TEST=1 python3 tests/test_public_extension_manifest_permissions.py
+
       - name: Dotenv Serializer Tests
         run: bash tests/test-dotenv-serializer.sh
 
       - name: Mode Switch Tests
         run: bash tests/test-mode-switch-status.sh
+
+      - name: Demo Offline Bash 3.2 Compatibility Tests
+        run: bash tests/test-demo-offline-bash32.sh
 
       - name: .env Upserts After an Unterminated Last Line
         run: bash tests/test-env-append-final-newline.sh
@@ -513,6 +523,9 @@ jobs:
 
       - name: CPU-Only Path Tests
         run: bash tests/test-cpu-only-path.sh
+
+      - name: Docker Reasoning Mode Entrypoint
+        run: python3 -m unittest discover -s tests -p 'test_llama_reasoning_*.py' -v
 
       - name: Hermes Default and Opt-in Owner-card Access
         run: |
@@ -600,6 +613,8 @@ jobs:
 
       - name: Linux install preflight tests
         run: |
+          python3 -m unittest -v tests/test_model_file_sha256.py tests/test_phase11_model_checksum.py
+          bash tests/test-model-integrity.sh
           python3 -m pytest -q tests/test_cloud_installer_messages.py
           bash tests/test-preflight-network-check.sh
           bash tests/test-phase11-local-build-failure.sh
@@ -655,6 +670,11 @@ jobs:
 
       - name: macOS protected bootstrap promotion
         run: python3 -m pytest -q tests/test_macos_bootstrap_promote.py tests/test_macos_bootstrap_dispatch.py
+
+      - name: macOS legacy bootstrap process ownership
+        run: |
+          python3 tests/test_bootstrap_native_owner.py -v
+          python3 -m pytest -q tests/test_macos_native_service_manager.py tests/test_macos_native_service_cli.py tests/test_macos_bridge_service.py
 
       - name: Support Bundle Evidence Tests
         run: bash tests/test-support-bundle.sh

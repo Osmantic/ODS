@@ -16,6 +16,7 @@ extract() {
         active {print} active && /^}/ {exit}' "$root/scripts/ods-doctor.sh"
 }
 eval "$(extract _doctor_check_llama_server)"
+eval "$(extract _doctor_unsupported_extension_stub)"
 eval "$(extract collect_extension_diagnostics)"
 fail() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
 log_ok() { :; }

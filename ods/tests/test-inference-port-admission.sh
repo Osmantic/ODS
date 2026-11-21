@@ -42,6 +42,7 @@ run_case() (
                 [[ "${*: -1}" == ods-llama-server && -n "$own" ]] || return 1
                 printf '%s\n' "${own//@install/$INSTALL_DIR}" ;;
             'ps --filter') echo foreign-id ;;
+            'ps --format') ;;  # no container publishes a busy port here
             'inspect --format') echo "$INSTALL_DIR|ods" ;;
             *) echo "unexpected Docker mutation: $*" >&2; return 88 ;;
         esac
@@ -78,6 +79,8 @@ expect 'Windows Ollama port stops noninteractive install' blocked windows=11434
 grep -q 'quit it from the system tray' "$tmp/output"
 expect 'Continue anyway cannot waive required inference port' blocked windows=11434 interactive=true
 expect 'Native Linux listener also stops install' blocked linux=:11434
+# The process behind lsof's PID has gone, so the PID alone names it.
+grep -qx 'Required local model port 11434 is in use by PID 987654.' "$tmp/output"
 expect 'Free default is admitted and selected consistently' 'ADMITTED 11434 11434'
 expect 'Explicit free port avoids occupied default' 'ADMITTED 11435 11435' windows=11434 explicit=11435
 expect 'Retained quoted override is checked' blocked windows=12434 "retained='12434'"

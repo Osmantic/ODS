@@ -109,7 +109,9 @@ export function createConversationWriter(initial = null) {
     && current.recoverySource?.revision === revision && current.recoverySource?.requestId === requestId
     && current.recoverySource?.sourceHash === snapshotHash(expected)
     && current.recoverySource?.resultHash === snapshotHash(conversationSnapshot(current)))
-  const write = chat => saveConversation(chat, {
+  // opened: the save that follows opening this conversation (Pixel's hydration).
+  const write = (chat, opened = false) => saveConversation(chat, {
+    opened,
     matches: current => {
       if (conversationSnapshot(current) === (chat.chatId === chatId ? expected : null)
         || (chat.chatId === chatId && current === null && omitted)) return true
@@ -170,9 +172,12 @@ export function saveConversation(chat, checkpoint) {
     throw error
   }
   if (checkpoint?.skip?.(latest)) return latest
+  // The sidebar orders by updatedAt. Opening a conversation saves it to move
+  // the active pointer; that is not an edit, so it keeps its place in the list.
+  const keepPlace = checkpoint?.opened && Number.isFinite(latest?.updatedAt)
   const value = checkpoint?.activate
     ? {...latest, persistenceVersion:2, persistenceRevision:latest.persistenceRevision || persistenceRevision()}
-    : { ...previous, ...chat, updatedAt: Date.now(), persistenceVersion: 2, persistenceRevision: persistenceRevision() }
+    : { ...previous, ...chat, updatedAt: keepPlace ? latest.updatedAt : Date.now(), persistenceVersion: 2, persistenceRevision: persistenceRevision() }
   // A normal edit (even one made by the recovery observer) ends the handoff.
   // Never carry a receipt forward through an object spread from saved data.
   if (!checkpoint?.activate) delete value.recoverySource

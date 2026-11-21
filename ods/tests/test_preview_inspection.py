@@ -340,6 +340,46 @@ class ProtocolTests(unittest.TestCase):
             with self.assertRaises(publisher.PreviewError):
                 broker.snapshot_bundle(previews, request)
 
+    def test_serve_exits_nonzero_when_it_cannot_start(self):
+        # Seen live under WSL2 + Docker Desktop: after the VM restarted, the
+        # broker could not start, printed its receipt and exited 0. Its unit
+        # restarts only on failure, so the broker stayed down and every Portal
+        # build failed browser inspection until a manual restart.
+        import subprocess
+
+        # Paths that are not ready, as during boot. The child never reads the
+        # installed configuration or replaces a live broker's socket.
+        child = (
+            "import pathlib, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import preview_inspection as broker\n"
+            "broker.CONFIG = pathlib.Path(sys.argv[2], 'missing.json')\n"
+            "broker.SOCKET = pathlib.Path(sys.argv[2], 'run', 'control.sock')\n"
+            "sys.argv[1:] = sys.argv[3:]\n"
+            "raise SystemExit(broker.main())\n"
+        )
+        host = str(Path(broker.__file__).resolve().parent)
+        with tempfile.TemporaryDirectory() as tmp:
+
+            def run(mode):
+                return subprocess.run(
+                    [sys.executable, "-B", "-c", child, host, tmp, mode],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    timeout=30,
+                )
+
+            serving = run("serve")
+            # Restart=on-failure retries an exit status above 0; the journal
+            # keeps the receipt and names the cause.
+            self.assertGreater(serving.returncode, 0, serving.stderr.decode(errors="replace"))
+            self.assertEqual(protocol.strict_json(serving.stdout)["errorCode"], "unavailable")
+            self.assertIn(b"missing.json", serving.stderr)
+            # Callers parse the other modes' receipt, which still exits 0.
+            health = run("health")
+            self.assertEqual(health.returncode, 0, health.stderr.decode(errors="replace"))
+            self.assertEqual(protocol.strict_json(health.stdout)["errorCode"], "unavailable")
+
 
 STORAGE_ERROR = (
     "Failed to read the 'sessionStorage' property from 'Window': The document "
@@ -534,7 +574,7 @@ class SnapshotAssetGuardTests(unittest.TestCase):
         origin = 'http://127.0.0.1:4321'
         prefix = '/site-' + 'a' * 24 + '/'
         blocked = []
-        capsule.guard_requests(context, context, origin, prefix, blocked, files=files)
+        capsule.guard_requests(context, context, origin, prefix, blocked, files=files, entry=prefix)
         for path, method, nav, expected in [
             ('/_next/app/%5Bslug%5D/page.js', 'GET', False, 'continued'),
             ('/_next/app/%5Bslug%5D/page.js', 'POST', False, 'aborted'),
@@ -1482,6 +1522,19 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed", result)
         self.assertEqual(result["steps"][-1]["errorCode"], "visibility_mismatch")
         self.assertFalse(result["steps"][-1]["before"]["visible"])
+
+    def test_hidden_overlay_is_described_by_shape_and_blocks_a_click(self):
+        # Workstation06 (2026-10-27): a generated game's win overlay carried the
+        # hidden attribute, but its CSS display showed it over the whole board.
+        html = ('<style>.overlay{position:fixed;inset:0;display:flex;z-index:10;background:#000c}</style>'
+                '<div hidden class="overlay" id="win-overlay"><p>You win</p></div><button id="go">Go</button>')
+        result = self.check(html, [step("click", "#go")])
+        self.assertEqual(result["status"], "failed", result)
+        self.assertEqual(result["steps"][0]["errorCode"], "click_failed")
+        self.assertEqual(result["diagnostics"]["renderedHiddenAttributeCount"], 1)
+        # Computed shape only: the id and class names never leave the page.
+        self.assertEqual(result["diagnostics"]["renderedHidden"],
+                         [{"tag": "div", "position": "fixed", "zIndex": 10, "viewportPercent": 100}])
 
     def test_hidden_flex(self):
         html = '<style>.card{display:flex}</style><article hidden class="card" id="item">Sold out</article>'

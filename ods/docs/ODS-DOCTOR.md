@@ -74,6 +74,14 @@ ods doctor --json > report.json
 
 ## Report Contents
 
+- **extensions**: Installed extension diagnostics. An empty GPU-only registry
+  scaffold on unsupported hardware (for example ComfyUI on Apple Silicon) has
+  `health_status: "not_applicable"` and
+  `applicability_reason: "unsupported_backend_stub"` when its container is absent.
+  It remains in `extensions_total`, is counted in `extensions_not_applicable`,
+  and is not counted as healthy. Actual service definitions, potentially
+  applicable overlays, unknown configuration, and existing stopped containers
+  retain their normal diagnostics.
 - **capability_profile**: Hardware detection snapshot
 - **preflight**: Blocker/warning analysis
   - Installer preflight requires the full tier disk floor before images and
