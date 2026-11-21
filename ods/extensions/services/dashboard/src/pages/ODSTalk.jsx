@@ -51,7 +51,7 @@ const MODEL_NOT_SUPPORTED_MESSAGE = "This model isn't supported in ODS Talk yet.
 // A model that failed the tool check gets an advisory, never a block: no
 // probe result may lock an owner out of chat. Unknown codes are ignored.
 const TALK_TOOLS_ADVISORY_CODE = 'tools-unavailable'
-const TALK_TOOLS_ADVISORY_MESSAGE = 'This model failed the tool-call check. Talk can still chat, but actions that need tools may fail.'
+const TALK_TOOLS_ADVISORY_MESSAGE = 'This model failed the tool-call check. Chat remains available, but replies and actions may fail. You can try this model or switch models.'
 const TALK_BLOCKING_COMPATIBILITY_STATUSES = new Set([
   'blocked',
   'incompatible',

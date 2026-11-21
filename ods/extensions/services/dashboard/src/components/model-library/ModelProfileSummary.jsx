@@ -151,7 +151,7 @@ function ProfileForModel({modelId, lifecycleActive}) {
       } else if (!body) {
         throw new Error('Recheck response unavailable')
       } else if (body?.status === 'error') {
-        setNotice('The check did not finish. Chat still works; try again later.')
+        setNotice('The check did not finish. Review saved results before trying again.')
       }
     } catch {
       if (recheckRequest.current === request) {
