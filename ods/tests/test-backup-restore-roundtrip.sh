@@ -57,6 +57,7 @@ echo "foo-state" > "$SRC/data/foo/state.txt"
 echo "png-bytes" > "$SRC/data/pixel-images/x.png"
 echo '{"hash":"x"}' > "$SRC/data/dashboard-password.json"
 chmod 600 "$SRC/data/dashboard-password.json"
+python3 "$SCRIPT_DIR/fixtures/talk-backup-state.py" create "$SRC"
 
 # Both scripts source lib/rsync.sh relative to ODS_DIR
 mkdir -p "$SRC/lib"
@@ -102,6 +103,10 @@ jq -e '.paths.data_hermes == "data/hermes" and .paths.data_persona == "data/pers
     "$BACKUP_DIR/manifest.json" >/dev/null \
     || fail "Manifest omitted Hermes or persona backup paths"
 pass "Hermes and persona data are present in the backup and manifest"
+python3 "$SCRIPT_DIR/fixtures/talk-backup-state.py" verify "$BACKUP_DIR"
+jq -e '.paths.data_talk == "data/talk"' "$BACKUP_DIR/manifest.json" >/dev/null \
+    || fail "Manifest omitted Talk conversation bindings"
+pass "Backup preserves Talk ownership, native IDs, turn outcomes and private modes"
 
 # Create destination ODS directory (empty)
 DST="$TMP/dst"
@@ -172,6 +177,7 @@ pass "All expected files/dirs present after restore"
     || fail "whisper cache content mismatch"
 
 pass "All file contents match after restore"
+python3 "$SCRIPT_DIR/fixtures/talk-backup-state.py" verify "$DST"
 
 # The default user-data type must keep skipping the cache tier: it is the
 # re-downloadable, tens-of-GB part a routine backup deliberately leaves out.
@@ -196,6 +202,7 @@ done
 [[ ! -e "$SRC/.backups/$UD_BACKUP_ID/models" ]] \
     || fail "User-data backup must not capture models/"
 pass "User-data backup still skips the cache tier"
+python3 "$SCRIPT_DIR/fixtures/talk-backup-state.py" verify "$SRC/.backups/$UD_BACKUP_ID"
 
 # Exercise the older macOS rsync branch, where `--info=progress2` is absent and
 # the helper falls back to `--progress`. The fallback must keep the same
@@ -258,6 +265,7 @@ ODS_DIR="$DST2" bash "$ODS_RESTORE" -f "$CBACKUP_ID" >/dev/null 2>&1 || fail "Co
 [[ -L "$DST2/data/whisper/hub/snapshots/revision/model.bin" ]] || fail "Compressed backup lost the cache symlink"
 [[ "$(cat "$DST2/data/whisper/hub/snapshots/revision/model.bin")" == "linked-model-cache" ]] || fail "Compressed backup broke cache links"
 pass "Compressed backup restores correctly"
+python3 "$SCRIPT_DIR/fixtures/talk-backup-state.py" verify "$DST2"
 
 # ── Interactive selection ─────────────────────────────────────────────
 # select_backup's stdout is command-substituted into backup_id, so the list
