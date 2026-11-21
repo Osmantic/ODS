@@ -34,6 +34,27 @@ const booleanSelection = value => {
   return value === '' ? '' : null
 }
 
+// Applicability comes from the server: `platforms` lists the host platforms a
+// field applies to (empty means all) and `hostPlatform` is the managed host's
+// platform, or null when the server cannot tell. Unknown hosts show every field,
+// and a field with a validation issue stays visible so it can be fixed.
+const isFieldApplicable = (field, hostPlatform, issueKeys) => {
+  const platforms = field?.platforms || []
+  if (!hostPlatform || platforms.length === 0) return true
+  return platforms.includes(hostPlatform) || issueKeys.has(field.key)
+}
+
+const visibleSectionsForHost = (sections = [], fields = {}, hostPlatform = null, issues = []) => {
+  const issueKeys = new Set((issues || []).map(issue => issue.key).filter(Boolean))
+  return sections
+    .map(section => ({
+      ...section,
+      keys: (section.keys || []).filter(key => isFieldApplicable(fields[key], hostPlatform, issueKeys)),
+    }))
+    // Drop only sections this filter emptied; the caller decides about the rest.
+    .filter((section, index) => section.keys.length > 0 || !(sections[index].keys || []).length)
+}
+
 const countIssueSections = (sections, issues) => {
   const issueKeys = new Set((issues || []).map(issue => issue.key).filter(Boolean))
   return (sections || []).filter(section => section.keys?.some(key => issueKeys.has(key))).length
@@ -79,9 +100,14 @@ export default function EnvEditor({
   reading = false,
 }) {
   useBeforeUnload(dirty || saving || applying)
-  const activeKeys = activeSection?.keys || []
+  const visibleSections = visibleSectionsForHost(sections, fields, editor?.hostPlatform, issues)
+  const visibleSectionIds = new Set(visibleSections.map(section => section.id))
+  const visibleActiveSection = activeSection && visibleSectionIds.has(activeSection.id)
+    ? visibleSections.find(section => section.id === activeSection.id)
+    : visibleSections[0]
+  const activeKeys = visibleActiveSection?.keys || []
   const canApply = Boolean(applyPlan?.supported && applyPlan?.services?.length > 0 && editor?.agentAvailable !== false)
-  const issueSectionCount = countIssueSections(sections, issues)
+  const issueSectionCount = countIssueSections(visibleSections, issues)
 
   return (
     <section className="settings-premium-card settings-environment p-5 lg:p-7">
@@ -156,19 +182,19 @@ export default function EnvEditor({
           <EnvironmentCategorySidebar
             search={search}
             onSearchChange={onSearchChange}
-            sections={sections}
-            activeSection={activeSection}
+            sections={visibleSections}
+            activeSection={visibleActiveSection}
             onSectionChange={onSectionChange}
           />
 
           <div className="settings-environment-fields">
-            {activeSection ? (
+            {visibleActiveSection ? (
               <>
                 <div className="mb-5 flex flex-col gap-4 border-b border-theme-border pb-5 lg:flex-row lg:items-center lg:justify-between">
                   <div className="flex items-start gap-3">
                     <SlidersHorizontal size={20} className="mt-1 shrink-0 text-theme-accent-light" />
                     <div>
-                      <h3 className="text-xl font-semibold text-theme-text">{activeSection.title}</h3>
+                      <h3 className="text-xl font-semibold text-theme-text">{visibleActiveSection.title}</h3>
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-4 text-xs">
