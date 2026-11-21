@@ -451,6 +451,15 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-uninstall-leftovers.ps1
 
+      - name: Windows Uninstall Git Checkout Contract (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-uninstall-git-checkout.ps1
+
+      - name: Windows Uninstall Git Checkout Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-uninstall-git-checkout.ps1
+
       - name: Windows Docker Pull Contract
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh

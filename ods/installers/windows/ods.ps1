@@ -460,6 +460,12 @@ function Assert-ODSInstallDirSafeForRemoval {
     if ($fullPath.TrimEnd("\") -eq $userProfile.TrimEnd("\")) {
         throw "Install directory resolves to the user profile ($fullPath); refusing to remove files."
     }
+    # An in-place install (installer run from a clone) has every runtime
+    # marker below, so the marker check alone would delete the clone's
+    # history and any uncommitted work. -KeepData/-KeepModels remove .git too.
+    if (Test-Path -LiteralPath (Join-Path $fullPath ".git")) {
+        throw "Install directory is a git source checkout ($fullPath); refusing to remove files. Remove it yourself after saving your work."
+    }
 
     $primaryMarkers = @(
         "manifest.json",
