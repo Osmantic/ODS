@@ -11,7 +11,7 @@
 #           ENABLE_RAG, ENABLE_HERMES (all used by fix_nvidia_secure_boot),
 #           log/warn/ai/ai_ok/ai_warn/ai_bad helpers
 # Provides: detect_gpu(), load_capability_profile(), ods_is_wsl_host(),
-#           ods_windows_host_port_in_use(),
+#           ods_windows_host_port_in_use(), ods_gpu_memory_in_use_report(),
 #           normalize_profile_tier(), tier_rank(), load_backend_contract(),
 #           fix_nvidia_secure_boot(), MIN_DRIVER_VERSION
 #           Side-effect var on Jetson: JETSON_L4T_RELEASE (e.g. "R36.4.0")
@@ -24,6 +24,22 @@
 
 # Safe env loading (no eval) for script output KEY="value" lines
 [[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "${SCRIPT_DIR}/lib/safe-env.sh"
+
+# ods_gpu_memory_in_use_report
+# Reads `nvidia-smi --query-gpu=index,memory.total,memory.used
+# --format=csv,noheader,nounits` rows on stdin and prints one line per GPU
+# where programs already hold more than max(4 GiB, 10% of the card), such as
+# another model server: "GPU <index>: <used> of <total> GiB in use". A desktop
+# session stays under that floor; rows without numbers ([N/A] on
+# unified-memory GPUs) are skipped.
+ods_gpu_memory_in_use_report() {
+    awk -F', *' '
+        $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $2 > 0 {
+            floor = $2 * 0.10
+            if (floor < 4096) floor = 4096
+            if ($3 + 0 > floor) printf "GPU %s: %.0f of %.0f GiB in use\n", $1, $3 / 1024, $2 / 1024
+        }'
+}
 
 # WSL2 forwards Docker-published ports through the Windows host. A port can
 # therefore look free to lsof/ss inside Linux while Docker Desktop still
@@ -646,8 +662,18 @@ ods_wsl_nvidia_driver_too_old() {
 ods_whisper_cuda_supported() {
     local backend="${1:-${GPU_BACKEND:-cpu}}"
     local driver_major="${2:-${DRIVER_VERSION:-0}}"
+    # The pinned Speaches CUDA image has CUDA on amd64 only: its arm64 variant
+    # ships a CTranslate2 "not compiled with CUDA support". A GB300 then ran
+    # large-v3-turbo on 4 CPU cores, 17 s per 4 s clip; the CPU image's base
+    # model took 1.2 s (Workstation06, 2026-10-27).
+    ods_host_is_arm64 && return 1
     [[ "$backend" == "nvidia" && "$driver_major" =~ ^[0-9]+$ \
         && "$driver_major" -ge "$MIN_WHISPER_CUDA_DRIVER_VERSION" ]]
+}
+
+# HOST_ARCH is detect_host_arch's value (amd64/arm64) once Phase 02 has run.
+ods_host_is_arm64() {
+    [[ "${HOST_ARCH:-$(uname -m 2>/dev/null || echo unknown)}" =~ ^(arm64|aarch64)$ ]]
 }
 
 _ods_csv_add_unique() {
@@ -958,6 +984,7 @@ fix_nvidia_secure_boot() {
     [[ -n "$TIER" ]] && resume_args="$resume_args --tier $TIER"
     [[ "$OFFLINE_MODE" == "true" ]] && resume_args="$resume_args --offline"
     [[ "${ODS_RESELECT_MODEL:-false}" == "true" ]] && resume_args="$resume_args --reselect-model"
+    [[ -n "${LLM_BACKEND_REQUESTED:-}" ]] && resume_args="$resume_args --llm-backend $LLM_BACKEND_REQUESTED"
     local resume_command="cd \"${SCRIPT_DIR}\" && ./install.sh${resume_args}"
     log "Secure Boot key enrollment pending; resume with: $resume_command"
 

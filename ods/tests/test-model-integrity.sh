@@ -58,15 +58,15 @@ test_tier_map_has_sha256() {
 }
 
 # ============================================================================
-# Test 2: Phase 11 uses sha256sum for verification
+# Test 2: Phase 11 uses the streaming model checksum helper
 # ============================================================================
-test_phase11_uses_sha256sum() {
-    info "Testing phase 11 uses sha256sum..."
+test_phase11_uses_checksum_helper() {
+    info "Testing phase 11 uses the model checksum helper..."
 
     local phase11="$ROOT_DIR/installers/phases/11-services.sh"
 
-    if ! grep -q "sha256sum" "$phase11"; then
-        fail "phase 11 doesn't use sha256sum for verification"
+    if ! grep -q "lib/model-file-sha256.py" "$phase11"; then
+        fail "phase 11 doesn't use the model checksum helper"
         return
     fi
 
@@ -190,7 +190,7 @@ echo "============================================"
 echo ""
 
 test_tier_map_has_sha256
-test_phase11_uses_sha256sum
+test_phase11_uses_checksum_helper
 test_corrupt_file_handling
 test_checksum_verification
 test_empty_checksum_handling

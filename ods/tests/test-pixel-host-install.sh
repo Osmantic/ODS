@@ -2121,6 +2121,12 @@ _ods_pixel_write_onboarding "$owner" "$home" "$TEST_ROOT/qwen-reasoning-onboardi
     /usr/bin/openclaw /opt/ods/pixel-plugin "$digest"
 check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["modelReasoning"] is True' \
     "$TEST_ROOT/qwen-reasoning-onboarding.json"
+# Case-insensitive, as the host agent reads LLAMA_REASONING: OFF is off.
+LLAMA_REASONING=OFF
+_ods_pixel_write_onboarding "$owner" "$home" "$TEST_ROOT/qwen-reasoning-upper-off.json" \
+    /usr/bin/openclaw /opt/ods/pixel-plugin "$digest"
+check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["modelReasoning"] is False' \
+    "$TEST_ROOT/qwen-reasoning-upper-off.json"
 LLAMA_REASONING=off
 MAX_CONTEXT=4096
 if _ods_pixel_write_onboarding "$owner" "$home" "$TEST_ROOT/undersized-onboarding.json" \
@@ -3512,15 +3518,19 @@ own_repair = installer.index("--state-dir \"$home/.openclaw/ods-runtime-patches/
 assert runtime_checkpoint < first_repair < foreign_restore < own_repair
 assert installer.count("Could not bind the verified Pixel ODS managed-runtime configuration.") == 1
 import re
-managed = re.findall(r"--state-dir \"\$home/\.openclaw/ods-runtime-patches/([a-z-]+)\"", installer)
+managed = re.findall(r"--state-dir \"\$home/\.openclaw/ods-runtime-patches/([a-z0-9-]+)\"", installer)
 assert "for mkdir_module in bridge secure; do" in installer
 assert "--sandbox-mkdir \"$mkdir_module\"" in installer
 assert "--state-dir \"$home/.openclaw/ods-runtime-patches/sandbox-mkdir-$mkdir_module\"" in installer
 managed.extend(["sandbox-mkdir-bridge", "sandbox-mkdir-secure"])
 known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
 assert sorted(known.replace("\\", " ").split()) == sorted(managed)
-assert len(set(managed)) == len(managed) == 21
+assert len(set(managed)) == len(managed) == 23
+assert "no-tools-ingress" in managed
 assert {"context-usage", "yield-usage", "compaction-empty", "compaction-no-work", "subagent-admission", "hook-provenance", "run-id-redaction"}.issubset(managed)
+assert "utf8-output" in managed
+assert "--utf8-output" in installer
+assert "host/openclaw-utf8-output.json" in installer
 assert "command-attempt-warning" in managed
 assert "subagent-session" in managed
 assert "--subagent-session" in installer

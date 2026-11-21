@@ -29,6 +29,13 @@ trap 'rm -rf "$tmp_dir"' EXIT
 mkdir -p "$install_dir/data/models" "$install_dir/scripts" "$install_dir/bin" "$bin_dir"
 install_dir="$(cd "$install_dir" && pwd -P)"
 python3 "$script_dir/fixtures/macos-private-store-cli.py" "$install_dir"
+# Bridge ownership is exercised by its manager suites. This fixture isolates
+# the CLI's bootstrap-resume dispatch across successful bridge operations.
+cat > "$install_dir/bin/macos_bridge_service.py" <<'BRIDGE'
+import json,sys
+assert sys.argv[1] in {"configure", "stop"}
+print(json.dumps({"listener_ready": sys.argv[1] == "configure"}))
+BRIDGE
 # This fixture checks resume dispatch, not launchd or native inference. The CLI
 # now delegates both start and stop through its installed service helper.
 mkdir -p "$install_dir/installers/macos/lib"
@@ -36,8 +43,21 @@ cat > "$install_dir/installers/macos/lib/native-llama-service.sh" <<'NATIVE'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$1" in
-    start) : > "$4" ;;
-    stop) : ;;
+    start)
+        printf '%s\n' 123 > "$4"
+        printf '%s\n' '{"identity":[123,1,2,501,20,501,20,501,20,"/fixture/runtime"]}'
+        ;;
+    status)
+        if [[ -f "$4" ]]; then
+            printf '%s\n' '{"running":true,"identity":[123,1,2,501,20,501,20,501,20,"/fixture/runtime"]}'
+        else
+            printf '%s\n' '{"running":false,"identity":null}'
+        fi
+        ;;
+    stop)
+        rm -f "$4"
+        printf '%s\n' '{"stopped":true}'
+        ;;
     *) exit 1 ;;
 esac
 NATIVE

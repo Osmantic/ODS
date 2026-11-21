@@ -750,41 +750,49 @@ ensure_llama_cpu_budget() {
 
 # ── Native llama-server management ──
 
+# The manager verifies the native executable, owner and process birth. Status
+# never rewrites a PID file, and unknown identity is an error rather than absence.
+native_llama_receipt_identity() {
+    "${ODS_PYTHON_CMD:-python3}" -c '
+import json, sys
+value = json.loads(sys.argv[1]).get("identity")
+if value is not None:
+    if not isinstance(value, list) or len(value) != 10 or type(value[0]) is not int or value[0] <= 0:
+        raise ValueError("Invalid native process receipt")
+print(json.dumps(value, separators=(",", ":")))
+' "$1"
+}
+
 get_native_llama_status() {
     NATIVE_LLAMA_RUNNING=false
     NATIVE_LLAMA_PID=0
     NATIVE_LLAMA_HEALTHY=false
+    NATIVE_LLAMA_IDENTITY=null
+    local report identity after
+    report="$(bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" status \
+        "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE")" || {
+        ai_err "Could not verify native llama-server ownership"
+        return 1
+    }
+    identity="$(native_llama_receipt_identity "$report")" || return 1
+    [[ "$identity" != null ]] || return 0
+    NATIVE_LLAMA_IDENTITY="$identity"
+    NATIVE_LLAMA_PID="$("${ODS_PYTHON_CMD:-python3}" -c 'import json,sys; print(json.loads(sys.argv[1])[0])' "$identity")" || return 1
+    NATIVE_LLAMA_RUNNING=true
 
-    local managed_pid
-    managed_pid="$(launchctl print "gui/$(id -u)/com.ods.llama-server" 2>/dev/null | awk '$1 == "pid" && $2 == "=" {print $3; exit}' || true)"
-    if [[ "$managed_pid" =~ ^[0-9]+$ ]] && kill -0 "$managed_pid" 2>/dev/null; then
-        printf '%s\n' "$managed_pid" > "$LLAMA_SERVER_PID_FILE"
-    fi
-
-    if [[ ! -f "$LLAMA_SERVER_PID_FILE" ]]; then
-        return
-    fi
-
-    local saved_pid
-    saved_pid=$(cat "$LLAMA_SERVER_PID_FILE" 2>/dev/null | tr -d '[:space:]')
-    [[ -z "$saved_pid" ]] && return
-
-    if kill -0 "$saved_pid" 2>/dev/null; then
-        NATIVE_LLAMA_RUNNING=true
-        NATIVE_LLAMA_PID="$saved_pid"
-
-        local native_port
-        native_port="$(read_env_value "${INSTALL_DIR}/.env" "ODS_NATIVE_LLAMA_PORT")"
-        [[ "$native_port" =~ ^[0-9]+$ ]] || native_port="8080"
-        local bind_address probe_host
-        bind_address="127.0.0.1"
-        probe_host="$(macos_bind_probe_host "${bind_address:-127.0.0.1}")"
-        if curl -sf --max-time 10 "http://${probe_host}:${native_port}/health" >/dev/null 2>&1; then
-            NATIVE_LLAMA_HEALTHY=true
+    local native_port probe_host
+    native_port="$(read_env_value "${INSTALL_DIR}/.env" "ODS_NATIVE_LLAMA_PORT")"
+    [[ "$native_port" =~ ^[0-9]+$ ]] || native_port="8080"
+    probe_host="$(macos_bind_probe_host "127.0.0.1")"
+    if curl -sf --max-time 10 "http://${probe_host}:${native_port}/health" >/dev/null 2>&1; then
+        report="$(bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" status \
+            "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE")" || return 1
+        after="$(native_llama_receipt_identity "$report")" || return 1
+        if [[ "$after" != "$identity" ]]; then
+            ai_err "Native llama-server changed during its health check"
+            return 1
         fi
-    else
-        # Clean up stale PID file
-        rm -f "$LLAMA_SERVER_PID_FILE" 2>/dev/null
+        NATIVE_LLAMA_HEALTHY=true
     fi
 }
 
@@ -803,9 +811,11 @@ start_native_llama() {
         return 1
     fi
 
-    get_native_llama_status
+    get_native_llama_status || return 1
     if [[ "${ENV_ODS_MODE:-local}" == "cloud" ]]; then
-        $NATIVE_LLAMA_RUNNING && stop_native_llama
+        if $NATIVE_LLAMA_RUNNING; then
+            stop_native_llama || return 1
+        fi
         ai "Cloud mode uses LiteLLM; native llama-server remains stopped"
         return 0
     fi
@@ -835,6 +845,11 @@ start_native_llama() {
     mkdir -p "$(dirname "$LLAMA_SERVER_PID_FILE")"
 
     local reasoning="${ENV_LLAMA_REASONING:-off}"
+    # Modes are case-insensitive, as in ods-host-agent.py; llama-server only
+    # accepts the lowercase spelling.
+    local reasoning_lower
+    reasoning_lower="$(printf '%s' "$reasoning" | tr '[:upper:]' '[:lower:]')"
+    case "$reasoning_lower" in off|on|auto) reasoning="$reasoning_lower" ;; esac
     # Map .env values (off/on/auto) to llama-server --reasoning-format values
     local reasoning_fmt
     case "$reasoning" in
@@ -872,11 +887,13 @@ start_native_llama() {
     [[ -n "${MACOS_NATIVE_CHAT_TEMPLATE_PATH:-}" ]] && llama_args+=(--chat-template-file "$MACOS_NATIVE_CHAT_TEMPLATE_PATH")
 
     # Artifact and argument verification must precede termination of working inference.
-    [[ "$replace" != true ]] || stop_native_llama
-    bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" start \
-        "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE" "${llama_args[@]}" || return 1
-    local pid
-    pid="$(cat "$LLAMA_SERVER_PID_FILE")"
+    # Replacement and startup share the manager's installation lock.
+    local receipt expected_identity pid
+    receipt="$(bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" start \
+        "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE" "${llama_args[@]}")" || return 1
+    expected_identity="$(native_llama_receipt_identity "$receipt")" || return 1
+    [[ "$expected_identity" != null ]] || return 1
+    pid="$("${ODS_PYTHON_CMD:-python3}" -c 'import json,sys; print(json.loads(sys.argv[1])[0])' "$expected_identity")" || return 1
 
     ai_ok "Native llama-server started (PID ${pid})"
     ai "Waiting for health..."
@@ -886,7 +903,12 @@ start_native_llama() {
     while [[ "$waited" -lt "$max_wait" ]]; do
         sleep 2
         waited=$((waited + 2))
-        if curl -sf --max-time 10 "http://${probe_host}:${native_port}/health" >/dev/null 2>&1; then
+        get_native_llama_status || return 1
+        if [[ "$NATIVE_LLAMA_IDENTITY" != "$expected_identity" ]]; then
+            ai_err "Native llama-server exited or was replaced during startup"
+            return 1
+        fi
+        if $NATIVE_LLAMA_HEALTHY; then
             ai_ok "Native llama-server healthy"
             return
         fi
@@ -895,28 +917,21 @@ start_native_llama() {
 }
 
 stop_native_llama() {
-    get_native_llama_status
-    local managed=false
-    launchctl print "gui/$(id -u)/com.ods.llama-server" >/dev/null 2>&1 && managed=true
-    bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" stop \
-        "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE" || return 1
-    if $managed; then
-        ai_ok "Native llama-server LaunchAgent stopped"
-        return 0
-    fi
-    if ! $NATIVE_LLAMA_RUNNING; then
+    local receipt stopped
+    receipt="$(bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" stop \
+        "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE")" || return 1
+    stopped="$("${ODS_PYTHON_CMD:-python3}" -c '
+import json, sys
+value = json.loads(sys.argv[1])["stopped"]
+if type(value) is not bool:
+    raise ValueError("Invalid native shutdown receipt")
+print("true" if value else "false")
+' "$receipt")" || return 1
+    if [[ "$stopped" == true ]]; then
+        ai_ok "Native llama-server stopped"
+    else
         ai "Native llama-server not running"
-        return
     fi
-
-    kill "$NATIVE_LLAMA_PID" 2>/dev/null || true
-    sleep 2
-    # Force kill if still running
-    if kill -0 "$NATIVE_LLAMA_PID" 2>/dev/null; then
-        kill -9 "$NATIVE_LLAMA_PID" 2>/dev/null || true
-    fi
-    rm -f "$LLAMA_SERVER_PID_FILE" 2>/dev/null
-    ai_ok "Native llama-server stopped (PID ${NATIVE_LLAMA_PID})"
 }
 
 # ============================================================================
@@ -945,7 +960,7 @@ cmd_status() {
     if [[ "$CLI_LLM_MODE" == "cloud" ]]; then
         ai "Inference backend: LiteLLM cloud gateway"
     else
-        get_native_llama_status
+        get_native_llama_status || return 1
         if $NATIVE_LLAMA_RUNNING; then
             local health_str="loading"
             $NATIVE_LLAMA_HEALTHY && health_str="healthy"
@@ -1157,8 +1172,8 @@ cmd_stop() {
         [[ -n "$service" ]] && args+=(--service "$service")
         ai "Compose validation failed; stopping only verified containers from this installation."
         "$policy_python" "$INSTALL_DIR/scripts/stop-owned-containers.py" "${args[@]}" || return 1
-        if [[ -z "$service" && -f "$LLAMA_SERVER_PID_FILE" ]]; then
-            stop_native_llama
+        if [[ -z "$service" ]]; then
+            stop_native_llama || return 1
         fi
         return 0
     fi
@@ -1178,9 +1193,7 @@ cmd_stop() {
         docker compose $flags stop
 
         # Stop native llama-server
-        if [[ -f "$LLAMA_SERVER_PID_FILE" ]]; then
-            stop_native_llama
-        fi
+        stop_native_llama || return 1
 
         ai_ok "All services stopped"
     fi
@@ -1322,7 +1335,7 @@ cmd_config_show() {
         return
     fi
 
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
         line_trimmed=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [[ "$line_trimmed" =~ ^# ]] && echo -e "  ${DGRN}${line_trimmed}${NC}" && continue
         [[ -z "$line_trimmed" ]] && continue

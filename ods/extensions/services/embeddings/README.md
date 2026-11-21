@@ -12,7 +12,7 @@ The embeddings service runs Hugging Face's Text Embeddings Inference (TEI) serve
 - **OpenAI-compatible API**: Drop-in replacement for OpenAI's embeddings endpoint
 - **Configurable model**: Switch embedding models via a single environment variable
 - **Persistent model cache**: Downloaded models are stored locally and survive restarts
-- **CPU-packaged runtime**: The shipped Compose service uses the pinned TEI CPU image across supported hosts
+- **CPU-packaged runtime**: The shipped Compose service uses the pinned TEI CPU image across supported hosts. TEI's release tags are amd64 only, so Linux arm64 hosts (DGX Station, DGX Spark, Ampere) run TEI's own arm64 build of the same release line from `compose.arm64.yaml`, and Apple Silicon runs the amd64 image under Rosetta 2
 
 ## Configuration
 

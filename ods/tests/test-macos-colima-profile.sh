@@ -30,7 +30,9 @@ extract_installer_function() {
 for function_name in \
     _resolve_active_colima_profile \
     _active_colima \
-    _active_colima_hint_args; do
+    _active_colima_hint_args \
+    _show_colima_start_hint \
+    _require_docker_cpu_budget; do
     function_body="$(extract_installer_function "$function_name")"
     [[ -n "$function_body" ]] || fail "could not extract $function_name"
     eval "$function_body"
@@ -122,5 +124,61 @@ grep -qF '_active_colima start --network-address --network-preferred-route' "$IN
 grep -qF 'colima start${profile_args} --cpu ${min_cpus}' "$INSTALLER" \
     || fail "CPU-budget recovery hint does not preserve the selected profile"
 pass "private-route repair is profile-scoped end to end"
+
+# Exercise the recovery instructions without running the printed commands.
+ai() { printf '%s\n' "$*"; }
+ai_err() { printf '%s\n' "$*"; }
+get_docker_available_cpus() { printf '2\n'; }
+DOCKER_BACKEND=colima
+hint_file="$TMP_DIR/recovery-hint.out"
+
+for context in colima-ods-native colima; do
+    reset_case "$context"
+    _resolve_active_colima_profile || fail "CPU recovery profile was not resolved"
+    if ( _require_docker_cpu_budget 6 ) >"$hint_file" 2>&1; then
+        fail "insufficient CPU budget should stop the installer"
+    else
+        rc=$?
+    fi
+    [[ "$rc" == 1 ]] || fail "CPU shortage exited with $rc"
+    if [[ "$context" == colima ]]; then
+        expected='    colima stop && colima start --cpu 6'
+    else
+        expected='    colima stop --profile ods-native && colima start --profile ods-native --cpu 6'
+    fi
+    grep -qxF "$expected" "$hint_file" || fail "CPU recovery command is incorrect"
+    if grep -qE -- '--memory|--disk' "$hint_file"; then
+        fail "CPU recovery must preserve memory and disk"
+    fi
+done
+pass "CPU recovery changes only the selected profile CPU budget"
+
+reset_case colima-ods-native
+COLIMA_PROFILE=stale-profile
+_show_colima_start_hint >"$hint_file"
+[[ "$COLIMA_PROFILE" == ods-native ]] || fail "start hint kept a stale profile"
+grep -qxF 'Run `colima start --profile ods-native` then re-run this installer.' "$hint_file" \
+    || fail "named-profile start hint is incorrect"
+
+reset_case colima
+COLIMA_PROFILE=stale-profile
+_show_colima_start_hint >"$hint_file"
+[[ "$COLIMA_PROFILE" == default ]] || fail "default profile was not resolved"
+grep -qxF 'Run `colima start` then re-run this installer.' "$hint_file" \
+    || fail "default-profile start hint is incorrect"
+pass "daemon recovery re-resolves the active profile and preserves its budget"
+
+for context in default colima-../../unsafe; do
+    reset_case "$context" unix:///var/run/docker.sock
+    COLIMA_PROFILE=stale-profile
+    _show_colima_start_hint >"$hint_file"
+    [[ -z "$COLIMA_PROFILE" ]] || fail "unresolved hint retained a stale profile"
+    grep -qF 'colima list' "$hint_file" || fail "unresolved hint needs profile discovery"
+    if grep -qE -- 'colima start|--memory|--disk' "$hint_file"; then
+        fail "unresolved profile must not produce a guessed start command"
+    fi
+done
+[[ ! -s "$MOCK_COLIMA_CALLS" ]] || fail "recovery hint must not run Colima"
+pass "unresolved daemon recovery asks for the existing profile without guessing"
 
 echo "[OK] macOS Colima profile custody contract holds"

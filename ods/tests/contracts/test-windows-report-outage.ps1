@@ -63,8 +63,8 @@ try {
     $location = (Get-Location).Path
     Invoke-Report
     if ((Get-Location).Path -cne $location) { throw 'Report changed caller location' }
-    $json = Get-Content (Join-Path $InstallDir 'artifacts/windows-report/report.json') -Raw | ConvertFrom-Json
-    $text = Get-Content (Join-Path $InstallDir 'artifacts/windows-report/report.txt') -Raw
+    $json = Get-Content -LiteralPath (Join-Path $InstallDir 'artifacts/windows-report/report.json') -Raw | ConvertFrom-Json
+    $text = Get-Content -LiteralPath (Join-Path $InstallDir 'artifacts/windows-report/report.txt') -Raw
     foreach ($name in @('docker_version', 'docker_info', 'compose_config', 'compose_ps')) {
         $receipt = $json.compose.$name
         if ($receipt.ok -or $receipt.exit_code -ne 1 -or ($receipt.lines -join '') -notmatch 'fixture Docker Desktop unavailable') { throw "Missing failed Docker receipt: $name" }
@@ -79,6 +79,45 @@ try {
     if (($actualCalls -join ';') -cne ($expectedCalls -join ';')) { throw "Wrong diagnostic command arguments: $actualCalls" }
     if ([IO.File]::ReadAllText($sentinel) -cne 'retain') { throw 'Report changed foreign state' }
     Write-Host 'PASS report writes configured diagnostics and failed Docker receipts during outage'
+
+    # Write-ODSInstallReport must succeed when the installation path contains
+    # square brackets (wildcard characters in PowerShell).
+    $bracketInstallDir = Join-Path $fixture 'install-[bracket-test]'
+    [void][IO.Directory]::CreateDirectory($bracketInstallDir)
+    [IO.File]::WriteAllText((Join-Path $bracketInstallDir 'docker-compose.base.yml'), 'services: {}')
+    [IO.File]::WriteAllText((Join-Path $bracketInstallDir '.env'), "WEBUI_PORT=13000`nDASHBOARD_PORT=13001`n")
+    $bracketReport = Write-ODSInstallReport -InstallDir $bracketInstallDir -ComposeFlags @()
+    if (-not (Test-Path -LiteralPath $bracketReport.JsonPath -PathType Leaf) -or -not (Test-Path -LiteralPath $bracketReport.TextPath -PathType Leaf)) {
+        throw "Install report files were not written to bracketed path: $($bracketReport.JsonPath)"
+    }
+    $bracketJson = Get-Content -LiteralPath $bracketReport.JsonPath -Raw | ConvertFrom-Json
+    if (-not $bracketJson.generated_at -or $bracketJson.platform.computer_name -ne $env:COMPUTERNAME) {
+        throw "Install report json in bracketed path is missing required properties"
+    }
+    # Exercise the actual CLI path, including installation validation and saved flags.
+    [IO.File]::WriteAllText((Join-Path $bracketInstallDir '.compose-flags'), '-f docker-compose.base.yml -f compose.bracket.yaml')
+    $plainInstallDir = $InstallDir
+    $InstallDir = $bracketInstallDir
+    try {
+        Invoke-Report
+        $cliJson = Get-Content -LiteralPath $bracketReport.JsonPath -Raw | ConvertFrom-Json
+        if (($cliJson.compose.flags -join '|') -cne '-f|docker-compose.base.yml|-f|compose.bracket.yaml') { throw 'Bracketed report lost saved flags' }
+        if ((Get-Location).Path -cne $location) { throw 'Bracketed report changed caller location' }
+        Remove-Item -LiteralPath (Join-Path $bracketInstallDir '.compose-flags')
+        $logs = Join-Path $bracketInstallDir 'logs'
+        [void][IO.Directory]::CreateDirectory($logs)
+        $launch = Join-Path $logs 'compose-launch.txt'
+        [IO.File]::WriteAllText($launch, 'compose_flags=-f docker-compose.base.yml -f compose.recovered.yaml')
+        if (((Get-ComposeFlags) -join '|') -cne '-f|docker-compose.base.yml|-f|compose.recovered.yaml') { throw 'Bracketed report lost launch-record flags' }
+        Remove-Item -LiteralPath $launch
+        $extension = Join-Path $bracketInstallDir 'extensions/services/fixture'
+        [void][IO.Directory]::CreateDirectory($extension)
+        [IO.File]::WriteAllText((Join-Path $extension 'compose.yaml'), 'services: {}')
+        [IO.File]::WriteAllText((Join-Path $bracketInstallDir 'docker-compose.nvidia.yml'), 'services: {}')
+        $fallback = (Get-ComposeFlags) -join '|'
+        if ($fallback -cne '--env-file|.env|-f|docker-compose.base.yml|-f|docker-compose.nvidia.yml|-f|extensions/services/fixture/compose.yaml') { throw 'Bracketed report lost detected Compose files' }
+    } finally { $InstallDir = $plainInstallDir }
+    Write-Host 'PASS install report generates successfully in bracketed directories'
 
     # Preserve lifecycle refusal: the opt-out belongs only to report generation.
     $child = [Diagnostics.ProcessStartInfo]::new()

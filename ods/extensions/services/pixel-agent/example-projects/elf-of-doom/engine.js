@@ -34,12 +34,22 @@ addEventListener("keydown", e => {
   // M mutes from anywhere, so the title-screen control list is accurate
   if (k === "m") { AudioSys.muted = !AudioSys.muted; const mb = $("mute-btn"); if (mb) mb.textContent = AudioSys.muted ? "🔇" : "🔊"; }
   // 1/2/3 pick a boon on the level-up panel (main row and numpad)
-  if (G.state === "levelup" && (k === "1" || k === "&" || k === "2" || k === "@" || k === "3" || k === "#")) {
+  // G.state is "over" while any modal panel is up, so the boon shortcut has to be gated on the
+  // level-up screen itself. Without this, pressing 1/2/3 on the quest-victory panel ran the boon
+  // picker against the old boon list, clicked a stale button, and started a fresh game mid-panel.
+  if (G.state === "levelup" && document.getElementById("screen-levelup") &&
+      !document.getElementById("screen-levelup").classList.contains("hidden") &&
+      (k === "1" || k === "&" || k === "2" || k === "@" || k === "3" || k === "#")) {
     const idx = (k === "1" || k === "&") ? 0 : (k === "2" || k === "@") ? 1 : 2;
     if (typeof boonKeySelect === "function") boonKeySelect(idx);
     return;
   }
-  if (k === "enter" && (G.state === "title" || G.state === "over" || G.state === "win")) startGame();
+  // Enter on the quest panel continues the endless run (matching its Continue button) rather than
+  // throwing away a deep run to restart. Every other end state still starts a fresh game.
+  if (k === "enter") {
+    if (G.state === "winstate") { if (typeof continueQuest === "function") continueQuest(); return; }
+    if (G.state === "title" || G.state === "over" || G.state === "win") startGame();
+  }
 });
 addEventListener("keyup", e => { const k = e.key.toLowerCase(); keys[k] = false; if (k === "j" || k === " ") slashHeld = false; });
 // Losing focus must STOP the game, not just drop the keys. Previously only the key state was
@@ -61,7 +71,13 @@ const PERKS = [
   { ico: "🎯", nm: "Keen Eye", ds: "+25% draw speed", apply: s => { s.atkDur *= .75; s.atkCd *= .75; } },
   { ico: "❤️", nm: "Sylvanic Hardbread", ds: "+25 max HP, heal full", apply: s => { s.maxHp += 25; s.hp = s.maxHp; } },
   { ico: "🩸", nm: "Hunter's Vigor", ds: "Heal 3 HP per kill", apply: s => s.lifesteal += 3 },
-  { ico: "🏹", nm: "Swift Draw", ds: "+20% fire rate", apply: s => { s.atkCd *= 0.8; } },
+  // "Hunter's Blessing" replaced "Swift Draw" (+20% fire rate), which stacked with Keen Eye into
+  // a generic rate-up nobody had to think about. This one is a trade: you give up the HP, damage
+  // and speed options for one pick, and every quiver you pick up from then on is worth double.
+  // ammoSec doubles per pick (x2, x4, x8...), so 6-arrow drops become 12 then 24 then 48. It is a
+  // multiplier on *drops*, not on the quiver: it never refills anything by itself, so it only pays
+  // out if you actually walk over to the supplies, and it does nothing at all in a wave with no drops.
+  { ico: "🦌", nm: "Hunter's Blessing", ds: "Quivers found are worth double — stacks ×2, ×4, ×8", apply: s => { s.ammoSec = Math.max(1, s.ammoSec | 0) * 2; } },
   { ico: "🏹", nm: "Double Shot", ds: "Loose 2 arrows per shot", apply: s => s.multi += 1 },
 ];
 
@@ -73,6 +89,9 @@ function resetHero() {
     hp: 50, maxHp: 50, lvl: 1, xp: 0, xpNext: Math.round(XP_BASE * XP_REQUIREMENT_SCALE), dmg: 22, spd: 205,
     drawT: 0, atkT: 0, atkDur: 0.26, atkCd: 0.32, atkCdT: 0, multi: 1,
     invuln: 0, lifesteal: 0,
+    // Hunter's Blessing multiplier on arrow drops. 1 = no blessing; each pick doubles it. Reset
+    // here so a new run never inherits the last run's blessing (same reason lifesteal is reset).
+    ammoSec: 1,
     arrows: 24, maxArrows: 24, hitFx: 0, shootAng: 0, webT: 0,
   });
   BOON_QUEUE = 0;   // a new run must never inherit picks left over from the last one (window global)
@@ -110,8 +129,12 @@ function startZone() {
   // the generation path - saw a half-populated arena. A missing or non-callable method then threw
   // "D.nearestFloor is not a function" from steerAround on the first brute that wedged against a
   // pillar, so a single bad realm build became per-frame update failures for the rest of the run.
-  const fresh = genArena(G.zone);
-  fresh.baked = bakeArena(fresh, G.zone, Math.floor(Math.random() * 1e9));
+  // Endless loop: the arena layout is chosen by realmIndex(), so realm 7 is a fresh realm-1 hall
+  // rather than an out-of-range ZONES lookup. genArena's obstacle seed stays on the raw zone, so
+  // each circuit still gets its own arrangement of pillars.
+  const lay = realmIndex(G.zone);
+  const fresh = genArena(lay);
+  fresh.baked = bakeArena(fresh, lay, Math.floor(Math.random() * 1e9));
   if (!(fresh.RW > 0 && fresh.RH > 0 && fresh.wpx > 0 && fresh.hpx > 0) ||
       !isFinite(fresh.wpx) || !isFinite(fresh.hpx) ||
       !fresh.spawn || !isFinite(fresh.spawn.x) || !isFinite(fresh.spawn.y) ||
@@ -149,20 +172,28 @@ function startZone() {
   }
   for (let i = 0; i < 4; i++) {
     const s = D.farSpot(P.x, P.y, 210, 16);
-    G.pickups.push({ x: s.x, y: s.y, kind: "arrows", val: 6, t: Infinity, bob: rand(0, 6) });
+    G.pickups.push({ x: s.x, y: s.y, kind: "arrows", val: arrowDrop(6), t: Infinity, bob: rand(0, 6) });
   }
   spawnWave();
-  announce(ZONES[G.zone].name, "Faelar draws his bow…");
+// realmIndex() again: past the first circuit G.zone is >= 6 and this lookup would be undefined.
+announce(ZONES[realmIndex(G.zone)].name, "Shasan draws his bow…");
 }
 function spawnWave() {
-  const z = ZONES[G.zone];
+  const z = ZONES[realmIndex(G.zone)];
   G.waveNum = (G.waveNum || 0) + 1;
   // +30% roster size (ROSTER_SCALE). The old 22 cap was set against the *pre-scale* curve, where
   // it only bound at about 14.7 raw; after scaling it clamped nearly every mid/late wave and
   // silently cancelled the increase (zone 5 wave 4 stayed at 22). Raised to 30 so the increase
   // lands, while keeping a hard ceiling: crowd rasterisation and AI are what caused the stalls.
-  const n = Math.min(30, (6 + G.zone + G.waveNum + randi(0, 2)) * 1.5 * ROSTER_SCALE | 0);
-  for (let i = 0; i < n; i++) spawnEnemy(pick(z.enemies));
+  // The loop multiplier is applied *outside* that ceiling on purpose. In loop 1 it is exactly 1,
+  // so the shipped curve is untouched; in deeper loops the crowd grows past 30 instead of the
+  // per-loop increase being silently eaten by the clamp. It is now x1.25 per loop, compounding, and
+  // stops at 4x this wave's loop 1 size — the uncapped crowd was what made deep loops feel
+  // overcrowded rather than harder.
+  const lp = loopNumber(G.zone), rawCount = loopCountMul(lp);
+  const n = Math.min(30, (6 + G.zone + G.waveNum + randi(0, 2)) * 1.5 * ROSTER_SCALE | 0) * rawCount | 0;
+  const hpMul = loopHpMul(lp, countCapLoop(loopCountMul));
+  for (let i = 0; i < n; i++) spawnEnemy(pick(z.enemies), hpMul);
   if (G.waveNum > 1) announce("Wave " + G.waveNum, "More brutes pour into the hall");
   // replenish supplies each wave. Each call resolves independently against candidates spread
   // over the hall, so these four land apart from one another rather than in one grab.
@@ -174,7 +205,7 @@ function spawnWave() {
   }
   for (let i = 0; i < 2; i++) {
     const s = D ? D.farSpot(P.x, P.y, 200, 16) : { x: P.x - rand(140, 340), y: P.y - rand(120, 280) };
-    G.pickups.push({ x: s.x, y: s.y, kind: "arrows", val: 6, t: Infinity, bob: rand(0, 6) });
+    G.pickups.push({ x: s.x, y: s.y, kind: "arrows", val: arrowDrop(6), t: Infinity, bob: rand(0, 6) });
   }
   updateHud();
 }
@@ -182,22 +213,48 @@ function spawnWave() {
 // advance G.waveNum or reuse the wave banner, so wave pacing and the pre-boss progression stay
 // untouched. Capped against a smaller ceiling than a normal wave because this lands on top of
 // the boss and its escort rather than replacing them - the crowd is what caused the frame stalls.
-function spawnReinforceWave(isFinal) {
-  const z = ZONES[G.zone];
-  const n = Math.min(14, (6 + G.zone + (G.waveNum || 1) + randi(0, 2)) * 1.5 * ROSTER_SCALE | 0);
-  for (let i = 0; i < n; i++) spawnEnemy(pick(z.enemies));
-  announce(isFinal ? "The Hollow Crown calls for aid!" : "Reinforcements!", "More brutes pour into the hall");
+// The banner keeps naming the caller, since "twice as often" is only readable to the player if the
+// call is announced distinctly for the boss doing it.
+//
+// `caller` is the boss actually calling, when the caller is known. It drives two captain-only
+// effects — his waves are CAPTAIN_REIN_MUL larger and they heal him — and is deliberately read from
+// the passed boss rather than from a kind string, so a captain wave and a crown wave cannot be
+// confused. Callers that pass nothing (the escort/realm paths) keep the shipped behaviour exactly.
+function spawnReinforceWave(isFinal, callerName, caller) {
+  const z = ZONES[realmIndex(G.zone)];
+  // Same treatment as a normal wave: loop scaling lands outside the ceiling, and the boss clock
+  // itself is never accelerated past realm 6 — the reinforcement just arrives in bigger packs.
+  const lp = loopNumber(G.zone), rawCount = loopCountMul(lp);
+  // The captain's bigger wave multiplies the whole computed pack, the same side-of-the-cap position
+  // the loop term occupies, so it scales his pack rather than redefining the ceiling everyone else
+  // is measured against. |0 keeps the count an integer after the x1.5.
+  const captain = !!(caller && caller.boss && caller.kind === CAPTAIN_BOSS_KIND);
+  const base = Math.min(14, (6 + G.zone + (G.waveNum || 1) + randi(0, 2)) * 1.5 * ROSTER_SCALE | 0) * rawCount;
+  const n = (captain ? base * CAPTAIN_REIN_MUL : base) | 0;
+  const hpMul = loopHpMul(lp, countCapLoop(loopCountMul));
+  for (let i = 0; i < n; i++) spawnEnemy(pick(z.enemies), hpMul);
+  // Rukhmak's heal: applied once per arriving wave, after the spawns, and only for him. The heal
+  // amount and its never-above-full clamp both come from captainReinHeal in world.js, so the value
+  // the probes assert against is the same expression the game runs.
+  if (captain) caller.hp = caller.hp + captainReinHeal(caller);
+  announce(isFinal ? "The Hollow Crown calls for aid!"
+    : callerName ? callerName + " calls for aid!" : "Reinforcements!",
+    "More brutes pour into the hall");
   G.shake = Math.max(G.shake, 5);
   updateHud();
 }
-function spawnEnemy(kind) {
+// loopHpMul defaults to 1 so every existing caller (and loop 1) is untouched. It carries the
+// compounding per-loop health term only; the per-realm ramp below is exactly as shipped.
+function spawnEnemy(kind, loopHpMul) {
   const st = ENEMY_STATS[kind];
   const spot = D ? D.farSpot(P.x, P.y, 300, st.r + 4) : { x: rand(80, DW - 80), y: rand(80, DH - 80) };
-  const mult = 1 + G.zone * 0.12;
+  const mult = (1 + G.zone * 0.12) * (loopHpMul || 1);
   // wolf hounds are 3x tankier than their base stat line
   const hpScale = (kind === "fenris" ? WOLF_HP_SCALE : 1);
   G.enemies.push({
-    kind, x: spot.x, y: spot.y, hp: st.hp * mult * hpScale, maxHp: st.hp * mult * hpScale, spd: st.spd * ENEMY_SPEED_SCALE * (kind === "fenris" ? WOLF_SPD_SCALE : 1), dmg: st.dmg * (1 + G.zone * .06),
+    kind, x: spot.x, y: spot.y, hp: st.hp * mult * hpScale, maxHp: st.hp * mult * hpScale,
+    spd: st.spd * ENEMY_SPEED_SCALE * loopSpdMul(loopNumber(G.zone)) * (kind === "fenris" ? WOLF_SPD_SCALE : 1),
+    dmg: st.dmg * (1 + G.zone * .06) * loopDmgMul(loopNumber(G.zone)),
     r: st.r,
     // Collision radius stays at the art's torso, but separation uses a stance radius so a hound
     // holds off at roughly nose length instead of pressing its muzzle into every packmate. A wolf
@@ -211,30 +268,75 @@ function spawnEnemy(kind) {
   return G.enemies[G.enemies.length - 1];
 }
 function spawnBoss() {
-  const z = ZONES[G.zone], bs = BOSS_STATS[z.boss.kind];
+  const z = ZONES[realmIndex(G.zone)], bs = BOSS_STATS[z.boss.kind];
   G.wave = "boss";
   const spot = D ? D.farSpot(P.x, P.y, 320, bs.r + 6) : { x: DW - 240, y: DH / 2 };
+  // +100% boss HP per completed loop, replacing the shipped +50%. As before, the loop term replaces
+  // a per-zone term rather than stacking on one: realm 6 was already the shipped difficulty peak, and
+  // multiplying a growing zone term by a growing loop term compounds two curves at once. One loop
+  // factor keeps each circuit an exact multiple of the last. This is deliberately the ONLY loop-health
+  // term on a boss — the request moves the boss's existing per-loop term from +50% to +100% and does
+  // not ask for the new enemy-health term to be multiplied in as well. An earlier draft did exactly
+  // that, which compounded three curves into one number (1.5x^2 * 2x^3 by loop 4). Bosses and their
+  // escorts stay in roughly the same league because both about double per loop.
+  const lp = loopNumber(G.zone);
+  // The troll bosses' +30% health dial was removed at the owner's request: Vhelmor and Druskral are
+  // back to the plain BOSS_STATS.troll pool. Their regen, enraged movement and enraged swing-rate
+  // dials in ui.js are unchanged.
+  //
+  // The captain carries the kind dial now: Rukhmak is +35% per the owner's request, keyed on kind
+  // for the same reason the wolf dial is — it follows him wherever he is posted. Everyone else's
+  // term is 1, so no other boss's number moves.
+  const bossHp = bs.hp * 2 * BOSS_HP_SCALE
+    * (z.boss.kind === "fenris" ? WOLF_HP_SCALE : 1)
+    * (z.boss.kind === CAPTAIN_BOSS_KIND ? CAPTAIN_HP_SCALE : 1)
+    * loopBossHpMul(lp);
   const e = {
     kind: z.boss.kind, boss: true, name: z.boss.name,
-    x: spot.x, y: spot.y, hp: bs.hp * 2 * BOSS_HP_SCALE * (z.boss.kind === "fenris" ? WOLF_HP_SCALE : 1), maxHp: bs.hp * 2 * BOSS_HP_SCALE * (z.boss.kind === "fenris" ? WOLF_HP_SCALE : 1),
+    x: spot.x, y: spot.y, hp: bossHp, maxHp: bossHp,
     // Bosses were scaling their minions but not themselves: ENEMY_SPEED_SCALE doubled the wave
     // while a boss still walked at its raw BOSS_STATS.spd, so Skarnax crawled next to pack hounds and
     // the Hollow Crown trailed the brutes summoned around him. Same dial, so a boss keeps its
     // intended position relative to the crowd instead of becoming the slowest thing on screen.
-    spd: bs.spd * ENEMY_SPEED_SCALE * (z.boss.kind === "fenris" ? WOLF_SPD_SCALE : 1), dmg: bs.dmg * (1 + G.zone * .05),
+    spd: bs.spd * ENEMY_SPEED_SCALE * loopSpdMul(lp) * (z.boss.kind === "fenris" ? WOLF_SPD_SCALE : 1),
+    dmg: bs.dmg * (1 + G.zone * .05) * loopDmgMul(lp),
     r: bs.r, sepR: bs.r + 14, face: -1, faceHold: 0, atkT: 0, atkDur: .6, atkCdT: 1, hurtT: 0, wob: 2,
     aiT: 2, dashT: 0, dashDx: 0, dashDy: 0, spitT: 2, phase: 1, scale: bs.scale,
+    // Ghost state, explicit at spawn rather than left undefined: every other field on an enemy is
+    // declared here, and crownGhostTick treats ghostT<=0 as "solid" with ghostNextT arming the first
+    // window. Starting solid means the fight opens with him hittable — a boss who begins the encounter
+    // invulnerable would read as broken. Only the Crown reads these; the fields are inert on everyone
+    // else, which is cheaper and safer than a kind test at spawn.
+    ghostT: 0, ghostNextT: rand(CROWN_GHOST_GAP_S[0], CROWN_GHOST_GAP_S[1]),
   };
   G.enemies.push(e); G.boss = e;
   // Boss fights must never stall into a quiet duel: a fresh wave arrives on a timer so pressure
   // is continuous. The final boss halves the interval. Reset here so each boss owns its own clock.
-  G.bossReinT = (z.boss.kind === FINAL_BOSS_KIND ? FINAL_BOSS_REINFRESH_S : BOSS_REINFRESH_S);
+  // From loop 2 on, every boss gets realm 6's aggressive cadence (see bossReinIntervalS). For every
+  // boss but Rukhmak that interval is the floor: deeper loops add bulk and pack size, never a shorter
+  // clock. Rukhmak is the deliberate exception and calls at half these rates (30 s / 15 s).
+  G.bossReinT = bossReinIntervalS(z.boss.kind, loopNumber(G.zone));
   // escort of brutes storms in with the boss so it can't be kited from range;
-  // staggered with a spark flare as each one arrives
-  const escort = Math.min(12, 6 + G.zone * 2);
+  // staggered with a spark flare as each one arrives.
+  //
+  // The loop multiplier is measured against the boss's OWN realm at loop 1, not applied to the raw
+  // expression. Two reasons, both about zone: the base min(12, 6 + zone*2) saturates at 12 by realm 4,
+  // and zone keeps counting across loops (realm 1 of loop 4 is zone 18). Applying loopCountMul to an
+  // already-saturated 12 would hand a deep-loop boss 48 minions — four times the shipped pack, which
+  // is the overcrowding this change exists to remove. Normalising by the realm's loop-1 escort size
+  // makes "4x" mean 4x the escort THIS boss had in loop 1, and lets the 12 ceiling bind again for the
+  // late-realm bosses whose packs were already capped.
+  const escortBase = Math.min(12, 6 + realmIndex(G.zone) * 2);
+  const bossEscortMul = Math.max(1, (escortBase * loopCountMul(lp) | 0) / escortBase);
+  const escort = escortBase * bossEscortMul | 0;
+  // The escort's own multiplier, not the global one: integer truncation of a small pack can lock
+  // below loop 8 (a 4-brute pack reaches 4x at 16), and the health crossover follows that lock.
+  const escortGrowCap = countCapLoop((L) =>
+    Math.max(1, (escortBase * loopCountMul(L) | 0) / escortBase));
+  const escortHpMul = loopHpMul(lp, escortGrowCap);
   G.escorts = [];
   for (let i = 0; i < escort; i++) {
-    const e = spawnEnemy(pick(ZONES[G.zone].enemies));
+    const e = spawnEnemy(pick(ZONES[realmIndex(G.zone)].enemies), escortHpMul);
     if (e) {
       const when = .25 + i * .14;
       G.escorts.push({ e, t: when, life: when });
@@ -252,7 +354,7 @@ function spawnBoss() {
   }
   for (let i = 0; i < 1; i++) {
     const s = D ? D.farSpot(e.x, e.y, 220, 16) : { x: e.x - rand(140, 300), y: e.y - rand(120, 260) };
-    G.pickups.push({ x: s.x, y: s.y, kind: "arrows", val: 10, t: Infinity, bob: rand(0, 6) });
+    G.pickups.push({ x: s.x, y: s.y, kind: "arrows", val: arrowDrop(10), t: Infinity, bob: rand(0, 6) });
   }
   bossWrap.classList.remove("hidden"); $("boss-name").textContent = e.name;
   AudioSys.bossRoar();
@@ -318,7 +420,21 @@ function dropPickup(x, y, kind, val) {
     }
     if (!ok) { const s = D.freeSpot(x, y, 26, 14); px = s.x; py = s.y; }
   }
+  // Blessing is applied at drop time, not at pickup time, so the number that pops over the
+  // quiver and the number that lands in the quiver are always the same number.
+  if (kind === "arrows") { val = arrowDrop(val); }
   G.pickups.push({ x: px, y: py, kind, val, t: 20, bob: rand(0, 6) });
+}
+
+// ---------- Hunter's Blessing ----------
+// Single place where a quiver's value is resolved, so every arrow source in the game respects the
+// blessing and none of them can double-apply it. Integer shift keeps 6 -> 12 -> 24 -> 48 exact
+// without floating-point drift, and the 9999 cap exists only so a pathological number of picks
+// cannot produce Infinity in the HUD; that cap is a sanity guard, not balance.
+const ARROW_DROP_CAP = 9999;
+function arrowDrop(n) {
+  const m = Math.max(1, (typeof P !== "undefined" && P.ammoSec | 0) || 1);
+  return Math.min(ARROW_DROP_CAP, (n | 0) * m);
 }
 
 // ---------- supply drops: never run dry ----------
@@ -339,7 +455,7 @@ function supplyTick(dt) {
   // each drop keeps TILE*2 from the item already placed, and - the part that actually mattered -
   // farSpot consults pickups already on the floor, which it did not before at all.
   const a = D.farSpot(P.x, P.y, 170, 16);
-  G.pickups.push({ x: a.x, y: a.y, kind: "arrows", val: 12, t: 45, bob: rand(0, 6) });
+  G.pickups.push({ x: a.x, y: a.y, kind: "arrows", val: arrowDrop(12), t: 45, bob: rand(0, 6) });
   burst(a.x, a.y - 8, 5, "rgba(220,190,140,.7)", 60, .5, 3);
   const h = D.farSpot(a.x, a.y, 150, 16);
   G.pickups.push({ x: h.x, y: h.y, kind: "heart", val: 30, t: 45, bob: rand(0, 6) });
@@ -371,6 +487,13 @@ function heroAtkMul() { return 1; }
 function cacheHeroDmg() { P.__dmgCached = Math.round(P.dmg * heroAtkMul()); }
 
 function hurtEnemy(e, dmg, ang) {
+  // Ghost mode: damage passes through the Hollow Crown. Returning before everything below — the damage
+  // number, the hit flash, the knockback, the phase latch and the kill path — is what makes it read as
+  // "the arrow went right through him" rather than as a hit that did no work. The caller in
+  // updateProjectiles still consumes the arrow on contact, so arrows disappear into him instead of
+  // sailing past to hit the wall or an enemy behind him. Guarded on crownGhosted, so this costs every
+  // other enemy one property read and nothing else.
+  if (crownGhosted(e)) return;
   dmg = Math.round(dmg * rand(.92, 1.12));
   e.hp -= dmg; e.hurtT = .18;
   popText(e.x + rand(-8, 8), e.y - e.r - 30, String(dmg), "#ffe9a8");
@@ -407,6 +530,17 @@ function killEnemy(e) {
   }
   updateHud();
 }
+// Gate cost shown AFTER reaching `lvl` — i.e. the price of the next level up — from the
+// XP_TIERED table in world.js. Callers pass the level just reached, so `fromLevel` reads as
+// "reaching this level switches the next gate to `cost`". Returns the cost of the highest tier
+// whose fromLevel is <= lvl, or 0 when lvl is below every tier (caller falls back to the ×1.45
+// curve). Scanning high→low keeps the table order irrelevant and costs nothing at four entries.
+function xpGateFor(lvl) {
+  for (let i = XP_TIERED.length - 1; i >= 0; i--) {
+    if (lvl >= XP_TIERED[i].fromLevel) return XP_TIERED[i].cost;
+  }
+  return 0;
+}
 function gainXp(n) {
   P.xp += n;
   // One boon per level, not one per kill-burst. The original called openLevelUp() inside the
@@ -420,7 +554,13 @@ function gainXp(n) {
     // scaled value made the +50% compound each level (level 6 reached +169% instead of +50%).
     // `|| XP_BASE` keeps a pathological round-to-zero from wedging leveling entirely.
     const curve = Math.round(P.xpNext / XP_REQUIREMENT_SCALE);
-    P.xpNext = Math.round(Math.round(curve * 1.45 + 12) * XP_REQUIREMENT_SCALE) || XP_BASE;
+    // Flat tiered gate from XP_FLAT_FROM_LEVEL on: the curve stops compounding so late realms
+    // keep handing out boons instead of stalling, and the tiers step the cost up so picks slow
+    // down deep into a run. P.lvl has already been incremented above, so the lookup uses the
+    // level just reached: 2500 until reaching 25, 5000 until reaching 50, 10000 until reaching
+    // 75, then 15000. Below the first tier the curve is unchanged.
+    P.xpNext = xpGateFor(P.lvl)
+      || (Math.round(Math.round(curve * 1.45 + 12) * XP_REQUIREMENT_SCALE) || XP_BASE);
   }
   if (levels > 0) {
     P.__dmgCached = undefined;

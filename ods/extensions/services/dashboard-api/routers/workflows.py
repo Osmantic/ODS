@@ -44,9 +44,9 @@ def _n8n_headers() -> dict[str, str]:
 
 def load_workflow_catalog() -> dict:
     """Load workflow catalog from JSON file."""
-    if not WORKFLOW_CATALOG_FILE.exists():
-        return DEFAULT_WORKFLOW_CATALOG
     try:
+        if not WORKFLOW_CATALOG_FILE.exists():
+            return DEFAULT_WORKFLOW_CATALOG
         with open(WORKFLOW_CATALOG_FILE) as f:
             data = json.load(f)
         if not isinstance(data, dict):
@@ -59,6 +59,12 @@ def load_workflow_catalog() -> dict:
         if not isinstance(categories, dict):
             categories = {}
         return {"workflows": workflows, "categories": categories}
+    except PermissionError as e:
+        logger.warning("Workflow catalog is not readable: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail="Workflow catalog is unavailable. Check its access permissions.",
+        ) from e
     except (json.JSONDecodeError, OSError, KeyError) as e:
         logger.warning("Failed to load workflow catalog from %s: %s", WORKFLOW_CATALOG_FILE, e)
         return DEFAULT_WORKFLOW_CATALOG

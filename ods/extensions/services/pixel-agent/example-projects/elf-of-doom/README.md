@@ -4,6 +4,14 @@ A small dungeon crawler that runs in your browser. You play an elf archer:
 clear each arena of brutes, grab hearts and quivers, level up, and fight
 through six realms to Mount Cinderfall.
 
+The quest never really ends. Break the Hollow Crown and the six realms fold
+back on themselves: every circuit brings 50% more foes at every spawn, bosses
+with 50% more health, and realm-6 reinforcement timers from the very first
+boss of the loop. The reinforcement clock never goes faster than realm 6's,
+no matter how deep you get. The victory panel appears after each circuit with
+a Continue button, and its colour deepens each time - bronze, silver, gold,
+and gold from then on.
+
 ## Play it
 
 In Portal's sidebar, open Projects, then Playground, then elf-of-doom. The
@@ -13,7 +21,8 @@ keyboard.
 - Arrow keys or WASD: move. You shoot the way you last moved.
 - Space: shoot. Hold it to keep shooting.
 - 1, 2, 3: choose a boon when you level up.
-- Esc or P: pause. Enter: start or retry. M: mute.
+- Esc or P: pause. Enter: start or retry, or continue the quest at a victory
+  panel. M: mute.
 
 Clicking outside the game pauses it. The game is plain HTML, CSS and
 JavaScript and needs no internet connection, so you can also open

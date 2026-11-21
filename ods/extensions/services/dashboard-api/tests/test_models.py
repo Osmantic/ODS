@@ -37,6 +37,32 @@ def test_active_model_reader_preserves_unmatched_quote(monkeypatch, tmp_path):
     assert models_router._read_active_model() == "model-v2.gguf'"
 
 
+@pytest.mark.parametrize(("owner", "expected"), [
+    ({"llmModel": "qwen3.6-35b-a3b", "ggufFile": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", "contextSize": 131072},
+     "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"),
+    (None, None),
+])
+def test_active_model_reader_asks_the_owner_agent_for_a_private_env(monkeypatch, tmp_path, owner, expected):
+    """An install owner other than UID 1000 keeps .env from this API's UID."""
+    from pathlib import Path
+    import routers.models as models_router
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("GGUF_FILE=stale.gguf\n", encoding="utf-8")
+    monkeypatch.setattr(models_router, "_ENV_PATH", env_path)
+    original = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if path == env_path:
+            raise PermissionError(13, "Permission denied", str(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(models_router, "owner_model_config", lambda: owner)
+
+    assert models_router._read_active_model() == expected
+
+
 def test_huggingface_artifacts_group_complete_shards_and_require_integrity():
     import routers.models as models_router
 
@@ -1977,7 +2003,11 @@ def test_api_models_reports_unmatched_external_runtime_without_fake_performance(
     monkeypatch.setattr(models_router, "get_loaded_model", AsyncMock(return_value=runtime_name))
     monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 42}))
     monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=None))
-    monkeypatch.setattr(models_router, "record_model_performance", lambda *args, **kwargs: recorded.append((args, kwargs)))
+    def record_sample(*args, **kwargs):
+        recorded.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(models_router, "record_model_performance", record_sample)
 
     response = test_client.get("/api/models", headers=test_client.auth_headers)
 
@@ -2316,9 +2346,13 @@ def test_api_models_falls_back_to_loaded_model_probe(test_client, monkeypatch, t
     monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=32768))
     monkeypatch.setattr(models_router, "SERVICES", {"llama-server": {"host": "localhost", "port": 8080}})
 
-    monkeypatch.setattr(models_router, "_last_recorded_throughput_sample", None)
+    monkeypatch.setattr(models_router, "_last_committed_sample_key", None)
     recorded = []
-    monkeypatch.setattr(models_router, "record_model_performance", lambda *args, **kwargs: recorded.append((args, kwargs)))
+    def record_sample(*args, **kwargs):
+        recorded.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(models_router, "record_model_performance", record_sample)
     resp = test_client.get("/api/models", headers=test_client.auth_headers)
     again = test_client.get("/api/models", headers=test_client.auth_headers)
     assert again.status_code == 200
