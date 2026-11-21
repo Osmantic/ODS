@@ -948,6 +948,16 @@ def test_validation_rejects_control_characters_in_model_and_key() -> None:
     assert "cannot contain control characters or newlines" in proc.stderr
 
 
+def test_hybrid_switchboard_keeps_local_to_cloud_fallback() -> None:
+    hybrid = run_renderer("--surface", "all", "--ods-mode", "hybrid", "--switchboard-mode", "enabled")
+    legacy = file_by_surface(hybrid, "litellm-hybrid")["content"]
+    switchboard = file_by_surface(hybrid, "litellm-switchboard")["content"]
+    assert "fallbacks:\n    - local:\n        - cloud" in legacy
+    assert "fallbacks:\n    - local:\n        - cloud" in switchboard
+    local = run_renderer("--surface", "all", "--switchboard-mode", "enabled")
+    assert "fallbacks:" not in file_by_surface(local, "litellm-switchboard")["content"]
+
+
 def main() -> int:
     tests = [
         test_external_model_uses_authenticated_gateway_without_vendor_impersonation,
@@ -990,6 +1000,7 @@ def main() -> int:
         test_identical_symlink_and_hardlink_do_not_skip_replacement,
         test_validation_rejects_negative_context_or_invalid_port,
         test_validation_rejects_control_characters_in_model_and_key,
+        test_hybrid_switchboard_keeps_local_to_cloud_fallback,
     ]
     for test in tests:
         test()
