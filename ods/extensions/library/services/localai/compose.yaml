@@ -12,8 +12,13 @@ services:
     volumes:
       - ./data/localai/models:/models
       - ./data/localai/builds:/builds
+      # LocalAI v3 installs inference backends from its gallery into /backends
+      # (an image-declared VOLUME). Bind it so installed backends survive a
+      # container recreate instead of vanishing with an anonymous volume.
+      - ./data/localai/backends:/backends
     environment:
       - MODELS_PATH=/models
+      - LOCALAI_BACKENDS_PATH=/backends
       - CONFIG_PATH=/builds
       - LLM_API_URL=${LLM_API_URL:-http://llama-server:8080}
     restart: unless-stopped

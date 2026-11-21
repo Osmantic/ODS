@@ -193,6 +193,8 @@ test: ## Run unit and contract tests
 	@echo "=== vLLM engine choice and installer phases ==="
 	@bash tests/test-vllm-installer-route.sh
 	@bash tests/test-vllm-installer-phases.sh
+	@echo "=== LocalAI backends directory is persisted ==="
+	@bash tests/test-localai-backends-persisted.sh
 	@echo ""
 	@echo "=== macOS ods config show secret-mask ==="
 	@bash tests/test-macos-config-show-secret-mask.sh
