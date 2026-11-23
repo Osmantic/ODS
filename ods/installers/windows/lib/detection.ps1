@@ -370,7 +370,8 @@ function Invoke-ODSDockerProbe {
 
     try {
         $process = [System.Diagnostics.Process]::Start($psi)
-    } catch {
+    } catch [System.ComponentModel.Win32Exception] {
+        # docker is on PATH but cannot be executed; report it as not started.
         return $result
     }
     $result.Started = $true
@@ -379,7 +380,11 @@ function Invoke-ODSDockerProbe {
         $null = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             $result.TimedOut = $true
-            try { $process.Kill() } catch { }
+            try {
+                $process.Kill()
+            } catch [System.InvalidOperationException] {
+                # The process exited between the timeout and Kill(); nothing to stop.
+            }
             return $result
         }
         $process.WaitForExit()
@@ -431,6 +436,7 @@ function Test-DockerDesktop {
             }
         }
     } catch {
+        # Docker not responding
         return $result
     }
     if (-not $result.Running) { return $result }
