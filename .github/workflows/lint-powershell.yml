@@ -104,6 +104,10 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-compose-startup-recovery.ps1
 
+      - name: Windows Docker share probe visibility
+        shell: pwsh
+        run: ./tests/contracts/test-windows-share-probe-visibility.ps1
+
       - name: Windows chat HTTP response exit contract
         if: runner.os == 'Windows'
         shell: pwsh
