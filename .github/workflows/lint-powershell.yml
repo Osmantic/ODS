@@ -104,6 +104,11 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-compose-startup-recovery.ps1
 
+      - name: Windows installer missing install drive
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-installdir-missing-drive.ps1
+
       - name: Windows chat HTTP response exit contract
         if: runner.os == 'Windows'
         shell: pwsh
