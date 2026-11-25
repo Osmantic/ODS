@@ -948,6 +948,43 @@ def test_validation_rejects_control_characters_in_model_and_key() -> None:
     assert "cannot contain control characters or newlines" in proc.stderr
 
 
+def _switchboard_fallbacks(content: str) -> dict[str, list[str]]:
+    """Map each fallbacks group to its targets in a rendered LiteLLM config."""
+    if "\n  fallbacks:\n" not in content:
+        return {}
+    block = content.split("\n  fallbacks:\n", 1)[1]
+    groups: dict[str, list[str]] = {}
+    current = None
+    for line in block.splitlines():
+        if line.startswith("    - "):
+            current = line[6:].rstrip(":").strip('"')
+            groups[current] = []
+        elif line.startswith("        - ") and current is not None:
+            groups[current].append(line[10:].strip())
+        else:
+            break
+    return groups
+
+
+def test_hybrid_switchboard_keeps_local_to_cloud_fallback() -> None:
+    hybrid = run_renderer(
+        "--surface", "all", "--ods-mode", "hybrid", "--switchboard-mode", "enabled",
+        "--litellm-key", "switch-secret",
+    )
+    legacy = file_by_surface(hybrid, "litellm-hybrid")["content"]
+    assert "fallbacks:\n    - local:\n        - cloud" in legacy
+    fallbacks = _switchboard_fallbacks(file_by_surface(hybrid, "litellm-switchboard")["content"])
+    # Fallbacks are keyed by model group: derive the group each default
+    # consumer actually requests instead of asserting a literal "local".
+    opencode_model = json.loads(file_by_surface(hybrid, "opencode")["content"])["model"]
+    hermes = file_by_surface(hybrid, "hermes")["content"]
+    hermes_model = hermes.split('default: "', 1)[1].split('"', 1)[0]
+    for group in {opencode_model, hermes_model, "local", "default"}:
+        assert fallbacks.get(group) == ["cloud"], (group, fallbacks)
+    local = run_renderer("--surface", "all", "--switchboard-mode", "enabled")
+    assert _switchboard_fallbacks(file_by_surface(local, "litellm-switchboard")["content"]) == {}
+
+
 def main() -> int:
     tests = [
         test_external_model_uses_authenticated_gateway_without_vendor_impersonation,
@@ -990,6 +1027,7 @@ def main() -> int:
         test_identical_symlink_and_hardlink_do_not_skip_replacement,
         test_validation_rejects_negative_context_or_invalid_port,
         test_validation_rejects_control_characters_in_model_and_key,
+        test_hybrid_switchboard_keeps_local_to_cloud_fallback,
     ]
     for test in tests:
         test()
