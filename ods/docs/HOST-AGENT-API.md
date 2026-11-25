@@ -17,7 +17,7 @@ The Dashboard API runs inside a Docker container and cannot directly run `docker
 The agent is started during installation. Its bind address depends on the platform:
 
 - **macOS** binds to `127.0.0.1` unless `ODS_AGENT_BIND` is set.
-- **Native Windows:** the installer writes `ODS_AGENT_BIND=0.0.0.0` on a new install and keeps a value already set in `.env`, so the Dashboard API container can reach the agent through Docker Desktop's host gateway (`host.docker.internal`). The agent still requires its bearer token on every `/v1/*` request.
+- **Native Windows:** the installer writes `ODS_AGENT_BIND=127.0.0.1` on a new install and keeps a value already set in `.env`. Docker Desktop forwards `host.docker.internal` (including the `host-gateway` mapping the Dashboard API uses) to the host's loopback, so the container reaches a loopback-only agent. The agent still requires its bearer token on every `/v1/*` request.
 - **Linux** auto-detects the `ods-network` gateway so containers can reach the agent, falls back to the default Docker bridge gateway for partial/older installs, and then falls back to `127.0.0.1`. It does not bind to `0.0.0.0` unless `ODS_AGENT_BIND` is explicitly set.
 
 ## Configuration
@@ -27,7 +27,7 @@ The agent reads its configuration from the `.env` file in the ODS install direct
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ODS_AGENT_KEY` | *(none)* | API key for authenticating requests. Falls back to `DASHBOARD_API_KEY` if unset. |
-| `ODS_AGENT_BIND` | Platform-specific | Bind address. macOS defaults to `127.0.0.1`; the native Windows installer writes `0.0.0.0`; Linux uses the `ods-network` gateway when detected, then the Docker bridge gateway, otherwise `127.0.0.1`. |
+| `ODS_AGENT_BIND` | Platform-specific | Bind address. macOS defaults to `127.0.0.1`; the native Windows installer writes `127.0.0.1`; Linux uses the `ods-network` gateway when detected, then the Docker bridge gateway, otherwise `127.0.0.1`. |
 | `ODS_AGENT_PORT` | `7710` | Port the agent listens on. |
 | `GPU_BACKEND` | `nvidia` | Passed to `resolve-compose-stack.sh` when building compose flags. |
 | `AMD_INFERENCE_PORT` | `8080` | Port of a Windows-owned `llama-server.exe` (AMD). An agent on native Windows reads it on `127.0.0.1`. |
