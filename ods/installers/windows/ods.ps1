@@ -1331,8 +1331,11 @@ function Set-ODSEnvValue {
         [void]$lines.Add("${Key}=${Value}")
     }
 
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllLines($envFile, $lines.ToArray(), $utf8NoBom)
+    # Stage and swap instead of truncating .env in place: an interrupted
+    # start/restart must leave the old secrets intact, never an empty file.
+    # Same line endings WriteAllLines produced (Environment.NewLine, trailing).
+    $newline = [Environment]::NewLine
+    Write-ODSPrivateEnvFile -Path $envFile -Content (($lines.ToArray() -join $newline) + $newline)
 }
 
 function Ensure-HermesDashboardSessionToken {

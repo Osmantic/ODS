@@ -555,6 +555,10 @@ else
         extract_fn Get-ComposeFlags
         extract_fn Update-ComposeFlags
         extract_fn Set-ODSEnvValue
+        # Set-ODSEnvValue writes through Write-ODSPrivateEnvFile, which ods.ps1 loads.
+        private_file_ps1="$(dirname "$ODS_PS1")/lib/private-file.ps1"
+        if command -v cygpath >/dev/null 2>&1; then private_file_ps1="$(cygpath -m "$private_file_ps1")"; fi
+        printf '. "%s"\n' "$private_file_ps1"
         extract_fn Set-ODSProxyAuthRequired
         # Keep Docker out of the test: force the offline branch of Invoke-Disable.
         echo 'function docker { $global:LASTEXITCODE = 1 }'

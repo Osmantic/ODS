@@ -7,6 +7,8 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 . (Join-Path $root "installers\windows\lib\llm-endpoint.ps1")
+# Set-ODSEnvValue writes through Write-ODSPrivateEnvFile, which ods.ps1 loads.
+. (Join-Path $root "installers\windows\lib\private-file.ps1")
 
 $dir = Join-Path ([IO.Path]::GetTempPath()) ("ods-env-utf8-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $dir | Out-Null
