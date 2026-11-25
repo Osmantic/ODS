@@ -104,6 +104,16 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-compose-startup-recovery.ps1
 
+      - name: Windows .env atomic rewrite (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-env-atomic-write.ps1
+
+      - name: Windows .env atomic rewrite (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-env-atomic-write.ps1
+
       - name: Windows chat HTTP response exit contract
         if: runner.os == 'Windows'
         shell: pwsh

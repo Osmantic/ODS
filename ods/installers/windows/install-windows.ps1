@@ -419,7 +419,7 @@ if ($dryRun) {
                 $envContent = $envContent -replace "(?m)^LLM_MODEL=.*$", "LLM_MODEL=$llmModelReplacement"
                 $envContent = $envContent -replace "(?m)^MAX_CONTEXT=.*$", "MAX_CONTEXT=$($tierConfig.MaxContext)"
                 $envContent = $envContent -replace "(?m)^CTX_SIZE=.*$", "CTX_SIZE=$($tierConfig.MaxContext)"
-                [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))
+                Write-ODSPrivateEnvFile -Path $envPath -Content $envContent
                 Write-AISuccess "Patched .env for bootstrap model ($($tierConfig.GgufFile))"
             }
 
