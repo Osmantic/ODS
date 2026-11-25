@@ -50,3 +50,6 @@ try {
     Remove-Item Env:ODS_TEST_COMPOSE_EXIT -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# The intentional exit-3 case leaves $LASTEXITCODE=3; CI wrappers would fail on it.
+exit 0
