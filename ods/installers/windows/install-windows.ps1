@@ -84,7 +84,9 @@ if (-not [string]::IsNullOrWhiteSpace($env:ODS_HOME)) {
     if ($_installRoot -and -not [System.IO.Directory]::Exists($_installRoot)) {
         Write-Host "ODS install target drive $($_installRoot.TrimEnd('\')) is not available: $env:ODS_HOME" -ForegroundColor Red
         Write-Host "  Reconnect the drive (or check that its letter did not change), or rerun with -InstallDir on an available NTFS drive." -ForegroundColor Yellow
-        exit 1
+        # ui.ps1 only reads constants inside functions, so it is safe this early.
+        . (Join-Path (Join-Path $ScriptDir "lib") "ui.ps1")
+        Exit-ODSInstallFailure
     }
 }
 
