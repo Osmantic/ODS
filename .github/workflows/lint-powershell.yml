@@ -104,6 +104,11 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-compose-startup-recovery.ps1
 
+      - name: Windows native-install blocker names the path
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-native-install-blocker-path.ps1
+
       - name: Windows chat HTTP response exit contract
         if: runner.os == 'Windows'
         shell: pwsh

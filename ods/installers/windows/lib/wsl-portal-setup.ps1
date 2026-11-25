@@ -29,11 +29,13 @@ function Test-ODSPortalAdministrator {
 }
 
 function Test-ODSNativeWindowsInstall {
+    # Returns the matched install root (truthy) so the blocker can name it,
+    # or $null when no native install is present.
     $roots = @($env:ODS_HOME, (Join-Path $env:USERPROFILE 'ods')) | Where-Object { $_ }
     foreach ($root in $roots) {
-        if ((Test-Path -LiteralPath (Join-Path $root '.env')) -and (Test-Path -LiteralPath (Join-Path $root 'ods.ps1'))) { return $true }
+        if ((Test-Path -LiteralPath (Join-Path $root '.env')) -and (Test-Path -LiteralPath (Join-Path $root 'ods.ps1'))) { return $root }
     }
-    return $false
+    return $null
 }
 
 function Invoke-ODSPortalWsl([string[]]$Arguments) {
@@ -462,7 +464,8 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     }
     if ($env:OS -ne 'Windows_NT') { throw 'Run install.ps1 in Windows PowerShell. Inside Ubuntu use bash install.sh --pixel --no-hermes.' }
     if (Test-ODSPortalAdministrator) { throw 'This window is running as Administrator. Setup requires a non-elevated user session. Open PowerShell without "Run as administrator" and rerun. If every window is elevated because UAC is disabled or this is the built-in Administrator account, use a standard Windows account or enable UAC and sign in again. UAC-disabled elevated sessions are not supported. Setup requests elevation separately only for Windows prerequisites.' }
-    if (Test-ODSNativeWindowsInstall) { throw 'An existing native Windows ODS installation was found. It is not automatically migrated or deleted. Stop and migrate/remove that installation before creating a WSL stack, to avoid shared ports and Compose project conflicts. See ods/docs/WINDOWS-QUICKSTART.md.' }
+    $nativeRoot = Test-ODSNativeWindowsInstall
+    if ($nativeRoot) { throw "An existing native Windows ODS installation was found at $nativeRoot (it has .env and ods.ps1). It is not automatically migrated or deleted. Stop it (& '$(Join-Path $nativeRoot 'ods.ps1')' stop) and migrate/remove that installation before creating a WSL stack, to avoid shared ports and Compose project conflicts. See ods/docs/WINDOWS-QUICKSTART.md." }
     Write-ODSPortalStage 1 'WINDOWS FOUNDATION' 'Checking disk space, virtualization and WSL.'
     $stop = Initialize-ODSPortalWindowsFoundation $Options $InstallerRoot $nonInteractive
     if ($null -ne $stop) { return $stop }
