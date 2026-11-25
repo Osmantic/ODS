@@ -14,7 +14,6 @@ import docs_registry
 from docs_registry import (
     DOC_CATEGORIES,
     DOC_REGISTRY,
-    find_doc_by_slug,
     get_all_slugs,
     get_docs_catalog,
     resolve_doc_path,

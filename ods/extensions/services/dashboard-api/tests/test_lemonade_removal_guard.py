@@ -57,6 +57,9 @@ ALLOWED = {
     "extensions/services/dashboard-api/routers/models.py": (
         "retired adoption routes answer 410; retired id forms and an unmigrated external .env are read"
     ),
+    "extensions/services/dashboard-api/docs_registry.py": (
+        "references docs/MIGRATION-LEMONADE-TO-LLAMACPP.md in the historical architecture documentation catalog"
+    ),
     "extensions/services/dashboard-api/settings.py": "lists the retired Lemonade .env keys so Settings can clear them",
     "extensions/services/dashboard/src/index.css": "the lemonade colour theme, unrelated to the runtime",
     "extensions/services/dashboard/src/components/dashboard-sign-in.css": "the lemonade colour theme",

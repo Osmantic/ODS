@@ -14,7 +14,7 @@ from config import INSTALL_DIR
 
 logger = logging.getLogger(__name__)
 
-DOC_CATEGORIES = [
+DOC_CATEGORIES: list[dict[str, Any]] = [
     {
         "id": "getting-started",
         "title": "Getting Started",
@@ -1216,12 +1216,12 @@ def get_path_to_slug_map() -> dict[str, str]:
 def get_docs_catalog() -> list[dict[str, Any]]:
     """Return documentation categories populated with sorted document entries."""
     category_map: dict[str, dict[str, Any]] = {
-        cat["id"]: {**cat, "documents": []}
-        for cat in sorted(DOC_CATEGORIES, key=lambda c: c["order"])
+        str(cat["id"]): {**cat, "documents": []}
+        for cat in sorted(DOC_CATEGORIES, key=lambda c: int(c["order"]))
     }
 
-    for doc in sorted(DOC_REGISTRY, key=lambda d: d.get("order", 0)):
-        cat_id = doc.get("category")
+    for doc in sorted(DOC_REGISTRY, key=lambda d: int(d.get("order", 0))):
+        cat_id = str(doc.get("category", ""))
         if cat_id in category_map:
             category_map[cat_id]["documents"].append({
                 "slug": doc["slug"],
