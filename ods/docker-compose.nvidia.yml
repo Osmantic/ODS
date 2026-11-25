@@ -32,7 +32,7 @@ services:
               count: all
               capabilities: [gpu]
         limits:
-          cpus: '${LLAMA_CPU_LIMIT:-16.0}'
+          cpus: '${LLAMA_CPU_LIMIT:-8.0}'
           memory: ${LLAMA_SERVER_MEMORY_LIMIT:-64G}
 
   dashboard-api:

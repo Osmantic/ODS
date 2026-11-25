@@ -74,6 +74,7 @@ tests/test_comfyui_extension_contract.py
 tests/test_extension_assets.py
 tests/test-compose-failure-evidence.sh
 tests/test-compose-image-discovery.sh
+tests/test-compose-cpu-limit-default.sh
 tests/test-custom-menu-agent-flags.sh
 tests/test-dashboard-approval-terminal-proxy.py
 tests/test-dashboard-extensions-lock.sh
