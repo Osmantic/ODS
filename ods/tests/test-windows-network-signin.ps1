@@ -36,6 +36,8 @@ foreach ($text in (Get-FunctionText -Path (Join-Path $root 'installers/windows/o
 foreach ($text in (Get-FunctionText -Path (Join-Path $root 'installers/windows/lib/llm-endpoint.ps1') -Names @('Get-WindowsODSEnvMap'))) {
     . ([scriptblock]::Create($text))
 }
+# Set-ODSEnvValue writes through Write-ODSPrivateEnvFile, which ods.ps1 loads.
+. (Join-Path $root 'installers/windows/lib/private-file.ps1')
 
 # Anything that would reach Docker or WSL fails the test instead.
 function docker { throw 'docker must not run in this test' }
