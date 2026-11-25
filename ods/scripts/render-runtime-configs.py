@@ -632,8 +632,9 @@ def render_litellm_switchboard(inputs: RenderInputs) -> RenderedFile:
       api_base: http://model-router:9099/v1
       api_key: no-key
 """
+    local_aliases = ("ods/current", "local", "default")
     routes = []
-    for name in ("ods/current", "local", "default"):
+    for name in local_aliases:
         routes.append(f"  - model_name: {name}\n{local_route}")
     if inputs.ods_mode == "hybrid":
         routes.extend([
@@ -658,16 +659,12 @@ def render_litellm_switchboard(inputs: RenderInputs) -> RenderedFile:
     routes.append(f'  - model_name: "*"\n{local_route}')
     # Hybrid promises local-first with cloud fallback; keep the fallback the
     # non-switchboard hybrid.yaml declares so the default switchboard does not
-    # silently drop it.
+    # silently drop it. LiteLLM keys fallbacks by model group, so every public
+    # local alias needs its own entry (OpenCode and Hermes request ods/current).
     router_settings = ""
     if inputs.ods_mode == "hybrid":
-        router_settings = """
-router_settings:
-  num_retries: 2
-  fallbacks:
-    - local:
-        - cloud
-"""
+        fallbacks = "".join(f'    - "{name}":\n        - cloud\n' for name in local_aliases)
+        router_settings = "\nrouter_settings:\n  num_retries: 2\n  fallbacks:\n" + fallbacks
     content = (
         "model_list:\n"
         + "".join(routes)
