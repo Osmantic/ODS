@@ -46,7 +46,14 @@ The bundle intentionally never includes raw `.env`. It writes
 The redactor masks common secret fields and headers containing words such as
 `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASS`, `SALT`, `AUTH`, and `CREDENTIAL`.
 It also masks bearer tokens, API-key headers, and credentials embedded in remote
-URLs.
+URLs. Credentials with a recognizable format are masked wherever they appear,
+even without a key name: provider API keys (OpenAI, Anthropic, Hugging Face,
+GitHub, GitLab, Slack, AWS, Google, Stripe and others), JWTs and PEM private-key
+blocks. Every secret value in the installation's `.env` that is at least 12
+characters long is masked wherever a log or command echoes it.
+
+The bundle directory and archive are created readable only by the user who ran
+the script.
 
 Review the archive before posting it publicly. Redaction is defensive, but local
 paths, hostnames, container names, model names, and non-secret configuration

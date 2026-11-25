@@ -7,6 +7,11 @@ import './portal-model-selector.css'
 
 export function modelDisplayName(model,compact=false) {
   let value=String(typeof model==='string'?model:model?.name || model?.id || '').trim()
+  // Native engines may advertise an absolute GGUF path as their model name.
+  // Shorten the label only; provider namespaces and request IDs stay intact.
+  if(/\.gguf$/i.test(value) && /^(?:\/(?!\/)|[a-z]:[\\/]|\\\\)/i.test(value)) {
+    value=value.split(/[\\/]/).pop()
+  }
   if(compact && /^extra\./i.test(value)) {
     const family=value.match(/\b([a-z]+[\d.]*-\d+(?:\.\d+)?[bm])\b/i)
     if(family)value=family[1]
@@ -86,14 +91,14 @@ export default function PortalModelSelector(props) {
 /** Once opened, retain the hook even while closed so an accepted swap stays observed. */
 function LoadedModelSelector({activeModel='',runtimeSource,observeCatalog,unavailableLabel,busy=false,onSwitchingChange,onSettled}) {
   const catalog=useModels({observe:observeCatalog})
-  const {currentModel,activationReadyModel,loading,error,canActivateModels,activationModeError,activationLoading,modelLifecycle,externalLemonade,modelManagement,runtimeActionLoading,actionLoadingModels=[],loadModel,refresh,clearMutationError}=catalog
+  const {currentModel,activationReadyModel,loading,error,canActivateModels,activationModeError,activationLoading,modelLifecycle,hostRuntime,modelManagement,runtimeActionLoading,actionLoadingModels=[],loadModel,refresh,clearMutationError}=catalog
   const models=Array.isArray(catalog.models)?catalog.models:[]
   const installed=models.filter(model=>observeCatalog && model && typeof model.id==='string' && ['loaded','downloaded'].includes(model.status))
     .map(quickSwitchProfile)
   const [open,setOpen]=useState(true),[confirmId,setConfirmId]=useState(null),[pending,setPending]=useState(false),[localError,setLocalError]=useState('')
   const [recoveryPending,setRecoveryPending]=useState(false),[recoveryBusy,setRecoveryBusy]=useState(false)
   const root=useRef(null),trigger=useRef(null),list=useRef(null),mounted=useRef(true),submitLock=useRef(false)
-  const managementUnavailable=externalLemonade===true && modelManagement?.managed==null
+  const managementUnavailable=hostRuntime===true && modelManagement?.managed==null
   const id=useId(),remote=runtimeSource==='remote-provider',external=runtimeSource==='external-host' && !managementUnavailable && modelManagement?.managed!==true,local=runtimeSource==='local-switchboard' || (runtimeSource==='external-host' && modelManagement?.managed===true)
   // A confirmed cloud route is independent of the local catalog's lifecycle,
   // which may remain stale after a catalog failure. Keep mutations initiated
@@ -182,7 +187,7 @@ function LoadedModelSelector({activeModel='',runtimeSource,observeCatalog,unavai
           ? <p className="portal-model-notice">Change this model on its external host.</p>
           : <Link className="portal-model-manage" to={remote?'/pixel/settings?section=connections':'/models'}><SlidersHorizontal size={14} aria-hidden="true"/>{remote?'Provider settings':'Manage models'}</Link>}
       </>}
-      <PortalModelRecovery active={open && observeCatalog} refreshKey={`${pending}:${Boolean(activationLoading)}`} onPendingChange={setRecoveryPending} onBusyChange={setRecoveryBusy} onRecovered={()=>{setLocalError('');clearMutationError();void refresh();onSettled?.()}}/>
+      <PortalModelRecovery active={open && observeCatalog} operationActive={pending || Boolean(modelLifecycle?.active)} refreshKey={`${pending}:${Boolean(activationLoading)}`} onPendingChange={setRecoveryPending} onBusyChange={setRecoveryBusy} onRecovered={()=>{setLocalError('');clearMutationError();void refresh();onSettled?.()}}/>
     </section>
   </div>
 }

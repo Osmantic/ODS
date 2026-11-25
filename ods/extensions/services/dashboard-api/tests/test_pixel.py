@@ -8,7 +8,7 @@ import json
 import os
 import pathlib
 import sys
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -135,6 +135,7 @@ def pixel_env(monkeypatch):
     monkeypatch.setattr(pixel_chat_identity, "async_request_json", saved_identity)
     monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", EDGE_KEY)
     monkeypatch.setenv("PIXEL_EDGE_URL", "http://pixel-edge:9595")
+    monkeypatch.setattr(pixel, "_runtime_proof", None)
 
     async def idle_model_lifecycle(*_args, **_kwargs):
         return {"status": "idle", "lifecycleActive": False, "activeOperation": None}
@@ -353,6 +354,69 @@ async def test_status_returns_only_fixed_projection():
 
 
 @pytest.mark.asyncio
+async def test_status_rides_out_a_transient_edge_failure_but_not_a_definitive_one(monkeypatch):
+    # RTX Spark: the gateway answered its model list late while writing a large
+    # page, and one failed poll flashed "Portal is unavailable" mid-build.
+    listing = FakeResponse(chunks=[json.dumps({"data": [{"id": "portal/default"}]}).encode()])
+    clock = [1000.0]
+    monkeypatch.setattr(pixel.time, "monotonic", lambda: clock[0])
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(listing)):
+        available = await pixel.pixel_status()
+    assert available["available"] is True
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(status=502))):
+        clock[0] += pixel._STATUS_GRACE_SECONDS - 1
+        assert await pixel.pixel_status() == available
+        clock[0] += 2
+        expired = await pixel.pixel_status()
+    assert expired["available"] is False and expired["detail"] == "Portal service is unavailable"
+    # A missing model is an answer, not a transient failure: it shows at once
+    # and later failures do not resurrect the earlier available status.
+    clock[0] = 2000.0
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(listing)):
+        await pixel.pixel_status()
+    missing = FakeResponse(chunks=[json.dumps({"data": []}).encode()])
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(missing)):
+        assert (await pixel.pixel_status())["available"] is False
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(status=502))):
+        assert (await pixel.pixel_status())["available"] is False
+
+
+@pytest.mark.asyncio
+async def test_status_rides_out_a_slow_runtime_probe_but_not_a_stopped_runtime(monkeypatch):
+    # RTX Spark: the host runtime's health probe missed its 3 s while the model
+    # wrote a large page, and Portal told the owner to restore the model mid-build.
+    listing = FakeResponse(chunks=[json.dumps({"data": [{"id": "portal/default"}]}).encode()])
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(listing)):
+        available = await pixel.pixel_status()
+    assert available["available"] is True
+    issue = "The local model runtime is unavailable. Restore it in Models before sending another task."
+    monkeypatch.setattr(pixel, "_local_inference_issue", AsyncMock(return_value=issue))
+    monkeypatch.setattr(pixel, "_owned_runtime_unloaded", AsyncMock(return_value=None))
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(listing)):
+        assert await pixel.pixel_status() == available
+    # A runtime the host proves stopped is an answer: Resume model shows at once.
+    monkeypatch.setattr(pixel, "_owned_runtime_unloaded", AsyncMock(return_value=True))
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(listing)):
+        stopped = await pixel.pixel_status()
+    assert stopped["available"] is False and stopped["state"] == "model_unavailable"
+    assert stopped["recovery"] == "resume-model"
+
+
+@pytest.mark.asyncio
+async def test_status_rides_out_an_edge_timeout_within_the_grace(monkeypatch):
+    listing = FakeResponse(chunks=[json.dumps({"data": [{"id": "portal/default"}]}).encode()])
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(listing)):
+        available = await pixel.pixel_status()
+
+    async def timeout(_self):
+        raise pixel.httpx.ReadTimeout("slow gateway")
+
+    monkeypatch.setattr(FakeStreamContext, "__aenter__", timeout)
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(listing)):
+        assert await pixel.pixel_status() == available
+
+
+@pytest.mark.asyncio
 async def test_status_accepts_real_edge_advertised_model(monkeypatch):
     # Exercise the production edge listing rather than repeating the dashboard
     # constant in a mock: these services previously disagreed after a rename.
@@ -550,34 +614,29 @@ async def test_status_projects_local_identity_even_for_adaptive_model(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_lemonade_model_drift_blocks_pixel_status_and_chat(monkeypatch):
-    runtime = {"source": "local-switchboard", "model": "Qwen3.6-35B-A3B-GGUF",
+async def test_recorded_route_needs_no_live_identity_probe(monkeypatch):
+    # llama-server serves the one model it started with and the router proves
+    # every response's model; an unmigrated Lemonade .env changes nothing.
+    runtime = {"source": "local-switchboard", "model": "Qwen3.6-35B-A3B-GGUF.gguf",
                "contextLength": 65536}
 
     async def recorded_status(*_args, **_kwargs):
         return {"status": "idle", "activeRuntime": runtime}
 
-    async def physical_model():
-        return "Qwen3.5-2B-Q4_K_M"
+    async def no_probe():
+        raise AssertionError("Pixel status must not probe the loaded model")
 
     monkeypatch.setattr(pixel, "request_agent_json", recorded_status)
     monkeypatch.setattr(pixel, "read_live_env_value",
                         lambda key: "lemonade" if key == "LLM_BACKEND" else "")
-    monkeypatch.setattr(pixel, "get_loaded_model", physical_model)
+    monkeypatch.setattr(pixel, "get_loaded_model", no_probe)
+    body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
     with patch.object(pixel.httpx, "AsyncClient",
-                      side_effect=AssertionError("stale route reached Pixel edge")):
+                      return_value=FakeClient(FakeResponse(chunks=[body]))):
         status = await pixel.pixel_status()
-        body = pixel.ChatStreamRequest(
-            chat_id="drift-test", messages=[{"role": "user", "content": "hello"}]
-        )
-        with pytest.raises(HTTPException) as raised:
-            await pixel.pixel_chat_stream(ConnectedRequest(), body)
-    assert status == {
-        "available": False, "model": None, "state": "model_unavailable",
-        "detail": pixel._MODEL_IDENTITY_DETAIL,
-    }
-    assert raised.value.status_code == 409
-    assert raised.value.detail == pixel._MODEL_IDENTITY_DETAIL
+    assert status["available"] is True
+    assert status["runtime"] == runtime
+    assert not hasattr(pixel, "_MODEL_IDENTITY_DETAIL")
 
 
 @pytest.mark.asyncio
@@ -602,27 +661,6 @@ async def test_matching_lemonade_model_keeps_pixel_available(monkeypatch, loaded
         status = await pixel.pixel_status()
     assert status["available"] is True
     assert status["runtime"] == runtime
-
-
-@pytest.mark.asyncio
-async def test_lemonade_probe_failure_fails_closed_without_logging_endpoint(monkeypatch, caplog):
-    runtime = {"source": "local-switchboard", "model": "Qwen3.6-35B-A3B-GGUF",
-               "contextLength": 65536}
-
-    async def recorded_status(*_args, **_kwargs):
-        return {"status": "idle", "activeRuntime": runtime}
-
-    async def failed_probe():
-        raise RuntimeError("private Lemonade origin and token")
-
-    monkeypatch.setattr(pixel, "request_agent_json", recorded_status)
-    monkeypatch.setattr(pixel, "read_live_env_value",
-                        lambda key: "lemonade" if key == "LLM_BACKEND" else "")
-    monkeypatch.setattr(pixel, "get_loaded_model", failed_probe)
-    result = await pixel.pixel_status()
-    assert result["available"] is False
-    assert result["state"] == "model_unavailable"
-    assert "private Lemonade" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -728,6 +766,210 @@ async def test_pending_native_model_transaction_blocks_pixel_after_host_restart(
         assert exc.value.status_code == 409
 
 
+# The host's ownership proof after Unload model; the Models page offers Resume model for it.
+_STOPPED_RUNTIME = {"managed": True, "canActivate": False, "canUnload": True, "running": False, "vision": False}
+_UNATTENDED_HOLD = {"status": "idle", "modelTransactionPending": True}
+
+
+def _host_agent(monkeypatch, model_status, management):
+    """Answer the host reads Portal makes for a held model; record each path."""
+    paths = []
+
+    async def agent(_method, path, **_kwargs):
+        paths.append(path)
+        if path == "/v1/model/status":
+            return model_status
+        if path == "/v1/model/management":
+            if isinstance(management, BaseException):
+                raise management
+            return management
+        raise pixel.AgentClientError("not used by this test")
+
+    monkeypatch.setattr(pixel, "request_agent_json", agent)
+    return paths
+
+
+def test_an_unattended_hold_on_a_stopped_runtime_is_an_unload_not_a_switch():
+    assert pixel._model_readiness_issue_from_status(_UNATTENDED_HOLD, runtime_stopped=True) == (
+        "model_unloaded", pixel._MODEL_UNLOADED_DETAIL)
+    assert pixel._model_readiness_issue_from_status(_UNATTENDED_HOLD) == ("model_switching", pixel._MODEL_SWITCH_DETAIL)
+    assert pixel._model_readiness_issue_from_status({"status": "idle"}, runtime_stopped=True) is None
+
+
+@pytest.mark.parametrize("status", [
+    {**_UNATTENDED_HOLD, "lifecycleActive": True, "activeOperation": "model_activation", "activeTarget": "next-model"},
+    {"status": "idle", "lifecycleActive": True, "activeOperation": "model_activation"},
+    # Resume model runs as the host's model_runtime operation.
+    {**_UNATTENDED_HOLD, "lifecycleActive": True, "activeOperation": "model_runtime"},
+])
+def test_a_host_operation_in_progress_stays_a_switch_on_a_stopped_runtime(status):
+    assert pixel._model_readiness_issue_from_status(status, runtime_stopped=True) == (
+        "model_switching", pixel._MODEL_SWITCH_DETAIL)
+
+
+@pytest.mark.asyncio
+async def test_status_says_the_model_is_unloaded_and_a_send_names_resume(monkeypatch):
+    paths = _host_agent(monkeypatch, _UNATTENDED_HOLD, _STOPPED_RUNTIME)
+    with patch.object(
+        pixel.httpx,
+        "AsyncClient",
+        side_effect=AssertionError("an unloaded model reached Pixel edge"),
+    ):
+        status = await pixel.pixel_status()
+        assert status == {"available": False, "model": None, "state": "model_unloaded",
+                          "detail": pixel._MODEL_UNLOADED_DETAIL, "recovery": "resume-model"}
+        body = pixel.ChatStreamRequest.model_validate({
+            "chat_id": "unloaded_model", "messages": [{"role": "user", "content": "hello"}],
+        })
+        with pytest.raises(HTTPException) as exc:
+            await pixel.pixel_chat_stream(ConnectedRequest(), body)
+        assert (exc.value.status_code, exc.value.detail) == (409, pixel._MODEL_UNLOADED_DETAIL)
+        assert (await pixel.pixel_status())["state"] == "model_unloaded"
+    # The proof starts Windows processes; one answer serves the following reads.
+    assert paths.count("/v1/model/management") == 1
+
+
+@pytest.mark.asyncio
+async def test_status_keeps_a_real_switch_without_asking_for_the_runtime_proof(monkeypatch):
+    switching = {**_UNATTENDED_HOLD, "lifecycleActive": True, "activeOperation": "model_activation"}
+    paths = _host_agent(monkeypatch, switching, _STOPPED_RUNTIME)
+    with patch.object(
+        pixel.httpx,
+        "AsyncClient",
+        side_effect=AssertionError("a model switch reached Pixel edge"),
+    ):
+        status = await pixel.pixel_status()
+    assert (status["state"], status["detail"]) == ("model_switching", pixel._MODEL_SWITCH_DETAIL)
+    assert "/v1/model/management" not in paths
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("management", [
+    {**_STOPPED_RUNTIME, "canActivate": True},
+    {**_STOPPED_RUNTIME, "running": 0, "canActivate": 0},
+    {"status": "idle"},
+    pixel.AgentHTTPError(503, "Windows runtime management could not be verified"),
+    pixel.AgentClientError("unreachable"),
+], ids=["inconsistent", "untyped", "malformed", "unverified", "unreachable"])
+async def test_an_unproven_runtime_keeps_the_switching_hold(monkeypatch, management):
+    _host_agent(monkeypatch, _UNATTENDED_HOLD, management)
+    with patch.object(
+        pixel.httpx,
+        "AsyncClient",
+        side_effect=AssertionError("a held model reached Pixel edge"),
+    ):
+        status = await pixel.pixel_status()
+    assert (status["state"], status["detail"]) == ("model_switching", pixel._MODEL_SWITCH_DETAIL)
+    assert "recovery" not in status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("management", [
+    {**_STOPPED_RUNTIME, "running": True, "canActivate": True},
+    # This installation owns no runtime it could have unloaded.
+    {"managed": False, "canActivate": False, "canUnload": False, "running": False, "vision": False},
+], ids=["running", "unmanaged"])
+async def test_an_unattended_hold_that_cannot_be_an_unload_offers_recover(monkeypatch, management):
+    _host_agent(monkeypatch, _UNATTENDED_HOLD, management)
+    with patch.object(
+        pixel.httpx,
+        "AsyncClient",
+        side_effect=AssertionError("a held model reached Pixel edge"),
+    ):
+        status = await pixel.pixel_status()
+        assert status == {"available": False, "model": None, "state": "model_recovery_required",
+                          "detail": pixel._MODEL_RECOVERY_DETAIL, "recovery": "recover-model"}
+        body = pixel.ChatStreamRequest.model_validate({
+            "chat_id": "held_model", "messages": [{"role": "user", "content": "hello"}],
+        })
+        with pytest.raises(HTTPException) as exc:
+            await pixel.pixel_chat_stream(ConnectedRequest(), body)  # type: ignore[arg-type]  # minimal Request
+        assert (exc.value.status_code, exc.value.detail) == (409, pixel._MODEL_RECOVERY_DETAIL)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("journal", "state"), [
+    ({"pending": True, "phase": "held", "transactionId": "a" * 64}, "model_unloaded"),
+    # The host refuses Resume for a switch that stopped part-way and asks
+    # for recovery first, even though its runtime is stopped too.
+    ({"pending": True, "phase": "applying", "transactionId": "a" * 64}, "model_recovery_required"),
+    ({"pending": True, "phase": "rolling-back", "transactionId": "a" * 64}, "model_recovery_required"),
+    # An unreadable journal keeps the earlier unload reading.
+    (pixel.AgentHTTPError(503, "Model recovery state is unavailable"), "model_unloaded"),
+], ids=["unload", "applying", "rolling-back", "unreadable"])
+async def test_a_stopped_runtime_is_an_unload_only_for_a_held_transaction(monkeypatch, journal, state):
+    paths = _host_agent(monkeypatch, _UNATTENDED_HOLD, _STOPPED_RUNTIME)
+    agent = pixel.request_agent_json
+
+    async def host(method, path, **kwargs):
+        if path == "/v1/model/recovery":
+            paths.append(path)
+            if isinstance(journal, BaseException):
+                raise journal
+            return journal
+        return await agent(method, path, **kwargs)
+
+    monkeypatch.setattr(pixel, "request_agent_json", host)
+    with patch.object(
+        pixel.httpx,
+        "AsyncClient",
+        side_effect=AssertionError("a held model reached Pixel edge"),
+    ):
+        status = await pixel.pixel_status()
+        assert status["state"] == state
+        assert status["recovery"] == pixel._STATE_RECOVERY[state]
+        assert (await pixel.pixel_status())["state"] == state
+    # One proof, with its journal read, serves the following polls.
+    assert (paths.count("/v1/model/management"), paths.count("/v1/model/recovery")) == (1, 1)
+
+
+@pytest.mark.parametrize("operation", ["pixel_startup_reproof", "pixel_access_mode", "pixel_settings"])
+def test_an_access_check_overlapping_a_hold_does_not_own_it(operation):
+    # The access monitor and Verify Sandbox take the model lifecycle only to
+    # serialize with model work. Portal must not flip to "switching" for them.
+    status = {**_UNATTENDED_HOLD, "lifecycleActive": True, "activeOperation": operation}
+    assert pixel._model_readiness_issue_from_status(status, runtime_stopped=True) == (
+        "model_unloaded", pixel._MODEL_UNLOADED_DETAIL)
+    assert pixel._model_readiness_issue_from_status(status, unload_ruled_out=True) == (
+        "model_recovery_required", pixel._MODEL_RECOVERY_DETAIL)
+
+
+def test_portal_and_the_host_agree_on_which_operations_never_own_a_hold():
+    import ast
+    source = (pathlib.Path(__file__).resolve().parents[4] / "bin" / "ods-host-agent.py").read_text(encoding="utf-8")
+    declaration = next(node for node in ast.parse(source).body if isinstance(node, ast.Assign)
+                       and any(getattr(target, "id", None) == "_MODEL_RUNTIME_NEUTRAL_OPERATIONS"
+                               for target in node.targets))
+    assert isinstance(declaration.value, ast.Call)
+    assert set(ast.literal_eval(declaration.value.args[0])) == pixel._MODEL_NEUTRAL_OPERATIONS
+
+
+@pytest.mark.asyncio
+async def test_the_runtime_proof_is_bounded_and_reused_until_it_expires(monkeypatch):
+    answers: dict[str, object] = {"management": None}
+    paths = []
+
+    async def host(_method, path, **_kwargs):
+        paths.append(path)
+        if path == "/v1/model/status":
+            return _UNATTENDED_HOLD
+        if answers["management"] is None:
+            await asyncio.sleep(5)  # A proof slower than its bound.
+        return answers["management"]
+
+    monkeypatch.setattr(pixel, "request_agent_json", host)
+    monkeypatch.setattr(pixel, "_RUNTIME_PROOF_SECONDS", 0.05)
+    switching = ("model_switching", pixel._MODEL_SWITCH_DETAIL)
+    assert await pixel._model_readiness_issue() == switching
+    answers["management"] = _STOPPED_RUNTIME
+    assert await pixel._model_readiness_issue() == switching
+    assert paths.count("/v1/model/management") == 1
+    checked_at, stopped = pixel._runtime_proof
+    monkeypatch.setattr(pixel, "_runtime_proof", (checked_at - pixel._RUNTIME_PROOF_TTL_SECONDS, stopped))
+    assert await pixel._model_readiness_issue() == ("model_unloaded", pixel._MODEL_UNLOADED_DETAIL)
+    assert paths.count("/v1/model/management") == 2
+
+
 @pytest.mark.asyncio
 async def test_status_keeps_adaptive_model_available_with_fixed_advisory(monkeypatch):
     async def adaptive_model(*_args, **_kwargs):
@@ -762,6 +1004,57 @@ async def test_status_keeps_adaptive_model_available_with_fixed_advisory(monkeyp
     assert "may be unreliable" in result["modelSupport"]["detail"]
     assert "ready" not in result["modelSupport"]["detail"]
     assert "adapt" not in result["modelSupport"]["detail"]
+
+
+_LOCAL_64K = {"source": "local-switchboard", "model": "model.gguf", "contextLength": 65536}
+
+
+@pytest.mark.parametrize("profile, runtime, viable, reason", [
+    # Any-model WP4.3: the measured profile names the advisory; the order is
+    # context, tools, not profiled, always thinking.
+    ({"state": "measured", "tools": False, "thinkingControl": "always"},
+     {**_LOCAL_64K, "contextLength": 8192}, False, "context-too-small"),
+    ({"state": "measured", "tools": False, "thinkingControl": "always"}, _LOCAL_64K, False, "tools-unavailable"),
+    ({"state": "not-profiled", "tools": None, "thinkingControl": None}, _LOCAL_64K, True, "not-profiled"),
+    ({"state": "measured", "tools": True, "thinkingControl": "always"}, _LOCAL_64K, True, "thinking-always-on"),
+])
+def test_profile_advisory_names_its_reason(profile, runtime, viable, reason):
+    status = {"activeModelProfile": profile, "activeRuntime": runtime, "activeAgentViable": viable}
+    support = pixel._model_support_from_status(status)
+    assert support == {"tier": "adaptive", "detail": pixel._MODEL_SUPPORT_REASONS[reason], "reason": reason}
+
+
+def test_a_measured_capable_model_gets_no_advisory():
+    profile = {"state": "measured", "tools": True, "thinkingControl": "enable_thinking"}
+    status = {"activeModelProfile": profile, "activeRuntime": _LOCAL_64K, "activeAgentViable": True}
+    assert pixel._model_support_from_status(status) is None
+    # Without a profile (observe, off) the advisory is today's.
+    assert pixel._model_support_from_status({"activeAgentViable": False}) == {
+        "tier": "adaptive", "detail": pixel._MODEL_CAPABILITY_DETAIL}
+
+
+def test_context_advisory_needs_a_local_route():
+    profile = {"state": "measured", "tools": True, "thinkingControl": "none"}
+    remote = {"source": "remote-provider", "model": "m", "contextLength": 8192, "maxTokens": 1024,
+              "reasoning": False}
+    assert pixel._model_support_from_status({"activeModelProfile": profile, "activeRuntime": remote}) is None
+
+
+@pytest.mark.asyncio
+async def test_a_profile_advisory_never_blocks_a_send(monkeypatch):
+    async def measured(*_args, **_kwargs):
+        return {"status": "idle", "activeAgentViable": False, "activeRuntime": _LOCAL_64K,
+                "activeModelProfile": {"state": "measured", "tools": False, "thinkingControl": "none"}}
+
+    monkeypatch.setattr(pixel, "request_agent_json", measured)
+    body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(chunks=[body]))):
+        result = await pixel.pixel_status()
+    assert result["available"] is True
+    support = result["modelSupport"]
+    assert isinstance(support, dict)
+    assert support["reason"] == "tools-unavailable"
+    assert await pixel._model_readiness_issue() is None
 
 
 @pytest.mark.asyncio
@@ -1231,3 +1524,12 @@ async def test_chat_activity_ambiguity_is_unknown_not_global_activity(response):
 async def test_chat_activity_transport_failure_is_sanitized():
     with patch.object(pixel.httpx, "AsyncClient", side_effect=pixel.httpx.ConnectError("private credential")):
         assert await pixel.pixel_chat_activity(pixel.ChatCancelRequest(chat_id="opaque_chat_1")) == {"state": "unknown"}
+
+
+def test_profile_advisory_texts_match_the_dashboard_copy():
+    # The dashboard shows its own copy per reason; API readers and older
+    # dashboards get the same words.
+    page = pathlib.Path(__file__).resolve().parents[2] / "dashboard" / "src" / "pages" / "Pixel.jsx"
+    source = page.read_text(encoding="utf-8")
+    for reason, text in pixel._MODEL_SUPPORT_REASONS.items():
+        assert f"['{reason}', '{text}']" in source

@@ -75,7 +75,7 @@ test('real harness recovers a premature stop and retains safe delivery when furt
     assert.match(log,/revision after potential side effects/);
     assert.doesNotMatch(hooks.at(-1).terminal,/https?:/);
     assert.match(hooks.at(-1).terminal,/O resultado foi encontrado/);
-    assert.match(hooks.at(-1).terminal,/atribuição permanece incompleta/);
+    assert.match(hooks.at(-1).terminal,/Attribution remains incomplete/);
   } finally {
     if(child && child.exitCode===null){const closed=once(child,'close');process.kill(-child.pid,'SIGTERM');await Promise.race([closed,delay(3000)]);if(child.exitCode===null)process.kill(-child.pid,'SIGKILL');}
     upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve));

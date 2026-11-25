@@ -24,7 +24,7 @@ const text = content => typeof content === 'string' ? content
   : Array.isArray(content) ? content.map(part => part?.text ?? '').join('\n') : '';
 const runtimeLine = system => system.split('\n').find(line => line.startsWith('Runtime: '));
 
-async function chats({stable, root, port}) {
+async function chats({stable, root}) {
   const requests = [];
   let log = '', child;
   const upstream = createServer(async (req, res) => {
@@ -38,6 +38,12 @@ async function chats({stable, root, port}) {
       choices: [{index: 0, delta: {}, finish_reason: 'stop'}]}) + '\n\ndata: [DONE]\n\n');
   });
   await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
+  // Keep the provider bound while selecting the gateway port so the two
+  // listeners cannot receive the same ephemeral port, including the second run.
+  const probe = createServer();
+  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
+  const port = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
   const plugin = join(root, stable ? 'stable-plugin' : 'upstream-plugin'); mkdirSync(plugin);
   writeFileSync(join(plugin, 'package.json'), JSON.stringify({name: 'runtime-line-fixture', version: '1.0.0', type: 'module', openclaw: {extensions: ['./index.mjs']}}));
   writeFileSync(join(plugin, 'openclaw.plugin.json'), JSON.stringify({id: 'runtime-line-fixture', activation: {onStartup: true}, configSchema: {type: 'object', properties: {}}}));
@@ -97,15 +103,13 @@ test('every Pixel chat reaches a real provider with the same system prompt', {sk
     mkdirSync(join(root, 'workspace'));
     mkdirSync(join(root, 'node_modules')); symlinkSync(pkg, join(root, 'node_modules', 'openclaw'));
     cpSync(new URL('../plugin/', import.meta.url), join(root, 'pa', 'plugin'), {recursive: true});
-    const probe = createServer(); await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
-    const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
     const system = body => {
       assert.equal(body.messages[0].role, 'system');
       return text(body.messages[0].content);
     };
 
     // Upstream: the chats differ inside the session key of the Runtime line.
-    const before = await chats({stable: false, root, port});
+    const before = await chats({stable: false, root});
     const [mainA, side, mainB] = before.requests.map(system);
     const upstreamLine = runtimeLine(mainA);
     assert.match(upstreamLine, new RegExp(`^Runtime: agent=pixel \\| session=agent:pixel:openai-user:${MAIN} \\| sessionId=[0-9a-f-]{36} \\| host=`), upstreamLine);
@@ -119,7 +123,7 @@ test('every Pixel chat reaches a real provider with the same system prompt', {sk
 
     // With the transform: one system prompt for all three requests, equal to
     // upstream's less the two fields, and every message delivered unchanged.
-    const after = await chats({stable: true, root, port});
+    const after = await chats({stable: true, root});
     const prompts = after.requests.map(system);
     assert.equal(prompts[1], prompts[0], 'the new chat gets the resident chat\'s system prompt');
     assert.equal(prompts[2], prompts[0], 'returning to the first chat keeps it');

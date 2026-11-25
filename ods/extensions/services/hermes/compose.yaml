@@ -99,6 +99,11 @@ services:
       # Persistent state: Hermes's HERMES_HOME. Sessions, skills, memories,
       # cron jobs, audit logs all live here.
       - ./data/hermes:/opt/data:z
+      # Code execution binds a private Unix socket in Hermes's scratch dir.
+      # Docker Desktop's host filesystem can reject chmod on socket inodes;
+      # use a Docker-managed volume with native Unix permissions. Keep the
+      # upstream scratch path, idle pruning, and persistence across recreates.
+      - hermes-scratch:/opt/data/cache/scratch
       # Bake our cli-config.yaml + SOUL.md as the defaults Hermes copies into
       # HERMES_HOME on first start (its entrypoint copies these examples into
       # /opt/data/ if the destination files don't exist yet). Mounting them
@@ -189,3 +194,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  hermes-scratch:

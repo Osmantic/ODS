@@ -234,3 +234,6 @@ try {
 }
 
 Write-Host "[PASS] Windows Docker pull and cached-build result contract"
+# The fixtures leave a nonzero $LASTEXITCODE from simulated Docker failures;
+# every assertion above throws on failure, so reaching here is a pass.
+exit 0

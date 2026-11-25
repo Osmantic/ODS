@@ -61,7 +61,7 @@ nvidia-smi
 - Ubuntu 22.04+ / Debian 12+ recommended
 - Docker Engine + Compose v2
 - NVIDIA: modern driver + toolkit
-- AMD unified memory path: current amdgpu/ROCm-compatible kernel stack
+- AMD unified memory path: current amdgpu kernel stack (the optional ROCm image also needs `/dev/kfd`)
 
 Quick checks:
 

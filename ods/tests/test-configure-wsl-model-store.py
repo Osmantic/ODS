@@ -57,7 +57,24 @@ class ConfigureTests(unittest.TestCase):
             helper.configure(self.root)
             self.assertEqual(status.call_args.args[1], {
                 'LEMONADE_HOST_TRANSPORT': 'model-router',
+                'ODS_HOST_LLM_TRANSPORT': 'model-router',
                 'ODS_WINDOWS_SYSTEM_DIRECTORY': r'D:\Operating $ystem\System32'})
+
+    def test_migrated_environment_reaches_the_bridge_under_both_names(self):
+        # The Lemonade migration writes the round-F keys; the bridge still
+        # reads the Lemonade-era names for one release.
+        (self.root / '.env').write_text("ODS_HOST_LLM_TRANSPORT=model-router\n"
+                                      "NATIVE_LLM_BASE_URL=http://localhost:13305\n"
+                                      "NATIVE_LLM_CONTAINER_BASE_URL=http://host.docker.internal:13305\n"
+                                      "AMD_INFERENCE_PORT=13305\n", encoding='utf-8')
+        with patch.object(helper.wsl_lemonade, 'status', return_value={'managed': False}) as status:
+            helper.configure(self.root)
+            self.assertEqual(status.call_args.args[1], {
+                'ODS_HOST_LLM_TRANSPORT': 'model-router', 'LEMONADE_HOST_TRANSPORT': 'model-router',
+                'NATIVE_LLM_BASE_URL': 'http://localhost:13305', 'LEMONADE_BASE_URL': 'http://localhost:13305',
+                'NATIVE_LLM_CONTAINER_BASE_URL': 'http://host.docker.internal:13305',
+                'LEMONADE_CONTAINER_BASE_URL': 'http://host.docker.internal:13305',
+                'AMD_INFERENCE_PORT': '13305'})
 
     def test_existing_directory_registration_keeps_its_id_and_profiles(self):
         helper.registration.register(self.root, "owner-store", self.models)

@@ -33,7 +33,7 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf.template
 
 # Copy entrypoint script for runtime auth configuration
 COPY entrypoint.sh /entrypoint.sh
-RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod 755 /entrypoint.sh
 
 # Create non-root user and set permissions for nginx
 RUN addgroup -g 1000 odser && \

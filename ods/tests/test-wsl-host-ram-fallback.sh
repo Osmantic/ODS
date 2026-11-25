@@ -41,11 +41,12 @@ fi
 # This is the installer call shape under set -euo pipefail: a failed optional
 # Windows query must leave the caller alive to use Linux /proc/meminfo.
 vm_kb=49209324
-host_kb="$(ods_wsl_host_ram_kb)" || host_kb=""
-ram_kb="${host_kb:-$vm_kb}"
-[[ "$ram_kb" == "$vm_kb" ]]
-
-phase="$root/installers/phases/02-detection.sh"
-[[ "$(grep -Fc 'ods_wsl_host_ram_kb)" || _wsl_' "$phase")" == 2 ]]
+printf 'MemTotal: %s kB\n' "$vm_kb" > "$tmp/meminfo"
+ODS_PROC_MEMINFO_FILE="$tmp/meminfo"
+ods_is_wsl_host() { return 0; }
+ods_detect_runtime_ram
+[[ -z "$WINDOWS_HOST_RAM_KB" ]]
+[[ "$RAM_KB" == "$vm_kb" && "$RAM_GB" == 46 ]]
+[[ "$MODEL_TIER_RAM_GB" == 44 ]]
 
 printf 'PASS: WSL host-RAM lookup falls back when Windows interop exits 126\n'

@@ -17,6 +17,8 @@ def managed(tmp_path, monkeypatch):
     monkeypatch.setattr(host, 'INSTALL_DIR', tmp_path)
     monkeypatch.setattr(host.platform, 'system', lambda: 'Darwin')
     monkeypatch.setattr(host, '_find_usable_bash', lambda: '/bin/bash')
+    monkeypatch.setattr(host, '_macos_native_llama_identity',
+                        lambda pid, exe: (pid, 42, 0, 501, 20, 501, 20, 501, 20, str(exe.resolve())))
     return tmp_path, manager
 
 
@@ -39,7 +41,7 @@ def test_stop_failure_never_falls_back_to_kill(managed, monkeypatch):
 def test_launch_uses_shared_manager_not_popen(managed, monkeypatch):
     root, manager = managed
     monkeypatch.setattr(host, 'load_env', lambda _: {'GGUF_FILE': 'test.gguf', 'CTX_SIZE': '16384'})
-    monkeypatch.setattr(host._model_stores, 'lemonade_profile', lambda *_: None)
+    monkeypatch.setattr(host._model_stores, 'registered_runtime_profile', lambda *_: None)
     monkeypatch.setattr(host, '_active_model_directory', lambda _: root / 'data/models')
     monkeypatch.setattr(host, '_disable_conflicting_macos_bridge', lambda *_: None)
     calls = []
@@ -49,7 +51,8 @@ def test_launch_uses_shared_manager_not_popen(managed, monkeypatch):
         return subprocess.CompletedProcess(args, 0)
     monkeypatch.setattr(host.subprocess, 'run', run)
     monkeypatch.setattr(host.subprocess, 'Popen', lambda *_a, **_k: pytest.fail('unmanaged launch'))
-    host._launch_native_llama_server(root / '.env', root / 'bin/llama-server', root / 'log', root / 'pid')
+    identity = host._launch_native_llama_server(root / '.env', root / 'bin/llama-server', root / 'log', root / 'pid')
+    assert identity == (4321, 42, 0, 501, 20, 501, 20, 501, 20, str(root / 'bin/llama-server'))
     assert calls[0][:3] == ['/bin/bash', str(manager), 'start']
     assert calls[0][calls[0].index('--ctx-size') + 1] == '16384'
     assert calls[0][calls[0].index('--alias') + 1] == 'test.gguf'
@@ -61,7 +64,7 @@ def test_tuning_validator_failure_prevents_start(managed, monkeypatch):
     root, _ = managed
     (root / 'installers/macos/lib/native-checkpoint-args.py').touch()
     monkeypatch.setattr(host, 'load_env', lambda _: {'GGUF_FILE': 'test.gguf', 'LLAMA_ARG_SLEEP_IDLE_SECONDS': '120'})
-    monkeypatch.setattr(host._model_stores, 'lemonade_profile', lambda *_: None)
+    monkeypatch.setattr(host._model_stores, 'registered_runtime_profile', lambda *_: None)
     monkeypatch.setattr(host, '_active_model_directory', lambda _: root / 'data/models')
     monkeypatch.setattr(host, '_disable_conflicting_macos_bridge', lambda *_: None)
     calls = []
@@ -76,7 +79,7 @@ def test_invalid_tuning_preserves_running_listener_and_bridge(managed, monkeypat
     root, _ = managed
     monkeypatch.setattr(host, '_require_macos_bridge_manager', lambda _: None)
     monkeypatch.setattr(host, 'load_env', lambda _: {'GGUF_FILE': 'test.gguf', 'LLAMA_ARG_CACHE_RAM': '-5'})
-    monkeypatch.setattr(host._model_stores, 'lemonade_profile', lambda *_: None)
+    monkeypatch.setattr(host._model_stores, 'registered_runtime_profile', lambda *_: None)
     monkeypatch.setattr(host, '_stop_macos_native_llama_server', lambda *_: pytest.fail('stopped healthy model'))
     monkeypatch.setattr(host, '_configure_macos_llm_bridge', lambda *_: pytest.fail('changed bridge'))
     with pytest.raises(RuntimeError, match='validator is missing'):
@@ -88,7 +91,7 @@ def test_restart_qualifies_selected_profile_before_stop(managed, monkeypatch):
     events = []
     monkeypatch.setattr(host, '_require_macos_bridge_manager', lambda _: None)
     monkeypatch.setattr(host, 'load_env', lambda _: {'GGUF_FILE': 'test.gguf'})
-    monkeypatch.setattr(host._model_stores, 'lemonade_profile', lambda *_: {'executable': str(root / 'selected-runtime')})
+    monkeypatch.setattr(host._model_stores, 'registered_runtime_profile', lambda *_: {'executable': str(root / 'selected-runtime')})
     monkeypatch.setattr(host, '_native_llama_tuning_arguments',
                         lambda env, binary, defaults=True: events.append(('qualify', binary, defaults)) or [])
     monkeypatch.setattr(host, '_stop_macos_native_llama_server', lambda *_: events.append('stop'))
@@ -181,17 +184,17 @@ def test_missing_qualifier_only_skips_defaults(managed, monkeypatch):
         host._native_llama_tuning_arguments({'LLAMA_ARG_SPEC_DRAFT_N_MAX': '3'}, root / 'binary')
 
 
-def _capture_launch(root, monkeypatch, env, profile=None):
+def _capture_launch(root, monkeypatch, env, profile=None, *, qualified_args=None):
     (root / 'installers/macos/lib/native-checkpoint-args.py').touch()
     monkeypatch.setattr(host, 'load_env', lambda _: env)
-    monkeypatch.setattr(host._model_stores, 'lemonade_profile', lambda *_: profile)
+    monkeypatch.setattr(host._model_stores, 'registered_runtime_profile', lambda *_: profile)
     monkeypatch.setattr(host, '_active_model_directory', lambda _: root / 'data/models')
     monkeypatch.setattr(host, '_disable_conflicting_macos_bridge', lambda *_: None)
     calls = []
     def run(args, **kw):
         calls.append(args)
         if 'native-checkpoint-args.py' in str(args[1]):
-            return subprocess.CompletedProcess(args, 0, stdout=b'--draft-max\x003\x00--ctx-checkpoints\x0032\x00')
+            return subprocess.CompletedProcess(args, 0, stdout=qualified_args if qualified_args is not None else b'--draft-max\x003\x00--ctx-checkpoints\x0032\x00')
         (root / 'pid').write_text('4321\n', encoding='utf-8')
         return subprocess.CompletedProcess(args, 0)
     monkeypatch.setattr(host.subprocess, 'run', run)
@@ -227,31 +230,73 @@ def test_darwin_profile_launch_gets_no_macos_defaults(managed, monkeypatch):
     assert start[start.index('--reasoning-format') + 1] == 'none'
 
 
-def test_windows_launch_keeps_its_direct_flags(tmp_path, monkeypatch):
-    monkeypatch.setattr(host, 'INSTALL_DIR', tmp_path)
-    monkeypatch.setattr(host.platform, 'system', lambda: 'Windows')
-    monkeypatch.setattr(host, 'load_env', lambda _: {'GGUF_FILE': 'test.gguf', 'LLAMA_ARG_SPEC_DRAFT_N_MAX': '3'})
-    monkeypatch.setattr(host._model_stores, 'lemonade_profile', lambda *_: None)
-    monkeypatch.setattr(host, '_active_model_directory', lambda _: tmp_path / 'models')
-    monkeypatch.setattr(host, '_disable_conflicting_macos_bridge', lambda *_: None)
-    probes = []
+def test_darwin_ubatch_reaches_actual_argv(managed, monkeypatch):
+    root, _ = managed
+    qualify, start = _capture_launch(root, monkeypatch, {'GGUF_FILE': 'test.gguf', 'LLAMA_ARG_UBATCH': '512'}, qualified_args=b'--ubatch-size\x00512\x00')
+    assert '--ubatch=512' in qualify
+    assert start[start.index('--ubatch-size') + 1] == '512'
 
-    def run(args, **_k):
-        # Only the --help probe for --reasoning may run; never the macOS qualifier.
-        if list(args[1:]) != ['--help']:
-            pytest.fail('macOS qualifier ran on Windows')
-        probes.append(list(args))
-        return subprocess.CompletedProcess(args, 0, '--reasoning-format FORMAT\n', '')
 
-    monkeypatch.setattr(host.subprocess, 'run', run)
-    launched = []
-    class Process:
-        pid = 99
-    monkeypatch.setattr(host.subprocess, 'Popen', lambda args, **_k: launched.append(args) or Process())
-    host._launch_native_llama_server(tmp_path / '.env', tmp_path / 'llama-server.exe', tmp_path / 'log', tmp_path / 'pid')
-    assert probes == [[str(tmp_path / 'llama-server.exe'), '--help']]
-    assert launched[0][launched[0].index('--spec-draft-n-max') + 1] == '3'
-    assert '--ctx-checkpoints' not in launched[0]
-    # A runtime without --reasoning (b8248) keeps the format mapping.
-    assert launched[0][launched[0].index('--reasoning-format') + 1] == 'none'
-    assert '--reasoning' not in launched[0]
+def test_darwin_profile_explicit_ubatch_rejected_before_stop(managed, monkeypatch):
+    root, _ = managed
+    (root / 'installers/macos/lib/native-checkpoint-args.py').touch()
+    monkeypatch.setattr(host, '_require_macos_bridge_manager', lambda _: None)
+    monkeypatch.setattr(host, 'load_env', lambda _: {'GGUF_FILE': 'test.gguf', 'LLAMA_ARG_UBATCH': '512'})
+    monkeypatch.setattr(host._model_stores, 'registered_runtime_profile', lambda *_: {'executable': str(root / 'profile-runtime')})
+    monkeypatch.setattr(host, '_stop_macos_native_llama_server', lambda *_: pytest.fail('stopped healthy model'))
+    monkeypatch.setattr(host, '_configure_macos_llm_bridge', lambda *_: pytest.fail('changed bridge'))
+    monkeypatch.setattr(host, '_launch_native_llama_server', lambda *_: pytest.fail('launched'))
+    with pytest.raises(RuntimeError, match='LLAMA_ARG_UBATCH'):
+        host._restart_macos_native_llama_server(root / '.env', root / 'bin/llama-server', root / 'log', root / 'pid')
+
+
+def test_darwin_profile_ubatch_rejected_when_helper_missing(managed, monkeypatch):
+    root, _ = managed
+    monkeypatch.setattr(host, '_require_macos_bridge_manager', lambda _: None)
+    monkeypatch.setattr(host, 'load_env', lambda _: {'GGUF_FILE': 'test.gguf', 'LLAMA_ARG_UBATCH': '512'})
+    monkeypatch.setattr(host._model_stores, 'registered_runtime_profile', lambda *_: {'executable': str(root / 'profile-runtime')})
+    monkeypatch.setattr(host, '_stop_macos_native_llama_server', lambda *_: pytest.fail('stopped healthy model'))
+    monkeypatch.setattr(host, '_configure_macos_llm_bridge', lambda *_: pytest.fail('changed bridge'))
+    with pytest.raises(RuntimeError, match='LLAMA_ARG_UBATCH'):
+        host._restart_macos_native_llama_server(root / '.env', root / 'bin/llama-server', root / 'log', root / 'pid')
+
+
+def test_darwin_direct_launch_rejects_profile_ubatch_before_bridge(managed, monkeypatch):
+    root, _ = managed
+    (root / 'installers/macos/lib/native-checkpoint-args.py').touch()
+    monkeypatch.setattr(host, 'load_env', lambda _: {'GGUF_FILE': 'test.gguf', 'LLAMA_ARG_UBATCH': '512'})
+    monkeypatch.setattr(host._model_stores, 'registered_runtime_profile', lambda *_: {'executable': str(root / 'profile-runtime')})
+    monkeypatch.setattr(host, '_active_model_directory', lambda _: root / 'data/models')
+    monkeypatch.setattr(host, '_disable_conflicting_macos_bridge', lambda *_: pytest.fail('changed bridge'))
+    monkeypatch.setattr(host.subprocess, 'run', lambda *_a, **_k: pytest.fail('launched'))
+    with pytest.raises(RuntimeError, match='LLAMA_ARG_UBATCH'):
+        host._launch_native_llama_server(root / '.env', root / 'bin/llama-server', root / 'log', root / 'pid')
+
+
+def test_non_darwin_ubatch_unchanged(managed, monkeypatch):
+    root, _ = managed
+    monkeypatch.setattr(host.platform, 'system', lambda: 'Linux')
+    assert host._native_llama_tuning_arguments({'LLAMA_ARG_UBATCH': '512'}, root / 'binary', defaults=False) == []
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='needs an executable shell script as the runtime')
+def test_real_qualifier_accepts_ubatch(managed):
+    root, _ = managed
+    ods = Path(__file__).resolve().parents[4]
+    shutil.copy(ods / 'installers/macos/lib/native-checkpoint-args.py', root / 'installers/macos/lib/')
+    runtime = root / 'llama-server'
+    runtime.write_text(f"#!/bin/sh\n[ \"$1\" = --help ] && exec cat '{ods / 'tests/fixtures/llama-server-help/b9014.txt'}'\nexit 9\n")
+    runtime.chmod(0o755)
+    result = host._native_llama_tuning_arguments({'LLAMA_ARG_UBATCH': '128'}, runtime)
+    assert result[result.index('--ubatch-size') + 1] == '128'
+    assert result.count('--ubatch-size') == 1
+
+
+def test_start_rejects_pid_without_native_identity(managed, monkeypatch):
+    root, _ = managed
+    from pixel_macos_process import ProcessIdentityError
+    def reject(pid, executable):
+        raise ProcessIdentityError('gateway-process-executable-mismatch')
+    monkeypatch.setattr(host, '_macos_native_llama_identity', reject)
+    with pytest.raises(ProcessIdentityError, match='executable-mismatch'):
+        _capture_launch(root, monkeypatch, {'GGUF_FILE': 'test.gguf'})

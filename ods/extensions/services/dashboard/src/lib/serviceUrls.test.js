@@ -19,6 +19,7 @@ describe('service URL helpers', () => {
 
   it('falls back to host-port links with ui paths when no public URL is configured', () => {
     expect(serviceUrl({ external_port: 3005, ui_path: '/dashboard' })).toBe('http://localhost:3005/dashboard')
+    expect(serviceUrl({ external_port: 9120, ui_path: '/auth/ods' })).toBe('http://localhost:9120/auth/ods')
   })
 
   it.each([

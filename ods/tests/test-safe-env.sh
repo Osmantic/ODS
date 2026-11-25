@@ -110,6 +110,17 @@ load_model_selector_env_from_output < <(printf '%s\n' 'LLAMA_ARG_CTX_CHECKPOINTS
 [[ "${LLAMA_SERVER_MEMORY_LIMIT:-}" == "6G" ]] || fail "LLAMA_SERVER_MEMORY_LIMIT was not loaded"
 pass "model selector loader carries checkpoint and prompt-cache caps"
 
+echo "Test 9c: model selector loader carries a preserved model's projector and fixed template"
+unset LLAMA_ARG_MMPROJ MODEL_CHAT_TEMPLATE_OVERRIDE LLAMA_ARG_CHAT_TEMPLATE_FILE
+load_model_selector_env_from_output < <(printf '%s\n' 'LLAMA_ARG_MMPROJ="/models/mmproj-test.gguf"' \
+    'MODEL_CHAT_TEMPLATE_OVERRIDE="fixed-tools"' \
+    'LLAMA_ARG_CHAT_TEMPLATE_FILE="/chat-templates/upstream-b9014/Fixed.jinja"')
+[[ "${LLAMA_ARG_MMPROJ:-}" == "/models/mmproj-test.gguf" ]] || fail "LLAMA_ARG_MMPROJ was not loaded"
+[[ "${MODEL_CHAT_TEMPLATE_OVERRIDE:-}" == "fixed-tools" ]] || fail "MODEL_CHAT_TEMPLATE_OVERRIDE was not loaded"
+[[ "${LLAMA_ARG_CHAT_TEMPLATE_FILE:-}" == "/chat-templates/upstream-b9014/Fixed.jinja" ]] \
+    || fail "LLAMA_ARG_CHAT_TEMPLATE_FILE was not loaded"
+pass "model selector loader carries the vision projector and fixed chat template keys"
+
 echo "Test 10: load_env_file skips Bash readonly UID"
 cat > "$tmpdir/.env-readonly" << 'EOF'
 UID=12345

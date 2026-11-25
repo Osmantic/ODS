@@ -1,6 +1,7 @@
 """Template HTTP contract for installed CLI tools that have no health endpoint."""
 
 from contextlib import nullcontext
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -54,6 +55,22 @@ def cli_template(tmp_path, monkeypatch):
     ))
     monkeypatch.setattr(extensions, "_extensions_lock", nullcontext)
     monkeypatch.setattr(extensions, "_call_agent_invalidate_compose_cache", lambda: None)
+    def selection_transport(method, path, *, payload=None, timeout=None):
+        assert method == "POST" and path == "/v1/extension/select"
+        assert payload["action"] == "enable"
+        assert payload["service_ids"] == ["aider"]
+        assert set(payload["expected_sha256"]) == set(payload["service_ids"])
+        for sid in payload["service_ids"]:
+            directory = tool_dir if sid == "aider" else gateway
+            enabled = directory / "compose.yaml"
+            disabled = directory / "compose.yaml.disabled"
+            selected = disabled if disabled.exists() else enabled
+            assert hashlib.sha256(selected.read_bytes()).hexdigest() == payload["expected_sha256"][sid]
+            if disabled.exists():
+                disabled.rename(enabled)
+        return {"action": "enabled", "service_ids": payload["service_ids"]}
+
+    monkeypatch.setattr(extensions, "request_agent_json", selection_transport)
     agent = MagicMock(return_value=True)
     hook = MagicMock(return_value=True)
     monkeypatch.setattr(extensions, "_call_agent", agent)
@@ -101,4 +118,6 @@ def test_non_ready_extensions_can_still_be_started(cli_template, monkeypatch, ki
     result = client.post("/api/templates/coding/apply")
     assert result.status_code == 200
     assert result.json()["started_count"] == 1
+    assert (tool / "compose.yaml").is_file()
+    assert not (tool / "compose.yaml.disabled").exists()
     agent.assert_called_once_with("start", "aider")

@@ -1,5 +1,6 @@
 import { RUN_PROGRESS_STOP_REASON } from "../plugin/run-progress-budget.mjs";
 import { PROGRESS_FINALIZATION_INSTRUCTION } from "../plugin/progress-finalization.mjs";
+import { PREVIEW_EARLIER_NOTE, PREVIEW_INCOMPLETE_NOTE, PREVIEW_STOPPED_NOTE } from "../plugin/preview-explanation.mjs";
 import test from "node:test";
 import vm from 'node:vm';
 
@@ -211,6 +212,7 @@ import {
   userMessageRequestsWorkspaceTools,
   userMessageRequestsWorkspaceMutation,
   userMessageRequestsWorkspacePreview,
+  userMessageRequiresWorkspacePreviewAuthorship,
   userMessageRequestsWorkspacePreviewInspection,
   workspacePreviewMode,
   userMessageWorkspaceContinuationPath,
@@ -222,6 +224,7 @@ import {
   userMessageRequestsExactByteDownload,
   userMessageExactDownloadRequest,
 } from "../plugin/tool-loop-guard.mjs";
+import { requestsNewPlaygroundProject } from "../plugin/playground-projects.mjs";
 
 function workspacePreviewSnapshot(relativeDirectory, writes) {
   const digest = createHash("sha256");
@@ -341,8 +344,12 @@ test('malformed dispatch failures stop only their active run and retain its veri
   const delivery = guard.deliveryVerificationForRun('run-1');
   assert.equal(delivery.status,'failed');
   assert.equal(delivery.preview.sha256,details.sha256);
-  assert.match(delivery.text,/Open last published preview/);
-  assert.match(delivery.text,/not completed/);
+  // The owner reads Portal's plain line, that the build stopped unfinished,
+  // the files it changed, and the receipt that becomes the preview card, not
+  // the stop facts (progressStopPresentation).
+  assert.ok(delivery.text.startsWith(`${PREVIEW_INCOMPLETE_NOTE}\n\nFiles changed in this response: \`log-viewer-lab/index.html\`.` +
+    `\n\nYour preview is ready.\n\n[Open preview](${details.url})`), delivery.text);
+  assert.doesNotMatch(delivery.text,/not completed|not proof|stopped after/);
   const other = {agentId:'pixel',runId:'run-2',sessionId:'session-2'};
   guard.observeRun(other,'pixel',{prompt:'hello'});
   assert.equal(guard.deliveryVerificationForRun('run-2').status,'none');
@@ -634,6 +641,45 @@ for (const prompt of [
     assert.equal(guard.verificationForRun(context.runId).status, "passed");
   });
 }
+
+test("a bug description does not block a named publication request", () => {
+  // "the error rows never show" describes the page, so the publication is
+  // allowed. It is optional rather than required, as for any outweighed
+  // "don't show".
+  // A repair of the session's verified page is optional too, not required.
+  for (const [prompt, status] of [
+    ["Make the error rows red in the existing log-viewer-lab and check it in the preview.", "failed"],
+    ["In log-viewer-lab the error rows never show. Make the error rows red in the existing log-viewer-lab and check it in the preview.", "none"]]) {
+    const guard = createToolLoopGuard();
+    seedNamedPreview(guard);
+    const context = { agentId: "pixel", runId: "run-named-repair", sessionId: "session-1" };
+    guard.observeRun(context, "pixel", { prompt });
+    assert.equal(guard.verificationForRun(context.runId).status, status, prompt);
+  }
+  for (const [prompt, status] of [["Publish log-viewer-lab.", "failed"],
+    ["In log-viewer-lab, the error rows never show. Publish log-viewer-lab.", "none"]]) {
+    const guard = createToolLoopGuard();
+    const { write, params } = seedNamedPreview(guard);
+    const context = { agentId: "pixel", runId: "run-named-report", sessionId: "session-1" };
+    guard.observeRun(context, "pixel", { prompt });
+    assert.equal(guard.verificationForRun(context.runId).status, status, prompt);
+    const read = { path: write.path };
+    call(guard, "read", { context, event: { runId: context.runId, params: read } });
+    afterCall(guard, "read", { context, event: {
+      runId: context.runId, params: read, result: { content: [{ type: "text", text: write.content }] },
+    } });
+    assert.notEqual(call(guard, "pixel_ods_workspace_preview", {
+      context, event: { runId: context.runId, params },
+    })?.block, true, prompt);
+  }
+  // A later negation is the owner's later word, even for a named project.
+  const guard = createToolLoopGuard();
+  const { params } = seedNamedPreview(guard);
+  const context = { agentId: "pixel", runId: "run-named-retracted", sessionId: "session-1" };
+  guard.observeRun(context, "pixel", { prompt: "Publish log-viewer-lab. Actually, don't show it yet." });
+  assert.equal(guard.verificationForRun(context.runId).status, "none");
+  assert.equal(call(guard, "pixel_ods_workspace_preview", { context, event: { runId: context.runId, params } })?.block, true);
+});
 
 for (const [prompt, sessionId] of [
   ["Publish another-lab.", "session-1"],
@@ -1119,7 +1165,7 @@ for (const wrap of [false, true]) {
       ...result, content: [{ type: "text", text: "[framework text already truncated]" }],
     });
     const text = persisted.message.content[0].text;
-    assert.ok(text.length < 1400);
+    assert.ok(text.length <= 4096);
     assert.match(text, /Earlier unittest framework frames compacted/);
     assert.match(text, /ERROR: test_wrong_column_count/);
     assert.match(text, /\/workspace\/project\/test_totals\.py/);
@@ -1851,6 +1897,77 @@ test("read-only HTML diagnosis does not acquire preview or mutation coaching fro
   assert.doesNotMatch(JSON.stringify(persisted), /Call tool_call next with id openclaw:core:write/);
   assert.notEqual(guard.verificationForRun("run-1")?.status, "failed");
 });
+
+for (const wrapped of [false, true]) {
+  for (const prompt of [
+    "Read the existing Playground/hf-runtime-check-0437/index.html file. What initial number does its Harbor counter show? Reply in one sentence based on the file, and do not change anything.",
+    "Read demo/index.html. Which number does the counter show initially?",
+    "Read demo/index.html and tell me which dialog it can open.",
+    "Read demo/index.html. Can its counter show a negative value? Do not change anything.",
+  ]) {
+    test(`read-only HTML questions do not coach publication (wrapped=${wrapped}): ${prompt}`, () => {
+      const guard = createToolLoopGuard();
+      const context = { agentId: "pixel", runId: "run-1", sessionId: "session-1" };
+      guard.observeRun(context, "pixel", { prompt });
+      const args = { path: prompt.includes("Playground/") ? "Playground/hf-runtime-check-0437/index.html" : "demo/index.html" };
+      const toolName = wrapped ? "tool_call" : "read";
+      const params = wrapped ? { id: "openclaw:core:read", args } : args;
+      const result = { content: [{ type: "text", text: '<!doctype html><output id="counter">3</output>' }] };
+      const observed = wrapped ? wrappedCoreResult("read", result) : result;
+      const toolCallId = "read-counter";
+      assert.notEqual(call(guard, toolName, { event: { toolCallId, params } })?.block, true);
+      afterCall(guard, toolName, { event: { toolCallId, params, result: observed } });
+      const persisted = persistToolResult(guard, toolName, toolCallId, observed);
+      assert.doesNotMatch(JSON.stringify(persisted?.message ?? observed), /publish BEFORE|pixel_ods_workspace_preview|must be delivered in Workbench/);
+      assert.equal(guard.beforeAgentFinalize({ lastAssistantMessage: "The counter initially shows 3." }, context)?.retry, undefined);
+      assert.equal(reply(guard, { event: { payload: { text: "The counter initially shows 3." } } }), undefined);
+      assert.equal(userMessageRequestsWorkspacePreview([], prompt), false);
+    });
+  }
+}
+
+test("HTML delivery still requires the requested publication after read-only inspection", () => {
+  for (const prompt of [
+    "Read demo/index.html, then publish demo/index.html.",
+    "Do not edit anything. Publish the existing demo/index.html.",
+    "Read demo/index.html and publish it.",
+    "Read demo/index.html and publish.",
+    "Could you please show demo/index.html?",
+    "I want you to preview demo/index.html.",
+    "Open README.md, then publish Playground/site/index.html.",
+    "Show the README text and then publish Playground/site/index.html.",
+    "Open README.md, then publish Playground/counter/index.html.",
+    "Show the README text and then publish Playground/counter/index.html.",
+  ]) {
+    assert.equal(userMessageRequestsWorkspacePreview([], prompt), true, prompt);
+    const guard = createToolLoopGuard();
+    const context = { agentId: "pixel", runId: "run-1", sessionId: "session-1" };
+    guard.observeRun(context, "pixel", { prompt });
+    assert.ok(guard.beforeAgentFinalize({ lastAssistantMessage: "The counter initially shows 3." }, context)?.retry, prompt);
+  }
+});
+
+for (const wrapped of [false, true]) {
+  test(`a saved preview does not turn a new file question into publication (wrapped=${wrapped})`, () => {
+    const guard = createToolLoopGuard();
+    const { write } = seedNamedPreview(guard);
+    const context = { agentId: "pixel", runId: "run-read-question", sessionId: "session-1" };
+    guard.observeRun(context, "pixel", { prompt: "Read log-viewer-lab/index.html. What initial text does it show? Reply in one sentence and do not change anything." });
+    const toolName = wrapped ? "tool_call" : "read";
+    const args = { path: write.path };
+    const params = wrapped ? { id: "openclaw:core:read", args } : args;
+    const result = { content: [{ type: "text", text: write.content }] };
+    const observed = wrapped ? wrappedCoreResult("read", result) : result;
+    const callContext = { ...context, toolName, toolCallId: "read-saved-preview" };
+    const event = { toolName, toolCallId: callContext.toolCallId, params };
+    assert.notEqual(guard.beforeToolCall(event, callContext)?.block, true);
+    guard.afterToolCall({ ...event, result: observed }, callContext);
+    const persisted = guard.toolResultPersist({ ...event, message: { role: "toolResult", ...event, ...observed } }, callContext);
+    assert.doesNotMatch(JSON.stringify(persisted?.message ?? observed), /publish BEFORE|pixel_ods_workspace_preview|must be delivered in Workbench/);
+    assert.equal(guard.beforeAgentFinalize({ lastAssistantMessage: "The page initially shows logs." }, context)?.retry, undefined);
+    assert.equal(guard.replyPayloadSending({ runId: context.runId, kind: "final", payload: { text: "The page initially shows logs." } }), undefined);
+  });
+}
 
 test("binds a preserved owner file and recovers a compact-model workdir envelope", () => {
   const guard = createToolLoopGuard();
@@ -5852,8 +5969,10 @@ test("routes one local host command to a canonical immutable approval proposal",
   assert.deepEqual(routed, {
     params: { id: "pixel_ods_host_command_propose", args: { command: "uname -sr" } },
   });
-  afterCall(guard, "tool_call", {
+  const completedHost = {
+    context: { toolCallId: "host-command-call" },
     event: {
+      toolCallId: "host-command-call",
       params: routed.params,
       result: {
         details: {
@@ -5875,8 +5994,10 @@ test("routes one local host command to a canonical immutable approval proposal",
         },
       },
     },
-  });
+  };
+  afterCall(guard, "tool_call", completedHost);
   const persisted = persistToolResult(guard, "tool_call", "host-command-call", {
+    ...completedHost.event.result,
     content: [{ type: "text", text: "oversized raw command receipt" }],
   });
   assert.equal(persisted.message.content.length, 1);
@@ -6965,6 +7086,67 @@ test("space-bearing process names do not admit markup or control characters", ()
   }
 });
 
+// Workstation06, 2026-10-27: asked how much GPU memory was free, the agent got
+// only totals from host.gpu, tried nine sandbox commands, and could not answer.
+// Each host line also repeated its label ("- Memory: Memory: ...").
+function hostGpuMemoryReply(devices) {
+  const guard = createToolLoopGuard();
+  const jobId = "ops-1234567890123-abcdef123456";
+  guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"}, "pixel",
+    {prompt:"How much free memory do the GPUs in this machine have right now?"});
+  afterCall(guard, "pixel_ops_workflow_submit", {event:{
+    params:{steps:[{id:"gpu",target:"ods-host",action:"host.gpu"},{id:"memory",target:"ods-host",action:"host.memory"}]},
+    result:{details:{jobId,status:"submitted",kind:"workflow"}},
+  }});
+  const step = (stepId, action, stdout) => ({stepId,target:"ods-host",action,exitCode:0,stderr:"",
+    outputTruncated:{stdout:false,stderr:false},riskSignals:[],stdout});
+  afterCall(guard, "pixel_ops_job_wait", {event:{params:{jobId},result:{details:{
+    jobId,status:"succeeded",waitTimedOut:false,
+    steps:[
+      step("gpu", "host.gpu", JSON.stringify({schemaVersion:1,kind:"ods-host-gpu",available:true,backend:"nvidia",devices})),
+      step("memory", "host.memory", "total used free shared buff/cache available\nMem: 17179869184 8589934592 1073741824 0 7516192768 8589934592\nSwap: 4294967296 0 4294967296\n"),
+    ],
+  }}}});
+  return reply(guard)?.payload?.text;
+}
+
+test("NVIDIA host evidence names each GPU's free and in-use memory, once per line", () => {
+  const text = hostGpuMemoryReply([
+    {name:"NVIDIA RTX PRO 6000 Blackwell Workstation Edition",memoryMiB:97887,memoryUsedMiB:13247,memoryFreeMiB:84018,driver:"610.57.04"},
+    {name:"NVIDIA GB300",memoryMiB:256703,memoryUsedMiB:12837,memoryFreeMiB:242945,driver:"610.57.04"},
+  ]);
+  assert.match(text, new RegExp("\\n- GPU: NVIDIA RTX PRO 6000 Blackwell Workstation Edition \\(97887 MiB total, 84018 MiB free, " +
+    "13247 MiB in use; driver 610\\.57\\.04\\); NVIDIA GB300 \\(256703 MiB total, 242945 MiB free, 12837 MiB in use; " +
+    "driver 610\\.57\\.04\\)\\. Together: 326963 MiB free of 354590 MiB \\(319\\.3 GiB free of 346\\.3 GiB\\)\\. " +
+    "Free and in-use memory are as of this check\\. Device identifiers"));
+  assert.match(text, /\n- Memory: 8\.00 GiB used of 16\.0 GiB/);
+  assert.doesNotMatch(text, /GPU: GPU:|Memory: Memory:/);
+});
+
+test("NVIDIA host evidence without live use keeps the totals; impossible live figures fail closed", () => {
+  const total = {name:"NVIDIA GeForce RTX 5070 Laptop GPU",memoryMiB:8151,driver:"573.22"};
+  const text = hostGpuMemoryReply([total]);
+  assert.match(text, /\n- GPU: NVIDIA GeForce RTX 5070 Laptop GPU \(8151 MiB; driver 573\.22\)\. Device identifiers/);
+  assert.doesNotMatch(text, /as of this check|Together/);
+  // One GPU is its own total; a GPU without live figures leaves no sum to give.
+  assert.doesNotMatch(hostGpuMemoryReply([{...total, memoryUsedMiB:1203, memoryFreeMiB:6687}]), /Together/);
+  assert.doesNotMatch(hostGpuMemoryReply([{...total, memoryUsedMiB:1203, memoryFreeMiB:6687}, total]), /Together/);
+  for (const live of [{memoryUsedMiB:1203,memoryFreeMiB:9000}, {memoryUsedMiB:-1,memoryFreeMiB:6687},
+    {memoryUsedMiB:1203.5,memoryFreeMiB:6687}, {memoryUsedMiB:1203}]) {
+    assert.doesNotMatch(hostGpuMemoryReply([{...total, ...live}]) ?? "", /MiB free|8151 MiB/, JSON.stringify(live));
+  }
+});
+
+test("a unified-memory NVIDIA GPU is named as sharing system RAM", () => {
+  const text = hostGpuMemoryReply([{name:"NVIDIA GB10",unifiedMemory:true,driver:"580.95.05"}]);
+  assert.match(text, /\n- GPU: NVIDIA GB10 \(unified memory shared with system RAM; driver 580\.95\.05\)\. Device identifiers/);
+  assert.match(text, /\n- Memory: 8\.00 GiB used of 16\.0 GiB/);
+  for (const device of [{name:"NVIDIA GB10",unifiedMemory:"yes",driver:"580.95.05"},
+    {name:"NVIDIA GB10",unifiedMemory:true,memoryMiB:8151,driver:"580.95.05"}]) {
+    assert.doesNotMatch(hostGpuMemoryReply([device]) ?? "", /NVIDIA GB10/, JSON.stringify(device));
+  }
+});
+
 test("Metal host evidence describes capability without claiming measured utilization", () => {
   const guard = createToolLoopGuard();
   const jobId = "ops-1234567890123-abcdef123456";
@@ -7453,10 +7635,11 @@ test("composes an explicitly requested mixed host and workspace task across ever
     event: { params: { path: "report.txt" } },
   }), { params: { path: "report.txt" } });
   assert.deepEqual(call(guard, "tool_call", {
-    event: { params: { id: "read", args: { path: "report.txt" } } },
+    event: { toolCallId: "mixed-read", params: { id: "read", args: { path: "report.txt" } } },
   }), { params: { id: "read", args: { path: "report.txt" } } });
   afterCall(guard, "tool_call", {
     event: {
+      toolCallId: "mixed-read",
       params: { id: "read", args: { path: "report.txt" } },
       result: {
         content: [{ type: "text", text: "tool wrapper result" }],
@@ -7607,6 +7790,7 @@ test("persists a trusted exact next step after each verified mixed-task boundary
   });
   afterCall(guard, "tool_call", {
     event: {
+      toolCallId: "read-call",
       params: evidenceRead.params,
       result: {
         details: {
@@ -7616,7 +7800,9 @@ test("persists a trusted exact next step after each verified mixed-task boundary
       },
     },
   });
-  assert.equal(persistToolResult(guard, "tool_call", "read-call"), undefined);
+  const afterRead = persistToolResult(guard, "tool_call", "read-call");
+  assert.deepEqual(afterRead.message.content, [{type: "text", text: "verified evidence"}]);
+  assert.doesNotMatch(JSON.stringify(afterRead), /ODS Pixel trusted continuation/);
 });
 
 test("allows requested host observations within the live extension setup request", () => {
@@ -7805,16 +7991,18 @@ test("persists compact receipt-bound host evidence before the trusted continuati
     "pixel",
     { prompt: "Inspect the ODS host hostname and active model." }
   );
-  call(guard, "tool_call", {
+  const routed = call(guard, "tool_call", {
     event: {
       toolCallId: "host-call",
       params: { id: "pixel_ods_host_observe", args: { actions: ["host.identity"] } },
     },
     context: { toolCallId: "host-call" },
   });
-  afterCall(guard, "tool_call", {
+  const completedHost = {
+    context: { toolCallId: "host-call" },
     event: {
-      params: { id: "pixel_ods_host_observe", args: { actions: ["host.identity"] } },
+      toolCallId: "host-call",
+      params: routed.params,
       result: {
         details: {
           tool: {
@@ -7838,8 +8026,10 @@ test("persists compact receipt-bound host evidence before the trusted continuati
         },
       },
     },
-  });
+  };
+  afterCall(guard, "tool_call", completedHost);
   const persisted = persistToolResult(guard, "tool_call", "host-call", {
+    ...completedHost.event.result,
     content: [{ type: "text", text: "oversized raw terminal receipt" }],
   });
   assert.equal(persisted.message.content.length, 2);
@@ -7849,19 +8039,14 @@ test("persists compact receipt-bound host evidence before the trusted continuati
   assert.match(persisted.message.content[0].text, /full terminal evidence remains bound/);
   assert.match(persisted.message.content[1].text, /id pixel_ods_status and args \{\}/);
 
-  const wrapped = persistToolResult(guard, "tool_call", "host-call", {
-    content: [{
-      type: "text",
-      text: JSON.stringify({
-        tool: {
-          id: "openclaw:pixel-ods:pixel_ods_host_observe",
-          source: "openclaw",
-          sourceName: "pixel-ods",
-          name: "pixel_ods_host_observe",
-        },
-        result: { details: { jobId } },
-      }),
-    }],
+  // Older runtimes store the complete envelope only in the text block.
+  // It still needs its own admitted call and validated after-hook receipt.
+  call(guard, "tool_call", {event: {toolCallId: "host-call-json", params: completedHost.event.params},
+    context: {toolCallId: "host-call-json"}});
+  afterCall(guard, "tool_call", {event: {...completedHost.event, toolCallId: "host-call-json"},
+    context: {toolCallId: "host-call-json"}});
+  const wrapped = persistToolResult(guard, "tool_call", "host-call-json", {
+    content: [{type: "text", text: JSON.stringify(completedHost.event.result.details)}],
   });
   assert.doesNotMatch(wrapped.message.content[0].text, /\"tool\"/);
   assert.match(wrapped.message.content[0].text, /Hostname: `light-worker`/);
@@ -7891,8 +8076,10 @@ test("accepts a structurally bound status projection from the synchronous host o
       args: { actions: ["host.identity"], includeOdsStatus: true },
     },
   });
-  afterCall(guard, "tool_call", {
+  const completedHost = {
+    context: { toolCallId: "host-status-call" },
     event: {
+      toolCallId: "host-status-call",
       params: routed.params,
       result: {
         details: {
@@ -7923,12 +8110,13 @@ test("accepts a structurally bound status projection from the synchronous host o
         },
       },
     },
-  });
+  };
+  afterCall(guard, "tool_call", completedHost);
   const verification = guard.verificationForRun("run-1");
   assert.equal(verification.status, "passed");
   assert.match(verification.text, /Hostname: `light-worker`/);
   assert.match(verification.text, /model `Qwen3\.5-2B-Q4_K_M\.gguf`/);
-  const persisted = persistToolResult(guard, "tool_call", "host-status-call");
+  const persisted = persistToolResult(guard, "tool_call", "host-status-call", completedHost.event.result);
   assert.match(persisted.message.content[0].text, /Qwen3\.5-2B-Q4_K_M\.gguf/);
   assert.match(persisted.message.content.at(-1).text, /id pixel_ods_evidence_report/);
   assert.doesNotMatch(persisted.message.content.at(-1).text, /id pixel_ods_status/);
@@ -7963,8 +8151,10 @@ test("atomically writes and reads a receipt-bound evidence report after one host
     },
     context: { toolCallId: "host-status-call" },
   });
-  afterCall(guard, "tool_call", {
+  const completedHost = {
+    context: { toolCallId: "host-status-call" },
     event: {
+      toolCallId: "host-status-call",
       params: routed.params,
       result: {
         details: {
@@ -7995,7 +8185,8 @@ test("atomically writes and reads a receipt-bound evidence report after one host
         },
       },
     },
-  });
+  };
+  afterCall(guard, "tool_call", completedHost);
 
   assert.equal(writes.length, 1);
   assert.equal(writes[0].relativePath, "report.txt");
@@ -8007,7 +8198,7 @@ test("atomically writes and reads a receipt-bound evidence report after one host
   );
   // terminal host receipt no longer aborts the agent run.
   assert.deepEqual(aborts, [], "terminal host receipt does not abort the agent run");
-  const persisted = persistToolResult(guard, "tool_call", "host-status-call");
+  const persisted = persistToolResult(guard, "tool_call", "host-status-call", completedHost.event.result);
   assert.equal(persisted.message.content.length, 1);
   assert.match(persisted.message.content[0].text, /Hostname: `light-worker`/);
   assert.doesNotMatch(persisted.message.content[0].text, /trusted continuation/);
@@ -10815,6 +11006,44 @@ test("tracks and drains only the active hashed ODS OpenAI user", async () => {
   assert.equal(guard.trackedUserCount(), 0);
 });
 
+test("an accepted abort cannot acknowledge Stop until the exact run drains", async () => {
+  const outcomes = [
+    {aborted: true, drained: false, forceCleared: false},
+    {aborted: true, drained: true, forceCleared: false},
+  ];
+  const guard = createToolLoopGuard({abortRunAndDrain: async () => outcomes.shift()});
+  const user = `ods-${"a".repeat(64)}`;
+  guard.observeRun({agentId: "pixel", sessionId: "session-live",
+    sessionKey: `agent:pixel:openai-user:${user}`, runId: "run-live"});
+
+  assert.equal(await guard.abortUserRun(user), false);
+  assert.equal(guard.trackedUserCount(), 1, "a pending Stop remains retryable");
+  assert.equal(await guard.abortUserRun(user), true);
+  assert.equal(guard.trackedUserCount(), 0);
+});
+
+test("malformed abort-and-drain results cannot acknowledge Stop", async () => {
+  const outcomes = [true, {aborted: true}, {aborted: true, drained: true}];
+  const guard = createToolLoopGuard({abortRunAndDrain: async () => outcomes.shift()});
+  const user = `ods-${"b".repeat(64)}`;
+  guard.observeRun({agentId: "pixel", sessionId: "session-live",
+    sessionKey: `agent:pixel:openai-user:${user}`, runId: "run-live"});
+
+  assert.equal(await guard.abortUserRun(user), false);
+  assert.equal(await guard.abortUserRun(user), false);
+  assert.equal(guard.trackedUserCount(), 1);
+  assert.equal(await guard.abortUserRun(user), true);
+});
+
+test("a synchronous abort signal alone cannot acknowledge owner Stop", async () => {
+  const guard = createToolLoopGuard({abortRun: () => true});
+  const user = `ods-${"c".repeat(64)}`;
+  guard.observeRun({agentId: "pixel", sessionId: "session-live",
+    sessionKey: `agent:pixel:openai-user:${user}`, runId: "run-live"});
+  assert.equal(await guard.abortUserRun(user), false);
+  assert.equal(guard.trackedUserCount(), 1);
+});
+
 test("client cancellation signals the exact run and blocks any later tool", {timeout:5000}, async () => {
   const signals = [];
   const clears = [];
@@ -10943,7 +11172,7 @@ test("shares one cancellation guard across gateway and agent registration passes
 });
 
 test("rejects malformed cancellation users and bounds retained mappings", async () => {
-  const guard = createToolLoopGuard({ abortRun: () => true });
+  const guard = createToolLoopGuard({ abortRunAndDrain: async () => ({aborted: true, drained: true}) });
   assert.equal(await guard.abortUserRun("not-an-ods-user"), false);
   for (let index = 0; index < 300; index += 1) {
     const user = `ods-${index.toString(16).padStart(64, "0")}`;
@@ -11486,6 +11715,39 @@ test("literal file contents and quoted examples do not require a website preview
   ]) assert.equal(userMessageRequestsWorkspacePreview([], request), true, request);
 });
 
+test("unquoted file payloads without a colon do not request website delivery", () => {
+  for (const request of [
+    "Create fleet-webui-check.txt in your workspace with the text WEBUI-PORTAL-OK. Then read it back and tell me the content.",
+    "Create note.txt containing PORTAL-OK.",
+    "Write note.txt containing exactly Build a website. Read it back.",
+    "Create note.txt with content a dashboard. Read it back.",
+    "Write note.txt with the contents exactly a browser app; then read it.",
+  ]) {
+    assert.equal(userMessageRequestsWorkspacePreview([], request), false, request);
+    assert.equal(userMessageRequiresWorkspacePreviewAuthorship([], request), false, request);
+    const guard = createToolLoopGuard();
+    guard.observeRun({agentId: 'pixel', runId: 'literal-payload'}, 'pixel', {prompt: request});
+    assert.notEqual(guard.verificationForRun('literal-payload')?.status, 'failed', request);
+  }
+  for (const request of [
+    "Create a customer portal with the text Welcome.",
+    "Build a website containing a dashboard.",
+    "Create note.txt containing PORTAL-OK. Then build a website.",
+    "Create note.txt containing Hello and build a website.",
+    "Create note.txt with the text Hello then create a customer portal.",
+    "Create note.txt containing Hello and then create and publish demo/index.html.",
+    "Create note.txt with the text Hello; then create and publish demo/index.html.",
+    'Create note.txt containing "Build a website." Then create a customer portal.',
+    "Create demo/index.html with the text Hello. Publish it.",
+  ]) {
+    assert.equal(userMessageRequestsWorkspacePreview([], request), true, request);
+    assert.equal(userMessageRequiresWorkspacePreviewAuthorship([], request), true, request);
+    const guard = createToolLoopGuard();
+    guard.observeRun({agentId: 'pixel', runId: 'real-preview'}, 'pixel', {prompt: request});
+    assert.equal(guard.verificationForRun('real-preview')?.status, 'failed', request);
+  }
+});
+
 test("wrapped private denial allows public extraction and workspace recovery", () => {
   const aborts = [];
   const guard = createToolLoopGuard({abortRun: id => {aborts.push(id); return true;}});
@@ -11730,6 +11992,69 @@ test("recognizes explicit SVG preview publication without widening nonvisual int
     "Do not publish the existing preview.",
   ]) {
     assert.equal(userMessageRequestsWorkspacePreview([], prompt), false, prompt);
+  }
+});
+
+const MAC_COUNTER_REPAIR = "The counter is visible but both buttons do nothing. The browser reports SecurityError when the page reads localStorage inside the sandbox. Please fix only Playground/mac-main-d48-counter/index.html: keep the count in memory, remove all storage access, start at 3 on every reload, and keep Increase and Reset usable by keyboard. Republish the corrected preview. No installs, web requests, or other file changes.";
+
+test("named HTML repair recognizes the actual counter correction without promoting quoted or read-only requests", () => {
+  for (const prompt of [
+    MAC_COUNTER_REPAIR,
+    "Please repair log-viewer-lab/index.html and republish the corrected preview.",
+    "Correct `log-viewer-lab/index.html` and show the repaired preview.",
+    "Fix only /workspace/log-viewer-lab/index.html and republish it.",
+    "Fix the preview's broken button.",
+    "Repair the existing page.",
+  ]) assert.equal(userMessageRequestsWorkspaceVisualContinuation([], prompt), true, prompt);
+  for (const prompt of [
+    "Read log-viewer-lab/index.html and explain how to fix it. Do not edit files.",
+    "Explain why we should repair log-viewer-lab/index.html.",
+    'Explain "Please fix log-viewer-lab/index.html and republish the corrected preview."',
+    "> Fix log-viewer-lab/index.html and republish the corrected preview.",
+    "```\nFix log-viewer-lab/index.html and republish the corrected preview.\n```",
+    "Do not fix log-viewer-lab/index.html. Show it unchanged.",
+    "Show the corrected preview without changing it.",
+    "Republish log-viewer-lab/index.html unchanged.",
+    "Republish the corrected preview unchanged.",
+    "Do not repair the existing page.",
+    "Create a new page, then repair the preview.",
+    "Fix log-viewer-lab/index.html. Do not edit any files.",
+    "Fix ../other-lab/index.html.",
+  ]) assert.equal(userMessageRequestsWorkspaceVisualContinuation([], prompt), false, prompt);
+});
+
+test("named HTML repair binds read-edit-publish to its own trusted session and rejects the unchanged snapshot", () => {
+  const guard = createToolLoopGuard();
+  const {write, params, details} = seedNamedPreview(guard);
+  const context = {agentId:'pixel',runId:'named-repair',sessionId:'session-1'};
+  guard.observeRun(context,'pixel',{prompt:MAC_COUNTER_REPAIR.replaceAll('Playground/mac-main-d48-counter','log-viewer-lab')});
+  const read = {path:write.path};
+  call(guard,'read',{context,event:{runId:context.runId,toolCallId:'repair-read',params:read}});
+  afterCall(guard,'read',{context,event:{runId:context.runId,toolCallId:'repair-read',params:read,result:{content:[{type:'text',text:write.content}]}}});
+  const guidance = guard.toolResultPersist({toolName:'read',toolCallId:'repair-read',message:{role:'toolResult',toolName:'read',toolCallId:'repair-read',content:[{type:'text',text:write.content}]}},context,'pixel');
+  assert.equal(guidance.message.content.at(-1).text, `[ODS Pixel next step] ${WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON}`);
+  assert.equal(call(guard,'pixel_ods_workspace_preview',{context,event:{runId:context.runId,params}})?.blockReason, WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON);
+  assert.equal(guard.beforeAgentFinalize({},context)?.retry?.idempotencyKey,'pixel-ods-workspace-visual-continuation-edit');
+  // Even a forged successful publication receipt cannot settle the old bytes.
+  afterCall(guard,'pixel_ods_workspace_preview',{context,event:{runId:context.runId,params,result:{details}}});
+  assert.notEqual(guard.verificationForRun(context.runId).status,'passed');
+  const changed = {path:write.path,content:write.content.replace('logs','corrected counter')};
+  assert.notEqual(call(guard,'write',{context,event:{runId:context.runId,params:changed}})?.block,true);
+  afterCall(guard,'write',{context,event:{runId:context.runId,params:changed,result:{details:{status:'completed'}}}});
+  assert.notEqual(call(guard,'pixel_ods_workspace_preview',{context,event:{runId:context.runId,params}})?.block,true);
+  const snapshot=workspacePreviewSnapshot(params.relativeDirectory,[changed]);
+  afterCall(guard,'pixel_ods_workspace_preview',{context,event:{runId:context.runId,params,result:{details:{...details,...snapshot,url:`http://${snapshot.siteId}.localhost:9437/${snapshot.siteId}/`}}}});
+  assert.equal(guard.verificationForRun(context.runId).preview.sha256,snapshot.sha256);
+});
+
+test("named HTML repair never borrows another project or session's preview custody", () => {
+  for (const [path,sessionId] of [['other-lab/index.html','session-1'],['index.html','session-1'],['log-viewer-lab/index.html','different-session']]) {
+    const guard=createToolLoopGuard(); seedNamedPreview(guard);
+    const context={agentId:'pixel',runId:'other-repair',sessionId};
+    guard.observeRun(context,'pixel',{prompt:`Please fix only ${path}. Republish the corrected preview.`});
+    const args={path};
+    assert.notEqual(call(guard,'read',{context,event:{runId:context.runId,params:args}})?.block,true,'Do not redirect or scope the explicitly named file to a different historical project');
+    assert.notEqual(guard.beforeAgentFinalize({},context)?.retry?.idempotencyKey,'pixel-ods-workspace-visual-continuation-read');
   }
 });
 
@@ -12201,6 +12526,231 @@ test("a post-verification repetition stop preserves a partial tool receipt, not 
   assert.equal(guard.verificationForRun("run-1").status, "failed");
 });
 
+// Real before/after hooks share a tool-call ID; receipt tests must model it.
+const executionPreparedParams = new WeakMap();
+function executionBefore(guard, toolName, overrides = {}) {
+  const result = call(guard, toolName, {...overrides,
+    context:{toolCallId:"execution-1",...overrides.context}});
+  assert.notEqual(result?.block, true, result?.blockReason);
+  executionPreparedParams.set(guard, {toolName,params:result?.params ?? overrides.event?.params});
+  return result;
+}
+function executionAfter(guard, toolName, overrides = {}) {
+  const prepared = executionPreparedParams.get(guard);
+  return afterCall(guard, toolName, {...overrides,
+    event:{...overrides.event,...(prepared?.toolName===toolName ? {params:prepared.params}: {})},
+    context:{toolCallId:"execution-1",...overrides.context}});
+}
+
+test("explicit code execution without a terminal exit-0 receipt is not delivered as success", () => {
+  const prompt = "Use your Python execution tool to calculate sum(i*i for i in range(1,21)). Report the actual tool output and say whether you executed it. Do not infer or estimate the result.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const delivered = guard.deliveryVerificationForRun("run-1");
+  assert.equal(delivered.status, "failed");
+  assert.match(delivered.text, /did not receive a successful terminal execution receipt/);
+  assert.doesNotMatch(delivered.text, /\b2550\b|\b2870\b/);
+});
+
+test("a terminal exit-0 exec receipt satisfies an explicit execution request", () => {
+  const prompt = "Use your Python execution tool to calculate sum(i*i for i in range(1,21)). Report the actual tool output and say whether you executed it.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 -c 'print(sum(i*i for i in range(1,21)))'", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "completed", exitCode: 0, aggregated: "2870" } } } });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("failed, missing-exit, isError and pending exec receipts do not satisfy execution", () => {
+  const prompt = "Run this Python script and report the output.";
+  for (const result of [
+    { details: { status: "completed", exitCode: 1 } },
+    { details: { status: "completed" } },
+    { details: { status: "failed", exitCode: 0 } },
+    { isError: true, details: { status: "completed", exitCode: 0 } },
+  ]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    const params = { command: "python3 script.py", workdir: "/workspace" };
+    executionBefore(guard, "exec", { event: { params } });
+    executionAfter(guard, "exec", { event: { params, result } });
+    assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+  }
+});
+
+test("a polled background completion with exit 0 satisfies execution", () => {
+  const prompt = "Run this Python script in the background and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "running", sessionId: "sess-1" } } } });
+  executionAfter(guard, "process", { event: { params: { action: "poll", sessionId: "sess-1" }, result: { details: { status: "completed", exitCode: 0, sessionId: "sess-1" } } } });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("execution classifier excludes explanations, quotes, math and no-tools", () => {
+  for (const prompt of [
+    "Explain how to run a Python script.",
+    "Show me a command to run this script.",
+    "What is sum(i*i for i in range(1,21))?",
+    "Do not use any tools; just tell me the answer.",
+    "Quote: `python3 script.py`.",
+    "Give me Python code to run locally.",
+    "Quote the instruction: run this Python code and report output.",
+    "Explain how I can run a Python script.",
+    "Print the words run Python code.",
+    "Run this Python script; do not actually execute it, just show the code.",
+    "Do not run it, but execute the Python code.",
+  ]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed", prompt);
+  }
+});
+
+test("execution classifier allows explicit execution requests", () => {
+  for (const prompt of [
+    "Run this Python code without changing files.",
+    "Please execute the Python script.",
+    "Can you run this Python code?",
+    "Write a Python script and then run it.",
+  ]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed", prompt);
+  }
+});
+
+test("nested tool_call exec receipt satisfies execution", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "tool_call", { event: { params: { id: "openclaw:core:exec", args: params } } });
+  executionAfter(guard, "tool_call", {
+    event: {
+      params: { id: "openclaw:core:exec", args: params },
+      result: wrappedCoreResult("exec", { details: { status: "completed", exitCode: 0 } }),
+    },
+  });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("background exec pending before poll does not satisfy execution", () => {
+  const prompt = "Run this Python script in the background and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "running", sessionId: "sess-1" } } } });
+  assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("a self-consistent process receipt without a bound exec cannot satisfy execution", () => {
+  const guard=createToolLoopGuard();
+  guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"},"pixel",{prompt:"Run this Python script."});
+  executionAfter(guard,"process",{event:{params:{action:"poll",sessionId:"never-started"},
+    result:{details:{status:"completed",sessionId:"never-started",exitCode:0}}}});
+  assert.match(guard.deliveryVerificationForRun("run-1").text,/did not receive a successful terminal execution receipt/);
+});
+
+test("background poll with failed, missing-exit, or isError does not satisfy execution", () => {
+  const prompt = "Run this Python script in the background and report the output.";
+  for (const pollResult of [
+    { details: { status: "completed", exitCode: 1, sessionId: "sess-1" } },
+    { details: { status: "completed", sessionId: "sess-1" } },
+    { isError: true, details: { status: "completed", exitCode: 0, sessionId: "sess-1" } },
+  ]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    const params = { command: "python3 script.py", workdir: "/workspace" };
+    executionBefore(guard, "exec", { event: { params } });
+    executionAfter(guard, "exec", { event: { params, result: { details: { status: "running", sessionId: "sess-1" } } } });
+    executionAfter(guard, "process", { event: { params: { action: "poll", sessionId: "sess-1" }, result: pollResult } });
+    assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+  }
+});
+
+test("unrelated poll session does not satisfy execution", () => {
+  const prompt = "Run this Python script in the background and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "running", sessionId: "sess-1" } } } });
+  executionAfter(guard, "process", { event: { params: { action: "poll", sessionId: "sess-other" }, result: { details: { status: "completed", exitCode: 0, sessionId: "sess-other" } } } });
+  assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("read-only tool receipt does not satisfy execution", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { path: "/workspace/script.py" };
+  executionBefore(guard, "read", { event: { params } });
+  executionAfter(guard, "read", { event: { params, result: { content: [{type:"text", text:"print(2870)"}] } } });
+  assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("previous-run receipt does not satisfy a new execution request", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "completed", exitCode: 0 } } } });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+  guard.observeRun({ agentId: "pixel", runId: "run-2", sessionId: "session-1" }, "pixel", { prompt });
+  assert.equal(guard.deliveryVerificationForRun("run-2").status, "failed");
+});
+
+test("successful execution followed by write keeps durable evidence", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "completed", exitCode: 0 } } } });
+  const writeParams = { path: "/workspace/out.txt", content: "ok" };
+  executionBefore(guard, "write", { event: { params: writeParams } });
+  executionAfter(guard, "write", { event: { params: writeParams, result: { details: { status: "completed" } } } });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("delivery hook replaces fabricated answer when execution receipt is missing", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const delivered = guard.deliveryVerificationForRun("run-1");
+  assert.equal(delivered.status, "failed");
+  assert.match(delivered.text, /did not receive a successful terminal execution receipt/);
+  const outgoing = reply(guard, {event:{payload:{text:"I executed the Python code and got 2550."}}});
+  assert.match(outgoing.payload.text, /did not receive a successful terminal execution receipt/);
+  assert.doesNotMatch(outgoing.payload.text, /2550/);
+});
+
+test("execution evidence rejects unbound and foreign terminal receipts", () => {
+  for (const wrapped of [false, true]) for (const variant of ["no-call", "wrong-call", "wrong-run", "wrong-session", "wrong-params", "outer-error"]) {
+    const guard=createToolLoopGuard();
+    const context={agentId:"pixel",runId:"run-1",sessionId:"session-1",toolCallId:"execution-1"};
+    guard.observeRun(context,"pixel",{prompt:"Run this Python code and report the actual output."});
+    const args={command:"python3 -c 'print(2870)'",workdir:"/workspace"};
+    const toolName=wrapped?"tool_call":"exec";
+    const params=wrapped?{id:"openclaw:core:exec",args}:args;
+    if (variant!=="no-call") guard.beforeToolCall({toolName,params},{...context,toolName});
+    const result={details:{status:"completed",exitCode:0}};
+    const observed=wrapped?wrappedCoreResult("exec",result):result;
+    if (variant==="outer-error") observed.isError=true;
+    const altered={...args,command:"python3 -c 'print(1)'"};
+    guard.afterToolCall({toolName,params:variant==="wrong-params"?(wrapped?{id:"openclaw:core:exec",args:altered}:altered):params,
+      ...(variant==="wrong-run"?{runId:"other-run"}:{}),result:observed},
+      {...context,toolName,...(variant==="wrong-call"?{toolCallId:"other-call"}:{}),...(variant==="wrong-session"?{sessionId:"other-session"}:{})});
+    assert.match(guard.deliveryVerificationForRun("run-1").text,/did not receive a successful terminal execution receipt/,`${wrapped} ${variant}`);
+  }
+});
+
 test("negated workspace repairs do not grant continuation intent", () => {
   for (const prompt of ["Do not repair the game in my workspace.", "Never fix /workspace/moon-garden."]) {
     assert.equal(userMessageRequestsWorkspaceContinuation([], prompt), false);
@@ -12611,6 +13161,27 @@ for (const wrapped of [false, true]) {
     assert.equal(guard.verificationForRun("run-1").status, "failed", "no successful host receipt has been received");
   });
 }
+
+test("asking Portal to open the shipped Elf of Doom example opens it as an existing project", () => {
+  // installers/lib/pixel-example-projects.py adds the game to this folder;
+  // Portal's sidebar opens it without a model run, and an owner may also ask.
+  const prompt = "Open the existing Playground/elf-of-doom/index.html preview.";
+  assert.equal(workspacePreviewMode([], prompt), "existing-project");
+  assert.equal(requestsNewPlaygroundProject(prompt), false, "never a new Playground folder");
+  for (const wrapped of [false, true]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    const params = { path: "Playground/elf-of-doom/index.html" };
+    call(guard, "read", { event: { params } });
+    afterCall(guard, "read", { event: { params, result: { details: { status: "completed" } } } });
+    const target = { relativeDirectory: "Playground/elf-of-doom" };
+    const published = call(guard, wrapped ? "tool_call" : "pixel_ods_workspace_preview", {
+      event: { params: wrapped ? { id: "pixel_ods_workspace_preview", args: target } : target },
+    });
+    assert.notEqual(published?.block, true, "an owner-requested existing project needs no new authorship");
+    assert.deepEqual(wrapped ? published?.params?.args ?? target : published?.params ?? target, target);
+  }
+});
 
 test("accepts only a readback-verified dedicated preview receipt", () => {
   const guard = createToolLoopGuard();
@@ -13730,6 +14301,77 @@ test('host evidence recognizes read/get and curly-apostrophe exclusions', () => 
   }
   const prompt = 'In the sandbox, run command -v python3. Don’t inspect the host OS.';
   assert.equal(userMessageOperationsRequirements([], prompt).required, false, prompt);
+});
+
+test("relative cd verification binds the actual completed fleet result", () => {
+  for (const wrapped of [false, true]) for (const workdir of [undefined, "/workspace", "/workspace/parent"]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", {
+      prompt: "Run the unit tests and report their actual result in chat.",
+    });
+    const args = { command: "cd fleet-tower3-20261022 && python3 -m unittest test_slugify -v", ...(workdir ? { workdir } : {}) };
+    const toolName = wrapped ? "tool_call" : "exec";
+    const params = wrapped ? { id: "exec", args } : args;
+    const before = call(guard, toolName, { event: { params, toolCallId: "fleet-test" } });
+    assert.notEqual(before?.block, true);
+    const executed = wrapped ? before?.params ?? params : { ...params, ...before?.params };
+    assert.equal(wrapped ? executed.args.command : executed.command, args.command);
+    const output = "test_spaces (test_slugify.TestSlugify.test_spaces) ... ok\n\nRan 7 tests in 0.000s\n\nOK";
+    const result = { content: [{ type: "text", text: output }], details: { status: "completed", exitCode: 0, aggregated: output } };
+    afterCall(guard, toolName, { event: { params: executed, toolCallId: "fleet-test", result: wrapped ? wrappedCoreResult("exec", result) : result } });
+    assert.equal(guard.verificationForRun("run-1").status, "passed");
+    assert.equal(reply(guard), undefined);
+  }
+});
+
+test("relative cd verification retains failed, empty and pending outcomes", () => {
+  const command = "cd project && python3 -m unittest -v";
+  for (const [details, expected] of [
+    [{ status: "completed", exitCode: 1, aggregated: "Ran 1 test\nFAILED (failures=1)" }, "failed"],
+    [{ status: "completed", exitCode: 0, aggregated: "Ran 0 tests\nOK" }, "failed"],
+    [{ status: "running", sessionId: "relative-check" }, "pending"],
+  ]) {
+    const guard = createToolLoopGuard();
+    const params = { command };
+    const before = call(guard, "exec", { event: { params } });
+    assert.notEqual(before?.block, true);
+    afterCall(guard, "exec", { event: { params: { ...params, ...before?.params }, result: { details } } });
+    assert.equal(guard.verificationForRun("run-1").status, expected);
+  }
+});
+
+test("relative cd verification fingerprints the runner cwd after cd", () => {
+  const source = readFileSync(new URL("../plugin/tool-loop-guard.mjs", import.meta.url), "utf8");
+  const scope = { path };
+  vm.runInNewContext(
+    source.slice(source.indexOf("function normalizeExecWorkdir("), source.indexOf("function normalizeApplyPatchInput(")) +
+    source.slice(source.indexOf("function verificationCommand("), source.indexOf("function canonicalRequestedUnittestParams(")), scope);
+  for (const [command, workdir, resolved] of [
+    ["cd project && python3 -m unittest -v", undefined, "/workspace/project"],
+    ["cd project && python3 -m unittest -v", "/workspace/parent", "/workspace/parent/project"],
+    ["cd /workspace/project && python3 -m unittest -v", "/workspace/parent", "/workspace/project"],
+  ]) {
+    const params = { command, ...(workdir ? { workdir } : {}) };
+    assert.equal(scope.verificationExecFingerprint(params), JSON.stringify(["python3 -m unittest -v", resolved]));
+  }
+});
+
+test("relative cd verification refuses masked output before execution", () => {
+  for (const suffix of [" | tee output.txt", " > output.txt", " 2>&1 | tee output.txt", " 2>/dev/null", "; echo done", " && echo done", " || true"]) {
+    const guard = createToolLoopGuard();
+    const params = { command: "cd project && python3 -m unittest -v" + suffix };
+    assert.equal(call(guard, "exec", { event: { params } })?.blockReason, VERIFICATION_COMMAND_NOT_AUDITABLE_REASON);
+  }
+});
+
+test("relative cd verification does not credit ambiguous paths or setup chains", () => {
+  for (const prefix of ["cd ../other", "cd .", "cd -P", "cd project/*", "cd a//b", "cd project/", "cd $(echo project)", 'cd "$DIR"', "cd project && echo setup"]) {
+    const guard = createToolLoopGuard();
+    call(guard, "read");
+    afterCall(guard, "exec", { event: { params: { command: "python3 -m unittest -v" }, result: { details: { exitCode: 1 } } } });
+    afterCall(guard, "exec", { event: { params: { command: prefix + " && python3 -m unittest -v" }, result: { details: { exitCode: 0, aggregated: "Ran 7 tests\nOK" } } } });
+    assert.equal(guard.verificationForRun("run-1").status, "failed", prefix);
+  }
 });
 
 test("AND-chain completed verification clears the previous failed direct test", () => {
@@ -15954,7 +16596,10 @@ test('progress stops scope historical preview delivery to the current owner requ
     }
     const delivery = guard.deliveryVerificationForRun(context.runId);
     assert.equal(delivery.status, 'failed', prompt);
-    assert.ok(delivery.text.startsWith(RUN_PROGRESS_STOP_REASON), prompt);
+    // A website request reads the stop in the owner's wording: Portal's line
+    // and the preview it can show (progressStopPresentation).
+    assert.ok(expectPreview ? delivery.text.startsWith(`${PREVIEW_STOPPED_NOTE}\n\n[Open last published preview](`)
+      : delivery.text.startsWith(RUN_PROGRESS_STOP_REASON), `${prompt}\n${delivery.text}`);
     assert.equal(Boolean(delivery.preview), expectPreview, prompt);
     assert.equal(delivery.text.includes(details.url), expectPreview, prompt);
     if (expectPreview) assert.equal(delivery.preview.sha256, details.sha256);
@@ -15989,13 +16634,14 @@ test("historical preview cannot hide a later coding stop from the final reply", 
       result: deferred ? wrappedCoreResult("exec", result) : result,
     }, context, "pixel");
     assert.equal(invoke("exec", params).blockReason, CODING_RETRY_EXHAUSTED_REASON);
+    // The record keeps the stop and the failed check; the owner reads one line.
+    const verification = guard.verificationForRun("coding-run");
+    assert.equal(verification.status, "failed");
+    assert.match(verification.text, /stopped before the requested work was complete/);
+    assert.ok(verification.text.includes(VERIFICATION_FAILED_DELIVERY_PREFIX));
+    assert.doesNotMatch(verification.text, /publish again to verify/);
     const delivered = reply(guard, {event: {runId: "coding-run", payload: {text: ""}}});
-    assert.match(delivered.payload.text, /stopped before the requested work was complete/);
-    assert.ok(delivered.payload.text.includes(VERIFICATION_FAILED_DELIVERY_PREFIX));
-    assert.ok(delivered.payload.text.includes(details.url));
-    assert.match(delivered.payload.text, /last published preview/);
-    assert.doesNotMatch(delivered.payload.text, /publish again to verify/);
-    assert.equal(guard.verificationForRun("coding-run").status, "failed");
+    assert.equal(delivered.payload.text, `${PREVIEW_STOPPED_NOTE}\n\n[Open last published preview](${details.url})`);
   }
 });
 
@@ -16007,12 +16653,13 @@ test("historical publication preserves failed and pending verification truth", (
     call(guard, "exec", {event: {params}});
     afterCall(guard, "exec", {event: {params, result: {details: status === "pending"
       ? {status: "running", sessionId: "pending-check"} : {status: "completed", exitCode: 1}}}});
-    const result = reply(guard);
-    assert.ok(result.payload.text.includes(status === "pending"
+    const verification = guard.verificationForRun("run-1");
+    assert.equal(verification.status, "failed");
+    assert.ok(verification.text.includes(status === "pending"
       ? VERIFICATION_PENDING_DELIVERY_PREFIX : VERIFICATION_FAILED_DELIVERY_PREFIX));
-    assert.ok(result.payload.text.includes(details.url));
-    assert.match(result.payload.text, /last published preview/);
-    assert.equal(guard.verificationForRun("run-1").status, "failed");
+    // The owner reads that the preview is an earlier version, with its link.
+    const result = reply(guard);
+    assert.equal(result.payload.text, `${PREVIEW_EARLIER_NOTE}\n\n[Open last published preview](${details.url})`);
   }
 });
 
@@ -16203,7 +16850,7 @@ test('invalid JSON publication stays failed until repaired files are republished
   invoke('write',{path:'export-site/export.json',content:'{"source":"""broken"""}'},written);
   invoke('pixel_ods_workspace_preview',{relativeDirectory:'export-site'},{isError:true,content:[{type:'text',text:'Invalid JSON at export.json line 1 column 13'}],details:{schemaVersion:1,kind:'ods-pixel-workspace-preview',status:'failed',errorCode:'invalid_json_artifact'}});
   assert.equal(guard.verificationForRun(context.runId).status,'failed');
-  assert.match(guard.verificationForRun(context.runId).text,/did not verify a browser-accessible preview/i);
+  assert.equal(guard.verificationForRun(context.runId).text,WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX);
   const repaired={path:'export-site/export.json',content:JSON.stringify({source:'"""valid source text"""\n'})};
   invoke('write',repaired,written);
   assert.equal(guard.verificationForRun(context.runId).status,'failed','a repair alone cannot publish a preview');
@@ -16619,4 +17266,462 @@ test('ordinary Python failures do not receive an escaped-newline diagnosis',()=>
   const {guard,result}=nativeFailureRun();
   const text=persistToolResult(guard,'exec','native-failure',result).message.content[0].text;
   assert.doesNotMatch(text,/ODS Pixel repair/);
+});
+
+// Reproduces the standalone unittest module generated in a real Portal turn.
+// Its name deliberately does not match test_*.py or *_test.py.
+const standaloneUnittestSource = "\"\"\"Slugify utility with unittest tests.\"\"\"\n\nimport re\nimport unicodedata\n\n\ndef slugify(text: str) -> str:\n    \"\"\"\n    Convert text to a URL-friendly slug.\n    \n    - Lowercase the text\n    - Remove accents (normalize to ASCII)\n    - Replace runs of punctuation or whitespace with one hyphen\n    - Trim leading/trailing hyphens\n    \"\"\"\n    # Lowercase\n    text = text.lower()\n    \n    # Normalize to decomposed form and remove combining characters (accents)\n    text = unicodedata.normalize('NFKD', text)\n    text = ''.join(c for c in text if not unicodedata.combining(c))\n    \n    # Replace runs of non-alphanumeric characters with a single hyphen\n    text = re.sub(r'[^a-z0-9]+', '-', text)\n    \n    # Trim leading/trailing hyphens\n    text = text.strip('-')\n    \n    return text\n\n\nif __name__ == \"__main__\":\n    import unittest\n\n\nclass TestSlugify(unittest.TestCase):\n    def test_hello_world(self):\n        self.assertEqual(slugify(\"Hello, World!\"), \"hello-world\")\n\n    def test_creme_brulee(self):\n        self.assertEqual(slugify(\" Crème Brûlée \"), \"creme-brulee\")\n\n    def test_underscores(self):\n        self.assertEqual(slugify(\"a___b\"), \"a-b\")\n\n    def test_only_punctuation(self):\n        self.assertEqual(slugify(\"!!!\"), \"\")\n\n    def test_version(self):\n        self.assertEqual(slugify(\"Version 2.0\"), \"version-2-0\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n";
+const standaloneUnittestPrompt = "Create fleet_slug_check.py in the workspace with a Python slugify(text) function using only the standard library. Write and actually run tests for five cases. Report the actual test result and file path.";
+const standaloneUnittestOutput = ".....\n----------------------------------------------------------------------\nRan 5 tests in 0.000s\n\nOK\n";
+const standaloneUnittestResult = (details = {}) => ({ isError:false,
+  content:[{type:"text",text:details.aggregated ?? standaloneUnittestOutput}],
+  details:{status:"completed",exitCode:0,aggregated:standaloneUnittestOutput,...details} });
+
+function standaloneUnittestRun(wrapped, options = {}) {
+  const guard = createToolLoopGuard();
+  guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"},"pixel",
+    {prompt:options.prompt ?? standaloneUnittestPrompt});
+  if (options.write !== false) {
+    const params={path:options.path ?? "/workspace/fleet_slug_check.py",
+      content:options.source ?? standaloneUnittestSource};
+    const prepared=call(guard,"write",{event:{toolCallId:"write-1",params},context:{toolCallId:"write-1"}});
+    assert.notEqual(prepared?.block,true,prepared?.blockReason);
+    afterCall(guard,"write",{event:{toolCallId:"write-1",params:prepared?.params ?? params,
+      result:{isError:false,details:{status:"completed"}}},context:{toolCallId:"write-1"}});
+  }
+  const name=wrapped ? "tool_call" : "exec";
+  const args={command:options.command ?? "python3 fleet_slug_check.py",workdir:options.workdir ?? "/workspace"};
+  const params=wrapped ? {id:"openclaw:core:exec",args} : args;
+  const prepared=call(guard,name,{event:{toolCallId:"exec-1",params},context:{toolCallId:"exec-1"}});
+  const applied=prepared?.params ?? params;
+  return {guard,name,applied,prepared,finish(result=standaloneUnittestResult(),event={},context={}) {
+    if (prepared?.block) return;
+    afterCall(guard,name,{event:{toolCallId:"exec-1",params:applied,
+      result:wrapped ? wrappedCoreResult("exec",result) : result,...event},
+      context:{toolCallId:"exec-1",...context}});
+  }};
+}
+
+for(const wrapped of [false,true]) {
+  test(`owner-named standalone unittest completes the coding task, wrapped=${wrapped}`,()=>{
+    const run=standaloneUnittestRun(wrapped);
+    assert.notEqual(run.prepared?.block,true);
+    assert.equal((wrapped ? run.applied.args : run.applied).command,"python3 fleet_slug_check.py");
+    run.finish();
+    assert.equal(run.guard.verificationStatus("run-1"),"passed");
+    assert.equal(run.guard.verificationForRun("run-1").status,"passed");
+  });
+
+  test(`standalone unittest rejects unrelated, masked and unbound receipts, wrapped=${wrapped}`,()=>{
+    const cases=[
+      {name:"unwritten file",write:false},
+      {name:"unrelated file",path:"/workspace/helper.py",command:"python3 helper.py"},
+      {name:"wrong directory",workdir:"/workspace/other"},
+      {name:"no unittest source",source:"print('hello')"},
+      {name:"traversal",command:"python3 ../fleet_slug_check.py"},
+      {name:"output pipe",command:"python3 fleet_slug_check.py | tail -n 5"},
+      {name:"exit masking",command:"python3 fleet_slug_check.py; echo OK"},
+      {name:"extra argument",command:"python3 fleet_slug_check.py --fake"},
+      {name:"redirection",command:"python3 fleet_slug_check.py > log.txt"},
+      {name:"newline",command:"python3 fleet_slug_check.py\necho OK"},
+      {name:"nonzero exit",details:{exitCode:1}},
+      {name:"pending",details:{status:"running",sessionId:"pending-1"}},
+      {name:"missing status",details:{status:undefined}},
+      {name:"missing exit",details:{exitCode:undefined}},
+      {name:"zero tests",details:{aggregated:"Ran 0 tests in 0.000s\n\nOK\n"}},
+      {name:"failure text",details:{aggregated:"Ran 5 tests in 0.000s\n\nFAILED (failures=1)\n"}},
+      {name:"no summary",details:{aggregated:"all good"}},
+      {name:"error result",isError:true},
+      {name:"wrong call",event:{toolCallId:"exec-other"},context:{toolCallId:"exec-other"}},
+      {name:"wrong session",context:{sessionId:"session-other"}},
+      {name:"wrong event run",event:{runId:"run-other"}},
+      {name:"wrong params",event:{params:wrapped ? {id:"openclaw:core:exec",args:{command:"python3 fleet_slug_check.py",workdir:"/workspace/other"}} : {command:"python3 fleet_slug_check.py",workdir:"/workspace/other"}}},
+    ];
+    for(const c of cases) {
+      const run=standaloneUnittestRun(wrapped,c);
+      run.finish({...standaloneUnittestResult(c.details),isError:c.isError ?? false},c.event,c.context);
+      assert.notEqual(run.guard.verificationStatus("run-1"),"passed",c.name);
+    }
+  });
+
+  test(`standalone unittest polls only its bound pending execution, wrapped=${wrapped}`,()=>{
+    const run=standaloneUnittestRun(wrapped);
+    run.finish({isError:false,details:{status:"running",sessionId:"pending-1"}});
+    assert.equal(run.guard.verificationStatus("run-1"),"pending");
+    afterCall(run.guard,"process",{event:{params:{action:"poll",sessionId:"other"},result:standaloneUnittestResult({sessionId:"pending-1"})}});
+    assert.equal(run.guard.verificationStatus("run-1"),"pending");
+    afterCall(run.guard,"process",{event:{params:{action:"poll",sessionId:"pending-1"},result:standaloneUnittestResult({sessionId:"pending-1"})}});
+    assert.equal(run.guard.verificationStatus("run-1"),"passed");
+  });
+
+  for(const pending of [false,true,"completed"]) test(`changed source revokes standalone test evidence, wrapped=${wrapped}, pending=${pending}`,()=>{
+    const run=standaloneUnittestRun(wrapped);
+    if(pending === true)run.finish({isError:false,details:{status:"running",sessionId:"pending-1"}});
+    if(pending === "completed")run.finish();
+    const params={path:"/workspace/fleet_slug_check.py",oldText:"return text",newText:"return 'wrong'"};
+    const prepared=call(run.guard,"edit",{event:{toolCallId:"edit-1",params},context:{toolCallId:"edit-1"}});
+    assert.notEqual(prepared?.block,true);
+    afterCall(run.guard,"edit",{event:{toolCallId:"edit-1",params:prepared?.params ?? params,
+      result:{content:[{type:"text",text:"Successfully replaced text"}]}},context:{toolCallId:"edit-1"}});
+    if(pending === true)afterCall(run.guard,"process",{event:{params:{action:"poll",sessionId:"pending-1"},result:standaloneUnittestResult({sessionId:"pending-1"})}});
+    else if(pending === false)run.finish();
+    assert.notEqual(run.guard.verificationStatus("run-1"),"passed");
+  });
+}
+
+for(const [command,workdir,file,prompt] of [
+  ["python3 -B -u ./fleet_slug_check.py -v 2>&1","/workspace","/workspace/fleet_slug_check.py",standaloneUnittestPrompt],
+  ["python3 /workspace/fleet_slug_check.py","/workspace","/workspace/fleet_slug_check.py",standaloneUnittestPrompt],
+  ["python3 fleet_slug_check.py","/workspace/slug-project","/workspace/slug-project/fleet_slug_check.py",standaloneUnittestPrompt.replace("in the workspace","in /workspace/slug-project")],
+]) test(`standalone unittest preserves literal invocation: ${command} in ${workdir}`,()=>{
+  const run=standaloneUnittestRun(false,{command,workdir,path:file,prompt});
+  assert.notEqual(run.prepared?.block,true,run.prepared?.blockReason);
+  run.finish();
+  assert.equal(run.guard.verificationStatus("run-1"),"passed");
+});
+
+test("standalone unittest pending receipt rejects another conversation and non-clean completion",()=>{
+  for(const variant of ["wrong-session","wrong-event-run","zero-tests","is-error"]) {
+    const run=standaloneUnittestRun(false);
+    run.finish({isError:false,details:{status:"running",sessionId:"pending-1"}});
+    const details={sessionId:"pending-1",...(variant === "zero-tests" ? {aggregated:"Ran 0 tests in 0.000s\n\nOK\n"} : {})};
+    afterCall(run.guard,"process",{event:{params:{action:"poll",sessionId:"pending-1"},
+      ...(variant === "wrong-event-run" ? {runId:"run-other"} : {}),
+      result:{...standaloneUnittestResult(details),isError:variant === "is-error"}},
+      context:variant === "wrong-session" ? {sessionId:"session-other"} : {}});
+    assert.notEqual(run.guard.verificationStatus("run-1"),"passed",variant);
+  }
+});
+
+test("standalone unittest survives the real Tool Search native child hooks",()=>{
+  const run=standaloneUnittestRun(true);
+  const callId="tool_search_code:exec-1:exec:1",params=run.applied.args;
+  const prepared=call(run.guard,"exec",{event:{toolCallId:callId,params},context:{toolCallId:callId}});
+  assert.notEqual(prepared?.block,true);
+  afterCall(run.guard,"exec",{event:{toolCallId:callId,params:prepared?.params ?? params,
+    result:standaloneUnittestResult()},context:{toolCallId:callId}});
+  run.finish();
+  assert.equal(run.guard.verificationForRun("run-1").status,"passed");
+});
+
+test("standalone unittest requires this run's writes and the wrapper's successful result",()=>{
+  const stale=standaloneUnittestRun(false);
+  stale.guard.observeRun({agentId:"pixel",runId:"run-2",sessionId:"session-2"},"pixel",{prompt:standaloneUnittestPrompt});
+  const params={command:"python3 fleet_slug_check.py",workdir:"/workspace"};
+  call(stale.guard,"exec",{event:{toolCallId:"new-exec",runId:"run-2",params},context:{runId:"run-2",sessionId:"session-2",toolCallId:"new-exec"}});
+  afterCall(stale.guard,"exec",{event:{toolCallId:"new-exec",runId:"run-2",params,result:standaloneUnittestResult()},context:{runId:"run-2",sessionId:"session-2",toolCallId:"new-exec"}});
+  assert.notEqual(stale.guard.verificationStatus("run-2"),"passed");
+  const wrapped=standaloneUnittestRun(true);
+  wrapped.finish(undefined,{result:{...wrappedCoreResult("exec",standaloneUnittestResult()),isError:true}});
+  assert.notEqual(wrapped.guard.verificationStatus("run-1"),"passed");
+});
+
+test("native multi-failure unittest lists every failing test within the multi bound", () => {
+  const { guard, result } = nativeFailureRun();
+  const persisted = persistToolResult(guard, "exec", "native-failure", result);
+  const text = persisted.message.content[0].text;
+  assert.ok(text.length <= 4096);
+  assert.match(text, /Earlier unittest framework frames compacted/);
+  assert.match(text, /ERROR: test_wrong_column_count/);
+  assert.match(text, /\/workspace\/project\/test_totals\.py/);
+  assert.match(text, /NameError: name 'sys' is not defined/);
+  assert.match(text, /Ran 36 tests/);
+  assert.match(text, /FAILED \(errors=6\)/);
+  assert.equal(persisted.message.isError, true);
+  assert.equal(persisted.message.details.exitCode, 1);
+  assert.equal(persisted.message.details.durationMs, 147);
+  assert.equal(persisted.message.details.cwd, "/workspace/project");
+  assert.equal(persisted.message.details.aggregated, text);
+});
+
+test("native multi-failure unittest keeps mixed AssertionError and TypeError", () => {
+  const mixed = [
+    "FAIL: test_alpha (test_totals.TotalsTest)",
+    "----------------------------------------------------------------------",
+    "Traceback (most recent call last):",
+    "  File \"/workspace/project/test_totals.py\", line 12, in test_alpha",
+    "    self.assertEqual(total, 3)",
+    "AssertionError: 2 != 3",
+    "",
+    "ERROR: test_beta (test_totals.TotalsTest)",
+    "----------------------------------------------------------------------",
+    "Traceback (most recent call last):",
+    "  File \"/workspace/project/test_totals.py\", line 20, in test_beta",
+    "    total = None + 1",
+    "TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'",
+    "",
+    "----------------------------------------------------------------------",
+    "Ran 2 tests in 0.002s",
+    "",
+    "FAILED (failures=1, errors=1)",
+    "(Command exited with code 1)",
+  ].join("\n");
+  const { guard, result } = nativeFailureRun({ resultOverride: { isError: true,
+    content: [{ type: "text", text: mixed }],
+    details: { status: "completed", exitCode: 1, durationMs: 12, aggregated: mixed, cwd: "/workspace/project" } } });
+  const text = persistToolResult(guard, "exec", "native-failure", result).message.content[0].text;
+  assert.ok(text.length <= 4096);
+  assert.match(text, /FAIL: test_alpha/);
+  assert.match(text, /AssertionError: 2 != 3/);
+  assert.match(text, /ERROR: test_beta/);
+  assert.match(text, /TypeError: unsupported operand type/);
+  assert.match(text, /total = None \+ 1/);
+  assert.match(text, /Command exited with code 1/);
+  assert.match(text, /Ran 2 tests/);
+  assert.match(text, /FAILED \(failures=1, errors=1\)/);
+});
+
+test("native multi-failure unittest lists seven distinct failures", () => {
+  const lines = [];
+  for (let index = 1; index <= 7; index += 1) {
+    lines.push(`ERROR: test_case_${index} (test_totals.TotalsTest)`);
+    lines.push("----------------------------------------------------------------------");
+    lines.push("Traceback (most recent call last):");
+    lines.push(`  File "/workspace/project/test_totals.py", line ${index * 10}, in test_case_${index}`);
+    lines.push(`    raise ValueError("boom ${index}")`);
+    lines.push(`ValueError: boom ${index}`);
+    lines.push("");
+  }
+  lines.push("----------------------------------------------------------------------");
+  lines.push("Ran 7 tests in 0.010s");
+  lines.push("");
+  lines.push("FAILED (errors=7)");
+  const source = lines.join("\n");
+  const { guard, result } = nativeFailureRun({ resultOverride: { isError: true,
+    content: [{ type: "text", text: source }],
+    details: { status: "completed", exitCode: 1, durationMs: 10, aggregated: source, cwd: "/workspace/project" } } });
+  const text = persistToolResult(guard, "exec", "native-failure", result).message.content[0].text;
+  assert.ok(text.length <= 4096);
+  for (let index = 1; index <= 7; index += 1) {
+    assert.match(text, new RegExp(`ERROR: test_case_${index}\\b`));
+  }
+  assert.match(text, /Ran 7 tests/);
+  assert.match(text, /FAILED \(errors=7\)/);
+});
+
+test("native multi-failure unittest bounds forty failures with explicit omission", () => {
+  const lines = [];
+  for (let index = 1; index <= 40; index += 1) {
+    lines.push(`ERROR: test_case_${index} (test_totals.TotalsTest)`);
+    lines.push("----------------------------------------------------------------------");
+    lines.push("Traceback (most recent call last):");
+    lines.push(`  File "/workspace/project/test_totals.py", line ${index}, in test_case_${index}`);
+    lines.push(`    raise ValueError("boom ${index}")`);
+    lines.push(`ValueError: boom ${index}`);
+    lines.push("");
+  }
+  lines.push("----------------------------------------------------------------------");
+  lines.push("Ran 40 tests in 0.100s");
+  lines.push("");
+  lines.push("FAILED (errors=40)");
+  const source = lines.join("\n");
+  const { guard, result } = nativeFailureRun({ resultOverride: { isError: true,
+    content: [{ type: "text", text: source }],
+    details: { status: "completed", exitCode: 1, durationMs: 100, aggregated: source, cwd: "/workspace/project" } } });
+  const text = persistToolResult(guard, "exec", "native-failure", result).message.content[0].text;
+  assert.ok(text.length <= 4096);
+  assert.match(text, /ERROR: test_case_1\b/);
+  assert.match(text, /more failing test/);
+  assert.match(text, /Ran 40 tests/);
+  assert.match(text, /FAILED \(errors=40\)/);
+});
+
+test("native multi-failure unittest bounds oversized header, error, and trailer", () => {
+  const huge = "x".repeat(5000);
+  const source = [
+    `ERROR: test_huge (test_totals.TotalsTest) ${huge}`,
+    "----------------------------------------------------------------------",
+    "Traceback (most recent call last):",
+    "  File \"/workspace/project/test_totals.py\", line 5, in test_huge",
+    `    raise ValueError("${huge}")`,
+    `ValueError: ${huge}`,
+    "",
+    "ERROR: test_other (test_totals.TotalsTest)",
+    "----------------------------------------------------------------------",
+    "Traceback (most recent call last):",
+    "  File \"/workspace/project/test_totals.py\", line 9, in test_other",
+    "    raise TypeError(\"other\")",
+    "TypeError: other",
+    "",
+    "----------------------------------------------------------------------",
+    "Ran 2 tests in 0.002s",
+    "",
+    `FAILED (errors=2) ${huge}`,
+    "(Command exited with code 1)",
+  ].join("\n");
+  const { guard, result } = nativeFailureRun({ resultOverride: { isError: true,
+    content: [{ type: "text", text: source }],
+    details: { status: "completed", exitCode: 1, durationMs: 2, aggregated: source, cwd: "/workspace/project" } } });
+  const persisted = persistToolResult(guard, "exec", "native-failure", result);
+  const text = persisted.message.content[0].text;
+  assert.ok(text.length <= 4096);
+  assert.match(text, /Ran 2 tests/);
+  assert.match(text, /FAILED \(errors=2\)/);
+  assert.match(text, /Command exited with code 1/);
+  assert.match(text, /truncated|omitted/);
+  assert.equal(persisted.message.details.exitCode, 1);
+  assert.equal(persisted.message.isError, true);
+});
+
+test("native and catalog multi-failure projections match", () => {
+  const { guard, result } = nativeFailureRun();
+  const text = persistToolResult(guard, "exec", "native-failure", result).message.content[0].text;
+  const catalog = createToolLoopGuard();
+  catalog.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", {
+    prompt: "Work in /workspace/project. Run the existing Python unittest tests and diagnose the failure.",
+  });
+  call(catalog, "tool_call", { event: { toolCallId: "catalog-failure", params: {
+    id: "exec", args: { command: "python3 -m unittest -v test_totals", workdir: "/workspace/project" },
+  } }, context: { toolCallId: "catalog-failure" } });
+  assert.equal(persistToolResult(catalog, "tool_call", "catalog-failure", wrappedCoreResult("exec", result)).message.content[0].text, text);
+});
+
+test("multi-failure syntax repair hint stays within the persisted output bound", () => {
+  const source = Array.from({ length: 40 }, (_, index) => [
+    `ERROR: test_parse_${index} (test_totals.TotalsTest.test_parse_${index})`,
+    "-".repeat(70),
+    "Traceback (most recent call last):",
+    `  File "/workspace/project/example_${index}.py", line 1, in example`,
+    "    x = 1\\nprint(x)",
+    "SyntaxError: unexpected character after line continuation character",
+  ].join("\n")).join("\n") + "\nRan 40 tests in 0.100s\nFAILED (errors=40)\n(Command exited with code 1)";
+  const { guard, result } = nativeFailureRun({ resultOverride: { isError: true,
+    content: [{ type: "text", text: source }],
+    details: { status: "completed", exitCode: 1, aggregated: source, cwd: "/workspace/project" } } });
+  const persisted = persistToolResult(guard, "exec", "native-failure", result);
+  const text = persisted.message.content[0].text;
+  assert.ok(text.length <= 4096);
+  assert.match(text, /\[ODS Pixel repair\]/);
+  assert.match(text, /Keep the requested assertions intact/);
+  assert.match(text, /omitted/);
+  assert.match(text, /Ran 40 tests/);
+  assert.match(text, /FAILED \(errors=40\)/);
+  assert.match(text, /Command exited with code 1/);
+  assert.equal(persisted.message.details.exitCode, 1);
+});
+
+// Interpreter flags before -m must retain completed verification evidence.
+// flags before -m unittest must be recognized consistently by receipt
+// classification, canonicalization, and runner-summary detection, while the
+// exact command fingerprint (including flags) is preserved.
+for (const wrapped of [false, true]) {
+  for (const flags of ["-B", "-u", "-B -u", "-u -B", "-B -B", "-u -u", "-B -u -B -u"]) {
+    for (const python of ["python3", "python3.12", "python"]) {
+      const command = `${python} ${flags} -m unittest test_public -v`;
+      test(`repeated -B/-u before -m unittest is recognized (wrapped=${wrapped}, ${command})`, () => {
+        const guard = createToolLoopGuard();
+        guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"},"pixel",
+          {prompt:"Run the unit tests and report their actual result in chat."});
+        const args = {command, workdir:"/workspace/project"};
+        const toolName = wrapped ? "tool_call" : "exec";
+        const params = wrapped ? {id:"openclaw:core:exec",args} : args;
+        const before = call(guard, toolName, {event:{toolCallId:"flag-test",params},context:{toolCallId:"flag-test"}});
+        assert.notEqual(before?.block,true,before?.blockReason);
+        const executed = wrapped ? before?.params ?? params : {...params,...before?.params};
+        // The exact command fingerprint, including flags, is preserved.
+        assert.equal(wrapped ? executed.args.command : executed.command, command);
+        const output = "test_public (test_public.TestPublic.test_ok) ... ok\n\nRan 1 test in 0.000s\n\nOK";
+        const result = {content:[{type:"text",text:output}],details:{status:"completed",exitCode:0,aggregated:output}};
+        afterCall(guard, toolName, {event:{toolCallId:"flag-test",params:executed,
+          result:wrapped ? wrappedCoreResult("exec",result) : result},context:{toolCallId:"flag-test"}});
+        assert.equal(guard.verificationForRun("run-1").status,"passed");
+        assert.equal(reply(guard),undefined);
+      });
+    }
+  }
+}
+
+for (const wrapped of [false, true]) {
+  test(`repeated -B/-u before -m unittest rejects zero-test and masked receipts (wrapped=${wrapped})`, () => {
+    for (const [details, expected] of [
+      [{status:"completed",exitCode:0,aggregated:"Ran 0 tests in 0.000s\n\nOK"},"failed"],
+      [{status:"completed",exitCode:1,aggregated:"Ran 1 test\nFAILED (failures=1)"},"failed"],
+      [{status:"running",sessionId:"flag-pending"},"pending"],
+    ]) {
+      const guard = createToolLoopGuard();
+      const args = {command:"python3 -B -u -m unittest test_public -v",workdir:"/workspace/project"};
+      const toolName = wrapped ? "tool_call" : "exec";
+      const params = wrapped ? {id:"openclaw:core:exec",args} : args;
+      const before = call(guard, toolName, {event:{toolCallId:"flag-reject",params},context:{toolCallId:"flag-reject"}});
+      assert.notEqual(before?.block,true);
+      const executed = wrapped ? before?.params ?? params : {...params,...before?.params};
+      afterCall(guard, toolName, {event:{toolCallId:"flag-reject",params:executed,
+        result:wrapped ? wrappedCoreResult("exec",{details}) : {details}},context:{toolCallId:"flag-reject"}});
+      assert.equal(guard.verificationForRun("run-1").status,expected,JSON.stringify(details));
+    }
+    // Masked commands are still refused before execution.
+    const guard = createToolLoopGuard();
+    const args = {command:"python3 -B -u -m unittest test_public -v; echo done",workdir:"/workspace/project"};
+    const toolName = wrapped ? "tool_call" : "exec";
+    const params = wrapped ? {id:"openclaw:core:exec",args} : args;
+    assert.equal(call(guard, toolName, {event:{params}})?.blockReason, VERIFICATION_COMMAND_NOT_AUDITABLE_REASON);
+  });
+}
+
+// A clean unittest run with a negative-path test that logs ERROR must trust the
+// actual runner summary, not the program's ERROR logging.
+for (const wrapped of [false, true]) {
+  test(`clean unittest with negative-case ERROR logging passes (wrapped=${wrapped})`, () => {
+    const guard = createToolLoopGuard();
+    guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"},"pixel",
+      {prompt:"Run the unit tests and report their actual result in chat."});
+    const args = {command:"python3 -B -u -m unittest test_public -v",workdir:"/workspace/project"};
+    const toolName = wrapped ? "tool_call" : "exec";
+    const params = wrapped ? {id:"openclaw:core:exec",args} : args;
+    const before = call(guard, toolName, {event:{toolCallId:"neg-log",params},context:{toolCallId:"neg-log"}});
+    assert.notEqual(before?.block,true);
+    const executed = wrapped ? before?.params ?? params : {...params,...before?.params};
+    const output = "ERROR:root:expected negative path\ntest_public (test_public.TestPublic.test_ok) ... ok\n\nRan 1 test in 0.000s\n\nOK";
+    const result = {content:[{type:"text",text:output}],details:{status:"completed",exitCode:0,aggregated:output}};
+    afterCall(guard, toolName, {event:{toolCallId:"neg-log",params:executed,
+      result:wrapped ? wrappedCoreResult("exec",result) : result},context:{toolCallId:"neg-log"}});
+    assert.equal(guard.verificationForRun("run-1").status,"passed");
+  });
+}
+
+// Canonical workdir receipt: the runner summary is trusted only when the
+// fingerprint's command is the unittest runner, even with -B/-u flags.
+test("canonical workdir receipt trusts runner summary with -B/-u flags", () => {
+  const guard = createToolLoopGuard();
+  guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"},"pixel",
+    {prompt:"Run the unit tests and report their actual result in chat."});
+  const args = {command:"python3 -B -u -m unittest test_public -v",workdir:"/workspace/project"};
+  const before = call(guard,"exec",{event:{toolCallId:"canon-wd",params:args},context:{toolCallId:"canon-wd"}});
+  assert.notEqual(before?.block,true);
+  const executed = {...args,...before?.params};
+  const output = "test_public (test_public.TestPublic.test_ok) ... ok\n\nRan 1 test in 0.000s\n\nOK";
+  const result = {content:[{type:"text",text:output}],details:{status:"completed",exitCode:0,aggregated:output,cwd:"/workspace/project"}};
+  afterCall(guard,"exec",{event:{toolCallId:"canon-wd",params:executed,result},context:{toolCallId:"canon-wd"}});
+  assert.equal(guard.verificationForRun("run-1").status,"passed");
+});
+
+test("Python module flags preserve requested unittest path canonicalization", () => {
+  const source = readFileSync(new URL("../plugin/tool-loop-guard.mjs", import.meta.url), "utf8");
+  const scope = {path};
+  vm.runInNewContext(
+    source.slice(source.indexOf("function normalizeExecWorkdir("), source.indexOf("function normalizeApplyPatchInput(")) +
+    source.slice(source.indexOf("function verificationCommand("), source.indexOf("function requestedUnittestCoachingParams(")), scope);
+  const canonical = scope.canonicalRequestedUnittestParams({
+    command:"python3 -B -u -m unittest /workspace/project/test_public.py -v",
+    workdir:"/workspace",
+  }, {workspaceTaskDirectory:"project", workspaceRequestedFiles:["solution.py", "test_public.py"]});
+  assert.equal(canonical?.command, "python3 -B -u -m unittest test_public.py -v");
+  assert.equal(canonical?.workdir, "/workspace/project");
+});
+
+test("Python module flags classify pytest without broadening interpreter options", () => {
+  for (const command of ["python3 -B -m pytest", "python3.12 -u -B -m pytest tests/"]) {
+    const guard = createToolLoopGuard();
+    const params = {command, workdir:"/workspace/project"};
+    call(guard, "exec", {event:{params}});
+    afterCall(guard, "exec", {event:{params, result:{details:{status:"completed",exitCode:0}}}});
+    assert.equal(guard.verificationForRun("run-1").status, "passed", command);
+  }
+  for (const command of ["python3 -I -m unittest", "python3 -Bu -m unittest", "python3 -c 'print(1)'"]) {
+    const guard = createToolLoopGuard();
+    const params = {command, workdir:"/workspace/project"};
+    call(guard, "exec", {event:{params}});
+    afterCall(guard, "exec", {event:{params, result:{details:{status:"completed",exitCode:0}}}});
+    assert.equal(guard.verificationForRun("run-1").status, "none", command);
+  }
 });

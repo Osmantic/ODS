@@ -8,7 +8,17 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 INSTALL_DIR="$TMP_DIR/install"
 BIN_DIR="$TMP_DIR/bin"
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
-touch "$INSTALL_DIR/docker-compose.yml" "$INSTALL_DIR/.env"
+INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd -P)"
+touch "$INSTALL_DIR/docker-compose.base.yml" "$INSTALL_DIR/.env"
+python3 "$ROOT_DIR/tests/fixtures/macos-private-store-cli.py" "$INSTALL_DIR"
+# Isolate the native producer boundary so this fixture reaches the Compose
+# configuration error it tests. Native identity errors have their own suite.
+mkdir -p "$INSTALL_DIR/installers/macos/lib"
+cat > "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" <<'NATIVE'
+#!/usr/bin/env bash
+[[ "$1" == status ]] || exit 1
+printf '%s\n' '{"running":false,"identity":null}'
+NATIVE
 
 cat > "$BIN_DIR/docker" <<'EOF'
 #!/usr/bin/env bash

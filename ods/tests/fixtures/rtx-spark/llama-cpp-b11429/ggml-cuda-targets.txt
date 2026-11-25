@@ -1,0 +1,3 @@
+embedded sm targets: sm_120a,sm_121a,sm_86,sm_89
+embedded compute targets:
+ggml-cuda.dll bytes=145449984

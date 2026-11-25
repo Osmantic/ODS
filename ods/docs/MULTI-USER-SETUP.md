@@ -22,31 +22,21 @@ Without changes, a fresh install:
 - Has no reverse proxy and no TLS bundled — the installer doesn't ship a Caddy or nginx service.
 - Has no firewall help — `ufw`/`firewalld` is on you.
 
-The hardware guide claims 5–40 concurrent users by tier. Those numbers assume you've done the steps below. They are not what you get from a default install.
+ODS publishes no verified concurrent-user counts by hardware tier. Measure the chosen model, context, workload, and serving setup before promising capacity.
 
 ---
 
 ## The six steps
 
-### 1. Set `LLAMA_PARALLEL` (highest leverage)
+### 1. Verify request slots and context together
 
-This is the single most impactful knob. The default of 1 silently single-streams every additional user.
+The default `LLAMA_PARALLEL=1` serves one inference request at a time; additional requests queue. Settings displays the configured slot count but does not allow it to change independently of the managed context.
 
-```bash
-# in .env
-LLAMA_PARALLEL=8
-```
+In the Docker llama-server setup, Compose passes `CTX_SIZE` to `--ctx-size` and `LLAMA_PARALLEL` to `--parallel`. With separate KV allocation, the configured context is divided across slots. For example, `CTX_SIZE=65536` with two slots serves 32768 tokens per request. It does not provide 65536 tokens to each request. Verify actual allocation through `/props` and the startup `n_ctx_slot` log; engine versions and unified-KV configurations can differ.
 
-`docker-compose.base.yml` passes this directly to llama-server as `--parallel`. Each parallel slot pre-allocates KV cache, so total KV ≈ `LLAMA_PARALLEL × CTX_SIZE`. You're trading VRAM for concurrency — pick a value that fits your card after the model weights load. Rough starting points:
+Changing slots alone can leave the router and clients advertising a larger context than the engine serves. It can also change GPU offload and other memory allocations. Do not treat a slot increase as a quality-preserving speedup or use a generic per-tier slot recommendation.
 
-| Tier | Suggested `LLAMA_PARALLEL` |
-|---|---|
-| Entry (12 GB) | 2–3 |
-| Prosumer (16 GB) | 5–8 |
-| Pro (24 GB) | 10–15 |
-| Enterprise (2× 24 GB+) | 20+ |
-
-Verify: `docker compose logs llama-server | grep parallel` after restart.
+Existing advanced configurations remain readable and are not rewritten by this Settings restriction. A supported concurrency change needs a coordinated activation that validates memory, establishes per-request context, updates every consumer, verifies runtime allocation, and rolls back on failure. Model Manager currently has no slot-count control. Until that path is qualified, retain the installed slot configuration and measure queueing and successful-task latency under representative load.
 
 ### 2. Bind services to the network
 
@@ -54,7 +44,7 @@ Verify: `docker compose logs llama-server | grep parallel` after restart.
 ./install.sh --lan
 ```
 
-Or set `BIND_ADDRESS=0.0.0.0` in `.env` and run `ods restart`. `install-core.sh` maps `--lan` to that value, and the base plus extension compose port bindings use `${BIND_ADDRESS:-127.0.0.1}` — no per-service edits needed.
+Or set `BIND_ADDRESS=0.0.0.0` in `.env` and run `ods restart` (`.\ods.ps1 restart` on native Windows), which turns Open WebUI sign-in on before recreating it. `install-core.sh` maps `--lan` to that value, and the base plus extension compose port bindings use `${BIND_ADDRESS:-127.0.0.1}` — no per-service edits needed.
 
 ### 3. Add firewall rules
 
@@ -126,11 +116,13 @@ Be honest with your users about this:
 
 `open-webui` is the only service in the stack with a real multi-user account model — chat history is per-account. If your users only interact via open-webui, the sharing problems above mostly don't surface.
 
+ODS keeps open-webui's self-signup closed. The first account created on a new install with `WEBUI_AUTH=true` becomes the administrator, who creates each user's account in **Admin Panel > Users**. Settings changed in open-webui's Admin Panel last until it restarts; see [Settings come from ODS](../extensions/services/open-webui/README.md#settings-come-from-ods).
+
 ---
 
 ## Capacity guidance
 
-[`HARDWARE-GUIDE.md`](HARDWARE-GUIDE.md) has the canonical per-tier user counts. Treat them as ceilings that assume the steps above are done. A default install on a Pro-tier machine will not serve 10–15 users — it will serve one at a time. The same machine *with* `LLAMA_PARALLEL=12`, network bind, and the relevant firewall rules will get close.
+ODS publishes no per-tier user counts; measure on your own hardware (`ods benchmark`) before you promise a capacity. A default install serves one request at a time (`LLAMA_PARALLEL=1`). Network access and concurrent inference are separate requirements; exposing a service does not establish its capacity or preserve per-request context.
 
 ---
 
@@ -138,7 +130,7 @@ Be honest with your users about this:
 
 ### Small team on the same LAN
 
-1. `LLAMA_PARALLEL` set per the table above.
+1. Retain the installed slot configuration and measure queueing at the team's expected load.
 2. `./install.sh --lan` + `ufw` rules locked to your subnet.
 3. `DASHBOARD_API_KEY` set in `.env`.
 4. Expose only `open-webui` to users; keep the rest at the firewall.
@@ -146,7 +138,7 @@ Be honest with your users about this:
 
 ### Remote access for a distributed team
 
-1. Same `LLAMA_PARALLEL` and `DASHBOARD_API_KEY` setup.
+1. Same measured serving configuration and `DASHBOARD_API_KEY` setup.
 2. `BIND_ADDRESS=0.0.0.0` so the Tailscale interface is reachable.
 3. Install Tailscale on the host; add team members to the tailnet.
 4. Users hit `http://<tailscale-name>:3000` for open-webui. No public DNS, no certs, no nginx.
@@ -170,21 +162,21 @@ A real public-facing deployment along these lines (multi-tile chat / search / vi
 
 Run through this before declaring multi-user ready:
 
-- [ ] `LLAMA_PARALLEL` set in `.env` and confirmed in llama-server logs.
+- [ ] Actual per-request context and slot count verified in `/props` and consistent with router and client limits.
 - [ ] `DASHBOARD_API_KEY` set in `.env` (not auto-generated).
 - [ ] `BIND_ADDRESS` set appropriately; `ods restart` run after the change.
 - [ ] Firewall rules limit each open port to the intended subnet or VPN interface.
 - [ ] Dashboard, dashboard-api, n8n, opencode are *not* reachable from the user-facing network.
 - [ ] open-webui has `WEBUI_AUTH=true` (the network-deployment default) and a strong `WEBUI_SECRET`.
-- [ ] Inference backend matches user count: llama-server up to ~10–15, vLLM beyond.
+- [ ] Inference backend selected using measured latency, successful-task throughput, and quality under load.
 - [ ] Reverse proxy or VPN in place for any remote access.
-- [ ] Capacity claim from `HARDWARE-GUIDE.md` reality-checked under load before announcing.
+- [ ] Capacity measured under load on this hardware before announcing.
 
 ---
 
 ## Future work
 
-The single highest-leverage change ODS itself could make: **tier-aware default values for `LLAMA_PARALLEL`** in the installer (`installers/lib/tier-map.sh`), so a Prosumer install lands at `LLAMA_PARALLEL=6` automatically and a Pro install at `LLAMA_PARALLEL=12`. That would close most of the gap between the hardware-guide capacity claims and what a default install actually delivers.
+A coordinated slot/context activation should preserve the requested per-user context, validate memory for the full allocation, synchronize clients, verify the live engine, and restore the previous setup on failure. Compare successful-task latency, throughput, and quality before choosing any new default. Increasing slots by hardware tier alone does not establish a safe configuration.
 
 This guide deliberately stops at documenting the current state. The installer-side change touches tier-mapping logic, which is core, and per the contribution policy that warrants a discussion issue before a PR. If a maintainer is interested, that's the natural next thread.
 
@@ -196,6 +188,6 @@ The configuration values, exposure-profile recommendations, and capacity caveats
 
 1. The ODS codebase as of `origin/main` at the time of writing — `install-core.sh`, `docker-compose.base.yml`, `SECURITY.md`, `HARDWARE-GUIDE.md`, and the relevant extension manifests.
 2. A public-facing multi-tile demo deployment validated for ~hundreds of unique visitors and peaks above 60 concurrent on a single Blackwell-class workstation (the source of the vLLM, Brave Search, and "rate-limit at the proxy, not in the app" recommendations in the public-facing pattern).
-3. The community capacity numbers documented in `HARDWARE-GUIDE.md` and `FAQ.md`, which originate from a 2× RTX 4090 reference rig.
+3. Community capacity numbers from a 2× RTX 4090 reference rig, formerly published in `HARDWARE-GUIDE.md` and `FAQ.md`. They were retired on 2026-10-03 because no measurements were published behind them.
 
 None of these are universal. Treat the guide as a starting recipe, not a benchmark.

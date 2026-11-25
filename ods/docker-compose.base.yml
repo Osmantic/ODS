@@ -25,17 +25,28 @@ services:
     image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53}
     container_name: ods-llama-server
     restart: unless-stopped
+    # Normalize reasoning modes on every launch, including CLI restarts,
+    # model switches and direct Compose use. The wrapper execs the server.
+    entrypoint: ["/bin/sh", "/opt/ods/llama-server-entrypoint.sh"]
     # config/llama-server/models.ini is not mounted: llama-server reads a
     # preset file only with --models-preset (router mode), which ODS does not
     # use; the model comes from --model below. ODS still writes models.ini as
     # a record of the active model.
     volumes:
       - ./data/models:/models:z
+      # Fixed chat templates ODS vendors from llama.cpp (any-model WP5), read
+      # only when LLAMA_ARG_CHAT_TEMPLATE_FILE below names one.
+      - ./config/chat-templates:/chat-templates:ro,z
+      - ./extensions/services/llama-server/llama-server-entrypoint.sh:/opt/ods/llama-server-entrypoint.sh:ro,z
     ports:
       - "127.0.0.1:${OLLAMA_PORT:-11434}:8080"
     command:
       - --model
       - /models/${GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}
+      # The served model id is the GGUF file name on every runtime, so
+      # /v1/models, model-state and every consumer use one identity.
+      - --alias
+      - ${GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}
       - --host
       - 0.0.0.0
       - --port
@@ -75,10 +86,26 @@ services:
       # 8192). CPU runtime profiles cap both; unset keeps llama.cpp defaults.
       - LLAMA_ARG_CTX_CHECKPOINTS
       - LLAMA_ARG_CACHE_RAM
+      # Optional operator-level container tuning. Passed through only when set
+      # (no empty-string default): llama.cpp parses both as integers and exits
+      # on a blank value. These apply to container launches only and must be
+      # revalidated after a model switch.
+      - LLAMA_ARG_UBATCH
+      - LLAMA_ARG_FIT_TARGET
+      # Vision projector of an imported model (/models/<mmproj file>). Set by
+      # model activation for models that bring one and removed otherwise;
+      # passed through only when set, so text models load without it.
+      - LLAMA_ARG_MMPROJ
+      # A fixed chat template (/chat-templates/upstream-b<build>/<name>.jinja)
+      # for a model whose own template is known to be broken. Set by model
+      # activation only on an exact template-hash match and removed for every
+      # other model; passed through only when set (an empty value would make
+      # llama.cpp fail to open a file named "").
+      - LLAMA_ARG_CHAT_TEMPLATE_FILE
       # Per-model speculative decoding (e.g. draft-mtp from a runtime
       # profile). Passed through only when set; the NVIDIA and CPU overlays
-      # default it to ${LLAMA_SPEC_TYPE:-ngram-mod}. The AMD (Lemonade), Intel,
-      # Arc and Apple overlays add no default.
+      # default it to ${LLAMA_SPEC_TYPE:-ngram-mod}. The AMD, Intel, Arc and
+      # Apple overlays add no default.
       - LLAMA_ARG_SPEC_TYPE
       - LLAMA_ARG_SPEC_DRAFT_N_MAX
       # Draft-model KV cache types (--spec-draft-type-k/-v). These are the
@@ -86,6 +113,9 @@ services:
       # LLAMA_ARG_SPEC_DRAFT_TYPE_K/V instead and pass them as flags.
       - LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K
       - LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V
+      # Opt-in diagnostics normalized to --log-verbosity by the entrypoint.
+      # Bare pass-through: unset keeps the upstream default.
+      - LLAMA_LOG_VERBOSITY
     security_opt:
       - no-new-privileges:true
     logging: *default-logging
@@ -102,39 +132,66 @@ services:
   # Chat UI
   # ============================================
   open-webui:
-    image: ghcr.io/open-webui/open-webui:v0.7.2@sha256:16d9a3615b45f14a0c89f7ad7a3bf151f923ed32c2e68f9204eb17d1ce40774b
+    image: ghcr.io/open-webui/open-webui:v0.11.4@sha256:9591b13f13843c7721c2b8eaf7382846c81b3ffe126526d1888d1fed50c6a33f
     container_name: ods-webui
     restart: unless-stopped
     logging: *default-logging
     security_opt:
       - no-new-privileges:true
+    # openwebui-prepare.py copies the database aside before a new Open WebUI
+    # version migrates it, and refuses a start that would leave it
+    # half-migrated. The wrapper then runs the image's own start command, which
+    # must be restated because Docker drops the image CMD when `entrypoint:` is
+    # set. The image's working directory (/app/backend) and user are kept.
+    entrypoint: ["/bin/sh", "/opt/ods/openwebui-entrypoint.sh"]
+    command: ["bash", "start.sh"]
     environment:
+      # ODS owns Open WebUI's settings: they are read from this environment at
+      # every start, so mode switches, Pixel, key rotation and the Dashboard
+      # Settings page keep applying. Without this, Open WebUI 0.10 and later
+      # writes every setting into webui.db on its first start and ignores later
+      # changes. Changes made in Open WebUI's admin panel last until it restarts.
+      ENABLE_PERSISTENT_CONFIG: "false"
+      # Nothing stores "signup closed" any more, so it is set here. Open WebUI
+      # still lets the first account sign up and makes it the administrator;
+      # administrators add the other accounts in Admin Panel > Users.
+      ENABLE_SIGNUP: "false"
       ENABLE_OLLAMA_API: "false"
+      # ODS pins and updates Open WebUI itself; the upstream "new version"
+      # check only calls GitHub and advertises releases ODS has not qualified.
+      ENABLE_VERSION_UPDATE_CHECK: "false"
+      # Arbitrary local models may answer chat but fail native tool calling.
+      # Explicit per-model or chat Native settings override this default.
+      DEFAULT_MODEL_PARAMS: '{"function_calling":"legacy"}'
       # Switchboard: OPEN_WEBUI_LLM_BASE_URL overrides to the LiteLLM gateway
       # (ods/current) in enabled mode; default is byte-identical to the prior
       # direct llama-server route for legacy/observe.
       OPENAI_API_BASE_URL: "${OPEN_WEBUI_LLM_BASE_URL:-${LLM_API_URL:-http://llama-server:8080}/v1}"
       OPENAI_API_KEY: "${OPEN_WEBUI_LLM_API_KEY:-}"
+      # openwebui-model-list.py applies the LiteLLM config choice to the model
+      # picker; same defaults as the LiteLLM service.
+      ODS_MODE: "${ODS_MODE:-local}"
+      ODS_MODEL_SWITCHBOARD: "${ODS_MODEL_SWITCHBOARD:-enabled}"
       # PWA / branding — surfaces as the app title, page title, and PWA install name.
       # When a user adds ODS to their home screen, this is the label they see
       # next to the ODS icon. Defaults to "ODS"; users can override per-install.
       WEBUI_NAME: "${WEBUI_NAME:-ODS}"
-      # Public URL Open WebUI uses for share links, OAuth callbacks, and PWA
-      # install metadata. This value is persistent inside Open WebUI's config
-      # database (https://docs.openwebui.com/getting-started/env-configuration/#webui_url),
-      # so seeding a URL that doesn't actually resolve will bake bad share
-      # links into the install.
-      #
       # Optional public URL Open WebUI uses for share links, OAuth callbacks,
       # and PWA install metadata. Leave empty for traditional localhost usage.
+      # Share links carry it, so set it only to a URL that actually resolves.
       # Headless/proxy installs should set WEBUI_URL to the real reachable chat
       # origin, usually http://chat.${ODS_DEVICE_NAME:-ods}.local once
       # ods-proxy and mDNS are enabled. Tailscale/Cloudflare/custom domains
       # should set this to the tunnel URL instead.
       WEBUI_URL: "${WEBUI_URL:-}"
       WEBUI_AUTH: "${WEBUI_AUTH:-true}"
+      # The address Open WebUI is published on (`ports:` below). The start-up
+      # wrapper turns sign-in on whenever it is not loopback, whatever .env
+      # says, so every way of recreating this container gets the same rule.
+      ODS_WEBUI_BIND_ADDRESS: "${BIND_ADDRESS:-127.0.0.1}"
       WEBUI_SECRET_KEY: "${WEBUI_SECRET:?WEBUI_SECRET must be set — run the installer or add it to .env}"
       ENABLE_WEB_SEARCH: "${ENABLE_WEB_SEARCH:-false}"
+      BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL: "${BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL:-false}"
       WEB_SEARCH_ENGINE: "searxng"
       SEARXNG_QUERY_URL: "http://searxng:8080/search?q=<query>&format=json"
       ENABLE_SEARCH_QUERY_GENERATION: "${ENABLE_WEB_SEARCH:-false}"
@@ -143,8 +200,8 @@ services:
       # Otherwise Open WebUI downloads sentence-transformers/all-MiniLM-L6-v2
       # during app startup, which can block fresh installs before port 8080 binds.
       RAG_EMBEDDING_ENGINE: "${RAG_EMBEDDING_ENGINE:-openai}"
-      # Use the exact model served by bundled TEI as Open WebUI's first-boot
-      # default. Existing Open WebUI ConfigVars remain database-backed.
+      # Use the exact model served by bundled TEI. Open WebUI reads it at every
+      # start (ENABLE_PERSISTENT_CONFIG above).
       RAG_EMBEDDING_MODEL: "${RAG_EMBEDDING_MODEL:-${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}}"
       RAG_OPENAI_API_BASE_URL: "${RAG_OPENAI_API_BASE_URL:-http://embeddings:80/v1}"
       RAG_OPENAI_API_KEY: "${RAG_OPENAI_API_KEY:-}"
@@ -156,10 +213,12 @@ services:
       # users would otherwise hit a missing-engine error from Open WebUI.
       ENABLE_IMAGE_GENERATION: "${ENABLE_IMAGE_GENERATION:-false}"
       IMAGE_GENERATION_ENGINE: "comfyui"
-      COMFYUI_BASE_URL: "http://comfyui:8188"
-      IMAGE_SIZE: "1024x1024"
-      IMAGE_STEPS: "4"
-      IMAGE_GENERATION_MODEL: "sdxl_lightning_4step.safetensors"
+      # Owner-settable in .env (Settings applies them by recreating Open WebUI).
+      # The workflow below stays fixed; IMAGE_GENERATION_MODEL fills its loader.
+      COMFYUI_BASE_URL: "${COMFYUI_BASE_URL:-http://comfyui:8188}"
+      IMAGE_SIZE: "${IMAGE_SIZE:-1024x1024}"
+      IMAGE_STEPS: "${IMAGE_STEPS:-4}"
+      IMAGE_GENERATION_MODEL: "${IMAGE_GENERATION_MODEL:-sdxl_lightning_4step.safetensors}"
       COMFYUI_WORKFLOW: >-
         {"3":{"inputs":{"seed":42,"steps":4,"cfg":1.5,"sampler_name":"euler","scheduler":"sgm_uniform","denoise":1.0,"model":["4",0],"positive":["6",0],"negative":["7",0],"latent_image":["5",0]},"class_type":"KSampler"},
         "4":{"inputs":{"ckpt_name":"sdxl_lightning_4step.safetensors"},"class_type":"CheckpointLoaderSimple"},
@@ -190,6 +249,9 @@ services:
       TZ: "${TIMEZONE:-UTC}"
     volumes:
       - ./data/open-webui:/app/backend/data:z
+      - ./extensions/services/open-webui/openwebui-entrypoint.sh:/opt/ods/openwebui-entrypoint.sh:ro,z
+      - ./extensions/services/open-webui/openwebui-prepare.py:/opt/ods/openwebui-prepare.py:ro,z
+      - ./extensions/services/open-webui/openwebui-model-list.py:/opt/ods/openwebui-model-list.py:ro,z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${WEBUI_PORT:-3000}:8080"
     deploy:
@@ -218,6 +280,11 @@ services:
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # remote-provider is internal, so ods-network stays this container's
+    # default route; config.py finds the host agent through that gateway.
+    networks:
+      - default
+      - remote-provider
     ports:
       - "127.0.0.1:${DASHBOARD_API_PORT:-3002}:3002"
     security_opt:
@@ -228,11 +295,20 @@ services:
       - ODS_DATA_DIR=/data
       - ODS_EXTENSIONS_LIBRARY_DIR=/data/extensions-library
       - ODS_MODE=${ODS_MODE:-local}
+      # Service status reads this live from .env. An install owner other than
+      # UID 1000 leaves the 0600 .env unreadable here, and the status must then
+      # fall back to this copy instead of counting Open WebUI as a core service down.
+      - ENABLE_OPEN_WEBUI=${ENABLE_OPEN_WEBUI:-true}
+      # The same fallback keeps --offline's switch off the GitHub release check.
+      - DISABLE_UPDATE_CHECK=${DISABLE_UPDATE_CHECK:-false}
       - ODS_AGENT_HOST=${ODS_AGENT_HOST:-}
       - ODS_AGENT_PORT=${ODS_AGENT_PORT:-7710}
       - GPU_BACKEND=${GPU_BACKEND:-nvidia}
       - GPU_COUNT=${GPU_COUNT:-1}
       - GPU_ASSIGNMENT_JSON_B64=${GPU_ASSIGNMENT_JSON_B64:-}
+      # The GPU page leaves CPU Whisper off its assigned GPU; the same
+      # unreadable-.env fallback as ENABLE_OPEN_WEBUI above.
+      - WHISPER_ACCELERATION=${WHISPER_ACCELERATION:-}
       - LLAMA_ARG_SPLIT_MODE=${LLAMA_ARG_SPLIT_MODE:-}
       - LLAMA_ARG_TENSOR_SPLIT=${LLAMA_ARG_TENSOR_SPLIT:-}
       - HOST_RAM_GB=${HOST_RAM_GB:-0}
@@ -241,8 +317,10 @@ services:
       - LLM_BACKEND=${LLM_BACKEND:-}
       - AMD_INFERENCE_LOCATION=${AMD_INFERENCE_LOCATION:-}
       - AMD_INFERENCE_PORT=${AMD_INFERENCE_PORT:-8080}
-      - LEMONADE_CONTAINER_BASE_URL=${LEMONADE_CONTAINER_BASE_URL:-}
-      - LEMONADE_BASE_URL=${LEMONADE_BASE_URL:-}
+      # Origin of an ODS-managed llama-server outside this stack (Windows
+      # Portal), as seen from containers and from the host. Empty otherwise.
+      - NATIVE_LLM_CONTAINER_BASE_URL=${NATIVE_LLM_CONTAINER_BASE_URL:-}
+      - NATIVE_LLM_BASE_URL=${NATIVE_LLM_BASE_URL:-}
       - OLLAMA_URL=${LLM_API_URL:-http://llama-server:8080}
       - LLM_MODEL=${LLM_MODEL:-qwen3:30b-a3b}
       - GGUF_FILE=${GGUF_FILE:-}
@@ -253,7 +331,6 @@ services:
       - ODS_ROUTER_INTERNAL_KEY=${ODS_ROUTER_INTERNAL_KEY:-}
       - MODEL_ROUTER_URL=http://model-router:9099
       - SHIELD_API_KEY=${SHIELD_API_KEY:-}
-      - OPENCLAW_TOKEN=${OPENCLAW_TOKEN:-}
       - TOKEN_SPY_URL=${TOKEN_SPY_URL:-http://token-spy:8080}
       - TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY:-}
       # Signing secret for ods-session cookies. session_signer.py reads
@@ -284,9 +361,9 @@ services:
       # ODS Talk's image-attachment endpoint calls the vision backend
       # directly (bypassing litellm because litellm's wildcard model
       # routing collapses our model id down to whatever's loaded).
-      # Defaults point at the Lemonade/llama-server OpenAI-compatible base URL
-      # on the internal docker network — no auth needed there. Operators with
-      # an external vision server set ODS_TALK_VISION_URL +
+      # Defaults point at the llama-server OpenAI-compatible base URL on the
+      # internal docker network — no auth needed there. Operators with an
+      # external vision server set ODS_TALK_VISION_URL +
       # ODS_TALK_VISION_KEY.
       - ODS_TALK_VISION_URL=${ODS_TALK_VISION_URL:-http://llama-server:8080${LLM_API_BASE_PATH:-/v1}}
       - ODS_TALK_VISION_KEY=${ODS_TALK_VISION_KEY:-}
@@ -303,9 +380,10 @@ services:
       - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH:-}
       - HERMES_DASHBOARD_OAUTH_CLIENT_ID=${HERMES_DASHBOARD_OAUTH_CLIENT_ID:-}
       - HERMES_DASHBOARD_OIDC_CLIENT_ID=${HERMES_DASHBOARD_OIDC_CLIENT_ID:-}
-      # Model id of the vision-capable variant. Defaults to the user.*
-      # name we register on AMD install (Qwen3.6-35B-A3B + mmproj-F16).
-      - ODS_TALK_VISION_MODEL=${ODS_TALK_VISION_MODEL:-user.Qwen3.6-35B-A3B-Vision}
+      # Model id for image attachments. Empty means the active model: there is
+      # no separately registered vision model on any runtime. Set it only
+      # together with ODS_TALK_VISION_URL for an external vision server.
+      - ODS_TALK_VISION_MODEL=${ODS_TALK_VISION_MODEL:-}
     volumes:
       # .env is atomically replaced; mounting the parent keeps updates visible.
       - ./:/ods:ro,z
@@ -387,6 +465,12 @@ services:
     restart: unless-stopped
     expose:
       - "8091"
+    # Not on ods-network: only LiteLLM and dashboard-api share the internal
+    # remote-provider network, and the outbound network carries provider
+    # traffic. Extensions on ods-network cannot reach this service.
+    networks:
+      - remote-provider
+      - remote-provider-outbound
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -403,6 +487,8 @@ services:
       - ODS_REMOTE_PROVIDER_ROUTE_PATH=/state/remote-provider/routing-state.json
       - ODS_REMOTE_PROVIDER_POLICY_PATH=/config/remote-provider-egress-policy.json
       - ODS_REMOTE_PROVIDER_API_KEY_FILE=/state/remote-provider/secrets/provider-api-key
+      # Callers must present the LiteLLM gateway key (LiteLLM, dashboard-api).
+      - ODS_REMOTE_PROVIDER_CALLER_KEY=${LITELLM_KEY:-}
       - ODS_REMOTE_PROVIDER_MAX_BODY_BYTES=${ODS_REMOTE_PROVIDER_MAX_BODY_BYTES:-4194304}
       - ODS_REMOTE_PROVIDER_UPSTREAM_TIMEOUT=${ODS_REMOTE_PROVIDER_UPSTREAM_TIMEOUT:-600}
       - ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_URL=${ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_URL:-http://remote-provider-ssh-tunnel:18090/health}
@@ -439,6 +525,11 @@ services:
       - "18090"
       - "18091"
       - "18092"
+    # Its SSH forwards are plain TCP with no caller check, so they must not be
+    # reachable from ods-network; see remote-provider-egress.
+    networks:
+      - remote-provider
+      - remote-provider-outbound
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -518,3 +609,12 @@ services:
 networks:
   default:
     name: ods-network
+  # The remote-provider egress boundary. Internal, so it never becomes a
+  # member's default route; only LiteLLM, dashboard-api, the egress and the
+  # SSH tunnel join it, and extensions may not (shared compose policy).
+  remote-provider:
+    name: ods-remote-provider
+    internal: true
+  # Internet access for the egress and the SSH tunnel only.
+  remote-provider-outbound:
+    name: ods-remote-provider-outbound

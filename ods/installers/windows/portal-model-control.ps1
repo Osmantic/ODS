@@ -1,6 +1,8 @@
 # JSON-only, finite controller. No daemon and no implicit runtime adoption.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# WSL interop may preserve a PS7 parent's module path; normalize only this PS5 child.
+if ($PSVersionTable.PSEdition -eq 'Desktop') { $env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules') }
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 . (Join-Path $PSScriptRoot 'lib/portal-model-control.ps1')

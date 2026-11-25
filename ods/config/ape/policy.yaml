@@ -63,11 +63,6 @@ intents:
       - /opt/data/sessions      # per-session chat history
       - /opt/data/cron          # scheduled task definitions
       - /opt/data/plans         # active multi-step plans
-      # OpenClaw (deprecated; paths retained until removal release so existing
-      # installs with openclaw still enabled keep working). Drop these when
-      # the openclaw extension is removed in the next release.
-      - /home/node/.openclaw/workspace
-      - /tmp/openclaw
 
   ReadFile:
     mode: allow

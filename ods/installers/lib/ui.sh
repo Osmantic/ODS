@@ -25,7 +25,7 @@
 DIVIDER="──────────────────────────────────────────────────────────────────────────────"
 
 # Resolve presentation separately from install interactivity. The cinematic UI
-# is for a human at a real terminal; pipes, CI, Tauri, and unattended installs
+# is for a human at a real terminal; pipes, CI, GUI front ends, and unattended installs
 # get stable one-line output with no cursor motion or screen clearing.
 ods_ui_cinematic() {
   case "${ODS_UI_MODE:-auto}" in
@@ -140,7 +140,7 @@ ui_status_line() {
     *)     color="$GRN";  marker='>'; label='INFO' ;;
   esac
   if ods_ui_cinematic; then
-    printf '\r  %b%s%b %-60s\n' "$color" "$marker" "$NC" "$message"
+    printf '\r\033[K  %b%s%b %-60s\n' "$color" "$marker" "$NC" "$message"
   else
     printf '  [%s] %s\n' "$label" "$message"
   fi
@@ -235,7 +235,7 @@ ods_select_lore_messages() {
   fi
   case "${ODS_MODE:-local}" in
     cloud) LORE_MESSAGES=("${ODS_CLOUD_LORE_MESSAGES[@]}") ;;
-    lemonade|external) LORE_MESSAGES=("${ODS_EXTERNAL_LORE_MESSAGES[@]}") ;;
+    external) LORE_MESSAGES=("${ODS_EXTERNAL_LORE_MESSAGES[@]}") ;;
     *) LORE_MESSAGES=("${ODS_LOCAL_LORE_MESSAGES[@]}") ;;
   esac
 }
@@ -303,28 +303,94 @@ cancel_active_download() {
   ODS_ACTIVE_DOWNLOAD_PID=""
 }
 
+# Fit visible text without splitting UTF-8 characters or emitting terminal controls.
+# Non-ASCII characters count as two cells, deliberately conservative for combining
+# marks and accented text. The C-locale fallback replaces non-ASCII bytes with '?'.
+# Assign the result directly so each frame does not fork a shell for clipping.
+ods_hud_fit() {
+  local text="$1" limit="$2" char width used=0 fitted='' shortened='' index
+  local LC_COLLATE=C locale_name="${LC_ALL:-${LC_CTYPE:-${LANG:-C}}}" unicode=false
+  ODS_HUD_FIT=''
+  [[ "$limit" =~ ^[0-9]{1,5}$ ]] || return 0
+  limit=$((10#$limit))
+  (( limit > 0 )) || return 0
+  case "$locale_name" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) unicode=true ;; esac
+  if [[ "$unicode" != true ]]; then
+    local LC_ALL=C
+  fi
+  for ((index=0; index<${#text}; index++)); do
+    char="${text:index:1}"
+    case "$char" in
+      [[:cntrl:]]) char='?'; width=1 ;;
+      [\ -~]) width=1 ;;
+      *)
+        if [[ "$unicode" == true ]]; then width=2; else char='?'; width=1; fi
+        ;;
+    esac
+    if (( used + width > limit )); then
+      ODS_HUD_FIT="${shortened}~"
+      return 0
+    fi
+    fitted+="$char"
+    used=$((used + width))
+    if (( used < limit )); then shortened="$fitted"; fi
+  done
+  ODS_HUD_FIT="$fitted"
+}
+
+# Read the output terminal, even if stdin is redirected. A redirected cinematic
+# test can supply COLUMNS; ordinary redirected installs use the plain branch.
+ods_hud_columns() {
+  local dimensions='' columns="${COLUMNS:-80}"
+  if [[ -t 1 ]]; then
+    { dimensions=$(stty size <&3 2>/dev/null) || dimensions=''; } 3<&1
+    [[ -z "$dimensions" ]] || columns="${dimensions#* }"
+  fi
+  if [[ "$columns" =~ ^[0-9]{1,5}$ ]] && (( 10#$columns > 0 )); then
+    ODS_HUD_COLUMNS=$((10#$columns))
+  else
+    ODS_HUD_COLUMNS=80
+  fi
+}
+
+# The live counter spin_task shows: the reader function's text when one is
+# given, else the .part file's bytes against the expected size.
+_ods_spin_counter() {
+  local progress_part="$1" progress_total_mb="$2" progress_reader="$3"
+  if [[ -n "$progress_reader" ]]; then
+    "$progress_reader"
+  else
+    format_download_progress "$(download_part_bytes "$progress_part")" "$progress_total_mb"
+  fi
+}
+
 # Spinner with mm:ss timer + lore messages every 8 seconds.
 # Optional args 3/4 turn the label into a live download counter: pass the .part
 # file the task is writing and the expected size in MB (0 when unknown). Without
-# them a long download is indistinguishable from a stalled one.
+# them a long download is indistinguishable from a stalled one. Optional arg 5
+# names a function that prints a short live status instead (a download of many
+# files, a model loading); pass "" and 0 for args 3/4 with it.
 spin_task() {
   local pid=$1
   local msg=$2
   local progress_part="${3:-}"
   local progress_total_mb="${4:-0}"
+  local progress_reader="${5:-}"
   local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
   local i=0
   local elapsed=0
   local lore_idx=0
+  local has_lore=0
+  local ODS_HUD_FIT='' ODS_HUD_COLUMNS=80
 
   ods_select_lore_messages
   if ! ods_ui_cinematic; then
     local plain_label="$msg"
-    if [[ -n "$progress_part" ]]; then
-      plain_label="$msg — $(format_download_progress "$(download_part_bytes "$progress_part")" "$progress_total_mb")"
+    if [[ -n "$progress_part" || -n "$progress_reader" ]]; then
+      plain_label="$msg — $(_ods_spin_counter "$progress_part" "$progress_total_mb" "$progress_reader")"
     fi
     printf "  ... %s\n" "$plain_label"
-    if [[ -n "$progress_part" ]]; then
+    if [[ -n "$progress_part" || -n "$progress_reader" ]]; then
       # Plain/redirected installs have no spinner: retain a bounded heartbeat
       # for large downloads instead of leaving the initial byte count frozen.
       while kill -0 "$pid" 2>/dev/null; do
@@ -333,7 +399,7 @@ spin_task() {
         if (( elapsed % 30 == 0 )); then
           printf "  ... [%02d:%02d] %s — %s\n" \
             "$((elapsed / 60))" "$((elapsed % 60))" "$msg" \
-            "$(format_download_progress "$(download_part_bytes "$progress_part")" "$progress_total_mb")"
+            "$(_ods_spin_counter "$progress_part" "$progress_total_mb" "$progress_reader")"
         fi
       done
     fi
@@ -342,24 +408,66 @@ spin_task() {
     return "$plain_rc"
   fi
 
-  printf "  ${GRN}⠋${NC} [00:00] %s " "$msg"
-  while kill -0 "$pid" 2>/dev/null; do
+  local timer prefix available lore='' fit_label locale_name counter title_budget
+  locale_name="${LC_ALL:-${LC_CTYPE:-${LANG:-C}}}"
+  case "$locale_name" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;; *) spin='|/-\' ;; esac
+  while :; do
     local mm=$((elapsed / 60))
     local ss=$((elapsed % 60))
     local label="$msg"
-    if [[ -n "$progress_part" ]]; then
-      label="$msg — $(format_download_progress "$(download_part_bytes "$progress_part")" "$progress_total_mb")"
+    counter=''
+    if [[ -n "$progress_part" || -n "$progress_reader" ]]; then
+      counter="$(_ods_spin_counter "$progress_part" "$progress_total_mb" "$progress_reader")"
     fi
-    printf "\r  ${GRN}%s${NC} [%02d:%02d] %s " "${spin:$i:1}" "$mm" "$ss" "$label"
+    ods_hud_columns
+    printf -v timer '[%02d:%02d]' "$mm" "$ss"
+    prefix="  ${spin:$i:1} $timer "
+    available=$((ODS_HUD_COLUMNS - 1 - ${#prefix}))
+    if (( available >= 0 )); then
+      if [[ -n "$counter" ]]; then
+        # Keep the live byte/percentage counter visible before spending the
+        # remaining cells on a potentially long model filename.
+        title_budget=$((available - ${#counter} - 4))
+        if (( title_budget > 0 )); then
+          ods_hud_fit "$msg" "$title_budget"
+          label="$ODS_HUD_FIT — $counter"
+        else
+          label="$counter"
+          if (( ${#counter} > available )) && [[ "$counter" =~ \(([0-9]+)%\)$ ]]; then
+            label="${BASH_REMATCH[1]}%"
+          fi
+        fi
+      fi
+      ods_hud_fit "$label" "$available"
+      fit_label="$ODS_HUD_FIT"
+      printf "\r\033[K  ${GRN}%s${NC} %s %s" "${spin:$i:1}" "$timer" "$fit_label"
+    else
+      ods_hud_fit "$timer" "$((ODS_HUD_COLUMNS - 1))"
+      printf '\r\033[K%s' "$ODS_HUD_FIT"
+    fi
+    if [[ -n "$lore" ]]; then
+      available=$((ODS_HUD_COLUMNS - 11))
+      if (( available >= 0 )); then
+        ods_hud_fit "$lore" "$available"
+        printf "\n\033[K  ${DGRN}  « %s »${NC}\033[A\r" "$ODS_HUD_FIT"
+        has_lore=1
+      elif (( has_lore )); then
+        printf '\n\033[K\033[A\r'
+      fi
+    fi
+    kill -0 "$pid" 2>/dev/null || break
     i=$(( (i + 1) % ${#spin} ))
     elapsed=$((elapsed + 1))
-    # Show lore every 8 seconds
+    # Keep both physical rows within the terminal width, including on redraw.
     if (( elapsed > 0 && elapsed % 8 == 0 )); then
-      printf "\n  ${DGRN}  « %s »${NC}\n" "${LORE_MESSAGES[$lore_idx]}"
+      lore="${LORE_MESSAGES[$lore_idx]}"
       lore_idx=$(( (lore_idx + 1) % ${#LORE_MESSAGES[@]} ))
     fi
     sleep 1
   done
+  if (( has_lore )); then
+    printf "\n\033[K\033[A\r"
+  fi
   local rc=0
   wait "$pid" || rc=$?
   return $rc
@@ -596,22 +704,29 @@ check_service() {
   return 1
 }
 
-# Show hardware summary — CRT monospace box
+# Show hardware summary — memory arguments include their display units.
 show_hardware_summary() {
     local gpu_name="$1"
     local gpu_vram="$2"
     local cpu_info="$3"
     local ram_gb="$4"
     local disk_gb="$5"
+    local windows_ram="${6:-}"
+    local is_wsl="${7:-false}"
 
     echo ""
     echo -e "${GRN}+-------------------------------------------------------------+${NC}"
     echo -e "${GRN}|${NC}  ${BGRN}HARDWARE SCAN RESULTS${NC}                                      ${GRN}|${NC}"
     echo -e "${GRN}+-------------------------------------------------------------+${NC}"
     printf "${GRN}|${NC}  GPU:    %-50s ${GRN}|${NC}\n" "${gpu_name:-Not detected}"
-    [[ -n "$gpu_vram" ]] && printf "${GRN}|${NC}  VRAM:   %-50s ${GRN}|${NC}\n" "${gpu_vram}GB"
+    [[ -n "$gpu_vram" ]] && printf "${GRN}|${NC}  VRAM:   %-50s ${GRN}|${NC}\n" "$gpu_vram"
     printf "${GRN}|${NC}  CPU:    %-50s ${GRN}|${NC}\n" "${cpu_info:-Unknown}"
-    printf "${GRN}|${NC}  RAM:    %-50s ${GRN}|${NC}\n" "${ram_gb}GB"
+    if [[ "$is_wsl" == true ]]; then
+        printf "${GRN}|${NC}  Windows RAM: %-45s ${GRN}|${NC}\n" "${windows_ram:-Unavailable (Windows interop)}"
+        printf "${GRN}|${NC}  WSL RAM:     %-45s ${GRN}|${NC}\n" "$ram_gb"
+    else
+        printf "${GRN}|${NC}  RAM:    %-50s ${GRN}|${NC}\n" "$ram_gb"
+    fi
     printf "${GRN}|${NC}  Disk:   %-50s ${GRN}|${NC}\n" "${disk_gb}GB available"
     echo -e "${GRN}+-------------------------------------------------------------+${NC}"
 }
@@ -683,7 +798,6 @@ show_install_menu() {
             # --hermes/--no-hermes on the command line wins over the preset
             # (the Windows Pixel path passes --no-hermes).
             [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=true
-            [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
             ENABLE_OPENCODE=true
             [[ "${DEVTOOLS_EXPLICIT:-false}" == true ]] || ENABLE_DEVTOOLS=true
             ENABLE_COMFYUI=true
@@ -711,7 +825,6 @@ show_install_menu() {
             ENABLE_RAG=false
             ENABLE_RECOMMENDED=false
             [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=false
-            [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
             ENABLE_OPENCODE=false
             [[ "${DEVTOOLS_EXPLICIT:-false}" == true ]] || ENABLE_DEVTOOLS=false
             ENABLE_COMFYUI=false
@@ -735,7 +848,7 @@ show_install_menu() {
 show_success_card() {
     local webui_url=$1
     local dashboard_url=$2
-    local ip_addr=$3
+    local lan_address=$3  # host:port other devices can reach, or empty
 
     if ods_ui_cinematic; then
         printf '\a'  # terminal bell only for a human terminal
@@ -756,9 +869,9 @@ show_success_card() {
         printf "${GRN}|${NC}   Chat:        ${WHT}%-43s${NC} ${GRN}|${NC}\n" "${webui_url}"
     fi
     echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
-    if [[ -n "$ip_addr" ]]; then
+    if [[ -n "$lan_address" ]]; then
         echo -e "${GRN}|${NC}   ${AMB}Access from other devices:${NC}                               ${GRN}|${NC}"
-        printf "${GRN}|${NC}   ${WHT}http://%-51s${NC} ${GRN}|${NC}\n" "${ip_addr}:3001"
+        printf "${GRN}|${NC}   ${WHT}http://%-51s${NC} ${GRN}|${NC}\n" "${lan_address}"
         echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
     fi
     echo -e "${GRN}+--------------------------------------------------------------+${NC}"
@@ -772,7 +885,7 @@ show_success_card() {
             type_line "Cloud mode is active; your configured providers may receive prompts and responses." "$DGRN" 0.04
             type_line "Review provider privacy, retention, and usage terms before sending sensitive data." "$DGRN" 0.04
             ;;
-        lemonade|external)
+        external)
             type_line "Inference uses the external endpoint you configured." "$DGRN" 0.04
             type_line "Traffic handling depends on that endpoint and its operator." "$DGRN" 0.04
             ;;

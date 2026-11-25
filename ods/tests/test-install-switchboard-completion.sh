@@ -7,7 +7,15 @@ line="$(ods_readiness_model_line 8080 /health ods-llama-server 4000)"
 [[ "$line" == *'|model-route' ]]
 curl() {
     [[ "$*" == *'/v1/model/status'* ]] && { printf '{}'; return 0; }
-    [[ "$*" == *'ods/current'* && "$*" == *'Bearer test-key'* ]] || return 1
+    # The key reaches curl in a header file (-H @file), never as an argument.
+    [[ "$*" != *test-key* ]] || return 1
+    local arg headers=""
+    for arg in "$@"; do
+        if [[ "$arg" == @* && "$arg" != @- ]]; then
+            headers+="$(cat "${arg#@}")"$'\n'
+        fi
+    done
+    [[ "$*" == *'ods/current'* && "$headers" == *'Authorization: Bearer test-key'* ]] || return 1
     printf '%s' "$RESPONSE"
     return "${CURL_STATUS:-0}"
 }

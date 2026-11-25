@@ -26,7 +26,14 @@ class ReleaseContract(unittest.TestCase):
             self.assertEqual(value[1], rows[0]['version'])
 
     def test_all_platform_launchers_enable_provider_scoped_search(self):
-        for file in ['opencode/opencode-web.service', 'installers/macos/install-macos.sh',
+        installer = (ROOT / 'installers/macos/install-macos.sh').read_text(encoding='utf-8')
+        self.assertIn('source "${LIB_DIR}/post-pixel-install.sh"', installer)
+        self.assertIn('    ods_macos_install_opencode\n', installer)
+        self.assertIn('\nods_macos_prepare_voice\n', installer)
+        self.assertIn('\nods_macos_configure_perplexica\n', installer)
+        self.assertLess(installer.index('if ! /usr/bin/python3 "$LIB_DIR/pixel-native-install.py"'),
+                        installer.index('    ods_macos_install_opencode\n'))
+        for file in ['opencode/opencode-web.service', 'installers/macos/lib/post-pixel-install.sh',
                      'installers/windows/phases/07-devtools.ps1']:
             text = (ROOT / file).read_text(encoding='utf-8')
             self.assertIn('OPENCODE_ENABLE_EXA', text)
@@ -34,7 +41,7 @@ class ReleaseContract(unittest.TestCase):
             self.assertNotIn('Environment=OPENCODE_WEBSEARCH_PROVIDER=', text)
             self.assertNotIn("`$env:OPENCODE_WEBSEARCH_PROVIDER =", text)
             self.assertNotIn('<key>OPENCODE_WEBSEARCH_PROVIDER</key>', text)
-        for file in ['installers/phases/07-devtools.sh', 'installers/macos/install-macos.sh']:
+        for file in ['installers/phases/07-devtools.sh', 'installers/macos/lib/post-pixel-install.sh']:
             text = (ROOT / file).read_text(encoding='utf-8')
             self.assertIn('ods_install_opencode', text)
             self.assertNotIn('https://opencode.ai/install', text)

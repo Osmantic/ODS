@@ -18,7 +18,7 @@ describe('Pixel workspace navigation', () => {
     expect(logo).toBeVisible()
     expect(screen.queryByRole('link', {name:'Pixel',exact:true})).toBeNull()
     expect(screen.queryByRole('link', {name:'Integrations',exact:true})).toBeNull()
-    expect(screen.queryByRole('link', {name:'Remote GPU',exact:true})).toBeNull()
+    expect(screen.queryByRole('link', {name:'Remote model',exact:true})).toBeNull()
     expect(screen.getByRole('link', {name:'Extensions',exact:true})).toBeVisible()
   })
   it('keeps the ODS dashboard separate from the conversational home', () => {

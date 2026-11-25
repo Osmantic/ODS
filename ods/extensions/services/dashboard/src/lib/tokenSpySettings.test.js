@@ -16,14 +16,14 @@ const html = execFileSync(process.platform === 'win32' ? 'python' : 'python3', [
 let browser
 afterEach(() => browser?.window.close())
 
-async function settingsPage(agents) {
+async function settingsPage(agents, extraSettings = {}) {
   browser = new JSDOM(html, { url: 'http://localhost', runScripts: 'outside-only' })
   const { window } = browser
   window.setInterval = vi.fn()
   window.setTimeout = vi.fn()
   const fetch = vi.fn(async (_url, options) => options?.method === 'POST'
     ? { ok: false, json: async () => ({ error: 'fixture: leave form open' }) }
-    : { status: 200, json: async () => ({ session_char_limit: 200000, poll_interval_minutes: 5, agents }) })
+    : { status: 200, json: async () => ({ session_char_limit: 200000, ...extraSettings, agents }) })
   window.fetch = fetch
   window.eval(window.document.scripts[1].textContent)
   await window.loadSettingsUI()
@@ -32,40 +32,38 @@ async function settingsPage(agents) {
 
 test('agents whose names normalize to the same DOM id retain separate overrides', async () => {
   const { window, fetch, groups } = await settingsPage({
-    'assistant-runner': { session_char_limit: 30000, poll_interval_minutes: 2 },
-    assistant_runner: { session_char_limit: 80000, poll_interval_minutes: 8 },
+    'assistant-runner': { session_char_limit: 30000 },
+    assistant_runner: { session_char_limit: 80000 },
   })
   expect(groups.map(group => [...group.querySelectorAll('input')].map(input => input.value)))
-    .toEqual([['30000', '2'], ['80000', '8']])
+    .toEqual([['30000'], ['80000']])
   groups[0].querySelector('input').value = '40000'
-  groups[1].querySelectorAll('input')[1].value = '9'
+  groups[1].querySelector('input').value = '90000'
   await window.saveSettings()
   const [, request] = fetch.mock.calls.find(([, options]) => options?.method === 'POST')
   expect(JSON.parse(request.body).agents).toEqual({
-    'assistant-runner': { session_char_limit: 40000, poll_interval_minutes: 2 },
-    assistant_runner: { session_char_limit: 80000, poll_interval_minutes: 9 },
+    'assistant-runner': { session_char_limit: 40000 },
+    assistant_runner: { session_char_limit: 90000 },
   })
 })
 
 test('display headings are not parsed back into agent identifiers', async () => {
   const agent = 'Daily Override helper'
   const { window, fetch, groups } = await settingsPage({
-    [agent]: { session_char_limit: null, poll_interval_minutes: 3 },
+    [agent]: { session_char_limit: 30000 },
   })
-  groups[0].querySelectorAll('input')[1].value = ''
+  groups[0].querySelector('input').value = ''
   await window.saveSettings()
   const [, request] = fetch.mock.calls.find(([, options]) => options?.method === 'POST')
   expect(JSON.parse(request.body)).toEqual({
-    session_char_limit: 200000, poll_interval_minutes: 5,
-    agents: { [agent]: { session_char_limit: null, poll_interval_minutes: null } },
+    session_char_limit: 200000,
+    agents: { [agent]: { session_char_limit: null } },
   })
 })
 
 test('agent names remain literal text and special object keys survive saving', async () => {
   const names = ['<em>Daily</em> & helper', '__proto__', 'constructor']
-  const agents = Object.fromEntries(names.map(name => [name, {
-    session_char_limit: 30000, poll_interval_minutes: 2,
-  }]))
+  const agents = Object.fromEntries(names.map(name => [name, { session_char_limit: 30000 }]))
   const { window, fetch, groups } = await settingsPage(agents)
   expect(groups.map(group => group.querySelector('h4').textContent))
     .toEqual(names.map(name => `${name} Override`))
@@ -73,4 +71,20 @@ test('agent names remain literal text and special object keys survive saving', a
   await window.saveSettings()
   const [, request] = fetch.mock.calls.find(([, options]) => options?.method === 'POST')
   expect(JSON.parse(request.body).agents).toEqual(agents)
+})
+
+test('a poll interval from an older Token Spy is neither shown nor saved back', async () => {
+  const { window, fetch } = await settingsPage(
+    { 'local-agent': { session_char_limit: 30000, poll_interval_minutes: 2 } },
+    { poll_interval_minutes: 5 },
+  )
+  const panel = window.document.getElementById('settings-panel')
+  expect(panel.querySelectorAll('input')).toHaveLength(2)
+  expect(panel.textContent).not.toMatch(/poll/i)
+  await window.saveSettings()
+  const [, request] = fetch.mock.calls.find(([, options]) => options?.method === 'POST')
+  expect(JSON.parse(request.body)).toEqual({
+    session_char_limit: 200000,
+    agents: { 'local-agent': { session_char_limit: 30000 } },
+  })
 })

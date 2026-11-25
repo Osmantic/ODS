@@ -1,6 +1,7 @@
 import {useEffect, useRef, useState} from 'react'
 import {ArrowLeft, ChevronRight, Circle, AlertCircle, Check, RotateCcw, Square, Users} from 'lucide-react'
 import {ACTIVE_TEAMS} from '../lib/portalTeams'
+import {embedDisplayText} from '../lib/embedDisplay'
 import {parseQuestions} from '../lib/pixelQuestions'
 import {MiniPortal} from './PortalAgentDock'
 import PixelQuestions from './PixelQuestions'
@@ -98,14 +99,14 @@ function AgentConversation({team,agent,index,controller,acting,perform,localErro
       <div className="portal-subagents-messages">
         {!transcript.length && (team.goal || agent.task) && <div className="portal-subagents-assignment"><span>Assignment</span><p>{text(team.goal) || text(agent.task)}</p>{team.goal && agent.task && <details><summary>Agent role</summary><p>{agent.task}</p></details>}</div>}
         {transcript.map((message,messageIndex) => <article key={messageIndex} className={`portal-subagents-message is-${message.role}`} aria-label={message.role === 'user' ? 'Assignment or reply' : `${agent.name} response`}>
-          <PortalStreamingText instant components={markdownComponents}>{message.content}</PortalStreamingText>
+          <PortalStreamingText instant components={markdownComponents}>{message.role === 'assistant' ? embedDisplayText(message.content) : message.content}</PortalStreamingText>
           {message.role === 'assistant' && <><PortalResponseActions content={message.content}/>{renderApproval?.(message.content)}</>}
         </article>)}
         {agent.status === 'queued' && <p className="portal-subagents-status">Waiting for its turn; it has not started.</p>}
         {agent.runtime_wait && <p className="portal-subagents-status">Waiting for the model runtime to become ready. No new work has been sent.</p>}
         <PortalGoalPlan task={agent.activity} active={active && !agent.runtime_wait}/>
         <PortalAgentActivity key={agent.activity?.runId || `${agent.id}:${agent.turn}`} task={agent.activity} active={active && !agent.runtime_wait} status={agent.status === 'failed' ? 'error' : ['cancelled','skipped','interrupted'].includes(agent.status) ? 'stopped' : undefined}/>
-        {output.trim() && !duplicateOutput && <article className="portal-subagents-message is-assistant" aria-label={`${agent.name} live response`}><PortalStreamingText active={active} onReveal={followOutput} components={markdownComponents}>{output}</PortalStreamingText>{!active && <PortalResponseActions content={output}/>}</article>}
+        {output.trim() && !duplicateOutput && <article className="portal-subagents-message is-assistant" aria-label={`${agent.name} live response`}><PortalStreamingText active={active} onReveal={followOutput} components={markdownComponents}>{embedDisplayText(output,{streaming:active})}</PortalStreamingText>{!active && <PortalResponseActions content={output}/>}</article>}
         {questions && <AgentQuestions key={`${team.id}:${agent.id}:${agent.turn}`} team={team} agent={agent} questions={questions} acting={acting} perform={perform} answer={controller.answer}/>}
         {error && <p className="portal-subagents-notice" role="alert"><AlertCircle size={14} aria-hidden="true"/>{error}</p>}
         {!transcript.length && !output.trim() && agent.status === 'completed' && <p className="portal-subagents-status">This agent finished without a recorded response.</p>}

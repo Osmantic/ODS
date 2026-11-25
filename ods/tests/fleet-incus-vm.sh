@@ -419,7 +419,7 @@ reboot_if_kernel_modules_changed() {
 extract_source() {
     rm -rf "$SRC_DIR"
     mkdir -p "$SRC_DIR"
-    tar -xzf /tmp/ods-src.tgz -C "$SRC_DIR"
+    tar -xzf /var/tmp/ods-src.tgz -C "$SRC_DIR"
     useradd -m -s /bin/bash odstest >/dev/null 2>&1 || true
     printf 'odstest ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/odstest
     chmod 0440 /etc/sudoers.d/odstest
@@ -474,8 +474,7 @@ run_installer_dry_run() {
             --no-workflows \
             --no-rag \
             --no-recommended \
-            --no-hermes \
-            --no-openclaw
+            --no-hermes
     '
     info "installer dry-run completed with Docker enabled"
 }
@@ -544,14 +543,15 @@ run_vm_check() {
     local vm="$1" lane="$2" installer_mode="$3"
     local boot_id rc
     boot_id="$(vm_boot_id "$vm")"
-    if incus exec "$vm" -- /tmp/fleet-incus-vm-check.sh "$lane" "${EXPECTED_PKG[$lane]}" "$installer_mode"; then
+    if incus exec "$vm" -- /var/tmp/fleet-incus-vm-check.sh "$lane" "${EXPECTED_PKG[$lane]}" "$installer_mode"; then
         return 0
+    else
+        rc=$?
     fi
-    rc=$?
     if [[ "$rc" -eq 75 ]]; then
         log "=== ${LABELS[$lane]} requested reboot after package updates ==="
         wait_for_reboot "$vm" "$boot_id"
-        incus exec "$vm" -- /tmp/fleet-incus-vm-check.sh "$lane" "${EXPECTED_PKG[$lane]}" "$installer_mode"
+        incus exec "$vm" -- /var/tmp/fleet-incus-vm-check.sh "$lane" "${EXPECTED_PKG[$lane]}" "$installer_mode"
         return $?
     fi
     return "$rc"
@@ -579,9 +579,10 @@ run_lane() {
     incus start "$vm"
 
     wait_for_exec "$vm"
-    incus file push "$PAYLOAD" "$vm/tmp/ods-src.tgz"
-    incus file push "$VM_CHECK" "$vm/tmp/fleet-incus-vm-check.sh"
-    incus exec "$vm" -- chmod +x /tmp/fleet-incus-vm-check.sh
+    # /tmp can be tmpfs; both files must survive a kernel-update reboot.
+    incus file push "$PAYLOAD" "$vm/var/tmp/ods-src.tgz"
+    incus file push "$VM_CHECK" "$vm/var/tmp/fleet-incus-vm-check.sh"
+    incus exec "$vm" -- chmod +x /var/tmp/fleet-incus-vm-check.sh
     run_vm_check "$vm" "$lane" "$installer_mode" || check_rc=$?
     if ((check_rc != 0)); then
         fail "${LABELS[$lane]} VM validation failed (rc=$check_rc)"

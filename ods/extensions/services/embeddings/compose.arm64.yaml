@@ -1,0 +1,13 @@
+# Linux arm64 hosts: DGX Station, DGX Spark and other NVIDIA Grace systems,
+# Ampere servers, Windows on Arm (WSL2). TEI publishes no multi-architecture
+# index: its release tags are amd64 only, and Docker on Linux has no amd64
+# emulation by default ("exec format error"). TEI's own CI builds every commit
+# for arm64; this pins the build of the v1.9.4 release commit (e80ef22). It
+# also runs on 64 KB-page kernels (Workstation06, 2026-10-27).
+#
+# scripts/resolve-compose-stack.sh adds this file on arm64 hosts other than
+# macOS, where Docker Desktop runs the base amd64 image under Rosetta 2.
+services:
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-sha-e80ef22@sha256:798cd7615e060a72ccbdf19aa0ada52289c6a0147490195bafaece6ce04d70f1
+    platform: linux/arm64

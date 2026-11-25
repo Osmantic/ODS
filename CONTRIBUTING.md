@@ -57,7 +57,38 @@ human review and appropriate validation before release.
 
 See
 **[ods/docs/AI_WORKFLOW_GUARDRAILS.md](ods/docs/AI_WORKFLOW_GUARDRAILS.md)**
-for the repository automation policy.
+for the repository automation policy and the rules for AI-assisted PRs.
+
+## Opening a Pull Request
+
+- Target `main`. The `public-beta` branch was promoted into `main` on
+  2026-09-24 and no longer accepts changes.
+- Keep each PR to one focused change and link the issue it fixes. Batch closely
+  related fixes into a single PR instead of opening one PR per line.
+- Keep at most ten PRs open at a time, and rebase or close your own stale PRs.
+  Outside-contributor PRs with no activity for 14 days may be closed; you are
+  welcome to reopen or resubmit them rebased on `main`.
+- The default branch requires the core CI checks (lint, secret scan, dashboard
+  API and frontend, Linux integration smoke, install readiness, release-tree
+  portability and runtime security policy) to pass.
+- New tests must run in CI: add them to a workflow step or to
+  `ods/tests/ci-suite.txt`. A service's own `tests/` directory runs in its
+  service's workflow job; for a service with no other job, add it to
+  `.github/workflows/test-service-suites.yml`. A check fails when a test under
+  `ods/tests` or `ods/extensions/services/*/tests` is not executed by CI and not
+  recorded, with a reason, in `ods/tests/ci-not-run.txt`. Only executions count:
+  a Makefile target (no workflow runs `make`), a lint or syntax check, or a
+  mention in another script does not.
+- Commit with a real identity. The *Commit identities* check rejects placeholder
+  names and example or machine-local email domains (`user@example.com`,
+  `me@laptop.local`); a GitHub noreply address is fine.
+- The *Python Type Check* jobs fail on new mypy errors in dashboard-api,
+  token-spy, privacy-shield and `ods/scripts`. Existing errors are recorded in
+  `.github/mypy-baseline.json`; lower it with `.github/scripts/mypy-ratchet.py
+  --update` when you fix some.
+- Report security issues privately through
+  [Security → Report a vulnerability](https://github.com/Osmantic/ODS/security/advisories/new),
+  not in PRs or issues.
 
 ## Full Contributor Guide
 

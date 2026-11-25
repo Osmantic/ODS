@@ -4,8 +4,8 @@ Revised fixture: the EXACT normal Git-backed repo that a user would create
 (gitea-demo with .git/, .gitignore, .gitattributes, .gitmodules, README.md,
 index.html).  VC metadata and config files are excluded without reading or
 copying.  Markdown is now an allowed static asset served as text/plain with
-nosniff.  .env and arbitrary hidden files remain blocked.  Source tree is
-never mutated.
+nosniff.  .env and every other hidden entry are skipped the same way: never
+read, copied or published.  Source tree is never mutated.
 """
 
 import sys
@@ -470,14 +470,19 @@ def test_executable_files_still_blocked():
             raise AssertionError("unsupported executable file was accepted")
 
 
-# ── 10. .env blocked (not VC metadata, not allowed suffix) ─────────────────
+# ── 10. .env skipped like every hidden file, never published ────────────────
 
 
-def test_dotenv_blocked():
-    """.env files are NOT VC metadata — they remain blocked.
-    .env has no recognized suffix AND starts with '.', so it fails both
-    the PATH_COMPONENT check and the suffix allowlist.
-    """
+def _assert_only_index_published(result, snapshot_dir):
+    assert result["status"] == "succeeded"
+    assert result["files"] == 1
+    assert sorted(p.name for p in snapshot_dir.iterdir()) == ["index.html"]
+    for f in snapshot_dir.rglob("*"):
+        assert SECRET_SENTINEL not in f.read_text(encoding="utf-8", errors="replace")
+
+
+def test_dotenv_skipped_and_never_published():
+    """.env is hidden, so it is skipped without being read or copied."""
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         workspace = root / "workspace"
@@ -495,25 +500,18 @@ def test_dotenv_blocked():
         (site / ".env").write_text(f"SECRET_KEY={SECRET_SENTINEL}\n", encoding="utf-8")
         os.chmod(site / ".env", 0o600)
 
-        try:
-            MODULE.publish_snapshot(workspace, previews, "env-repo", os.getuid())
-        except MODULE.PreviewError as exc:
-            # Must be blocked (either unsafe or unsupported)
-            assert "unsafe" in str(exc).lower() or "unsupported" in str(exc).lower()
-        else:
-            raise AssertionError(".env was accepted")
+        result = MODULE.publish_snapshot(workspace, previews, "env-repo", os.getuid())
+        _assert_only_index_published(result, previews / result["siteId"])
 
         # Source unchanged
         assert (site / ".env").read_text(encoding="utf-8") == f"SECRET_KEY={SECRET_SENTINEL}\n"
 
 
-# ── 11. Arbitrary hidden files blocked ──────────────────────────────────────
+# ── 11. Arbitrary hidden files skipped ──────────────────────────────────────
 
 
-def test_arbitrary_hidden_files_blocked():
-    """Arbitrary dot-prefixed files (not VC metadata) are still blocked.
-    .hidden-config is NOT in VC_METADATA_NAMES, so it fails PATH_COMPONENT.
-    """
+def test_arbitrary_hidden_files_skipped():
+    """Any dot-prefixed file is skipped like VC metadata, never published."""
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         workspace = root / "workspace"
@@ -531,12 +529,9 @@ def test_arbitrary_hidden_files_blocked():
         (site / ".hidden-config").write_text(SECRET_SENTINEL, encoding="utf-8")
         os.chmod(site / ".hidden-config", 0o600)
 
-        try:
-            MODULE.publish_snapshot(workspace, previews, "hidden-repo", os.getuid())
-        except MODULE.PreviewError as exc:
-            assert "unsafe" in str(exc).lower()
-        else:
-            raise AssertionError("arbitrary hidden file was accepted")
+        result = MODULE.publish_snapshot(workspace, previews, "hidden-repo", os.getuid())
+        _assert_only_index_published(result, previews / result["siteId"])
+        assert (site / ".hidden-config").read_text(encoding="utf-8") == SECRET_SENTINEL
 
 
 # ── 12. Nested .git in subdirectory ─────────────────────────────────────────
@@ -798,16 +793,23 @@ def test_metadata_is_never_opened_or_traversed_and_alias_is_rejected():
         previews.mkdir(mode=0o700)
         site.mkdir(mode=0o700)
         _build_exact_repo_fixture(site)
+        (site / ".harness").mkdir(mode=0o700)
+        (site / ".harness" / "lint.py").write_text(SECRET_SENTINEL, encoding="utf-8")
         original_open, original_scandir = os.open, os.scandir
+
+        def hidden_site_entry(path):
+            path = pathlib.Path(path)
+            return path.is_relative_to(site) and any(
+                part.startswith(".") for part in path.relative_to(site).parts)
 
         def guarded_open(path, *args, **kwargs):
             if not isinstance(path, int):
-                assert not any(p in MODULE.VC_METADATA_NAMES for p in pathlib.Path(path).parts)
+                assert not hidden_site_entry(path)
             return original_open(path, *args, **kwargs)
 
         def guarded_scandir(path):
             if not isinstance(path, int):
-                assert pathlib.Path(path).name not in MODULE.VC_METADATA_NAMES
+                assert not hidden_site_entry(path)
             return original_scandir(path)
 
         with mock.patch.object(os, "open", guarded_open), mock.patch.object(os, "scandir", guarded_scandir):

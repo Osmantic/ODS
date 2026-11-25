@@ -111,6 +111,14 @@ def test_native_compose_services_start_and_reach_host(tmp_path, monkeypatch):
         original_named(runner, project + '-edge' if name == 'ods-pixel-edge' else name))
     legacy_identity = None
     try:
+        spec = importlib.util.spec_from_file_location('native_config_stage',
+            ROOT / 'installers/macos/lib/pixel-native-ingress-config.py')
+        staging = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(staging)
+        (tmp_path / 'data/pixel-native/preparation').mkdir(parents=True, mode=0o700)
+        selected = staging.stage(run, config, user=str(os.getuid()) + ':' + str(os.getgid()),
+            docker_run=docker_run, install_dir=tmp_path)
+        env['PIXEL_NATIVE_CONFIG_SHA256'] = selected['sha256']
         phase = native_compose.start_infrastructure(run, dashboard_key='b' * 64)
         assert phase == {'phase': 'infrastructure-ready', 'requiresGatewayActivation': True}
         result = run('exec', '-T', 'pixel-edge', 'python3', '-c', native_compose.TRANSITION_PROBE,

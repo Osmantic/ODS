@@ -62,6 +62,39 @@ def settings(env=None, config_path=None):
             "secret": env.get("HERMES_DASHBOARD_BASIC_AUTH_SECRET") or basic.get("secret") or derive("signing"), "managed": True}
 
 
+def _prepare_scratch_volume():
+    """Assign only the scratch volume root to the configured runtime user.
+
+    Upstream can skip ownership setup on an already initialized Hermes home.
+    A newly mounted volume still needs ownership before the UID-remapped agent
+    can use it. Descriptor-relative traversal refuses symlinked components.
+    """
+    if os.name != "posix" or os.getuid() != 0:
+        return
+    raw_ids = [os.environ.get(key) for key in ("HERMES_UID", "HERMES_GID")]
+    if any(value is None for value in raw_ids):
+        return  # Compatibility with custom images without UID remapping.
+    if any(not value.isascii() or not value.isdecimal() or int(value) >= 2**32 - 1 for value in raw_ids):
+        raise ValueError("Hermes scratch requires valid HERMES_UID and HERMES_GID")
+    uid, gid = map(int, raw_ids)
+    home = Path(os.environ.get("HERMES_HOME", "/opt/data"))
+    if not home.is_absolute() or ".." in home.parts:
+        raise ValueError("Hermes home must be an absolute directory without parent traversal")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open("/", flags)
+    try:
+        for part in (*home.parts[1:], "cache", "scratch"):
+            next_fd = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        os.fchown(fd, uid, gid)
+        os.fchmod(fd, 0o700)
+    except FileNotFoundError:
+        return  # An older custom compose has no scratch volume to prepare.
+    finally:
+        os.close(fd)
+
+
 def bootstrap():
     config_path = Path(os.environ.get("HERMES_HOME", "/opt/data")) / "config.yaml"
     if not config_path.exists():
@@ -88,6 +121,7 @@ def bootstrap():
             name = "HERMES_DASHBOARD_BASIC_AUTH_" + key
             if not os.environ.get(name):
                 os.environ[name] = value
+    _prepare_scratch_volume()
     # Keep the actual upstream bootstrap/UID remapping/seed-once behavior.
     import sys
     dispatcher = "/opt/hermes/docker/entrypoint-dispatch.sh"

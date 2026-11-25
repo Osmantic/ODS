@@ -50,8 +50,8 @@ def _is_local_only_image(image: str) -> bool:
     return bool(_LOCAL_ONLY_TAG_RE.search(image.strip()))
 
 # Services intentionally NOT built by the base install path (documented):
-#   llama-server  — pulled image on most backends; AMD builds it via a
-#                   backend-specific branch, not the base build list.
+#   llama-server  — a pulled upstream image on every GPU backend, AMD
+#                   included; only the Intel Arc overlay has a local build.
 #   comfyui       — optional, gated on ENABLE_COMFYUI.
 _KNOWN_NON_BASE_BUILD = {"llama-server", "comfyui"}
 

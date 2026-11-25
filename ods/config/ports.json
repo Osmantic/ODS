@@ -82,13 +82,6 @@
       "manifest_service": "litellm"
     },
     {
-      "env_var": "OPENCLAW_PORT",
-      "external_default": 7860,
-      "service_id": "openclaw",
-      "internal_port": 18789,
-      "manifest_service": "openclaw"
-    },
-    {
       "env_var": "SHIELD_PORT",
       "external_default": 8085,
       "service_id": "privacy-shield",

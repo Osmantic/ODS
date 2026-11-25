@@ -318,8 +318,8 @@ const removeApplyPayload = {
 }
 
 async function fillConfigureForm() {
-  await screen.findByRole('heading', { name: 'Remote GPU' })
-  fireEvent.change(screen.getByLabelText('Base URL'), {
+  await screen.findByRole('heading', { name: 'Remote model' })
+  fireEvent.change(screen.getByLabelText('API address'), {
     target: { value: 'https://gpu.example.test/v1' },
   })
   fireEvent.change(screen.getByLabelText('Model'), {
@@ -338,6 +338,94 @@ beforeEach(() => {
   globalThis.fetch = vi.fn()
 })
 
+test('refreshes stale dashboard after successful disable without replaying the route', async () => {
+  const mismatch = { ...disabledStatusPayload, dashboardMode: { effectiveMode: 'cloud', configuredMode: 'local', matches: false } }
+  const converged = { ...disabledStatusPayload, dashboardMode: { effectiveMode: 'local', configuredMode: 'local', matches: true } }
+  globalThis.fetch
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockResolvedValueOnce(response(disableApplyPayload))
+    .mockResolvedValueOnce(response(mismatch))
+    .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    .mockResolvedValueOnce(response({ ready: true, matches: true }))
+    .mockResolvedValueOnce(response(converged))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: /switch back to the local model/i }))
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(6))
+  expect(globalThis.fetch.mock.calls.map(([url, options]) => [url, options?.method || 'GET'])).toEqual([
+    ['/api/remote-provider/status', 'GET'],
+    ['/api/remote-provider/apply', 'POST'],
+    ['/api/remote-provider/status', 'GET'],
+    ['/api/remote-provider/dashboard-mode', 'POST'],
+    ['/api/remote-provider/dashboard-mode', 'GET'],
+    ['/api/remote-provider/status', 'GET'],
+  ])
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh dashboard' })).toBeNull())
+  expect(screen.getByText('Disable applied')).toBeInTheDocument()
+})
+
+test('offers explicit repair after refresh and preserves an unresolved model hold', async () => {
+  const mismatch = { ...disabledStatusPayload, dashboardMode: { effectiveMode: 'cloud', configuredMode: 'local', matches: false } }
+  globalThis.fetch
+    .mockResolvedValueOnce(response(mismatch))
+    .mockRejectedValueOnce(new TypeError('Connection reset'))
+    .mockResolvedValueOnce(response({ ready: false, matches: true, pending: true, reconciling: false }))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh dashboard' }))
+  expect(await screen.findByText('Recover the model switch in Models before refreshing the dashboard.')).toBeInTheDocument()
+  expect(globalThis.fetch.mock.calls.filter(([url]) => url.endsWith('/apply'))).toHaveLength(0)
+  expect(screen.getByRole('button', { name: 'Refresh dashboard' })).toBeEnabled()
+})
+
+test('reports a definite busy refusal without waiting through the refresh deadline', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response({ ...disabledStatusPayload, dashboardMode: { matches: false } }))
+    .mockResolvedValueOnce(response({ error: 'Another chat is active. Try again when it finishes.' }, 409))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh dashboard' }))
+  expect(await screen.findByText('Another chat is active. Try again when it finishes.')).toBeInTheDocument()
+  expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole('button', { name: 'Refresh dashboard' })).toBeEnabled()
+})
+
+test('reports a definite host refresh failure without treating it as a disconnect', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response({ ...disabledStatusPayload, dashboardMode: { matches: false } }))
+    .mockResolvedValueOnce(response({ detail: { code: 'dashboard_refresh_failed', error: 'Refresh failed; retry when idle.' } }, 500))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh dashboard' }))
+  expect(await screen.findByText('Refresh failed; retry when idle.')).toBeInTheDocument()
+  expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+})
+
+test('does not refresh the dashboard after an unconfirmed provider mutation', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockRejectedValueOnce(new TypeError('Connection lost'))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: /switch back to the local model/i }))
+  expect(await screen.findByText('Connection lost')).toBeInTheDocument()
+  expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+})
+
+test.each([
+  { pending: true, reconciling: true },
+  { pending: true, reconciling: false, lifecycleActive: true },
+])('waits for released maintenance after the API mode has already converged: %j', async held => {
+  const mismatch = { ...disabledStatusPayload, dashboardMode: { matches: false } }
+  globalThis.fetch
+    .mockResolvedValueOnce(response(mismatch))
+    .mockRejectedValueOnce(new TypeError('Connection reset'))
+    .mockResolvedValueOnce(response({ ready: false, matches: true, ...held }))
+    .mockResolvedValueOnce(response({ ready: true, matches: true }))
+    .mockResolvedValueOnce(response({ ...disabledStatusPayload, dashboardMode: { matches: true } }))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: 'Refresh dashboard' }))
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(3))
+  expect(screen.getByRole('button', { name: 'Refresh dashboard' })).toBeDisabled()
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(5), { timeout: 4500 })
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh dashboard' })).toBeNull())
+})
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
@@ -347,11 +435,11 @@ test('renders remote provider status and proof receipt', async () => {
 
   render(createElement(RemoteProvider))
 
-  expect(await screen.findByRole('heading', { name: 'Remote GPU' })).toBeInTheDocument()
+  expect(await screen.findByRole('heading', { name: 'Remote model' })).toBeInTheDocument()
   expect(screen.getByText('qwen/remote:latest')).toBeInTheDocument()
   expect(screen.getByText('Provider handshake ok')).toBeInTheDocument()
   expect(screen.getByText('2026-07-26T00:00:00+00:00')).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: /test route/i })).toBeEnabled()
+  expect(screen.getByRole('button', { name: /check connection/i })).toBeEnabled()
 })
 
 test('compact views keep the connection draft and never apply changes on navigation', async () => {
@@ -361,15 +449,15 @@ test('compact views keep the connection draft and never apply changes on navigat
   expect(screen.queryByRole('heading', { name: 'Egress' })).toBeNull()
   // The tab exists before the status-to-form effect has hydrated the fields.
   // Start this navigation test from a fully loaded connection draft.
-  await waitFor(() => expect(screen.getByLabelText('Base URL')).toHaveValue(statusPayload.routeState.provider.baseUrl))
-  fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://draft.example/v1' } })
+  await waitFor(() => expect(screen.getByLabelText('API address')).toHaveValue(statusPayload.routeState.provider.baseUrl))
+  fireEvent.change(screen.getByLabelText('API address'), { target: { value: 'https://draft.example/v1' } })
   fireEvent.click(screen.getByRole('button', { name: 'Diagnostics', exact: true }))
   expect(screen.getByRole('heading', { name: 'Egress' })).toBeVisible()
-  expect(screen.queryByRole('textbox', { name: 'Base URL' })).toBeNull()
+  expect(screen.queryByRole('textbox', { name: 'API address' })).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Peer models', exact: true }))
   expect(screen.getByRole('heading', { name: 'ODS Peer Models' })).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'Connection', exact: true }))
-  expect(screen.getByLabelText('Base URL')).toHaveValue('https://draft.example/v1')
+  expect(screen.getByLabelText('API address')).toHaveValue('https://draft.example/v1')
   expect(globalThis.fetch.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false)
 })
 
@@ -381,7 +469,7 @@ test('runs configured route probe and shows proof recording result', async () =>
 
   render(createElement(RemoteProvider))
 
-  fireEvent.click(await screen.findByRole('button', { name: /test route/i }))
+  fireEvent.click(await screen.findByRole('button', { name: /check connection/i }))
 
   await waitFor(() => {
     expect(globalThis.fetch.mock.calls.map(call => call[0])).toEqual([
@@ -390,8 +478,50 @@ test('runs configured route probe and shows proof recording result', async () =>
       '/api/remote-provider/status',
     ])
   })
-  expect(screen.getByText('Route proof recorded')).toBeInTheDocument()
+  expect(screen.getByText('Connection checked: the API answered, and ODS and Portal use it.')).toBeInTheDocument()
   expect(screen.getByText('2026-07-26T00:05:00+00:00')).toBeInTheDocument()
+})
+
+const NOT_SERVING_PROOF = {
+  recorded: false,
+  reachable: true,
+  reason: 'provider_not_serving',
+  statusCode: 502,
+  providerStatus: 500,
+  providerMessage: 'Connection error.',
+}
+const NOT_SERVING_SUMMARY = 'The API is not answering chats right now. ODS kept its settings, so chat and Portal fail until ' +
+  'it is back. Check again later, or turn the remote model off to use the model on this computer. The API answered: ' +
+  'HTTP 500: Connection error.'
+
+test('a provider that lists models but serves no chat is named, not reported as busy', async () => {
+  const notServing = { ...probePayload, routeProof: NOT_SERVING_PROOF }
+  globalThis.fetch
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockResolvedValueOnce(response(notServing))
+    .mockResolvedValueOnce(response(statusPayload))
+
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: /check connection/i }))
+
+  expect(await screen.findAllByText(NOT_SERVING_SUMMARY)).toHaveLength(1)
+  expect(screen.getByRole('link', { name: /get help on discord/i })).toBeInTheDocument()
+  expect(screen.queryByText(/busy with another model change/)).not.toBeInTheDocument()
+})
+
+test('connecting to an API that serves no chat says so once, without claiming ODS kept its model', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response(disabledStatusPayload))
+    .mockResolvedValueOnce(response(configureApplyPayload))
+    .mockResolvedValueOnce(response({ ...probePayload, routeProof: NOT_SERVING_PROOF }))
+    .mockResolvedValueOnce(response(statusPayload))
+
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button', { name: 'Connect', exact: true }))
+
+  expect(await screen.findAllByText(NOT_SERVING_SUMMARY)).toHaveLength(1)
+  expect(screen.queryByText(/still uses its current model/)).not.toBeInTheDocument()
 })
 
 test('plans direct provider configuration without rendering secret material', async () => {
@@ -402,7 +532,7 @@ test('plans direct provider configuration without rendering secret material', as
   render(createElement(RemoteProvider))
   await fillConfigureForm()
 
-  fireEvent.click(screen.getByRole('button', { name: /plan/i }))
+  fireEvent.click(screen.getByRole('button', { name: /preview changes/i }))
 
   await waitFor(() => {
     expect(globalThis.fetch).toHaveBeenCalledTimes(2)
@@ -427,6 +557,42 @@ test('plans direct provider configuration without rendering secret material', as
   expect(screen.queryByText('unit-test-provider-token')).not.toBeInTheDocument()
 })
 
+test('the output limit is a quarter of the context window until the owner sets it', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response(disabledStatusPayload))
+    .mockResolvedValueOnce(response(configurePlanPayload))
+
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  const context = screen.getByLabelText('Context window')
+  const output = screen.getByLabelText('Max output tokens')
+  expect(output).toHaveValue(8192)
+  fireEvent.change(context, { target: { value: '131072' } })
+  expect(output).toHaveValue(32768)
+
+  fireEvent.click(screen.getByRole('button', { name: /preview changes/i }))
+  await waitFor(() => {
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+  })
+  expect(requestBody(1).provider).toMatchObject({ contextLength: 131072, maxTokens: 32768 })
+
+  fireEvent.change(output, { target: { value: '16384' } })
+  fireEvent.change(context, { target: { value: '65536' } })
+  expect(output).toHaveValue(16384)
+})
+
+test('a saved route keeps its output limit when the context changes', async () => {
+  globalThis.fetch.mockResolvedValueOnce(response(statusPayload))
+
+  render(createElement(RemoteProvider))
+  await screen.findByRole('heading', { name: 'Remote model' })
+  const output = screen.getByLabelText('Max output tokens')
+  // 4096 is a quarter of the saved 32768-token context, as typed by the owner.
+  expect(output).toHaveValue(4096)
+  fireEvent.change(screen.getByLabelText('Context window'), { target: { value: '131072' } })
+  expect(output).toHaveValue(4096)
+})
+
 test('applies direct provider configuration and clears the secret input', async () => {
   globalThis.fetch
     .mockResolvedValueOnce(response(statusPayload))
@@ -437,7 +603,7 @@ test('applies direct provider configuration and clears the secret input', async 
   await fillConfigureForm()
   const apiKeyInput = screen.getByLabelText('API key')
 
-  fireEvent.click(screen.getByRole('button', { name: /^configure$/i }))
+  fireEvent.click(screen.getByRole('button', { name: /save without switching/i }))
 
   await waitFor(() => {
     expect(globalThis.fetch.mock.calls.map(call => call[0])).toEqual([
@@ -460,7 +626,7 @@ test('applies disable lifecycle action and refreshes status', async () => {
 
   render(createElement(RemoteProvider))
 
-  fireEvent.click(await screen.findByRole('button', { name: /^disable$/i }))
+  fireEvent.click(await screen.findByRole('button', { name: /switch back to the local model/i }))
 
   await waitFor(() => {
     expect(globalThis.fetch.mock.calls.map(call => call[0])).toEqual([
@@ -481,8 +647,8 @@ test('offers one-click reconciliation when the active consumer drifted', async (
 
   render(createElement(RemoteProvider))
 
-  expect(await screen.findByText(/ODS and Portal are not using its exact model contract/i)).toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: /^reconcile route$/i }))
+  expect(await screen.findByText(/ODS and Portal are not using it right now/i)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: /^reconnect$/i }))
 
   await waitFor(() => {
     expect(globalThis.fetch.mock.calls.map(call => call[0])).toEqual([
@@ -495,6 +661,104 @@ test('offers one-click reconciliation when the active consumer drifted', async (
   expect(screen.getByText('Enable applied')).toBeInTheDocument()
 })
 
+test('enable retries a briefly unavailable consumer and settles to ready', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    const unavailableStatusPayload = {
+      ...driftedStatusPayload,
+      activation: {
+        ...driftedStatusPayload.activation,
+        reason: 'consumer_status_unavailable',
+      },
+    }
+    globalThis.fetch
+      .mockResolvedValueOnce(response(driftedStatusPayload))
+      .mockResolvedValueOnce(response(enableApplyPayload))
+      .mockResolvedValueOnce(response(unavailableStatusPayload))
+      .mockResolvedValueOnce(response(statusPayload))
+
+    render(createElement(RemoteProvider))
+    fireEvent.click(await screen.findByRole('button', { name: /^reconnect$/i }))
+
+    expect(await screen.findByText('Switching ODS and Portal over…')).toBeInTheDocument()
+    expect(screen.queryByText('Needs attention')).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(4))
+    await waitFor(() => expect(screen.queryByText('Switching ODS and Portal over…')).toBeNull())
+    expect(screen.queryByText('Needs attention')).toBeNull()
+    expect(screen.getByText('Enable applied')).toBeInTheDocument()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('a consumer that stays unavailable after the settle budget needs attention', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    const unavailableStatusPayload = {
+      ...driftedStatusPayload,
+      activation: {
+        ...driftedStatusPayload.activation,
+        reason: 'consumer_status_unavailable',
+      },
+    }
+    globalThis.fetch
+      .mockResolvedValueOnce(response(driftedStatusPayload))
+      .mockResolvedValueOnce(response(enableApplyPayload))
+    for (let poll = 0; poll < 5; poll += 1) {
+      globalThis.fetch.mockResolvedValueOnce(response(unavailableStatusPayload))
+    }
+
+    render(createElement(RemoteProvider))
+    fireEvent.click(await screen.findByRole('button', { name: /^reconnect$/i }))
+
+    expect(await screen.findByText('Switching ODS and Portal over…')).toBeInTheDocument()
+    for (let poll = 0; poll < 5; poll += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    }
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(7))
+    await waitFor(() => expect(screen.queryByText('Switching ODS and Portal over…')).toBeNull())
+    expect(screen.getAllByText('Needs attention').length).toBeGreaterThan(0)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('an invalid activation after enable is not retried', async () => {
+  const invalidStatusPayload = {
+    ...driftedStatusPayload,
+    activation: {
+      ...driftedStatusPayload.activation,
+      reason: 'invalid_activation_contract',
+    },
+  }
+  globalThis.fetch
+    .mockResolvedValueOnce(response(driftedStatusPayload))
+    .mockResolvedValueOnce(response(enableApplyPayload))
+    .mockResolvedValueOnce(response(invalidStatusPayload))
+
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button', { name: /^reconnect$/i }))
+
+  await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(3))
+  expect(screen.queryByText('Switching ODS and Portal over…')).toBeNull()
+  expect(screen.getByText('Enable applied')).toBeInTheDocument()
+})
+
+test('a route an update paused reads Paused, not a fault, and offers Reconnect', async () => {
+  // Fleet, laptop: after an installer rerun kept ODS local, Settings said
+  // "Needs attention" for a route the update had paused on purpose.
+  globalThis.fetch.mockResolvedValueOnce(response({ ...driftedStatusPayload, status: 'paused' }))
+
+  render(createElement(RemoteProvider))
+
+  expect(await screen.findByText(/An update or a mode change paused this API/i)).toBeInTheDocument()
+  expect(screen.getAllByText('Paused').length).toBeGreaterThan(0)
+  expect(screen.queryByText(/ODS and Portal are not using it right now/i)).toBeNull()
+  expect(screen.queryByText('Needs attention')).toBeNull()
+  expect(screen.getByRole('button', { name: /^reconnect$/i })).toBeEnabled()
+})
+
 test('confirms remove before deleting route state and stored secrets', async () => {
   const confirmSpy = vi.spyOn(window, 'confirm').mockImplementation(() => true)
   globalThis.fetch
@@ -504,7 +768,7 @@ test('confirms remove before deleting route state and stored secrets', async () 
 
   render(createElement(RemoteProvider))
 
-  fireEvent.click(await screen.findByRole('button', { name: /^remove$/i }))
+  fireEvent.click(await screen.findByRole('button', { name: /remove saved api/i }))
 
   await waitFor(() => {
     expect(globalThis.fetch.mock.calls.map(call => call[0])).toEqual([
@@ -513,7 +777,7 @@ test('confirms remove before deleting route state and stored secrets', async () 
       '/api/remote-provider/status',
     ])
   })
-  expect(confirmSpy).toHaveBeenCalledWith('Remove remote GPU route and stored secrets?')
+  expect(confirmSpy).toHaveBeenCalledWith('Remove the saved API and its key? ODS switches back to the model on this computer.')
   expect(requestBody(1)).toEqual({ action: 'remove' })
   expect(screen.getByText('Remove applied')).toBeInTheDocument()
 })
@@ -526,7 +790,7 @@ test('renders peer model inventory when peer lifecycle is ready', async () => {
 
   render(createElement(RemoteProvider))
 
-  expect(await screen.findByRole('heading', { name: 'Remote GPU' })).toBeInTheDocument()
+  expect(await screen.findByRole('heading', { name: 'Remote model' })).toBeInTheDocument()
   expect(await screen.findByText('Remote Qwen')).toBeInTheDocument()
   expect(screen.getByText('Remote Available')).toBeInTheDocument()
   expect(screen.getByText('Remote Loaded')).toBeInTheDocument()
@@ -634,23 +898,23 @@ test.each(['apply', 'refresh'])('keeps newer edits while configure %s is pending
 
   render(createElement(RemoteProvider))
   await fillConfigureForm()
-  fireEvent.click(screen.getByRole('button', { name: 'Configure', exact: true }))
+  fireEvent.click(screen.getByRole('button', { name: 'Save without switching', exact: true }))
   await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2))
   if (pendingStage === 'refresh') {
     await act(async () => { finishApply(response(configureApplyPayload)) })
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(3))
   }
 
-  fireEvent.change(screen.getByLabelText('Base URL'), { target: { value: 'https://next.example/v1' } })
+  fireEvent.change(screen.getByLabelText('API address'), { target: { value: 'https://next.example/v1' } })
   fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'next-provider-token' } })
   await act(async () => {
     finishApply(response(configureApplyPayload))
     finishRefresh(response(statusPayload))
   })
 
-  expect(screen.getByLabelText('Base URL')).toHaveValue('https://next.example/v1')
+  expect(screen.getByLabelText('API address')).toHaveValue('https://next.example/v1')
   expect(screen.getByLabelText('API key')).toHaveValue('next-provider-token')
-  expect(screen.getByRole('button', { name: 'Configure', exact: true })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Save without switching', exact: true })).toBeEnabled()
   expect(requestBody(1).provider.baseUrl).toBe('https://gpu.example.test/v1')
 })
 
@@ -668,20 +932,20 @@ test.each([
     .mockResolvedValueOnce(brokenResponse())
   render(createElement(RemoteProvider))
   await fillConfigureForm()
-  fireEvent.click(screen.getByRole('button', { name: 'Configure', exact: true }))
+  fireEvent.click(screen.getByRole('button', { name: 'Save without switching', exact: true }))
 
   expect(await screen.findByText(message)).toBeInTheDocument()
-  expect(screen.getByLabelText('Base URL')).toHaveValue('https://gpu.example.test/v1')
+  expect(screen.getByLabelText('API address')).toHaveValue('https://gpu.example.test/v1')
   expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
-  expect(screen.getByRole('button', { name: 'Configure', exact: true })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Save without switching', exact: true })).toBeEnabled()
   expect(screen.queryByText('Unknown completed')).not.toBeInTheDocument()
   // An unreadable receipt does not justify another mutation or a success refresh.
   expect(globalThis.fetch).toHaveBeenCalledTimes(2)
 
   fireEvent.click(screen.getByRole('button', { name: 'Refresh', exact: true }))
-  await screen.findByRole('heading', { name: 'Remote GPU' })
+  await screen.findByRole('heading', { name: 'Remote model' })
   expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
-  expect(screen.getByLabelText('Base URL')).toHaveValue('https://gpu.example.test/v1')
+  expect(screen.getByLabelText('API address')).toHaveValue('https://gpu.example.test/v1')
   expect(globalThis.fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
 })
 
@@ -690,7 +954,85 @@ test('keeps the HTTP status when an error response is not JSON', async () => {
     .mockResolvedValueOnce(new globalThis.Response('<html>Bad Gateway</html>', { status: 502 }))
   render(createElement(RemoteProvider))
   await fillConfigureForm()
-  fireEvent.click(screen.getByRole('button', { name: 'Configure', exact: true }))
+  fireEvent.click(screen.getByRole('button', { name: 'Save without switching', exact: true }))
   expect(await screen.findByText('Request failed (502)')).toBeInTheDocument()
   expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
+})
+
+test('connects in one step: saves the API, then checks it and switches ODS to it', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response(disabledStatusPayload))
+    .mockResolvedValueOnce(response(configureApplyPayload))
+    .mockResolvedValueOnce(response(probePayload))
+    .mockResolvedValueOnce(response(statusPayload))
+
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button', { name: 'Connect', exact: true }))
+
+  expect(await screen.findByText('Connected. ODS and Portal now use qwen/remote:latest from gpu.example.test.')).toBeInTheDocument()
+  expect(globalThis.fetch.mock.calls.map(call => call[0])).toEqual([
+    '/api/remote-provider/status',
+    '/api/remote-provider/apply',
+    '/api/remote-provider/probe',
+    '/api/remote-provider/status',
+  ])
+  expect(requestBody(1).action).toBe('configure')
+  expect(screen.getByLabelText('API key')).toHaveValue('')
+  expect(screen.queryByText('unit-test-provider-token')).not.toBeInTheDocument()
+})
+
+test('a refused key says so, that ODS kept its model, and where to get help', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response(disabledStatusPayload))
+    .mockResolvedValueOnce(response(configureApplyPayload))
+    .mockResolvedValueOnce(response({ detail: { message: 'remote provider probe returned HTTP 401' } }, 401))
+    .mockResolvedValueOnce(response(disabledStatusPayload))
+
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button', { name: 'Connect', exact: true }))
+
+  expect(await screen.findByText('The API refused the key. Check the key, then connect again.')).toBeInTheDocument()
+  expect(screen.getByText(/ODS still uses its current model\. The API settings were saved/)).toBeInTheDocument()
+  expect(screen.getByText('remote provider probe returned HTTP 401')).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: /get help on discord/i })).toBeInTheDocument()
+})
+
+test('a setting the API rejects before saving changes nothing', async () => {
+  globalThis.fetch
+    .mockResolvedValueOnce(response(disabledStatusPayload))
+    .mockResolvedValueOnce(response({ detail: 'Base URL must use https' }, 400))
+    .mockResolvedValueOnce(response(disabledStatusPayload))
+
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button', { name: 'Connect', exact: true }))
+
+  expect(await screen.findByText('Base URL must use https')).toBeInTheDocument()
+  expect(screen.getByText('Nothing was changed. ODS still uses its current model.')).toBeInTheDocument()
+  expect(globalThis.fetch.mock.calls.map(call => call[0])).not.toContain('/api/remote-provider/probe')
+})
+
+test('a short switch-over after a check is not reported as a problem', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    globalThis.fetch
+      .mockResolvedValueOnce(response(statusPayload))
+      .mockResolvedValueOnce(response(probePayload))
+      .mockResolvedValueOnce(response(driftedStatusPayload))
+      .mockResolvedValueOnce(response(statusPayload))
+
+    render(createElement(RemoteProvider))
+    fireEvent.click(await screen.findByRole('button', { name: /check connection/i }))
+
+    expect(await screen.findByText('Switching ODS and Portal over…')).toBeInTheDocument()
+    expect(screen.queryByText(/ODS and Portal are not using it right now/i)).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(4))
+    await waitFor(() => expect(screen.queryByText('Switching ODS and Portal over…')).toBeNull())
+    expect(screen.queryByText(/ODS and Portal are not using it right now/i)).toBeNull()
+  } finally {
+    vi.useRealTimers()
+  }
 })

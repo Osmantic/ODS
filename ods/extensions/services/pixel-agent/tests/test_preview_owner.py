@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import errno
 import sys
 if sys.platform == 'win32':
     from unittest import SkipTest
@@ -16,6 +17,43 @@ spec.loader.exec_module(preview)
 
 
 class PreviewOwnerTests(unittest.TestCase):
+    def test_invalid_startup_port_reports_configuration_without_value(self):
+        for port in ('private-fixture-value', '0'):
+            with self.subTest(port=port), patch.object(preview.sys, 'stderr', io.StringIO()) as stderr:
+                self.assertEqual(preview.main(['preview', 'serve', str(preview.SOCKET_PATH),
+                                              '/workspace', '/previews', 'fixture', port]), 1)
+                self.assertIn('stage=configuration, reason=invalid-configuration', stderr.getvalue())
+                self.assertNotIn('private-fixture-value', stderr.getvalue())
+
+    def test_startup_diagnostic_preserves_category_and_hides_private_error_text(self):
+        for error, code in ((PermissionError(errno.EACCES, 'secret-fixture', '/private/config'), 'EACCES'),
+                            (OSError(errno.EADDRINUSE, 'secret-fixture'), 'EADDRINUSE'),
+                            (preview.PreviewError('unsafe preview root'), 'unsafe-root'),
+                            (preview.PreviewError('secret-fixture'), 'validation-failed'),
+                            (KeyError('secret-fixture'), 'invalid-configuration')):
+            with self.subTest(code=code):
+                def fail(*args, **kwargs):
+                    with preview._startup_phase('workspace-root'):
+                        raise error
+                with patch.object(preview, 'serve', side_effect=fail), \
+                        patch.object(preview.sys, 'stderr', io.StringIO()) as stderr:
+                    self.assertEqual(preview.main(['preview', 'serve', str(preview.SOCKET_PATH),
+                                                  '/workspace', '/previews', 'fixture', '9437']), 1)
+                    self.assertIn('stage=workspace-root, reason=' + code, stderr.getvalue())
+                    self.assertNotIn('secret-fixture', stderr.getvalue())
+                    self.assertNotIn('/private/config', stderr.getvalue())
+
+    def test_real_missing_workspace_reports_startup_stage(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(preview.sys, 'stderr', io.StringIO()) as stderr, \
+                patch.object(preview, 'preview_owner_uid', return_value=501):
+            absent = str(Path(temporary) / 'missing')
+            self.assertEqual(preview.main(['preview', 'serve', str(preview.SOCKET_PATH),
+                                          absent, str(Path(temporary) / 'previews'), 'fixture', '9437']), 1)
+            self.assertIn('stage=workspace-root, reason=ENOENT', stderr.getvalue())
+            self.assertNotIn(temporary, stderr.getvalue())
+
     def test_request_cli_forwards_only_valid_bounded_publish(self):
         payload = b'{"schemaVersion":1,"action":"publish","relativeDirectory":"demo"}'
         with patch.object(preview.sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(payload))), \

@@ -37,7 +37,7 @@ def payload(probe, stream=False, tools=False):
     return result
 
 
-@pytest.mark.parametrize("kind", ["stream", "buffered-tool", "repair"])
+@pytest.mark.parametrize("kind", ["stream", "buffered-tool", "buffered-json", "thinking", "repair"])
 def test_each_upstream_send_matches_wire_and_preserves_attempts(router, kind):
     mod, client, write_state, _ = router
     write_state()
@@ -53,24 +53,54 @@ def test_each_upstream_send_matches_wire_and_preserves_attempts(router, kind):
             return httpx.Response(200, content=(
                 'data: {"model":"Concrete.gguf","choices":[{"delta":{"content":"ok"}}]}\n\n'
                 'data: [DONE]\n\n'), headers={"content-type": "text/event-stream"})
-        assert body["stream"] is False
+        if kind == "buffered-tool":
+            assert body["stream"] is True
+            assert body["stream_options"]["include_usage"] is True
+            frames = [
+                {"model": "Concrete.gguf", "choices": [{"index": 0,
+                    "delta": {"role": "assistant", "content": "ok"},
+                    "finish_reason": None}]},
+                {"model": "Concrete.gguf", "choices": [{"index": 0,
+                    "delta": {}, "finish_reason": "stop"}]},
+            ]
+            sse = b"".join(b"data: " + json.dumps(frame).encode() + b"\n\n"
+                           for frame in frames) + b"data: [DONE]\n\n"
+            return httpx.Response(200, content=sse,
+                                  headers={"content-type": "text/event-stream"})
+        if kind == "buffered-json":
+            assert body["stream"] is True
+        elif body["stream"]:
+            assert kind == "repair"
+            return httpx.Response(500, json={"error": {
+                "message": "Invalid diff: now finding less tool calls!"}})
+        else:
+            assert body["stream"] is False
         text = ("<tool_call>\n<function=missing_tool>\n<parameter=key>\nx\n</parameter>\n</function>\n</tool_call>"
-                if kind == "repair" and len(sent) == 1 else "ok")
-        return httpx.Response(200, json={"model": "Concrete.gguf", "choices": [
+                if kind == "repair" and len(sent) == 2 else "ok")
+        model = "Decision-other.gguf" if kind == "repair" and len(sent) == 2 else "Concrete.gguf"
+        return httpx.Response(200, json={"model": model, "choices": [
             {"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]})
 
     asyncio.run(mod.app.state.http.aclose())
     mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
-    response = client.post("/v1/chat/completions", json=payload(probe, True, kind != "stream"))
+    body = payload(probe, True, kind != "stream")
+    if kind == "thinking":
+        body["chat_template_kwargs"] = {"enable_thinking": True}
+    response = client.post("/v1/chat/completions", json=body)
     assert response.status_code == 200
     rows = observed(client, probe)["attempts"]
-    assert len(rows) == len(sent) == (2 if kind == "repair" else 1)
+    assert len(rows) == len(sent) == (3 if kind == "repair" else 1)
     assert [r["attempt"] for r in rows] == list(range(1, len(rows) + 1))
     for row, raw in zip(rows, sent):
         assert row["requestId"] == response.headers["X-ODS-Request-Id"]
         assert row["fingerprints"]["bodyDigest"] == expected_digest(probe, raw)
         assert row["fingerprints"]["bodyBytes"] == len(raw)
-        assert row["status"] == "complete" and row["httpStatus"] == 200
+        expected_status = "stream-error" if kind == "repair" and row["attempt"] == 1 else "complete"
+        expected_http = 500 if kind == "repair" and row["attempt"] == 1 else 200
+        assert row["status"] == expected_status and row["httpStatus"] == expected_http
+        expected_model = (None if expected_http == 500 else
+            "Decision-other.gguf" if kind == "repair" and row["attempt"] == 2 else "Concrete.gguf")
+        assert row["responseModel"] == expected_model
         assert row["elapsedMs"] >= 0 and row["capturePrepareMs"] >= 0
         actual = json.loads(raw)
         for name in ["messages", "tools"]:
@@ -128,6 +158,7 @@ def test_expiry_limit_and_old_completion_cannot_revive_evidence(router):
     assert mod._probe_attempts.public(probe, "probe-secret") is None
     assert arm(client, probe).status_code == 201
     mod._probe_attempts.finish(stale_handle, "complete", 200)
+    mod._probe_attempts.observe_response_model(stale_handle, "Late-other.gguf")
     assert observed(client, probe)["attempts"] == []
 
 
@@ -164,6 +195,7 @@ def test_failed_sends_are_observable_without_retries_or_exception_text(router, f
     mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(fail))
     response = client.post("/v1/chat/completions", json=payload(probe))
     assert response.status_code in [502, 504] and len(sent) == 1
+    assert "private backend detail" not in response.text
     rows = observed(client, probe)["attempts"]
     assert len(rows) == 1 and rows[0]["status"] == failure
     assert "private backend detail" not in json.dumps(rows)

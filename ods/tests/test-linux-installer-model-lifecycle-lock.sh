@@ -57,8 +57,8 @@ complete_line="$(grep -n 'write_status "complete"' "$UPGRADER" | tail -1 | cut -
     || fail "upgrader must confirm lifecycle ownership before config promotion"
 (( bootstrap_cleanup_line < complete_line )) \
     || fail "upgrader completion must follow bootstrap cleanup"
-grep -q "trap 'cleanup_bootstrap_pixel_model_transaction; release_model_router_swap_gate; release_model_lifecycle_lock; release_upgrade_lock' EXIT" "$UPGRADER" \
-    || fail "upgrader must clean up Pixel before automatically releasing the router gate and both lifecycle locks"
+grep -q "trap 'stop_download_monitor; cleanup_bootstrap_pixel_model_transaction; release_model_router_swap_gate; release_model_lifecycle_lock; release_upgrade_lock' EXIT" "$UPGRADER" \
+    || fail "upgrader must stop progress, clean up Pixel, then release the router gate and both lifecycle locks"
 finalization_locks="$(grep -c 'acquire_model_lifecycle_lock || fail "Could not serialize full-model finalization' "$UPGRADER")"
 [[ "$finalization_locks" -ge 3 ]] \
     || fail "every Linux path that publishes a final GGUF must first acquire the lifecycle lock"
@@ -72,9 +72,10 @@ python3 - "$UPGRADER" <<'PY'
 import pathlib, re, subprocess, sys
 source = pathlib.Path(sys.argv[1]).read_text()
 trap = re.search(r"^    (trap '[^'\n]*' EXIT)$", source, re.M).group(1)
-expected = ["pixel", "router", "lifecycle", "upgrade"]
+expected = ["monitor", "pixel", "router", "lifecycle", "upgrade"]
 for cleanup_rc in (0, 1):
     script = "set -uo pipefail\n" + f"cleanup_bootstrap_pixel_model_transaction() {{ echo pixel; return {cleanup_rc}; }}\n"
+    script += "stop_download_monitor() { echo monitor; }\n"
     script += "release_model_router_swap_gate() { echo router; }\n"
     script += "release_model_lifecycle_lock() { echo lifecycle; }\n"
     script += "release_upgrade_lock() { echo upgrade; }\n"
@@ -82,7 +83,7 @@ for cleanup_rc in (0, 1):
     assert result.returncode == 73, result
     assert result.stdout.splitlines() == expected, result
 PY
-pass "actual EXIT trap cleans Pixel first and releases shell locks even if Pixel stays held"
+pass "actual EXIT trap stops progress, cleans Pixel, and releases shell locks even if Pixel stays held"
 
 if ! command -v flock >/dev/null 2>&1; then
     echo "[SKIP] flock is unavailable; static lifecycle lock contracts passed, runtime contention test skipped"
@@ -113,6 +114,32 @@ export ODS_MODEL_LIFECYCLE_LOCK_ROOT="$tmp/locks"
 export ODS_TEST_LOCK_LIB="$LOCK_LIB"
 export ODS_TEST_INSTALL_DIR="$install_dir"
 export ODS_TEST_EVENTS="$tmp/events"
+
+# The existing-install migration acquires/releases this lock before Phase 06.
+# Closing its fd must not discard stderr from every later installer command.
+for mode in release failed-acquire; do
+    ODS_TEST_LOCK_MODE="$mode" bash -c '
+        set -euo pipefail
+        . "$ODS_TEST_LOCK_LIB"
+        if [[ "$ODS_TEST_LOCK_MODE" == failed-acquire ]]; then
+            flock() { return 1; }
+            if ods_model_lifecycle_lock_acquire "$ODS_TEST_INSTALL_DIR" "refused lock"; then
+                exit 91
+            fi
+        else
+            ods_model_lifecycle_lock_acquire "$ODS_TEST_INSTALL_DIR" "diagnostic test"
+            ods_model_lifecycle_lock_release
+        fi
+        [[ -z "$ODS_MODEL_LIFECYCLE_LOCK_FD" ]]
+        printf "parent-diagnostic\n" >&2
+        bash -c '\''printf "child-diagnostic\\n" >&2'\''
+    ' >"$tmp/$mode.stdout" 2>"$tmp/$mode.stderr"
+    grep -qx parent-diagnostic "$tmp/$mode.stderr" \
+        || fail "$mode discarded the parent installer diagnostics"
+    grep -qx child-diagnostic "$tmp/$mode.stderr" \
+        || fail "$mode discarded later helper diagnostics"
+done
+pass "lock release and acquisition failure preserve parent and child stderr"
 
 bash -c '
     set -euo pipefail

@@ -14,7 +14,7 @@ class RelativeArchiveLinks(unittest.TestCase):
     def test_archive_and_restore_resolve_relative_cold_directory(self):
         for relative in ("cold pool", "../cold pool"):
             with self.subTest(relative=relative), tempfile.TemporaryDirectory(prefix="ods-cold-links-") as directory:
-                root = Path(directory)
+                root = Path(directory).resolve()
                 work = root / "working/nested"
                 work.mkdir(parents=True)
                 cache = root / "cache"

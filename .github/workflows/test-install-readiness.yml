@@ -5,11 +5,14 @@ on:
   push:
     branches: [main, master, public-beta]
 
+permissions:
+  contents: read
+
 jobs:
   readiness:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

@@ -27,11 +27,15 @@ The Linux installer detects the distro via `/etc/os-release` and chooses the rig
 
 | Distro family   | Package manager | Typical distros                    | Notes |
 |-----------------|----------------|------------------------------------|-------|
-| Debian/Ubuntu   | apt            | Ubuntu 22.04/24.04/26.04, Debian 11/12   | Most tested; Docker install via get.docker.com or distro packages. |
-| Fedora / RHEL   | dnf            | Fedora 38/39/40/41                | Well supported. |
-| Arch            | pacman         | Arch Linux, CachyOS               | Supported; ensure curl and optional jq/rsync. |
-| openSUSE        | zypper         | openSUSE Tumbleweed, Leap        | Supported. |
+| Debian/Ubuntu   | apt            | Ubuntu 22.04/24.04/26.04, Debian 12, Linux Mint 21.3 | Most tested; Docker install via get.docker.com or distro packages. |
+| Fedora / RHEL   | dnf            | Fedora 41, Rocky Linux 9          | Package-manager and syntax checks in CI. |
+| Arch            | pacman         | Arch Linux, Manjaro, CachyOS      | Package-manager and syntax checks in CI; ensure curl and optional jq/rsync. |
+| openSUSE        | zypper         | openSUSE Tumbleweed               | Package-manager and syntax checks in CI; install Docker before running the installer. |
 | Other           | (detected)     | Derivatives of above               | Installer falls back to apt-style messages when unknown. |
+
+The distributions listed are the ones in the CI distro matrix, which checks
+package-manager detection, prerequisite installation and installer syntax in
+containers; it does not run full installs.
 
 **Minimum versions:** We test on current LTS and recent stable releases. Older versions may work but are not guaranteed; see [SUPPORT-MATRIX.md](SUPPORT-MATRIX.md) for tier definitions.
 
@@ -42,7 +46,7 @@ The Linux installer detects the distro via `/etc/os-release` and chooses the rig
 | Backend   | Use case              | Requirements                          | Compose overlay           |
 |-----------|------------------------|----------------------------------------|----------------------------|
 | **NVIDIA**| CUDA inference         | NVIDIA GPU, drivers, nvidia-container-toolkit | docker-compose.nvidia.yml |
-| **AMD**   | ROCm (e.g. Strix Halo) | AMD GPU, ROCm stack                   | docker-compose.amd.yml    |
+| **AMD**   | llama.cpp Vulkan (e.g. Strix Halo); ROCm optional | AMD GPU with the amdgpu driver (`/dev/dri`; `/dev/kfd` for ROCm) | docker-compose.amd.yml (+ docker-compose.amd-rocm.yml for ROCm) |
 | **Apple** | Metal (macOS only)     | Apple Silicon, macOS 13+              | Native binary + Docker   |
 | **CPU**   | No GPU                 | Any x86_64/arm64 Linux                | docker-compose.base.yml + CPU backend |
 
@@ -115,7 +119,7 @@ Extensions declare compatibility with ODS versions via `compatibility.ods_min` (
 | Scenario                    | Supported | Notes |
 |----------------------------|-----------|-------|
 | Linux Ubuntu 24.04/26.04 + NVIDIA | Yes       | Primary path. |
-| Linux Fedora + AMD GPU     | Yes       | ROCm path. |
+| Linux Fedora + AMD GPU     | Yes       | llama.cpp Vulkan path (ROCm optional). |
 | Linux Debian + no GPU      | Yes       | CPU-only; lower tier. |
 | Linux Arch + NVIDIA        | Yes       | Use pacman for optional tools. |
 | Old PC (2015) + Linux + Docker | Possible | CPU-only or old GPU; use small model, check RAM. |

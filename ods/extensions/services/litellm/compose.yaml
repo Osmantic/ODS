@@ -6,10 +6,19 @@ services:
     image: ghcr.io/berriai/litellm:v1.90.7@sha256:917d480b7e4a7e61822e54f70be5c7cf753fb0b7328cbf6467612652ca748075
     container_name: ods-litellm
     restart: unless-stopped
+    # remote-provider (declared in docker-compose.base.yml) reaches the
+    # remote-provider egress; it is internal, so ods-network stays the
+    # default route for local and host-side model backends.
+    networks:
+      - default
+      - remote-provider
     security_opt:
       - no-new-privileges:true
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_KEY:-}
+      # Use the cost map bundled in the pinned image instead of fetching it
+      # from GitHub at every start.
+      - LITELLM_LOCAL_MODEL_COST_MAP=True
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
@@ -19,6 +28,10 @@ services:
       - ODS_MODEL_SWITCHBOARD=${ODS_MODEL_SWITCHBOARD:-enabled}
       - TOKEN_SPY_URL=${TOKEN_SPY_URL:-http://token-spy:8080}
       - TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY:-}
+      # A Windows AMD install's LiteLLM config sends this bearer key to the
+      # native llama-server (os.environ/LLAMA_SERVER_API_KEY). Only those
+      # installs set it; it is empty, and unused, everywhere else.
+      - LLAMA_SERVER_API_KEY=${LLAMA_SERVER_API_KEY:-}
     volumes:
       - ./config/litellm/${ODS_MODE:-local}.yaml:/app/config.yaml:ro,z
       - ./config/litellm/switchboard.yaml:/app/switchboard.yaml:ro,z
@@ -58,6 +71,14 @@ services:
                 success_callbacks = []
             success_callbacks.append('langfuse')
             settings['success_callback'] = list(dict.fromkeys(success_callbacks))
+        # The remote-provider egress admits only the gateway key. Older
+        # rendered configs say not-needed, and an unset key must not fall
+        # back to OPENAI_API_KEY, so set it here for every egress route.
+        egress_key = 'os.environ/LITELLM_MASTER_KEY' if os.environ.get('LITELLM_MASTER_KEY') else 'ods-gateway-key-missing'
+        for model in cfg.get('model_list') or []:
+            params = model.get('litellm_params') if isinstance(model, dict) else None
+            if isinstance(params, dict) and str(params.get('api_base') or '').startswith('http://remote-provider-egress:'):
+                params['api_key'] = egress_key
         with open('/tmp/config.yaml', 'w') as f:
             yaml.dump(cfg, f, default_flow_style=False)
         "

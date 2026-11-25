@@ -197,7 +197,7 @@ MODEL_PROFILE=gemma4 run_tier 2
 assert_eq "MODEL_PROFILE_EFFECTIVE" "gemma4"                   "$MODEL_PROFILE_EFFECTIVE"
 assert_eq "LLM_MODEL"               "gemma-4-e4b-it"           "$LLM_MODEL"
 assert_eq "GGUF_FILE"               "gemma-4-E4B-it-Q4_K_M.gguf" "$GGUF_FILE"
-assert_eq "LLAMA_SERVER_IMAGE" "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f" "$LLAMA_SERVER_IMAGE"
+assert_eq "LLAMA_SERVER_IMAGE" "ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c" "$LLAMA_SERVER_IMAGE"
 assert_eq "LLAMA_CPP_RELEASE_TAG_OVERRIDE" "b9014"             "$LLAMA_CPP_RELEASE_TAG_OVERRIDE"
 unset MODEL_PROFILE
 echo ""

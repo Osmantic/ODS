@@ -1,0 +1,66 @@
+# ODS - host-native llama-server overlay
+#
+# Used when the model runs in an ODS-managed llama-server outside this Docker
+# stack: on Windows, the Portal runs llama-server.exe as an owned per-user
+# task while this stack runs in WSL. The overlay keeps the in-stack
+# llama-server off and keeps model-router for Pixel and browser model
+# switching against that runtime.
+#
+# The native server requires LLAMA_SERVER_API_KEY. LiteLLM and model-router
+# send it as a bearer token, and the other services reach the model through
+# LiteLLM, so the key is not given to them.
+#
+# This file is intentionally not standalone. scripts/resolve-compose-stack.sh
+# selects it, together with docker-compose.base.yml and
+# extensions/services/litellm/compose.yaml, when NATIVE_LLM_BASE_URL is set.
+#
+# Validate the resolved stack with:
+#
+#   NATIVE_LLM_BASE_URL=http://localhost:8080 \
+#     ./scripts/resolve-compose-stack.sh --ods-mode local --gpu-backend cpu --tier 1
+
+services:
+  llama-server:
+    profiles:
+      - local-inference
+    restart: "no"
+
+  model-router:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - LLAMA_SERVER_API_KEY=${LLAMA_SERVER_API_KEY:-}
+
+  litellm:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - LLAMA_SERVER_API_KEY=${LLAMA_SERVER_API_KEY:-}
+
+  open-webui:
+    environment:
+      OPENAI_API_BASE_URL: "http://litellm:4000/v1"
+      OPENAI_API_KEY: "${LITELLM_KEY}"
+
+  dashboard-api:
+    environment:
+      - GPU_BACKEND=${GPU_BACKEND:-amd}
+      - LLM_BACKEND=llama-server
+      - LLM_API_BASE_PATH=/v1
+      - OLLAMA_URL=${NATIVE_LLM_CONTAINER_BASE_URL:-http://host.docker.internal:8080}
+      - LLM_URL=${LLM_API_URL:-http://litellm:4000}
+      - ODS_TALK_HERMES_TIMEOUT=${ODS_TALK_HERMES_TIMEOUT:-900}
+      # Image attachments go to the active model, as on every runtime: an empty
+      # ODS_TALK_VISION_MODEL (the default) keeps them on its chat route. An
+      # owner who sets a vision model reaches it through LiteLLM, which holds
+      # the native server's key; dashboard-api does not.
+      - ODS_TALK_VISION_URL=${ODS_TALK_VISION_URL:-http://litellm:4000/v1}
+      - ODS_TALK_VISION_KEY=${ODS_TALK_VISION_KEY:-${LITELLM_KEY}}
+      - ODS_TALK_VISION_MODEL=${ODS_TALK_VISION_MODEL:-}
+      - AMD_INFERENCE_RUNTIME=${AMD_INFERENCE_RUNTIME:-llama-server}
+      - AMD_INFERENCE_BACKEND=${AMD_INFERENCE_BACKEND:-vulkan}
+      - AMD_INFERENCE_LOCATION=${AMD_INFERENCE_LOCATION:-host}
+      - AMD_INFERENCE_PORT=${AMD_INFERENCE_PORT:-8080}
+      - AMD_INFERENCE_SUPPORTED_BACKENDS=${AMD_INFERENCE_SUPPORTED_BACKENDS:-vulkan}
+      - AMD_INFERENCE_RUNTIME_MODE=${AMD_INFERENCE_RUNTIME_MODE:-windows-portal-llama-server}
+      - AMD_INFERENCE_MANAGED=${AMD_INFERENCE_MANAGED:-true}

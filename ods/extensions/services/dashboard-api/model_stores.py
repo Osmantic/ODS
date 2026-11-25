@@ -17,17 +17,13 @@ from pathlib import Path, PureWindowsPath
 MAX_REGISTRY_BYTES = 65536
 
 
-def validate_profile_command(profile: dict, model_path: Path, *, lemonade: bool = False) -> None:
+def validate_profile_command(profile: dict, model_path: Path) -> None:
     # The host agent imports this module by filename, so resolve its adjacent
     # validator explicitly instead of depending on the host's sys.path.
     spec = importlib.util.spec_from_file_location('_ods_native_runtime_validation', Path(__file__).with_name('model_mtp.py'))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     command = [profile['executable'], '--model', str(model_path), '--ctx-size', str(profile['contextLength']), '--jinja']
-    if lemonade:
-        # Lemonade 10 can add this on any machine with an iGPU, independently
-        # of the selected accelerator. Check it before a running model stops.
-        command += ['--no-mmap', '--gpu-layers', '99', '--context-shift', '--keep', '16', '--reasoning-format', 'auto', '--no-webui']
     command += profile['args']
     fit = profile.get('memoryQualification')
     if isinstance(fit, dict):
@@ -44,7 +40,7 @@ def resolve_runtime_selection(install_dir: Path, *, verify_hashes: bool = True, 
     env = {}
     for line in (install_dir / ".env").read_text(encoding="utf-8").splitlines():
         key, separator, value = line.partition("=")
-        if separator and key.strip() in {"ODS_ACTIVE_MODEL_STORE", "GGUF_FILE", "CTX_SIZE", "MAX_CONTEXT", "LLM_BACKEND", "AMD_INFERENCE_RUNTIME"}:
+        if separator and key.strip() in {"ODS_ACTIVE_MODEL_STORE", "GGUF_FILE", "CTX_SIZE", "MAX_CONTEXT"}:
             env[key.strip()] = parse_env_value(value)
     if verify_hashes and allow_missing_model:
         raise ValueError("Artifact verification cannot use missing-model metadata")
@@ -87,9 +83,34 @@ def resolve_runtime_selection(install_dir: Path, *, verify_hashes: bool = True, 
             else:
                 profile["contextLength"] = int(context)
     if profile and verify_hashes:
-        validate_profile_command(profile, checkpoint, lemonade=env.get('LLM_BACKEND') == 'lemonade' or env.get('AMD_INFERENCE_RUNTIME') == 'lemonade')
+        validate_profile_command(profile, checkpoint)
+    # The projector the host agent's switch launches with: a memory-qualified
+    # profile's measured one (hash-checked above), else a vision import's own.
+    fit = profile.get("memoryQualification") if profile else None
+    projector = safe_artifact(store["path"], fit.get("visionProjectorFile")) if isinstance(fit, dict) \
+        else library_projector(install_dir, store["path"], filename)
     return {"schemaVersion":1,"storeId":store["id"],"modelsDirectory":str(store["path"]),
-            "modelPath":str(checkpoint),"available":available,"profile":profile}
+            "modelPath":str(checkpoint),"available":available,"profile":profile,
+            "projectorPath":str(projector) if projector else None}
+
+
+def library_projector(install_dir: Path, models_dir: Path, gguf_file: str) -> Path | None:
+    """The vision projector a catalog or import record downloaded with ``gguf_file`` (WP2).
+
+    Native launches outside a model switch (``ods start``, an installer rerun)
+    read it here, as the host agent's switch does, so a vision import keeps its
+    vision. An unreadable library launches without it, like the agent.
+    """
+    for rel in ("config/model-library.json", "data/model-imports.json"):
+        try:
+            records = json.loads((Path(install_dir) / rel).read_text(encoding="utf-8")).get("models")
+        except (OSError, ValueError, AttributeError):
+            continue
+        for record in records if isinstance(records, list) else []:
+            if isinstance(record, dict) and record.get("gguf_file") == gguf_file:
+                filename = str(record.get("mmproj_file") or "").strip()
+                return safe_artifact(models_dir, filename) if filename else None
+    return None
 
 
 def active_compose_overlay(install_dir: Path, identifier: str) -> Path | None:
@@ -197,6 +218,11 @@ def safe_artifact(root: Path, filename: str, *, allow_empty: bool = False) -> Pa
         return None
 
 
+# A vision projector is not a model: upstream names them mmproj-*.gguf and an
+# import stores its own as hf-<repo>-mmproj-<quant>-<hash>.gguf (WP2).
+_PROJECTOR_FILE = re.compile(r"(?:^|[-_.])mmproj(?:[-_.]|$)", re.IGNORECASE)
+
+
 def scan_model_files(data_dir: Path, *, container: bool = False, default_dir: Path | None = None) -> dict[str, Path]:
     stores = registered_stores(data_dir, container=container)
     if default_dir is not None:
@@ -205,7 +231,8 @@ def scan_model_files(data_dir: Path, *, container: bool = False, default_dir: Pa
     for store in stores:
         try:
             for child in store["path"].iterdir():
-                if not child.name.lower().endswith(".gguf") or child.name.lower().startswith(("mmproj", "mtp-")):
+                if (not child.name.lower().endswith(".gguf") or child.name.lower().startswith("mtp-")
+                        or _PROJECTOR_FILE.search(child.name)):
                     continue
                 target = safe_artifact(store["path"], child.name)
                 if target is not None:
@@ -239,7 +266,7 @@ def active_store(data_dir: Path, identifier: str = "default", *, container: bool
     raise ValueError("The configured model store is unavailable; remount or register it before activating a model")
 
 
-def lemonade_profile(data_dir: Path, filename: str, *, container: bool = False) -> dict | None:
+def registered_runtime_profile(data_dir: Path, filename: str, *, container: bool = False) -> dict | None:
     """Read a narrowly typed local runtime profile, never arbitrary shell text."""
     store = store_for_model(data_dir, filename, container=container)
     return native_profile(store, filename)
@@ -272,7 +299,13 @@ def native_profile(store: dict | None, filename: str, *, require_executable: boo
     args = ["--parallel", "1", "--flash-attn", "on", "--cache-type-k", "q4_0", "--cache-type-v", "q4_0", *load_args]
     if row["mtp"]:
         args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(draft), "--spec-draft-type-k", "q4_0", "--spec-draft-type-v", "q4_0"]
+    fit = row.get("memoryQualification")
+    if isinstance(fit, dict) and fit.get("runtimeMode") != "native":
+        # Fits measured through Lemonade's launch (runtimeMode=lemonade, its
+        # injected flags) do not describe a native llama-server launch. They
+        # stay recorded but never qualify an activation; requalify natively.
+        fit = None
     return {"backend": row["backend"], "executable": str(executable), "contextLength": context,
             "mtp": row["mtp"], "args": args, "storeId": store["id"],
             "runtimeSha256":row.get("runtimeSha256"), "modelSha256":row.get("modelSha256"),
-            "memoryQualification":row.get("memoryQualification")}
+            "memoryQualification":fit}

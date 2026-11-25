@@ -14,10 +14,10 @@
 # =============================================================================
 model:
   # Local model name advertised to Hermes. llama.cpp's OpenAI-compat server
-  # ignores this field and serves whatever's loaded, but Lemonade (AMD) and
-  # other strict OpenAI-compat servers DO require an exact match — they will
-  # 404 every chat completion if Hermes asks for "qwen3.5-9b" but the server
-  # only serves "extra.Qwen3.5-4B-Q4_K_M.gguf" or similar. The installer
+  # ignores this field and serves whatever's loaded, but strict
+  # OpenAI-compat servers DO require an exact match — they will 404 every
+  # chat completion if Hermes asks for "qwen3.5-9b" but the server only
+  # serves "Qwen3.5-4B-Q4_K_M.gguf" or similar. The installer
   # should sed-replace this value with the actually-served model name
   # during phase 11 (open follow-up). Until that lands, operators on
   # AMD / Apple Silicon / aarch64 must hand-edit /opt/data/config.yaml

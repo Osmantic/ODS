@@ -11,7 +11,7 @@ import { useVersion } from './hooks/useVersion'
 import { useFirstRun } from './hooks/useFirstRun'
 import { useSessionBootstrap } from './hooks/useSessionBootstrap'
 import { getInternalRoutes } from './plugins/registry'
-import { X, PanelRightClose, PanelRightOpen } from 'lucide-react'
+import { X, PanelRightClose, PanelRightOpen, Loader2 } from 'lucide-react'
 import { PortalIdentityProvider } from './contexts/PortalIdentityContext'
 
 // Phone-first first-boot wizard. Mounted instead of the normal app shell
@@ -177,6 +177,19 @@ function App() {
 }
 
 function BootstrapBanner({ bootstrap }) {
+  const phaseCopy = {
+    starting: { title: 'Preparing Full Model', action: 'is being prepared', detail: 'Preparing the full model download…' },
+    downloading: { title: 'Downloading Full Model', action: 'is downloading' },
+    verifying: { title: 'Verifying Full Model', action: 'is being checked', detail: 'Checking the downloaded model before activation…' },
+    swapping: { title: 'Activating Full Model', action: 'is starting', detail: 'Switching chat to the full model…' },
+  }
+  const phase = phaseCopy[bootstrap.phase] ? bootstrap.phase : 'downloading'
+  const copy = phaseCopy[phase]
+  const downloadComplete = phase === 'verifying' || phase === 'swapping'
+  // bootstrap-upgrade.sh writes bytesTotal 0 when the server sends no
+  // Content-Length, and /api/status reports that unknown percent as 0.
+  const unknownTotal = phase === 'downloading'
+    && !(Number.isFinite(bootstrap.bytesTotal) && bootstrap.bytesTotal > 0)
   const formatEta = (seconds) => {
     if (!seconds || seconds <= 0) return 'calculating...'
     if (seconds < 60) return `${seconds}s`
@@ -198,28 +211,47 @@ function BootstrapBanner({ bootstrap }) {
           <div className="flex items-center gap-3">
             <div className="w-3 h-3 bg-theme-accent rounded-full animate-pulse" />
             <div>
-              <h3 className="text-sm font-semibold text-white">Downloading Full Model</h3>
+              <h3 className="text-sm font-semibold text-white">{copy.title}</h3>
               <p className="text-xs text-theme-text-secondary">
-                Chat now with lightweight model • <span className="text-theme-accent-light">{bootstrap.model}</span> downloading
+                {phase === 'swapping' ? 'Chat pauses during activation' : 'Chat now with lightweight model'} • <span className="text-theme-accent-light">{bootstrap.model}</span> {copy.action}
               </p>
             </div>
           </div>
           <div className="text-right">
-            <span className="text-xl font-bold text-theme-accent">{bootstrap.percent?.toFixed(1) || 0}%</span>
-            {bootstrap.speedMbps && (
+            {unknownTotal ? (
+              <Loader2 size={20} role="progressbar" aria-label="Full model download progress"
+                className="ml-auto text-theme-accent motion-safe:animate-spin" />
+            ) : (
+              <span className="text-xl font-bold text-theme-accent">
+                {downloadComplete ? 'Download 100%' : phase === 'starting' ? 'Preparing' : `${bootstrap.percent?.toFixed(1) || 0}%`}
+              </span>
+            )}
+            {phase === 'downloading' && bootstrap.speedMbps && (
               <p className="text-xs text-theme-text-muted">{bootstrap.speedMbps.toFixed(1)} MB/s</p>
             )}
           </div>
         </div>
-        <div className="h-2 bg-theme-border rounded-full overflow-hidden">
-          <div
-            className="h-full bg-theme-accent rounded-full transition-all duration-500"
-            style={{ width: `${bootstrap.percent || 0}%` }}
-          />
-        </div>
-        <p className="text-xs text-theme-text-muted mt-2">
-          ETA: {formatEta(bootstrap.eta)} • {formatBytes(bootstrap.bytesDownloaded)} / {formatBytes(bootstrap.bytesTotal)} GB
-        </p>
+        {!unknownTotal && (
+          <div role="progressbar" aria-label="Full model download progress"
+            aria-valuenow={downloadComplete ? 100 : phase === 'starting' ? 0 : bootstrap.percent || 0}
+            className="h-2 bg-theme-border rounded-full overflow-hidden">
+            <div
+              className="h-full bg-theme-accent rounded-full transition-all duration-500"
+              style={{ width: `${downloadComplete ? 100 : phase === 'starting' ? 0 : bootstrap.percent || 0}%` }}
+            />
+          </div>
+        )}
+        {unknownTotal ? (
+          <p className="text-xs text-theme-text-muted mt-2">
+            {bootstrap.bytesDownloaded > 0
+              ? `${formatBytes(bootstrap.bytesDownloaded)} GB downloaded · Total size unavailable`
+              : 'Progress unavailable'}
+          </p>
+        ) : phase === 'downloading' ? (
+          <p className="text-xs text-theme-text-muted mt-2">
+            ETA: {formatEta(bootstrap.eta)} • {formatBytes(bootstrap.bytesDownloaded)} / {formatBytes(bootstrap.bytesTotal)} GB
+          </p>
+        ) : <p className="text-xs text-theme-text-muted mt-2">{copy.detail}</p>}
       </div>
     </div>
   )

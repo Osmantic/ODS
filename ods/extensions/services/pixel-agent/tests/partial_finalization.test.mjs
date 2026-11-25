@@ -56,6 +56,7 @@ function harness(name, prompt) {
   const aborts = [];
   const verifications = [];
   const guard = createToolLoopGuard({abortRun: (id, key) => { aborts.push([id, key]); return true; },
+    abortRunAndDrain: async (id, key) => { aborts.push([id, key]); return {aborted: true, drained: true}; },
     hostCitationVerifier: {allowed: () => true, async verify({urls}) {
       verifications.push(urls);
       return {fetched: urls.length, verified: urls.map(url => ({url})), elapsedMs: 1};

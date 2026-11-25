@@ -17,5 +17,5 @@ COPY --from=build /app/packages/web/fonts /usr/share/nginx/html/fonts
 COPY --from=build /app/packages/web/imgs /usr/share/nginx/html/imgs
 COPY --from=build /app/packages/web/examples /usr/share/nginx/html/examples
 COPY --from=build /app/LICENSE /usr/share/nginx/html/LICENSE
-COPY nginx.conf /etc/nginx/nginx.conf
+COPY --chmod=0644 nginx.conf /etc/nginx/nginx.conf
 USER 101:101

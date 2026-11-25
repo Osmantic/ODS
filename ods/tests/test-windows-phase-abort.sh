@@ -4,8 +4,9 @@
 #
 # Verifies the ODS_INSTALL_ABORTED contract for dot-sourced phases:
 #   1. Phase-local broad catches must rethrow the sentinel, not swallow it.
-#   2. The orchestrator stops (exit 1) before running the next phase when a
-#      phase throws the sentinel from inside a local try/catch.
+#   2. The orchestrator stops through Exit-ODSInstallFailure (help link, then
+#      exit 1) before running the next phase when a phase throws the sentinel
+#      from inside a local try/catch.
 # ============================================================================
 
 set -euo pipefail
@@ -14,6 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PREFLIGHT="$ROOT_DIR/installers/windows/phases/01-preflight.ps1"
 ORCHESTRATOR="$ROOT_DIR/installers/windows/install-windows.ps1"
+UI_LIB="$ROOT_DIR/installers/windows/lib/ui.ps1"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -40,8 +42,8 @@ echo ""
 # ── Static contract checks ───────────────────────────────────────────────────
 check 'if ($_.FullyQualifiedErrorId -eq "ODS_INSTALL_ABORTED") { throw }' "$PREFLIGHT" \
     "preflight Windows-build catch rethrows abort sentinel"
-check 'if ($_.FullyQualifiedErrorId -eq "ODS_INSTALL_ABORTED") { exit 1 }' "$ORCHESTRATOR" \
-    "orchestrator catches sentinel and exits 1"
+check 'if ($_.FullyQualifiedErrorId -eq "ODS_INSTALL_ABORTED") { Exit-ODSInstallFailure }' "$ORCHESTRATOR" \
+    "orchestrator catches sentinel and exits through Exit-ODSInstallFailure"
 
 # ── Behavioral check: sentinel from a local try must stop the orchestrator ──
 PS_BIN="powershell.exe"
@@ -67,23 +69,29 @@ EOF
 Set-Content -Path (Join-Path $PSScriptRoot "next-phase-ran.marker") -Value "ran"
 EOF
 
+    # The real installer UI library, so the exit helper under test is the
+    # one install-windows.ps1 calls.
+    cp "$UI_LIB" "$TMPDIR_TEST/ui.ps1"
+
     cat > "$TMPDIR_TEST/orchestrator.ps1" <<'EOF'
 # Mirrors the install-windows.ps1 phase loop.
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "ui.ps1")
 try {
     . (Join-Path $PSScriptRoot "phase-fatal.ps1")
     . (Join-Path $PSScriptRoot "phase-next.ps1")
 } catch {
-    if ($_.FullyQualifiedErrorId -eq "ODS_INSTALL_ABORTED") { exit 1 }
+    if ($_.FullyQualifiedErrorId -eq "ODS_INSTALL_ABORTED") { Exit-ODSInstallFailure }
     throw
 }
 exit 0
 EOF
 
     set +e
-    "$PS_BIN" -NoProfile -ExecutionPolicy Bypass -File "$TMPDIR_TEST/orchestrator.ps1"
+    output="$("$PS_BIN" -NoProfile -ExecutionPolicy Bypass -File "$TMPDIR_TEST/orchestrator.ps1" 2>&1)"
     rc=$?
     set -e
+    printf '%s\n' "$output"
 
     if [[ $rc -eq 1 ]]; then
         pass "orchestrator exits 1 on sentinel thrown from local try"
@@ -95,6 +103,12 @@ EOF
         pass "next phase does not run after sentinel"
     else
         fail "next phase does not run after sentinel"
+    fi
+
+    if grep -Fq "Need help? Ask on the ODS Discord: https://discord.gg/" <<<"$output"; then
+        pass "sentinel stop names the ODS Discord"
+    else
+        fail "sentinel stop names the ODS Discord"
     fi
 else
     echo "  SKIP behavioral checks (no PowerShell available)"

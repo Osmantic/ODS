@@ -77,13 +77,14 @@ _ods_readiness_model_route_available() {
     local url="$1" agent_key="${ODS_AGENT_KEY:-${DASHBOARD_API_KEY:-}}"
     [[ -n "${LITELLM_KEY:-}" ]] || return 1
     command -v python3 >/dev/null 2>&1 || return 1
+    # Keys go through header files, never argv, which any local user can read.
     if [[ -n "$agent_key" ]]; then
-        curl -fsS --max-time 10 -H "Authorization: Bearer $agent_key" \
+        curl -fsS --max-time 10 -H @<(printf 'Authorization: Bearer %s\n' "$agent_key") \
             "http://127.0.0.1:${ODS_AGENT_PORT:-7710}/v1/model/status" >/dev/null 2>&1 || true
     fi
     local response
     response="$(curl -fsS --max-time 30 "$url" \
-        -H "Authorization: Bearer $LITELLM_KEY" -H 'Content-Type: application/json' \
+        -H @<(printf 'Authorization: Bearer %s\n' "$LITELLM_KEY") -H 'Content-Type: application/json' \
         -d '{"model":"ods/current","messages":[{"role":"user","content":"Say OK"}],"max_tokens":64,"temperature":0,"stream":false,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)" || return 1
     printf '%s' "$response" | python3 -c '
 import json, sys
@@ -101,6 +102,9 @@ ods_readiness_summary() {
     local status_cmd="${1:-ods status}"
     local log_file="${2:-}"
     local dashboard_url="${3:-http://localhost:3001}"
+    # Callers may require one service before announcing a successful install.
+    # Other services remain diagnostic, and existing callers keep that policy.
+    local required_name="${4:-}" required_ready=false
 
     local ready_lines=()
     local attention_lines=()
@@ -159,12 +163,16 @@ ods_readiness_summary() {
         line=$(printf "%-28s %s (%s)" "$name" "$open_url" "$detail")
         if [[ "$state" == "ready" ]]; then
             ready_lines+=("$line")
+            [[ "$name" != "$required_name" ]] || required_ready=true
         else
             attention_lines+=("$(printf "%-28s %s - %s" "$name" "$state" "$detail")")
         fi
     done
 
-    [[ "$total" -gt 0 ]] || return 0
+    if [[ "$total" -eq 0 ]]; then
+        [[ -z "$required_name" ]]
+        return
+    fi
 
     echo ""
     echo -e "${BGRN:-}INSTALL READINESS${NC:-}"
@@ -196,4 +204,8 @@ ods_readiness_summary() {
         fi
     fi
     echo ""
+    if [[ -n "$required_name" && "$required_ready" != true ]]; then
+        echo "Install incomplete: required $required_name is not reachable. Resolve the reported failure and rerun the installer."
+        return 1
+    fi
 }

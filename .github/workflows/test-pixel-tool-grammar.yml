@@ -12,6 +12,7 @@ on:
       - 'ods/extensions/services/pixel-agent/host/chat_image*.mjs'
       - 'ods/extensions/services/pixel-agent/tests/test_openclaw_tool_recovery.py'
       - 'ods/extensions/services/pixel-agent/host/openclaw-image-envelope.json'
+      - 'ods/extensions/services/pixel-agent/host/openclaw-subagent-session.json'
       - 'ods/extensions/services/pixel-agent/host/openclaw_tool_recovery.py'
       - 'ods/docker-compose.base.yml'
       - '.github/workflows/test-pixel-tool-grammar.yml'
@@ -48,6 +49,7 @@ jobs:
           python ods/extensions/services/pixel-agent/host/openclaw_tool_recovery.py \
             --openclaw-bin "$package/openclaw.mjs" --state-dir "$runtime/repair-state" --image-envelope
           echo "OPENCLAW_TOOL_SEARCH_MODULE=$package/dist/tool-search-BInRpkE3.js" >> "$GITHUB_ENV"
+          echo "OPENCLAW_AGENT_GATEWAY_MODULE=$package/dist/agent-Dme3RrGI.js" >> "$GITHUB_ENV"
           echo "OPENCLAW_PACKAGE_DIR=$package" >> "$GITHUB_ENV"
           echo "OPENCLAW_STATE_DIR=$runtime/state" >> "$GITHUB_ENV"
           echo "ODS_TEST_GRAMMAR_WORKSPACE=$runtime/workspace" >> "$GITHUB_ENV"

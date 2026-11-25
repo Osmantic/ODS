@@ -73,7 +73,7 @@ def test_installer_keeps_host_model_reachable_across_lan_modes(tmp_path, endpoin
     if custom_port:
         values += [f'LITELLM_PORT={port}', f'ODS_NATIVE_LLAMA_PORT={port}']
     (install / '.env').write_text('\n'.join(values) + '\n', encoding='utf-8')
-    source = (MAC / 'install-macos.sh').read_text(encoding='utf-8')
+    source = (MAC / 'lib/post-pixel-install.sh').read_text(encoding='utf-8')
     # Run exactly the installer block that selects and persists OpenCode's route.
     block = source.split('        _opencode_switchboard_mode=', 1)[1]
     block = '        _opencode_switchboard_mode=' + block.split('\n        ai_ok "OpenCode configured', 1)[0]
@@ -82,7 +82,7 @@ def test_installer_keeps_host_model_reachable_across_lan_modes(tmp_path, endpoin
     script += function(MAC / 'lib/env-generator.sh', 'read_env_value')
     for name in ['macos_normalize_bind_address', 'macos_bind_probe_host']:
         script += function(MAC / 'lib/constants.sh', name)
-    script += function(MAC / 'install-macos.sh', '_write_macos_opencode_config').replace('/usr/bin/python3', '"$ODS_TEST_PYTHON"')
+    script += function(MAC / 'lib/post-pixel-install.sh', '_write_macos_opencode_config').replace('/usr/bin/python3', '"$ODS_TEST_PYTHON"')
     script += block + '\n'
     env = dict(os.environ, ODS_TEST_PYTHON=sys.executable)
     result = subprocess.run(['bash', '-s', '--', str(install), str(config),

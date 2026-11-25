@@ -10,7 +10,7 @@ SearXNG aggregates results from 70+ search engines — Google, Bing, DuckDuckGo,
 
 - **Multi-engine aggregation**: Queries dozens of search engines simultaneously and deduplicates results
 - **Zero tracking**: No user profiling, no ad targeting, no query logging to third parties
-- **API access**: JSON API for programmatic search queries (used by Perplexica and OpenClaw)
+- **API access**: JSON API for programmatic search queries (used by Perplexica and Hermes)
 - **Configurable engines**: Enable, disable, or weight individual search engines in `config/searxng/`
 - **Multiple categories**: Web, images, news, science, files, social media, and more
 - **Lightweight**: Runs in under 512 MB of memory
@@ -72,7 +72,7 @@ curl http://localhost:8888/healthz
 ```
 ┌────────────┐   GET /search?q=...   ┌──────────────┐
 │ Perplexica │──────────────────────▶│   SearXNG    │
-│  OpenClaw  │                       │  (Metasearch)│
+│   Hermes   │                       │  (Metasearch)│
 │  Browser   │◀──────────────────────│              │
 └────────────┘    JSON results       └──────┬───────┘
                                             │

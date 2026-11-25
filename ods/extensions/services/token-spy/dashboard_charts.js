@@ -19,11 +19,18 @@
     return { ctx, width, height };
   }
 
+  // Series labels are agent names supplied by API callers.
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, ch => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+    ));
+  }
+
   function legend(target, items) {
     if (!target) return;
     target.innerHTML = items.map(item =>
-      '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' + item.color +
-      '"></span><span>' + item.label + '</span></span>'
+      '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' + esc(item.color) +
+      '"></span><span>' + esc(item.label) + '</span></span>'
     ).join('');
   }
 

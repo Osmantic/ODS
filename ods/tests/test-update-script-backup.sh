@@ -38,8 +38,13 @@ trap 'rm -rf "$FIXTURE"' EXIT
 # INSTALL_DIR is the script's own directory; BACKUP_DIR is $HOME/.ods/backups
 mkdir -p "$FIXTURE/home"
 cp "$ROOT_DIR/ods-update.sh" "$FIXTURE/ods-update.sh"
+mkdir -p "$FIXTURE/scripts"
+cp "$ROOT_DIR/scripts/publish-update-backup.py" "$FIXTURE/scripts/"
 : > "$FIXTURE/docker-compose.base.yml"
 : > "$FIXTURE/docker-compose.nvidia.yml"
+printf '%s\n' '-f docker-compose.base.yml -f docker-compose.nvidia.yml' > "$FIXTURE/.compose-flags"
+mkdir -p "$FIXTURE/config/litellm"
+printf 'model_list: []\n' > "$FIXTURE/config/litellm/config.yaml"
 echo "GPU_BACKEND=nvidia" > "$FIXTURE/.env"
 echo '{"version": "2.0.0"}' > "$FIXTURE/.version"
 
@@ -76,9 +81,9 @@ fi
 # ---------------------------------------------------------------------------
 # 2. all eligible files are copied and counted
 # ---------------------------------------------------------------------------
-# 2 compose files + .env + .version = 4
-if echo "$output" | grep -q "Files backed up: 4"; then
-    pass "backup counted all 4 files"
+# 2 compose files + .env + .compose-flags + config/litellm + .version = 6
+if echo "$output" | grep -q "Files backed up: 6"; then
+    pass "backup counted all 6 files"
 else
     fail "wrong file count: $(echo "$output" | grep 'Files backed up' || echo "$output")"
 fi
@@ -86,6 +91,13 @@ if [[ -f "$backup_dir/docker-compose.nvidia.yml" && -f "$backup_dir/.version" ]]
     pass "backup copied files beyond the first one"
 else
     fail "backup stopped after the first file"
+fi
+if [[ -f "$backup_dir/.compose-flags" && -f "$backup_dir/config-litellm/config.yaml" \
+      && -f "$backup_dir/metadata.json" && -f "$backup_dir/snapshot.json" ]] \
+   && ! find "$backup_dir" -mindepth 1 -maxdepth 1 -name '.*.tmp.*' | grep -q .; then
+    pass "backup publishes a flat, restorable snapshot with active overlays and config"
+else
+    fail "backup published missing or nested snapshot content: $output"
 fi
 
 # ---------------------------------------------------------------------------
@@ -112,7 +124,168 @@ else
     fail "rotation removed the backup it just created"
 fi
 
+# ---------------------------------------------------------------------------
+# 4. backup labels cannot escape the backup directory
+# ---------------------------------------------------------------------------
+rm -rf "$BACKUPS"
+mkdir -p "$BACKUPS"
+output=$(run_backup "../../../escaped")
+
+if echo "$output" | grep -q "Invalid backup name" && \
+        ! find "$FIXTURE/home/.ods" -type d -name "escaped-*" | grep -q .; then
+    pass "backup rejects path-like labels before writing"
+else
+    fail "path-like backup label escaped or was accepted: $output"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. failed backups never become visible rollback candidates
+# ---------------------------------------------------------------------------
+rm -rf "$BACKUPS"
+mkdir -p "$BACKUPS"
+FAIL_BIN="$FIXTURE/fail-bin"
+mkdir -p "$FAIL_BIN"
+printf '#!/bin/sh\nexit 17\n' > "$FAIL_BIN/cp"
+chmod +x "$FAIL_BIN/cp"
+output=$(PATH="$FAIL_BIN:$PATH" run_backup broken)
+
+if ! find "$BACKUPS" -maxdepth 1 -type d -name "backup-broken-*" | grep -q . && \
+        ! find "$BACKUPS" -maxdepth 1 -type d -name ".backup-broken-*" | grep -q .; then
+    pass "failed backup leaves no final or staging directory"
+else
+    remaining_failed=$(find "$BACKUPS" -maxdepth 1 -type d -name "*backup-broken-*" -print)
+    fail "failed backup remained selectable ($remaining_failed): $output"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. a repeated backup id cannot overwrite a completed snapshot
+# ---------------------------------------------------------------------------
+rm -rf "$BACKUPS"
+mkdir -p "$BACKUPS"
+DATE_BIN="$FIXTURE/date-bin"
+mkdir -p "$DATE_BIN"
+# shellcheck disable=SC2016  # ${1:-} belongs to the generated date stub.
+printf '%s\n' \
+    '#!/bin/sh' \
+    'if [ "${1:-}" = "-u" ]; then' \
+    '  echo 2026-08-23T12:34:56Z' \
+    'else' \
+    '  echo 20260823-123456' \
+    'fi' > "$DATE_BIN/date"
+chmod +x "$DATE_BIN/date"
+
+first_output=$(PATH="$DATE_BIN:$PATH" run_backup collision)
+echo '{"version": "9.9.9"}' > "$FIXTURE/.version"
+second_output=$(PATH="$DATE_BIN:$PATH" run_backup collision)
+collision_count=$(find "$BACKUPS" -maxdepth 1 -type d -name "backup-collision-*" | wc -l)
+collision_dir=$(find "$BACKUPS" -maxdepth 1 -type d -name "backup-collision-*" | head -1)
+
+if [[ "$collision_count" -eq 1 ]] && \
+        grep -q '"version": "2.0.0"' "$collision_dir/.version" && \
+        echo "$second_output" | grep -Eq "already exists|already in progress"; then
+    pass "repeated backup id preserves the completed snapshot"
+else
+    fail "repeated backup id overwrote or duplicated the snapshot: first=$first_output second=$second_output"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. an in-progress backup id rejects a concurrent writer
+# ---------------------------------------------------------------------------
+rm -rf "$BACKUPS"
+mkdir -p "$BACKUPS/.backup-concurrent-20260823-123456.lock"
+output=$(PATH="$DATE_BIN:$PATH" run_backup concurrent)
+
+if echo "$output" | grep -q "Backup already in progress" && \
+        ! find "$BACKUPS" -maxdepth 1 -type d -name "backup-concurrent-*" | grep -q .; then
+    pass "backup lock rejects a concurrent writer"
+else
+    fail "backup ignored an active transaction lock: $output"
+fi
+
+# ---------------------------------------------------------------------------
+# A dangling destination is an existing recovery artifact too.
+ln -s "$FIXTURE/foreign-absent" "$BACKUPS/backup-dangling-20260823-123456"
+output=$(PATH="$DATE_BIN:$PATH" run_backup dangling)
+if [[ -L "$BACKUPS/backup-dangling-20260823-123456" && ! -e "$FIXTURE/foreign-absent" ]] && \
+        echo "$output" | grep -q "Backup already exists"; then
+    pass "dangling recovery artifact is refused without following it"
+else
+    fail "dangling recovery artifact changed: $output"
+fi
+
+# Preserve the ordinary filename labels accepted before transaction staging.
+for ordinary_label in 'before my update' 'trước-cập-nhật' 'backup (stable)'; do
+    output=$(PATH="$DATE_BIN:$PATH" run_backup "$ordinary_label")
+    if [[ -f "$BACKUPS/backup-$ordinary_label-20260823-123456/snapshot.json" ]]; then
+        pass "legacy label remains accepted: $ordinary_label"
+    else
+        fail "legacy filename label rejected: $output"
+    fi
+done
+for unsafe_label in $'line\nbreak' $'tab\tlabel' 'nested/name' 'nested\name'; do
+    output=$(PATH="$DATE_BIN:$PATH" run_backup "$unsafe_label")
+    if echo "$output" | grep -q 'Invalid backup name'; then
+        pass "control or separator label is refused"
+    else
+        fail "unsafe label accepted: $output"
+    fi
+done
+
+# 8. invalid retention cannot delete the snapshot and report success
+# ---------------------------------------------------------------------------
+for invalid_retention in 0 -1 invalid; do
+    if HOME="$FIXTURE/home" MAX_BACKUPS="$invalid_retention" \
+        bash "$FIXTURE/ods-update.sh" backup retention > "$FIXTURE/retention.log" 2>&1; then
+        fail "MAX_BACKUPS=$invalid_retention was accepted"
+    elif grep -q 'MAX_BACKUPS must be a positive integer' "$FIXTURE/retention.log" \
+        && ! find "$BACKUPS" -maxdepth 1 -type d -name 'backup-retention-*' | grep -q .; then
+        pass "MAX_BACKUPS=$invalid_retention refuses an unusable snapshot"
+    else
+        fail "MAX_BACKUPS=$invalid_retention failed without the retention guard"
+    fi
+done
+
 echo ""
+# A failed metadata write and a cancelled copy must stay invisible to rollback,
+# preserve unrelated recovery data, and release the ID so a retry can succeed.
+rm -rf "$BACKUPS"
+mkdir -p "$BACKUPS/operator-recovery"
+printf 'retained\n' > "$BACKUPS/operator-recovery/sentinel"
+META_BIN="$FIXTURE/meta-bin"
+mkdir -p "$META_BIN"
+printf '#!/bin/sh\nexit 19\n' > "$META_BIN/jq"
+chmod +x "$META_BIN/jq"
+output=$(PATH="$META_BIN:$DATE_BIN:$PATH" run_backup metadata)
+if [[ ! -e "$BACKUPS/backup-metadata-20260823-123456" ]] && \
+        [[ -z "$(find "$BACKUPS" -maxdepth 1 -name '.backup-metadata-*' -print)" ]]; then
+    pass "metadata failure leaves no selectable backup or transaction artifacts"
+else
+    fail "metadata failure published partial backup: $output"
+fi
+CANCEL_BIN="$FIXTURE/cancel-bin"
+mkdir -p "$CANCEL_BIN"
+cat > "$CANCEL_BIN/cp" <<'CANCEL'
+#!/bin/bash
+# cmd_backup runs in a subshell: signal the actual backup transaction, not the
+# wrapper process, and return so Bash can deliver its pending TERM trap.
+kill -TERM "$PPID"
+exit 0
+CANCEL
+chmod +x "$CANCEL_BIN/cp"
+output=$(PATH="$CANCEL_BIN:$DATE_BIN:$PATH" run_backup cancelled)
+if [[ ! -e "$BACKUPS/backup-cancelled-20260823-123456" ]] && \
+        [[ -z "$(find "$BACKUPS" -maxdepth 1 -name '.backup-cancelled-*' -print)" ]]; then
+    pass "cancelled copy leaves no selectable backup or transaction artifacts"
+else
+    fail "cancelled copy published partial backup: $output"
+fi
+output=$(PATH="$DATE_BIN:$PATH" run_backup cancelled)
+if [[ -f "$BACKUPS/backup-cancelled-20260823-123456/snapshot.json" ]] && \
+        [[ "$(cat "$BACKUPS/operator-recovery/sentinel")" == retained ]]; then
+    pass "cancelled backup can be retried and foreign recovery files survive"
+else
+    fail "cancellation prevented safe retry or changed foreign recovery data: $output"
+fi
 echo "Results: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]] || exit 1
 exit 0

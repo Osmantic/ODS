@@ -41,7 +41,10 @@ def test_compose_resolver_uses_persisted_webui_choice_after_cache_invalidation(t
         agent.resolve_compose_flags()
         assert child_envs[0]["ENABLE_OPEN_WEBUI"] == "false"
         assert child_envs[0]["ODS_GATEWAY_ONLY"] == "false"
-        assert child_envs[0]["EXTERNAL_LLM_URL"] == "https://model.example.test/v1"
+        # The resolver gets only the external route's presence, never the
+        # credential-bearing URL.
+        assert child_envs[0]["ODS_EXTERNAL_LLM_SELECTED"] == "true"
+        assert "EXTERNAL_LLM_URL" not in child_envs[0]
         assert "SYNTHETIC_PRIVATE_VALUE" not in child_envs[0]
 
         # A later UI action changes persisted selection while this process

@@ -108,15 +108,23 @@ def migrate(preparation, *, apply=False):
         finally: os.close(directory)
         latest = record
     try:
+        def prepare_ingress(checkpoint):
+            return helper('ingress-config').prepare(run,
+                docker_run=docker_run,
+                environment_path=install_dir / '.env', backup=preparation / 'ingress-environment.before.env',
+                checkpoint=checkpoint)
         record = compose.migrate_infrastructure(run, docker_run,
             ingress=receipt['legacyStorage']['containers']['ingress'], image=transport['image'],
             user=transport['user'], project=project, transaction=receipt['runtimeDigest'],
             storage=documents['storage.compose.json'], workspace=values['PIXEL_NATIVE_WORKSPACE'],
-            dashboard_key=values['DASHBOARD_API_KEY'], checkpoint=checkpoint)
+            dashboard_key=values['DASHBOARD_API_KEY'], checkpoint=checkpoint,
+            prepare_ingress=prepare_ingress)
         compose.finish_migration_infrastructure(run, docker_run, record,
             dashboard_key=values['DASHBOARD_API_KEY'], checkpoint=checkpoint)
     except BaseException:
         if latest and latest.get('phase') != 'releasing-admission':
+            if latest.get('ingressConfig'):
+                helper('ingress-config').restore_environment(install_dir / '.env', latest['ingressConfig'])
             compose.restore_migration_infrastructure(previous_run, docker_run, latest,
                 dashboard_key=values['DASHBOARD_API_KEY'], checkpoint=checkpoint)
         raise

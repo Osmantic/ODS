@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-30T11:32:07Z",
+  "generated_at": "2026-10-27T08:46:30Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -240,7 +240,7 @@
     {
       "id": "ape",
       "name": "APE (Agent Policy Engine)",
-      "description": "Lightweight policy engine that intercepts and audits agent tool calls before execution. Enforces configurable allow/deny rules (command allowlists, path guards, rate limits) and maintains a tamper-evident audit log of every decision. Drop-in governance layer for OpenClaw and any OpenAI-compatible agent framework.\n",
+      "description": "Lightweight policy engine that intercepts and audits agent tool calls before execution. Enforces configurable allow/deny rules (command allowlists, path guards, rate limits) and maintains a tamper-evident audit log of every decision. Drop-in governance layer for Hermes and any OpenAI-compatible agent framework.\n",
       "category": "optional",
       "gpu_backends": [
         "all"
@@ -1247,7 +1247,7 @@
     {
       "id": "comfyui",
       "name": "ComfyUI (Image Generation)",
-      "description": "Generate images with FLUX.1 via ComfyUI",
+      "description": "Generate images with SDXL Lightning via ComfyUI",
       "category": "optional",
       "gpu_backends": [
         "amd",
@@ -1264,19 +1264,19 @@
         {
           "id": "images",
           "name": "Image Generation",
-          "description": "Generate images with FLUX.1 via ComfyUI",
+          "description": "Generate images with SDXL Lightning via ComfyUI",
           "icon": "Image",
           "category": "creative",
           "requirements": {
             "services": [
               "comfyui"
             ],
-            "vram_gb": 0
+            "vram_gb": 8
           },
           "enabled_services_all": [
             "comfyui"
           ],
-          "setup_time": "Ready",
+          "setup_time": "Image build or download and a 6.9 GB model; see README",
           "priority": 5,
           "launch": {
             "type": "service",
@@ -1446,6 +1446,7 @@
           }
         }
       ],
+      "ui_path": "/_utils/",
       "startup_check": true,
       "startup_timeout": 180,
       "configuration_scope": "declared-environment-keys"
@@ -1494,6 +1495,7 @@
           }
         }
       ],
+      "ui_path": "/playground",
       "startup_check": true,
       "startup_timeout": 120,
       "configuration_scope": "declared-environment-keys"
@@ -1701,6 +1703,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -1862,6 +1865,7 @@
           }
         }
       ],
+      "ui_path": "/ui",
       "startup_check": true,
       "startup_timeout": 180,
       "configuration_scope": "declared-environment-keys"
@@ -2092,6 +2096,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/info",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -2539,6 +2544,11 @@
           }
         }
       ],
+      "host_requirements": {
+        "architectures": [
+          "amd64"
+        ]
+      },
       "startup_check": true,
       "startup_timeout": 600,
       "catalog_source": "builtin",
@@ -2828,91 +2838,6 @@
           ]
         }
       ],
-      "configuration_scope": "declared-environment-keys"
-    },
-    {
-      "id": "gaia",
-      "name": "AMD GAIA",
-      "description": "Experimental AMD GAIA Agent UI recipe for local agent workflows.",
-      "category": "optional",
-      "gpu_backends": [
-        "all"
-      ],
-      "compose_file": "compose.yaml",
-      "depends_on": [],
-      "port": 4200,
-      "external_port_default": 7822,
-      "health_endpoint": "/",
-      "env_vars": [
-        {
-          "key": "GAIA_AGENT_UI_VERSION",
-          "required": false,
-          "default": "0.19.0",
-          "description": "Agent UI npm package version to install when building the container."
-        },
-        {
-          "key": "GAIA_LEMONADE_BASE_URL",
-          "required": false,
-          "default": "",
-          "description": "Remote Lemonade/OpenAI-compatible API base URL for GAIA, usually ending in /api/v1."
-        },
-        {
-          "key": "GAIA_SKIP_GAIA_INIT",
-          "required": false,
-          "default": "true",
-          "description": "Skip GAIA's first-run Lemonade/model bootstrap to avoid automatic model downloads."
-        },
-        {
-          "key": "GAIA_UI_SERVE_ONLY",
-          "required": false,
-          "default": "false",
-          "description": "Serve only the Agent UI static frontend without starting the GAIA Python backend."
-        },
-        {
-          "key": "GAIA_DISABLE_UPDATE",
-          "required": false,
-          "default": "1",
-          "description": "Disable Agent UI auto-update checks inside the container."
-        }
-      ],
-      "tags": [
-        "amd",
-        "gaia",
-        "agents",
-        "agent-ui",
-        "ryzen-ai",
-        "experimental"
-      ],
-      "features": [
-        {
-          "id": "amd-gaia-agent-ui",
-          "name": "AMD GAIA Agent UI",
-          "description": "Experimental AMD local agent UI and framework integration",
-          "icon": "Bot",
-          "category": "ai",
-          "requirements": {
-            "services": [
-              "gaia"
-            ],
-            "vram_gb": 0,
-            "disk_gb": 5
-          },
-          "enabled_services_all": [
-            "gaia"
-          ],
-          "setup_time": "~5-10 minutes first start",
-          "priority": 31,
-          "launch": {
-            "type": "service",
-            "service": "gaia",
-            "path": "/"
-          },
-          "gpu_backends": [
-            "all"
-          ]
-        }
-      ],
-      "startup_timeout": 300,
       "configuration_scope": "declared-environment-keys"
     },
     {
@@ -3750,6 +3675,7 @@
           ]
         }
       ],
+      "ui_path": "/auth/ods",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -4528,6 +4454,7 @@
           }
         }
       ],
+      "ui_path": "/editor",
       "startup_check": true,
       "startup_timeout": 180,
       "configuration_scope": "declared-environment-keys"
@@ -4872,6 +4799,7 @@
           }
         }
       ],
+      "ui_path": "/admin/",
       "startup_check": true,
       "startup_timeout": 300,
       "configuration_scope": "declared-environment-keys"
@@ -5077,7 +5005,29 @@
       "port": 7860,
       "external_port_default": 7802,
       "health_endpoint": "/health",
-      "env_vars": [],
+      "env_vars": [
+        {
+          "key": "LANGFLOW_SUPERUSER_PASSWORD",
+          "required": true,
+          "description": "Password for the Langflow superuser; flows can run arbitrary Python.",
+          "min_length": 8,
+          "max_length": 128,
+          "generate": "password"
+        },
+        {
+          "key": "LANGFLOW_SECRET_KEY",
+          "required": true,
+          "description": "Stable key Langflow uses to encrypt stored credentials and sign sessions.",
+          "generate": "hex64",
+          "min_length": 32
+        },
+        {
+          "key": "LANGFLOW_SUPERUSER",
+          "required": false,
+          "default": "admin",
+          "description": "Langflow superuser username."
+        }
+      ],
       "tags": [
         "visual",
         "workflow",
@@ -5491,6 +5441,7 @@
           }
         }
       ],
+      "ui_path": "/webui",
       "llm": {
         "consumes": true,
         "route": "gateway",
@@ -5574,6 +5525,7 @@
           }
         }
       ],
+      "ui_path": "/index.php/admin",
       "startup_check": true,
       "startup_timeout": 90,
       "configuration_scope": "declared-environment-keys"
@@ -5769,6 +5721,7 @@
       ],
       "tags": [],
       "features": [],
+      "ui_path": "/ui/",
       "llm": {
         "consumes": true,
         "route": "gateway",
@@ -6813,6 +6766,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
       "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
@@ -7574,48 +7528,6 @@
           "kind": "chat",
           "path": "/openai/v1/chat/completions",
           "auth": "webui-session"
-        }
-      },
-      "catalog_source": "builtin",
-      "configuration_scope": "declared-environment-keys"
-    },
-    {
-      "id": "openclaw",
-      "name": "OpenClaw (Agents — DEPRECATED)",
-      "description": "OpenClaw (Agents — DEPRECATED)",
-      "category": "optional",
-      "gpu_backends": [
-        "all"
-      ],
-      "compose_file": "compose.yaml",
-      "depends_on": [
-        "llama-server",
-        "searxng"
-      ],
-      "port": 18789,
-      "external_port_default": 7860,
-      "health_endpoint": "/",
-      "env_vars": [
-        {
-          "key": "OPENCLAW_TOKEN",
-          "required": true,
-          "description": "OpenClaw gateway token",
-          "pattern": "^[!-~]+$",
-          "format_description": "printable ASCII without spaces",
-          "min_length": 10
-        }
-      ],
-      "tags": [],
-      "features": [],
-      "llm": {
-        "consumes": true,
-        "route": "gateway",
-        "pinning": "none",
-        "min_context": 65536,
-        "probe": {
-          "kind": "custom",
-          "path": "/",
-          "auth": "env:OPENCLAW_TOKEN"
         }
       },
       "catalog_source": "builtin",
@@ -8743,6 +8655,7 @@
           }
         }
       ],
+      "ui_path": "/_/",
       "startup_check": true,
       "startup_timeout": 180,
       "configuration_scope": "declared-environment-keys"
@@ -8979,6 +8892,10 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "host_requirements": {
+        "max_page_size": 4096
+      },
+      "ui_path": "/dashboard",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -9109,6 +9026,7 @@
           }
         }
       ],
+      "ui_path": "/.web/",
       "startup_check": true,
       "startup_timeout": 90,
       "configuration_scope": "declared-environment-keys"
@@ -9321,6 +9239,7 @@
       ],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
       "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
@@ -9377,6 +9296,7 @@
       ],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
       "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
@@ -9613,6 +9533,7 @@
           }
         }
       ],
+      "ui_path": "/web/admin",
       "startup_check": true,
       "startup_timeout": 90,
       "configuration_scope": "declared-environment-keys"
@@ -10565,6 +10486,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/dashboard",
       "llm": {
         "consumes": true,
         "route": "direct",
@@ -10708,6 +10630,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/docs",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },

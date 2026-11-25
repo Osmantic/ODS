@@ -30,10 +30,16 @@ wsl --set-default-version 2
 ```
 
 ### Install the NVIDIA Container Toolkit
-Inside your WSL2 distribution, install the NVIDIA Container Toolkit:
+Never install an NVIDIA driver inside WSL2: the Windows driver provides the GPU
+to Linux, and a Linux driver package inside the distribution breaks that. ODS
+needs Windows driver 570 or newer.
+
+If you use Docker Desktop, which is what the ODS Windows installer sets up, skip
+this step: Docker Desktop provides GPU support to containers. Only when you run
+Docker Engine inside the WSL2 distribution yourself, install the NVIDIA
+Container Toolkit there:
 ```bash
 sudo apt-get update
-sudo apt-get install -y nvidia-driver-510
 sudo apt-get install -y nvidia-container-toolkit
 sudo systemctl restart docker
 ```

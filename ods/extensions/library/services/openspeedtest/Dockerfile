@@ -5,7 +5,7 @@ RUN wget -O /tmp/source.tgz https://codeload.github.com/openspeedtest/Speed-Test
 FROM nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
 COPY --from=source /source/index.html /source/downloading /source/upload /source/License.md /usr/share/nginx/html/
 COPY --from=source /source/assets/ /usr/share/nginx/html/assets/
-COPY nginx.conf /etc/nginx/nginx.conf
+COPY --chmod=0644 nginx.conf /etc/nginx/nginx.conf
 USER 101:101
 ENTRYPOINT ["nginx"]
 CMD ["-g", "daemon off;"]

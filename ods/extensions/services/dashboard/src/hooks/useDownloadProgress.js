@@ -3,9 +3,40 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 const TERMINAL_DOWNLOAD_STATUSES = new Set(['failed', 'error', 'cancelled'])
 // Allow the API's 30-second host-agent request to settle before giving up.
 const CANCEL_ACK_TIMEOUT_MS = 45000
+// Status reads normally allow five seconds for the host-agent observation.
+const STATUS_TIMEOUT_MS = 15000
 
 function isTerminalProgress(progress) {
   return TERMINAL_DOWNLOAD_STATUSES.has(progress?.status)
+}
+
+function downloadArtifactKey(model) {
+  if (typeof model !== 'string') return null
+  // Active split downloads name a part, while cancellation names part one.
+  // Normalize only the host's documented progress suffix and GGUF part index.
+  return model.replace(/ \((?:part \d+\/\d+|\d+ parts?)\)$/, '')
+    .replace(/-\d{5}-of-(\d{5})(\.gguf)$/i, '-part-of-$1$2')
+}
+
+function cancelledTransfer(current, terminal) {
+  // The API keeps cancellation inactive: idle + lastTerminalStatus. Consume
+  // that record only for a transfer this hook actually observed, so historical
+  // receipts cannot reappear on mount, after dismissal, or after completion.
+  const terminalStatus = typeof terminal?.status === 'string' ? terminal.status.toLowerCase() : null
+  if (!['downloading', 'verifying'].includes(current?.status)
+    || !['cancelled', 'canceled'].includes(terminalStatus)
+    || typeof terminal?.model !== 'string' || !terminal.model
+    || downloadArtifactKey(terminal.model) !== downloadArtifactKey(current.downloadTarget || current.model)) return null
+  const observedAt = Date.parse(current.updatedAt || current.startedAt)
+  const terminalAt = Date.parse(terminal.updatedAt)
+  if (Number.isFinite(observedAt) && (!Number.isFinite(terminalAt) || terminalAt < observedAt)) return null
+  return {
+    status: 'cancelled',
+    model: terminal.model,
+    error: (typeof terminal.error === 'string' && terminal.error)
+      || (typeof terminal.message === 'string' && terminal.message)
+      || 'Download cancelled',
+  }
 }
 
 async function errorFromResponse(response, fallback) {
@@ -34,27 +65,42 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
   const [isCancelling, setIsCancelling] = useState(false)
   const lastCompleteKeyRef = useRef(null)
   const progressRequestRef = useRef(0)
-  const latestAppliedProgressRequestRef = useRef(0)
+  const activeProgressRequestRef = useRef(null)
   const cancelInFlightRef = useRef(false)
 
-  const fetchProgress = useCallback(async () => {
+  const fetchProgress = useCallback(async (skipIfPending = false) => {
+    const previous = activeProgressRequestRef.current
+    if (previous) {
+      if (skipIfPending) return null
+      clearTimeout(previous.timer)
+      previous.controller.abort()
+    }
     const requestId = ++progressRequestRef.current
+    const controller = new AbortController()
+    const request = { controller, timer: null }
+    request.timer = setTimeout(() => {
+      controller.abort()
+      if (activeProgressRequestRef.current === request) {
+        activeProgressRequestRef.current = null
+        setStatusError('Download status unavailable: request timed out.')
+      }
+    }, STATUS_TIMEOUT_MS)
+    activeProgressRequestRef.current = request
     try {
-      const response = await fetch('/api/models/download-status')
-      if (requestId < latestAppliedProgressRequestRef.current) return null
-      latestAppliedProgressRequestRef.current = requestId
+      const response = await fetch('/api/models/download-status', { signal: controller.signal })
+      if (requestId !== progressRequestRef.current || controller.signal.aborted) return null
       if (!response.ok) {
         const detail = await errorFromResponse(
           response,
           `Download status unavailable (HTTP ${response.status}).`,
         )
-        if (requestId < latestAppliedProgressRequestRef.current) return null
+        if (requestId !== progressRequestRef.current || controller.signal.aborted) return null
         setStatusError(detail)
         return null
       }
       
       const data = await response.json()
-      if (requestId < latestAppliedProgressRequestRef.current) return null
+      if (requestId !== progressRequestRef.current || controller.signal.aborted) return null
       setStatusError(null)
       
       if (data.status === 'downloading' || data.status === 'verifying') {
@@ -66,13 +112,16 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
         setIsDownloading(true)
         setProgress({
           model: data.model,
+          downloadTarget: data.activeOperation === 'model_download' && typeof data.activeTarget === 'string'
+            ? data.activeTarget : data.model,
           status: data.status,
           percent,
           bytesDownloaded: downloaded,
           bytesTotal: total,
           speedMbps: data.speedBytesPerSec ? data.speedBytesPerSec / (1024 * 1024) : 0,
           eta: data.eta,
-          startedAt: data.startedAt
+          startedAt: data.startedAt,
+          updatedAt: data.updatedAt,
         })
       } else if (data.status === 'complete' || data.status === 'idle') {
         setIsDownloading(false)
@@ -91,7 +140,8 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
         } else {
           // A later idle snapshot must not erase the only visible record of a
           // failed or cancelled transfer. The next download or dismissal does.
-          setProgress(current => isTerminalProgress(current) ? current : null)
+          setProgress(current => cancelledTransfer(current, data.lastTerminalStatus)
+            || (isTerminalProgress(current) ? current : null))
         }
       } else if (TERMINAL_DOWNLOAD_STATUSES.has(data.status)) {
         setIsDownloading(false)
@@ -104,15 +154,27 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
       }
       return data
     } catch (err) {
-      if (requestId < latestAppliedProgressRequestRef.current) return null
-      latestAppliedProgressRequestRef.current = requestId
+      if (requestId !== progressRequestRef.current || controller.signal.aborted) return null
       setStatusError(`Download status unavailable: ${err?.message || 'network error'}`)
       return null
+    } finally {
+      clearTimeout(request.timer)
+      if (activeProgressRequestRef.current === request) activeProgressRequestRef.current = null
     }
   }, [])
 
   useEffect(() => {
     void fetchProgress()
+    return () => {
+      // Invalidate even a body that settles after abort during navigation.
+      ++progressRequestRef.current
+      const request = activeProgressRequestRef.current
+      activeProgressRequestRef.current = null
+      if (request) {
+        clearTimeout(request.timer)
+        request.controller.abort()
+      }
+    }
   }, [fetchProgress])
 
   useEffect(() => {
@@ -120,7 +182,7 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
     // Skip ticks while the tab is hidden — nobody sees the progress bar and
     // the visibility handler below catches state up on return (#1490).
     const activeInterval = isDownloading ? pollIntervalMs : 10000
-    const tick = () => { if (!document.hidden) fetchProgress() }
+    const tick = () => { if (!document.hidden) fetchProgress(true) }
     const interval = setInterval(tick, activeInterval)
 
     // Resume immediately when the tab becomes visible again

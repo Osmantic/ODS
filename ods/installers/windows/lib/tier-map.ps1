@@ -116,8 +116,8 @@ function Resolve-QwenTierConfig {
                 TierName   = "NVIDIA Ultra (90GB+)"
                 LlmModel   = "qwen3-coder-next"
                 GgufFile   = "qwen3-coder-next-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF/resolve/main/Qwen3-Coder-Next-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF/resolve/ce09c67b53bc8739eef83fe67b2f5d293c270632/Qwen3-Coder-Next-Q4_K_M.gguf"
+                GgufSha256 = "9e6032d2f3b50a60f17ce8bf5a1d85c71af9b53b89c7978020ae7c660f29b090"
                 MaxContext = 131072
                 ModelProfileRequested = "qwen"
                 ModelProfileEffective = "qwen"
@@ -128,12 +128,12 @@ function Resolve-QwenTierConfig {
         "SH_LARGE" {
             # Strix Halo (AMD Ryzen AI MAX+ 395, 124GB unified) should stay
             # on the A3B MoE path proven by fleet. Dense 70B/Coder Next choices
-            # are too aggressive for Windows Lemonade first-run recovery.
+            # are too aggressive for Windows first-run recovery.
             return @{
                 TierName   = "Strix Halo 90+"
                 LlmModel   = "qwen3.6-35b-a3b"
                 GgufFile   = "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
                 GgufSha256 = "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
                 MaxContext = 131072
                 ModelSizeMB = 21110
@@ -148,7 +148,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Strix Halo Compact"
                 LlmModel   = "qwen3.6-35b-a3b"
                 GgufFile   = "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
                 GgufSha256 = "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
                 MaxContext = 131072
                 ModelProfileRequested = "qwen"
@@ -162,8 +162,8 @@ function Resolve-QwenTierConfig {
                 TierName   = "Lightweight"
                 LlmModel   = "qwen3.5-2b"
                 GgufFile   = "Qwen3.5-2B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
+                GgufSha256 = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
                 MaxContext = 8192
                 ModelProfileRequested = "qwen"
                 ModelProfileEffective = "qwen"
@@ -176,7 +176,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Entry Level"
                 LlmModel   = "qwen3.5-9b"
                 GgufFile   = "Qwen3.5-9B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
                 GgufSha256 = "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
                 MaxContext = 16384
                 ModelProfileRequested = "qwen"
@@ -190,7 +190,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Prosumer"
                 LlmModel   = "qwen3.5-9b"
                 GgufFile   = "Qwen3.5-9B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
                 GgufSha256 = "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
                 MaxContext = 32768
                 ModelProfileRequested = "qwen"
@@ -204,7 +204,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Pro"
                 LlmModel   = "qwen3.5-27b"
                 GgufFile   = "Qwen3.5-27B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/3221f178a6b842d04f1fb42f1c413534adcc0a6a/Qwen3.5-27B-Q4_K_M.gguf"
                 GgufSha256 = "84b5f7f112156d63836a01a69dc3f11a6ba63b10a23b8ca7a7efaf52d5a2d806"
                 MaxContext = 65536
                 ModelProfileRequested = "qwen"
@@ -218,7 +218,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Enterprise"
                 LlmModel   = "qwen3.6-35b-a3b"
                 GgufFile   = "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
                 GgufSha256 = "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
                 MaxContext = 131072
                 ModelProfileRequested = "qwen"
@@ -241,7 +241,8 @@ function Resolve-GemmaTierConfig {
 
     # Keep this aligned with docker-compose.nvidia.yml so preflight validates
     # the same CUDA runtime image compose will start.
-    $runtimeImage = "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
+    $runtimeImage = "ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c"
+    # This tag selects the native Windows archive, not the CUDA image.
     $runtimeTag = "b9014"
 
     switch ($Tier) {
@@ -306,8 +307,8 @@ function Resolve-GemmaTierConfig {
                 TierName   = "Lightweight"
                 LlmModel   = "qwen3.5-2b"
                 GgufFile   = "Qwen3.5-2B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
+                GgufSha256 = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
                 MaxContext = 8192
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "qwen"
@@ -727,6 +728,79 @@ function Get-CatalogModelSelectorRequiredGB {
     return $estimate.DeviceGiB
 }
 
+function Get-CatalogModelMemoryNeed {
+    <#
+    .SYNOPSIS
+        GPU memory and Windows commit a model needs at a context, in GiB.
+    .DESCRIPTION
+        DeviceNeedGiB is the device estimate; a runtime profile's measured
+        estimated_required_gb wins at the profile's own context. CommitNeedGiB
+        adds host state: the estimate's host checkpoints, or the profile's
+        measured estimated_host_gb. On Windows every GPU allocation counts
+        against the commit limit, so commit is device plus host memory.
+    #>
+    param([object]$Model, [object]$RuntimeProfile = $null, [int]$ContextLength = 0)
+    $estimate = Get-CatalogRuntimeEstimate -Model $Model -RuntimeProfile $RuntimeProfile -ContextLength $ContextLength
+    $device = [double]$estimate.DeviceGiB
+    $hostGiB = [double]$estimate.TotalGiB - [double]$estimate.DeviceGiB
+    $method = $estimate.Method
+    $atProfileContext = $RuntimeProfile -and $RuntimeProfile.context_length -and [int]$RuntimeProfile.context_length -eq [int]$estimate.ContextLength
+    if ($atProfileContext -and $null -ne $RuntimeProfile.estimated_required_gb -and (Get-CatalogPositiveNumber $RuntimeProfile.estimated_required_gb) -gt 0) {
+        $device = Get-CatalogPositiveNumber $RuntimeProfile.estimated_required_gb
+        $method = "authored"
+    }
+    if ($atProfileContext -and $null -ne (Get-CatalogProperty $RuntimeProfile "estimated_host_gb")) {
+        $hostGiB = Get-CatalogPositiveNumber (Get-CatalogProperty $RuntimeProfile "estimated_host_gb")
+    }
+    return [pscustomobject]@{
+        ContextLength = [int]$estimate.ContextLength
+        DeviceNeedGiB = [Math]::Round($device, 2)
+        CommitNeedGiB = [Math]::Round($device + $hostGiB, 2)
+        Method = $method
+    }
+}
+
+function Test-ODSCatalogModelArtifacts {
+    <#
+    .SYNOPSIS
+        The files a catalog model downloads, each { File; Url; Sha256;
+        SizeBytes }, or $null when the entry cannot be installed and verified.
+    .DESCRIPTION
+        One file needs gguf_url and gguf_sha256; a split model needs every
+        gguf_parts entry with file, url, sha256 and size_bytes. A vision
+        projector comes from the flat mmproj_file, mmproj_url, mmproj_sha256
+        and mmproj_size_bytes fields, the ones the host agent reads. The
+        generic rankers keep their own rule (a gguf_url).
+    #>
+    param([object]$Model)
+    $artifacts = @()
+    # Get-CatalogProperty returns the list whole; enumerate it here.
+    $rawParts = Get-CatalogProperty $Model "gguf_parts"
+    $parts = @(@($rawParts) | Where-Object { $null -ne $_ })
+    if ($parts.Count) {
+        foreach ($part in $parts) {
+            $size = Get-CatalogPositiveNumber (Get-CatalogProperty $part "size_bytes")
+            if (-not "$($part.file)" -or -not "$($part.url)" -or "$($part.sha256)" -notmatch '^[0-9A-Fa-f]{64}$' -or $size -le 0) { return $null }
+            $artifacts += [pscustomobject]@{ File = "$($part.file)"; Url = "$($part.url)"; Sha256 = "$($part.sha256)".ToLowerInvariant(); SizeBytes = [long]$size }
+        }
+    } else {
+        $sha = "$(Get-CatalogProperty $Model "gguf_sha256")"
+        if (-not "$($Model.gguf_file)" -or -not "$($Model.gguf_url)" -or $sha -notmatch '^[0-9A-Fa-f]{64}$') { return $null }
+        $size = Get-CatalogPositiveNumber (Get-CatalogProperty $Model "size_bytes")
+        if ($size -le 0) { $size = (Get-CatalogPositiveNumber (Get-CatalogProperty $Model "size_mb")) * 1MB }
+        $artifacts += [pscustomobject]@{ File = "$($Model.gguf_file)"; Url = "$($Model.gguf_url)"; Sha256 = $sha.ToLowerInvariant(); SizeBytes = [long]$size }
+    }
+    $projector = "$(Get-CatalogProperty $Model "mmproj_file")"
+    if ($projector) {
+        $url = "$(Get-CatalogProperty $Model "mmproj_url")"
+        $sha = "$(Get-CatalogProperty $Model "mmproj_sha256")"
+        $size = Get-CatalogPositiveNumber (Get-CatalogProperty $Model "mmproj_size_bytes")
+        if (-not $url -or $sha -notmatch '^[0-9A-Fa-f]{64}$' -or $size -le 0) { return $null }
+        $artifacts += [pscustomobject]@{ File = $projector; Url = $url; Sha256 = $sha.ToLowerInvariant(); SizeBytes = [long]$size }
+    }
+    return ,$artifacts
+}
+
 function Get-CatalogFitMarginGB {
     param([double]$CapacityGB, [string]$MemoryClass)
     if ($MemoryClass -ne "discrete") { return 0.0 }
@@ -799,12 +873,24 @@ function Test-CatalogModelContextFit {
     return [bool](Test-CatalogMemoryFits -RequiredGB $required -CapacityGB $memory.CapacityGB -MemoryClass $memory.MemoryClass -ArchitectureEstimate $architecture)
 }
 
+function Resolve-CatalogHostArchitecture {
+    param([string]$HostArchitecture = "")
+    if ($HostArchitecture) { return (Normalize-HostArchitecture -HostArchitecture $HostArchitecture) }
+    $hostArch = Normalize-HostArchitecture -HostArchitecture $env:HOST_ARCH
+    if ($hostArch -eq "unknown") { $hostArch = Get-HostArchitecture }
+    return $hostArch
+}
+
 function Get-CatalogRuntimeProfile {
     param(
         [object]$Model,
         [hashtable]$GpuInfo,
         [int]$SystemRamGB,
-        [switch]$IgnoreRamMinimum
+        [switch]$IgnoreRamMinimum,
+        # Empty: $env:HOST_ARCH, else this PowerShell's process architecture.
+        # Windows on Arm callers pass arm64: an x64 PowerShell runs emulated
+        # there and reports AMD64.
+        [string]$HostArchitecture = ""
     )
 
     if (-not $Model.PSObject.Properties["runtime_profiles"]) { return $null }
@@ -814,8 +900,7 @@ function Get-CatalogRuntimeProfile {
     $backend = ConvertTo-CatalogBackend $GpuInfo.Backend
     $memoryType = "$($GpuInfo.MemoryType)".ToLowerInvariant()
     if (-not $memoryType) { $memoryType = "discrete" }
-    $hostArch = Normalize-HostArchitecture -HostArchitecture $env:HOST_ARCH
-    if ($hostArch -eq "unknown") { $hostArch = Get-HostArchitecture }
+    $hostArch = Resolve-CatalogHostArchitecture -HostArchitecture $HostArchitecture
     $vramGB = [double]$GpuInfo.VramMB / 1024.0
 
     foreach ($runtimeProfile in $profiles) {
@@ -916,11 +1001,12 @@ function Get-CatalogModelCandidate {
         [double]$CapacityGB,
         [string]$MemoryClass,
         [int]$MinContext = 0,
-        [int]$Priority = -1
+        [int]$Priority = -1,
+        [string]$HostArchitecture = ""
     )
 
-    $runtimeProfile = Get-CatalogRuntimeProfile -Model $Model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB
-    if (-not $runtimeProfile -and (Get-CatalogRuntimeProfile -Model $Model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -IgnoreRamMinimum)) { return $null }
+    $runtimeProfile = Get-CatalogRuntimeProfile -Model $Model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -HostArchitecture $HostArchitecture
+    if (-not $runtimeProfile -and (Get-CatalogRuntimeProfile -Model $Model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -IgnoreRamMinimum -HostArchitecture $HostArchitecture)) { return $null }
     if ($Priority -lt 0) { $Priority = Get-CatalogSelectionPriority -Model $Model -MemoryClass $MemoryClass }
     $evidence = Get-CatalogEvidenceAdjustment -Model $Model
     $includeHost = ($MemoryClass -eq "cpu")
@@ -974,7 +1060,8 @@ function Get-CatalogRankedCandidates {
         [string]$MemoryClass,
         [string]$ModelProfileName,
         [int]$MinContext = 0,
-        [switch]$RequireMinContext
+        [switch]$RequireMinContext,
+        [string]$HostArchitecture = ""
     )
 
     $candidates = @()
@@ -986,7 +1073,7 @@ function Get-CatalogRankedCandidates {
         $priority = Get-CatalogSelectionPriority -Model $model -MemoryClass $MemoryClass
         if ($priority -le 0) { continue }
         if ($CapacityGB -lt (Get-CatalogMinimumCapacity -Model $model -MemoryClass $MemoryClass)) { continue }
-        $candidate = Get-CatalogModelCandidate -Model $model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -CapacityGB $CapacityGB -MemoryClass $MemoryClass -MinContext $MinContext -Priority $priority
+        $candidate = Get-CatalogModelCandidate -Model $model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -CapacityGB $CapacityGB -MemoryClass $MemoryClass -MinContext $MinContext -Priority $priority -HostArchitecture $HostArchitecture
         if (-not $candidate) { continue }
         if ($RequireMinContext -and -not $candidate.MeetsMinContext) { continue }
         $familyMatch = if ($ModelProfileName -eq "gemma4" -and "$($model.family)".ToLowerInvariant() -eq "gemma4") { 1 } else { 0 }
@@ -1055,7 +1142,8 @@ function Resolve-CatalogModelRecommendation {
         [int]$SystemRamGB,
         [string]$SourceRoot,
         [int]$MinContext = 0,
-        [switch]$RequireMinContext
+        [switch]$RequireMinContext,
+        [string]$HostArchitecture = ""
     )
 
     if ($env:ODS_DISABLE_CATALOG_MODEL_SELECTOR -eq "true" -or $Tier -eq "CLOUD") {
@@ -1080,10 +1168,7 @@ function Resolve-CatalogModelRecommendation {
     $memory = Get-CatalogModelSelectorMemory -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB
     $capacityGb = [double]$memory.CapacityGB
     $memoryClass = $memory.MemoryClass
-    $hostArchName = Normalize-HostArchitecture -HostArchitecture $env:HOST_ARCH
-    if ($hostArchName -eq "unknown") {
-        $hostArchName = Get-HostArchitecture
-    }
+    $hostArchName = Resolve-CatalogHostArchitecture -HostArchitecture $HostArchitecture
 
     $backendName = "$($GpuInfo.Backend)".ToLowerInvariant()
     $memoryTypeName = "$($GpuInfo.MemoryType)".ToLowerInvariant()
@@ -1105,7 +1190,7 @@ function Resolve-CatalogModelRecommendation {
         }
         $archCandidate = $null
         if ($archModel -and $archModel.gguf_url -and (Test-CatalogModelInstallRecommendationAllowed -Model $archModel)) {
-            $archCandidate = Get-CatalogModelCandidate -Model $archModel -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -CapacityGB $capacityGb -MemoryClass $memoryClass -MinContext $MinContext
+            $archCandidate = Get-CatalogModelCandidate -Model $archModel -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -CapacityGB $capacityGb -MemoryClass $memoryClass -MinContext $MinContext -HostArchitecture $HostArchitecture
             if ($archCandidate -and $RequireMinContext -and -not $archCandidate.MeetsMinContext) { $archCandidate = $null }
         }
         if ($archCandidate) {
@@ -1114,7 +1199,7 @@ function Resolve-CatalogModelRecommendation {
             if ($isSparkAarch64) {
                 $rationale = "is selected for arm64 NV_ULTRA Spark-class NVIDIA hosts because qwen3-coder-next is excluded on this architecture by the tier map"
             } else {
-                $rationale = "is selected for AMD unified-memory SH_LARGE hosts because Qwen3.6-35B-A3B is the fleet-proven Windows Lemonade target. Dense 70B and Coder Next defaults are avoided for first-run recovery"
+                $rationale = "is selected for AMD unified-memory SH_LARGE hosts because Qwen3.6-35B-A3B is the fleet-proven Windows AMD target. Dense 70B and Coder Next defaults are avoided for first-run recovery"
             }
             $reason = "Arch-aware catalog policy ($archPolicy): $($archModel.name) $rationale. It needs about $($archCandidate.RequiredGB) GiB ($breakdown), fits $([Math]::Round($capacityGb, 1)) GiB $($memory.Label), and gives ${contextK}K context. Throughput requires a local benchmark after first launch."
             Set-CatalogTierConfigFromCandidate -TierConfig $TierConfig -Candidate $archCandidate
@@ -1127,7 +1212,7 @@ function Resolve-CatalogModelRecommendation {
         }
     }
 
-    $ranked = @(Get-CatalogRankedCandidates -Catalog $catalog -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -CapacityGB $capacityGb -MemoryClass $memoryClass -ModelProfileName $modelProfileName -MinContext $MinContext -RequireMinContext:$RequireMinContext)
+    $ranked = @(Get-CatalogRankedCandidates -Catalog $catalog -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -CapacityGB $capacityGb -MemoryClass $memoryClass -ModelProfileName $modelProfileName -MinContext $MinContext -RequireMinContext:$RequireMinContext -HostArchitecture $HostArchitecture)
     if ($ranked.Count -eq 0) {
         if ($RequireMinContext -and $MinContext -gt 0) {
             throw "No catalog model fits the detected memory at $MinContext context. Choose a smaller model profile or use cloud mode; refusing an unsafe tier-map fallback."
@@ -1247,7 +1332,7 @@ function ConvertTo-ModelFromTier {
 # Tiny model for instant chat while the full tier model downloads in background.
 
 $script:BOOTSTRAP_GGUF_FILE    = "Qwen3.5-2B-Q4_K_M.gguf"
-$script:BOOTSTRAP_GGUF_URL     = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
+$script:BOOTSTRAP_GGUF_URL     = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
 $script:BOOTSTRAP_GGUF_SHA256  = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
 $script:BOOTSTRAP_LLM_MODEL    = "qwen3.5-2b"
 # Hermes requires at least a 64K context window. Keep the fast-start model at

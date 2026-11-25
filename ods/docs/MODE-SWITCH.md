@@ -28,9 +28,9 @@ ods restart
 ## How It Works
 
 One env var (`LLM_API_URL`) controls where all services send LLM requests.
-Three modes are user-selectable via `ods mode`; a fourth (`lemonade`) is
-auto-configured by the installer on AMD hardware today. The maintainer contract
-for provider modes lives in [Engine Provider Modes](ENGINE-PROVIDER-MODES.md).
+Three modes are user-selectable via `ods mode`. AMD GPUs use local mode like
+every other GPU. The maintainer contract for provider modes lives in
+[Engine Provider Modes](ENGINE-PROVIDER-MODES.md).
 
 | Mode | `LLM_API_URL` | `ODS_MODE` | LiteLLM config |
 |------|---------------|--------------|-----------------|
@@ -39,6 +39,11 @@ for provider modes lives in [Engine Provider Modes](ENGINE-PROVIDER-MODES.md).
 | **hybrid** | `http://litellm:4000` | `hybrid` | `config/litellm/hybrid.yaml` |
 
 All compose files reference `${LLM_API_URL:-http://llama-server:8080}`, so existing installs work without changes.
+
+In local mode, an install whose model runs outside the stack sends requests
+through LiteLLM (`LLM_API_URL=http://litellm:4000`): the Windows Portal's
+`llama-server.exe` on an AMD GPU, or an external OpenAI-compatible server set
+with `--external-llm-url`.
 
 ---
 
@@ -91,25 +96,19 @@ Local llama-server as primary, cloud APIs as fallback via LiteLLM.
 ods mode hybrid
 ```
 
-### Lemonade Mode (AMD — auto-configured)
+### AMD GPUs
 
-**Not user-switchable.** This mode is automatically set by the installer on AMD hardware. `ods mode` does not accept `lemonade` as an argument — only the installer sets it.
-
-All LLM traffic routes through the LiteLLM proxy, which delegates to the Lemonade SDK (`lemonade-server`). The dashboard API uses a distinct `/api/v1` URL prefix in this mode (instead of `/v1`).
-
-| Aspect | Details |
-|--------|---------|
-| **LLM** | Lemonade SDK via LiteLLM proxy |
-| **Cost** | $0 (local inference) |
-| **Requires** | AMD GPU (auto-detected at install time) |
-| **Set by** | Installer (Phase 06), not `ods mode` |
+AMD GPUs run in local mode on llama.cpp's `llama-server`, like every other GPU:
+the Vulkan container image on Linux (ROCm is optional) and `llama-server.exe`
+on Windows. The former `lemonade` mode is retired. An installer rerun moves an
+install that used it to local mode; until then ODS reads it as `local`. See
+[AMD GPUs now run on llama.cpp](MIGRATION-LEMONADE-TO-LLAMACPP.md).
 
 For AMD Strix Halo performance tuning (GRUB, kernel module, sysctl settings), see [`config/system-tuning/README.md`](../config/system-tuning/README.md).
 
-Existing Lemonade SDK installs on Linux AMD hosts can be wrapped without letting
-ODS manage the Lemonade runtime. See [Lemonade SDK Compatibility](LEMONADE-SDK-COMPAT.md).
-Future Lemonade work should follow the provider-mode contract rather than
-adding one-off installer or dashboard paths.
+A Lemonade Server you run yourself connects like any other OpenAI-compatible
+server; see
+[Can ODS reuse a model already running in Ollama or LM Studio?](FAQ.md#can-ods-reuse-a-model-already-running-in-ollama-or-lm-studio).
 
 ---
 
@@ -117,7 +116,7 @@ adding one-off installer or dashboard paths.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ODS_MODE` | `local` | Active mode: `local`, `cloud`, or `hybrid`; `lemonade` is auto-set on AMD (not user-switchable) |
+| `ODS_MODE` | `local` | Active mode: `local`, `cloud`, or `hybrid`. The retired `lemonade` value is read as `local` |
 | `LLM_API_URL` | `http://llama-server:8080` | Where services send LLM requests |
 | `ANTHROPIC_API_KEY` | *(empty)* | Anthropic API key (cloud/hybrid) |
 | `OPENAI_API_KEY` | *(empty)* | OpenAI API key (cloud/hybrid) |
@@ -138,10 +137,10 @@ This sets `ODS_MODE=cloud`, `LLM_API_URL=http://litellm:4000`, and auto-enables 
 
 An ordinary installer rerun preserves the valid `ODS_MODE` already stored in
 the owner-controlled `.env`. This prevents an upgrade or repair rerun from
-silently moving a configured cloud, hybrid, or Lemonade installation back to
-local inference. An explicit operator selection still wins: use `--cloud`, a
-Lemonade option, or set `ODS_MODE` in the installer environment when you
-intentionally want to change the mode.
+silently moving a configured cloud or hybrid installation back to local
+inference. An explicit operator selection still wins: use `--cloud` or set
+`ODS_MODE` in the installer environment when you intentionally want to change
+the mode.
 
 ---
 
@@ -211,14 +210,14 @@ User -> Open WebUI -> LiteLLM -> llama-server (local) -> Response
 
 ## Mode Comparison
 
-| Feature | Local | Cloud | Hybrid | Lemonade (AMD) |
-|---------|-------|-------|--------|----------------|
-| Internet required | No | Yes | Yes (for fallback) | No |
-| API keys required | No | Yes | Recommended | No |
-| GPU required | Yes | No | Yes | Yes (AMD) |
-| Response quality | Good | Best | Best of both | Good |
-| Cost | $0 | $$$ | $0 or $$$ | $0 |
-| Privacy | 100% local | Data to cloud | Local unless fallback | 100% local |
+| Feature | Local | Cloud | Hybrid |
+|---------|-------|-------|--------|
+| Internet required | No | Yes | Yes (for fallback) |
+| API keys required | No | Yes | Recommended |
+| GPU required | Yes | No | Yes |
+| Response quality | Good | Best | Best of both |
+| Cost | $0 | $$$ | $0 or $$$ |
+| Privacy | 100% local | Data to cloud | Local unless fallback |
 
 ---
 

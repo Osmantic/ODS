@@ -125,11 +125,13 @@ cat > "$STUB_BIN/docker" <<'STUB'
 exit 0
 STUB
 
-chmod +x "$STUB_BIN"/*
+cat > "$STUB_BIN/nvidia-smi" <<'STUB'
+#!/usr/bin/env bash
+# No NVIDIA devices in this fixture, including on NVIDIA and WSL hosts.
+exit 0
+STUB
 
-# Deliberately do NOT stub nvidia-smi. `command -v nvidia-smi` must return
-# false under GPU_BACKEND=apple so the apple branch is the only one taken.
-# For negative tests we rely on nvidia-smi being absent from PATH too.
+chmod +x "$STUB_BIN"/*
 
 STUB_PATH="$STUB_BIN:$PATH"
 
@@ -155,7 +157,7 @@ else
     fail "ods gpu status exited $RC; output: $OUT"
 fi
 
-# Header: nvidia-smi absent → gpu_count=0 so header reads "GPU Status (0 GPUs)".
+# Header: the NVIDIA stub reports no GPUs, so the shared count is zero.
 # We only assert the "━━━ GPU Status" prefix is present; the count is a
 # cosmetic artefact of the shared header, not a regression target.
 if echo "$OUT" | grep -q "━━━ GPU Status"; then
@@ -285,7 +287,7 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# Case 6 (negative): GPU_BACKEND=nvidia with no nvidia-smi → no apple output
+# Case 6 (negative): GPU_BACKEND=nvidia with no devices → no apple output
 # ----------------------------------------------------------------------------
 echo "── 6. gpu status (nvidia, negative) ──"
 write_env nvidia
@@ -298,7 +300,7 @@ else
 fi
 
 if echo "$OUT" | grep -qE "nvidia-smi not found|GPU status unavailable"; then
-    pass "nvidia backend without nvidia-smi emits fallthrough warning"
+    pass "nvidia backend without devices emits fallthrough warning"
 else
     fail "nvidia backend fallthrough warning missing; output: $OUT"
 fi

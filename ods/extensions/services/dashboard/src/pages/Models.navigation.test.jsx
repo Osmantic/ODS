@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Models from './Models'
+import { forgetLastCatalog } from '../hooks/useModels'
 
 // Keep the production inventory/activation hook and page together. Downloads
 // are a separate transport and are not involved in these navigation cases.
@@ -38,6 +39,7 @@ async function startActivation() {
 }
 
 beforeEach(() => {
+  forgetLastCatalog()
   vi.useFakeTimers()
   Object.defineProperty(document, 'hidden', { configurable: true, value: false })
   vi.stubGlobal('fetch', vi.fn((url, options) => {
@@ -53,6 +55,102 @@ afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
   delete document.hidden
+})
+
+it('shows actual rollback progress after navigation while blocking a new model load',async()=>{
+  vi.stubGlobal('fetch',vi.fn(async url=>{
+    if(url==='/api/models/recovery')return {ok:true,json:async()=>({pending:true,phase:'held',transactionId:'a'.repeat(64)})}
+    const payload=await response(true).json()
+    return {ok:true,json:async()=>({...payload,modelActivation:{active:true,phase:'rolling_back',failureCode:'runtime_load_failed'}})}
+  }))
+  await openModels()
+  expect(screen.getByRole('alert',{name:'Model activation'})).toHaveTextContent('restoring previous model')
+  expect(screen.getByRole('button',{name:'Working'})).toBeDisabled()
+  expect(screen.queryByRole('button',{name:'Recover model switch'})).toBeNull()
+  expect(posts()).toHaveLength(0)
+})
+
+it('offers the existing guarded recovery only after an authoritative pending read',async()=>{
+  vi.stubGlobal('fetch',vi.fn(async url=>{
+    if(url==='/api/models/recovery')return {ok:true,json:async()=>({pending:true,phase:'held',transactionId:'a'.repeat(64)})}
+    const payload=await response(false).json()
+    return {ok:true,json:async()=>({...payload,modelRecoveryPending:true,
+      modelActivation:{active:false,outcome:'rollback_unconfirmed',failureCode:'rollback_unconfirmed'}})}
+  }))
+  await openModels()
+  expect(screen.getByRole('alert',{name:'Model activation'})).toHaveTextContent('Model recovery needs attention')
+  expect(screen.getByRole('button',{name:'Recover model switch'})).toBeEnabled()
+  expect(screen.getByRole('button',{name:'Run'})).toBeDisabled()
+  fireEvent.click(screen.getByRole('button',{name:'Run'}))
+  expect(screen.queryByRole('button',{name:'Run model'})).toBeNull()
+  expect(posts()).toHaveLength(0)
+})
+
+it.each(['remote_provider_apply', 'remote_provider_proof'])('shows progress during %s instead of offering recovery',async operation=>{
+  let active=true
+  vi.stubGlobal('fetch',vi.fn(async url=>{
+    if(url==='/api/models/recovery')return {ok:true,json:async()=>({pending:active,phase:active?'held':'completed',transactionId:'a'.repeat(64)})}
+    const payload=await response(false).json()
+    return {ok:true,json:async()=>({...payload,modelRecoveryPending:active,
+      modelLifecycle:active?{active:true,operation}:null})}
+  }))
+  await openModels()
+  expect(screen.getByRole('status')).toHaveTextContent('checking or changing the model connection')
+  expect(screen.queryByRole('button',{name:'Recover model switch'})).toBeNull()
+  expect(screen.getByRole('button',{name:'Run'})).toBeDisabled()
+  expect(posts()).toHaveLength(0)
+  active=false
+  fireEvent.click(screen.getByTitle('Refresh models'))
+  await act(async()=>{})
+  expect(screen.queryByRole('status')).toBeNull()
+  expect(screen.getByRole('button',{name:'Run'})).toBeEnabled()
+})
+
+it.each(['remote_provider_apply', 'remote_provider_proof'])('waits through a transitional mode mismatch during %s, but reports a remaining mismatch',async operation=>{
+  let active=true
+  vi.stubGlobal('fetch',vi.fn(async()=>{
+    const payload=await response(false).json()
+    return {ok:true,json:async()=>({...payload,configuredMode:'cloud',
+      modelLifecycle:active?{active:true,operation}:null})}
+  }))
+  await openModels()
+  expect(screen.getByRole('status')).toHaveTextContent('checking or changing the model connection')
+  expect(screen.queryByText(/Restart or repair ODS/)).toBeNull()
+  expect(screen.getByRole('button',{name:'Run'})).toBeDisabled()
+  active=false
+  fireEvent.click(screen.getByTitle('Refresh models'))
+  await act(async()=>{})
+  expect(screen.queryByRole('status')).toBeNull()
+  expect(screen.getAllByText(/Restart or repair ODS/).length).toBeGreaterThan(0)
+  expect(screen.getByRole('button',{name:'Run'})).toBeDisabled()
+  expect(posts()).toHaveLength(0)
+})
+
+it('blocks an open activation dialog while recovery is pending and unlocks only after recovery readback',async()=>{
+  let pending=false
+  vi.stubGlobal('fetch',vi.fn(async (url,options)=>{
+    if(url==='/api/models/recovery'){
+      if(options?.method==='POST')pending=false
+      return {ok:true,json:async()=>({pending,phase:pending?'held':'completed',transactionId:'a'.repeat(64)})}
+    }
+    const payload=await response(false).json()
+    return {ok:true,json:async()=>({...payload,modelRecoveryPending:pending})}
+  }))
+  await openModels()
+  fireEvent.click(screen.getByRole('button',{name:'Run'}))
+  expect(screen.getByRole('button',{name:'Run model'})).toBeEnabled()
+  pending=true
+  fireEvent.click(screen.getByTitle('Refresh models'))
+  await act(async()=>{})
+  expect(screen.getByRole('button',{name:'Run model'})).toBeDisabled()
+  fireEvent.click(screen.getByRole('button',{name:'Run model'}))
+  expect(posts()).toHaveLength(0)
+  fireEvent.click(screen.getByRole('button',{name:'Cancel'}))
+  fireEvent.click(screen.getByRole('button',{name:'Recover model switch'}))
+  await act(async()=>{})
+  expect(posts().map(([url])=>url)).toEqual(['/api/models/recovery'])
+  expect(screen.getByRole('button',{name:'Run'})).toBeEnabled()
+  expect(screen.queryByRole('button',{name:'Recover model switch'})).toBeNull()
 })
 
 it('stops all activation polling after leaving Models between polls', async () => {
@@ -99,4 +197,31 @@ it('reads backend activation on return without replaying the POST', async () => 
   const atNavigation = reads().length
   await act(async () => { await vi.advanceTimersByTimeAsync(620000) })
   expect(reads()).toHaveLength(atNavigation)
+})
+
+it('offers recovery from a remembered catalog only after its own read confirms it', async () => {
+  const held = { ok: true, json: async () => ({ pending: true, phase: 'held', transactionId: 'a'.repeat(64) }) }
+  const pendingCatalog = async () => {
+    const payload = await response(false).json()
+    return { ok: true, json: async () => ({ ...payload, modelRecoveryPending: true,
+      modelActivation: { active: false, outcome: 'rollback_unconfirmed', failureCode: 'rollback_unconfirmed' } }) }
+  }
+  vi.stubGlobal('fetch', vi.fn(async url => (url === '/api/models/recovery' ? held : pendingCatalog())))
+  const first = await openModels()
+  expect(screen.getByRole('button', { name: 'Recover model switch' })).toBeEnabled()
+  first.unmount()
+
+  let release
+  fetch.mockImplementation(url => (url === '/api/models/recovery'
+    ? Promise.resolve(held)
+    : new Promise(resolve => { release = () => resolve(pendingCatalog()) })))
+  render(<StrictMode><MemoryRouter><Models compact /></MemoryRouter></StrictMode>)
+  await act(async () => {})
+  expect(screen.queryByRole('button', { name: 'Recover model switch' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Run' })).toBeDisabled()
+
+  await act(async () => { release() })
+  await act(async () => {})
+  expect(screen.getByRole('button', { name: 'Recover model switch' })).toBeEnabled()
+  expect(posts()).toHaveLength(0)
 })

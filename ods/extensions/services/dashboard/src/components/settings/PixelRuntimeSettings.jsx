@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { readSettings, prepareSettingsSave, GROUPS, CONTROLS } from './pixelRuntimeSettingsForm';
+import { readSettings, prepareSettingsSave, canInitializeSettings, GROUPS, CONTROLS } from './pixelRuntimeSettingsForm';
 import PixelSettingsRuntime from './PixelSettingsRuntime';
 import { useBeforeUnload } from '../../hooks/useBeforeUnload';
 import { usePortalIdentity } from '../../contexts/PortalIdentityContext';
@@ -133,7 +133,7 @@ export default function PixelRuntimeSettings() {
 
   const hasChanges = Object.keys(rawChanges).length > 0;
   useBeforeUnload(hasChanges);
-  const canSave = snapshot && hasChanges && !stale && !pending && !runtimeBusy && snapshot.revision < Number.MAX_SAFE_INTEGER;
+  const canSave = snapshot && (hasChanges || canInitializeSettings(snapshot)) && !stale && !pending && !runtimeBusy && snapshot.revision < Number.MAX_SAFE_INTEGER;
   const canReload = !pending && !runtimeBusy;
   const canCancel = hasChanges && !pending && !runtimeBusy;
 

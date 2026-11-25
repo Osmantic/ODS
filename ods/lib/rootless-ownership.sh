@@ -264,6 +264,9 @@ _ods_rootless_stat_metadata() {
 
 _ods_rootless_fix_directory() {
     local install_dir="$1" relative="$2" owner="$3" container="${4:-}" mode="${5:-}"
+    # On rootful Docker, `ods repair rootless-ownership` does nothing, so the
+    # rootful callers name their own remedy.
+    local remedy="${6:-Stop the affected service or ODS, then run: ods repair rootless-ownership}"
     local target metadata current_owner current_mode container_state
 
     [[ "$owner" =~ ^[0-9]+:[0-9]+$ ]] || {
@@ -295,7 +298,7 @@ _ods_rootless_fix_directory() {
         fi
         echo "[error] Refusing recursive ownership repair while $container is running." >&2
         echo "        Current metadata: $current_owner mode $current_mode; expected: $owner${mode:+ mode $mode}." >&2
-        echo "        Stop the affected service or ODS, then run: ods repair rootless-ownership" >&2
+        echo "        $remedy" >&2
         return 1
     fi
 
@@ -415,7 +418,84 @@ ods_prepare_whisper_cache_ownership() {
         return 1
     }
     _ods_rootless_ensure_helper_image || return 1
-    _ods_rootless_fix_directory "$install_dir" data/whisper "1000:$host_gid" ods-whisper 775
+    _ods_rootless_fix_directory "$install_dir" data/whisper "1000:$host_gid" ods-whisper 775 \
+        "Stop it with 'ods stop whisper', then choose Retry on its card in Extensions."
+}
+
+# APE and Token Spy run as fixed container UIDs (APE 100:65534 with a private
+# 0700 state directory, Token Spy 1000:1000), independently of the installer
+# owner. Phase 06 prepares their state directories only for services enabled
+# at install, and the namespace repair above is a no-op on rootful Docker, so
+# a Library or Dashboard add-back must prepare the same owner before the first
+# start. A directory that already matches is left alone without Docker.
+ods_prepare_service_state_ownership() {
+    local install_dir="$1" service="$2" owner mode="" rootless_state=0 metadata
+    [[ -n "$install_dir" && "$(uname -s)" == Linux ]] || return 1
+    case "$service" in
+        ape) owner=100:65534; mode=700 ;;
+        token-spy) owner=1000:1000 ;;
+        *) return 1 ;;
+    esac
+    ods_docker_rootless_state || rootless_state=$?
+    case "$rootless_state" in
+        0) ods_fix_rootless_ownership "$install_dir" "$service"; return ;;
+        1) ;;
+        *) return 1 ;;
+    esac
+
+    [[ -d "$install_dir/data/$service" && ! -L "$install_dir/data/$service" ]] || {
+        echo "[error] The $service state directory is not a real directory." >&2
+        return 1
+    }
+    metadata=$(stat -c '%u:%g:%a' "$install_dir/data/$service") || return 1
+    if [[ "${metadata%:*}" == "$owner" && ( -z "$mode" || "${metadata##*:}" == "$mode" ) ]]; then
+        return 0
+    fi
+    _ods_rootless_ensure_helper_image || return 1
+    _ods_rootless_fix_directory "$install_dir" "data/$service" "$owner" "ods-$service" "$mode" \
+        "Stop it with 'ods stop $service', then choose Retry on its card in Extensions."
+}
+
+# ComfyUI's NVIDIA image runs as UID 1000. Phase 11 prepares its writable bind
+# sources only when ComfyUI is enabled at install, and the namespace repair
+# above is a no-op on rootful Docker, so a Dashboard or Library add-back must do
+# the same before the first start. An install owner with another UID otherwise
+# leaves them read-only to the container, which crash-looped on
+# mkdir /models/text_encoders (Workstation06, 2026-10-26: owner UID 1001). As in
+# Phase 11, the owner's group keeps write access for the model packs the host
+# agent downloads. A folder that already matches is left alone without Docker.
+ods_prepare_comfyui_data_ownership() {
+    local install_dir="$1" backend="${2:-}" rootless_state=0 host_uid host_gid path target metadata
+    [[ -n "$install_dir" && "$(uname -s)" == Linux ]] || return 1
+    ods_docker_rootless_state || rootless_state=$?
+    case "$rootless_state" in
+        0) GPU_BACKEND="$backend" ods_fix_rootless_ownership "$install_dir" comfyui; return ;;
+        1) ;;
+        *) return 1 ;;
+    esac
+    # Only the NVIDIA image runs as UID 1000 against these folders.
+    [[ "$backend" == nvidia ]] || return 0
+    host_uid=$(id -u) || return 1
+    [[ "$host_uid" != 1000 ]] || return 0
+    host_gid=$(id -g) || return 1
+    [[ "$host_gid" =~ ^[0-9]+$ ]] || return 1
+    for path in models output input user cuda-cache; do
+        [[ -d "$install_dir/data/comfyui/$path" && ! -L "$install_dir/data/comfyui/$path" ]] || {
+            echo "[error] The ComfyUI $path folder is not a real directory." >&2
+            return 1
+        }
+        metadata=$(stat -c '%u:%g' "$install_dir/data/comfyui/$path") || return 1
+        [[ "$metadata" != "1000:$host_gid" ]] || continue
+        _ods_rootless_ensure_helper_image || return 1
+        _ods_rootless_fix_directory "$install_dir" "data/comfyui/$path" "1000:$host_gid" ods-comfyui 775 \
+            "Stop it with 'ods stop comfyui', then choose Retry on its card in Extensions." || return 1
+        target=$(_ods_rootless_resolve_target "$install_dir" "data/comfyui/$path") || return 1
+        docker run --rm --pull never --user 0:0 --network none -v "$target:/data" \
+            "$ODS_ROOTLESS_HELPER_IMAGE" chmod -R ug+rwX /data || {
+            echo "[error] Could not make data/comfyui/$path writable for ComfyUI and the install group." >&2
+            return 1
+        }
+    done
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

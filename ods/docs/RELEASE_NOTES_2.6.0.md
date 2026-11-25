@@ -96,10 +96,7 @@ yet.
   - because that matrix was waived, this candidate is not stamped strict User
     Green; publication should describe the waiver rather than claiming Model UI
     Green
-  - `dgx-gpu01` was excluded after strict SSH host-key verification failed;
-    Tower2's pinned ED25519 key is
-    `SHA256:hPPRpUClgK0nCDrZujmfHgbMIIYV70zSpKfBw4VWmdo`, while the endpoint
-    currently presents `SHA256:zgUNklRWH+N/aaQ1MmZEzmN6ABu/6XMOw2Mm3ITzwfM`
+  - `dgx-gpu01` was excluded after strict SSH host-key verification failed.
 
 ## Known Limits
 

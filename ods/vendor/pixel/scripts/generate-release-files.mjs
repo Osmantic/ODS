@@ -53,6 +53,16 @@ assert(/^>=?\d+$/.test(manifest.node), "Node runtime requirement is invalid");
 assert(/^22\.\d+\.\d+$/.test(manifest.nodeRuntime.version), "Node qualification runtime version is invalid");
 assert(manifest.nodeRuntime.url === `https://nodejs.org/dist/v${manifest.nodeRuntime.version}/node-v${manifest.nodeRuntime.version}-linux-x64.tar.xz`, "Node qualification runtime URL does not match its version");
 assert(/^[0-9a-f]{64}$/.test(manifest.nodeRuntime.sha256), "Node qualification runtime SHA-256 is invalid");
+// The agent sandbox image installs this official Node.js build per architecture.
+const sandboxNode = manifest.sandboxNodeRuntime;
+const sandboxNodeArchitectures = { amd64: "x64", arm64: "arm64" };
+assert(/^\d+\.\d+\.\d+$/.test(sandboxNode?.version ?? ""), "sandbox Node.js runtime version is invalid");
+assert(JSON.stringify(Object.keys(sandboxNode.artifacts ?? {}).sort()) === JSON.stringify(Object.keys(sandboxNodeArchitectures)), "sandbox Node.js runtime must pin exactly amd64 and arm64");
+for (const [arch, nodeArch] of Object.entries(sandboxNodeArchitectures)) {
+  const artifact = sandboxNode.artifacts[arch];
+  assert(artifact.url === `https://nodejs.org/dist/v${sandboxNode.version}/node-v${sandboxNode.version}-linux-${nodeArch}.tar.xz`, `sandbox Node.js ${arch} URL does not match its version`);
+  assert(/^[0-9a-f]{64}$/.test(artifact.sha256), `sandbox Node.js ${arch} SHA-256 is invalid`);
+}
 assert(/@sha256:[0-9a-f]{64}$/.test(manifest.baseImage), "base image is not digest pinned");
 for (const [name, image] of Object.entries(manifest.referenceImages ?? {})) {
   assert(/@sha256:[0-9a-f]{64}$/.test(image), `${name} reference image is not digest pinned`);
@@ -107,6 +117,7 @@ const constants = {
   openclawPlugins: manifest.openclawPlugins,
   openclawPluginPackages: manifest.openclawPluginPackages,
   sandboxImage: manifest.sandboxImage,
+  sandboxNodeRuntime: manifest.sandboxNodeRuntime,
   baseImage: manifest.baseImage,
   referenceImages: manifest.referenceImages,
 };
@@ -140,6 +151,7 @@ PIXEL_GENERATED_LLAMA_PLUGIN_URL=${shellQuote(constants.openclawPluginPackages.l
 PIXEL_GENERATED_LLAMA_PLUGIN_SHA256=${shellQuote(constants.openclawPluginPackages.llamaCpp.sha256)}\n\
 PIXEL_GENERATED_LLAMA_PLUGIN_INTEGRITY=${shellQuote(constants.openclawPluginPackages.llamaCpp.integrity)}\n\
 PIXEL_GENERATED_SANDBOX_IMAGE=${shellQuote(constants.sandboxImage)}\n\
+PIXEL_GENERATED_SANDBOX_NODE_VERSION=${shellQuote(constants.sandboxNodeRuntime.version)}\n\
 PIXEL_GENERATED_BASE_IMAGE=${shellQuote(constants.baseImage)}\n\
 PIXEL_GENERATED_SEARXNG_IMAGE=${shellQuote(constants.referenceImages.searxng)}\n\
 PIXEL_GENERATED_LLAMA_IMAGE=${shellQuote(constants.referenceImages.llamaCpp)}\n`;
@@ -211,6 +223,18 @@ SOFTWARE.
 OpenClaw's package includes its upstream \`LICENSE\` and
 \`THIRD_PARTY_NOTICES.md\` files, including notices for third-party material
 incorporated into OpenClaw itself.
+
+## Node.js
+
+Pixel's agent sandbox image (\`deploy/sandbox/Dockerfile\`) installs the
+official Node.js ${sandboxNode.version} \`node\` binary for Linux from nodejs.org,
+pinned by SHA-256 in \`RELEASE-MANIFEST.json\`. Node.js is not part of this
+repository and is not relicensed under Pixel's ODS-specific license. It is
+MIT-licensed and incorporates third-party components under their own
+licenses. The image keeps the complete upstream license text, including those
+notices, at \`/usr/local/share/doc/nodejs/LICENSE\`:
+
+- [Node.js ${sandboxNode.version} license](https://github.com/nodejs/node/blob/v${sandboxNode.version}/LICENSE)
 `;
 
 const outputs = new Map([
@@ -253,6 +277,16 @@ for (const path of [
 
 let dockerfile = await read("deploy/sandbox/Dockerfile");
 dockerfile = replaceRequired(dockerfile, /^FROM .*$/m, `FROM ${manifest.baseImage}`, "sandbox Dockerfile base image");
+for (const [arch, artifact] of Object.entries(sandboxNode.artifacts)) {
+  dockerfile = replaceRequired(
+    dockerfile,
+    new RegExp(`^      ${arch}\\) node_url=https://nodejs\\.org/dist/\\S+ node_sha256=[a-f0-9]{64} ;; \\\\$`, "m"),
+    `      ${arch}) node_url=${artifact.url} node_sha256=${artifact.sha256} ;; \\`,
+    `sandbox Dockerfile ${arch} Node.js runtime`,
+  );
+}
+dockerfile = replaceRequired(dockerfile, /test "\$\(\/usr\/local\/bin\/node --version\)" = "v[^"]+"/, `test "$(/usr/local/bin/node --version)" = "v${sandboxNode.version}"`, "sandbox Dockerfile Node.js version");
+dockerfile = replaceRequired(dockerfile, /^LABEL org\.osmantic\.pixel\.sandbox-node="[^"]+"$/m, `LABEL org.osmantic.pixel.sandbox-node="${sandboxNode.version}"`, "sandbox Dockerfile Node.js label");
 outputs.set("deploy/sandbox/Dockerfile", dockerfile);
 
 let workRunnerDockerfile = await read("deploy/work-runner/Dockerfile");

@@ -41,3 +41,75 @@ export function deliveredArtifactMetadata(message) {
   const artifacts = parseDeliveredArtifacts(message.artifacts)
   return artifacts?.length ? { artifacts } : {}
 }
+
+// Model-authored hosts never authorize a download. A canonical snapshot/file
+// path may select exactly one verified receipt from this completed response;
+// the download control still fetches and checks the ODS snapshot's bytes.
+function authoredArtifactPath(href) {
+  if (typeof href !== 'string' || !/^https?:\/\//i.test(href)
+    || /[\s\\]/.test(href)) return null
+  let url
+  try { url = new URL(href) } catch { return null }
+  if (url.username || url.password || url.search || url.hash) return null
+  const slash = href.indexOf('/', href.indexOf('://') + 3)
+  const rawPath = slash < 0 ? '' : href.slice(slash)
+  // URL parsing normalizes dot segments and backslashes. Never let that turn
+  // an unrelated or traversal-shaped URL into a receipt match.
+  if (rawPath !== url.pathname) return null
+  return rawPath
+}
+
+export function deliveredArtifactForHref(href, artifacts) {
+  const delivered = parseDeliveredArtifacts(artifacts)
+  const rawPath = authoredArtifactPath(href)
+  if (!delivered?.length || !rawPath) return null
+  const matches = delivered.filter(({siteId, file}) => [
+    `/${siteId}/${file.path}`,
+    `/${siteId.slice(5)}/${file.path}`,
+    `/pixel-preview/${siteId}/${file.path}`,
+    `/preview/${siteId}/${file.path}`,
+  ].includes(rawPath))
+  return matches.length === 1 ? matches[0] : null
+}
+
+// Called only for an explicit Download-labelled link in ordinary answer prose.
+// The filename can select one completed receipt; the URL never supplies a host,
+// snapshot ID or bytes. Ambiguous names and URL paths requiring normalization
+// cannot bind.
+export function deliveredArtifactForDownloadHref(href, artifacts) {
+  const delivered = parseDeliveredArtifacts(artifacts)
+  const rawPath = authoredArtifactPath(href)
+  if (!delivered?.length || !rawPath) return null
+  const name = rawPath.split('/').at(-1)
+  const matches = delivered.filter(({file}) => file.path === name)
+  return matches.length === 1 ? matches[0] : null
+}
+
+// An explicit Download filename in ordinary prose may select one completed
+// receipt. The authored URL is not consulted or fetched; the receipt remains
+// the sole authority for the snapshot, filename, digest and bytes.
+export function deliveredArtifactForDownloadName(name, artifacts) {
+  const delivered = parseDeliveredArtifacts(artifacts)
+  if (!delivered?.length || typeof name !== 'string') return null
+  const matches = delivered.filter(({file}) => file.path === name)
+  return matches.length === 1 ? matches[0] : null
+}
+
+const EMBED_DIRECTIVE = /^\[embed ref="artifact_([a-f0-9]{64})" title="([^"]+)" height="([0-9]+)" \/\](?:\r?\n)*$/
+
+// Returns '' only when the entire assistant content is exactly one stand-alone
+// embed directive whose ref matches a delivered artifact's file.sha256 and
+// whose title matches that artifact's file.path. Any surrounding prose,
+// indentation, quoting, fencing, or mismatch preserves the original content.
+export function deliveredArtifactDisplayText(content, artifacts) {
+  if (typeof content !== 'string') return content
+  const match = EMBED_DIRECTIVE.exec(content)
+  if (!match) return content
+  const [, ref, title] = match
+  const delivered = parseDeliveredArtifacts(artifacts)
+  if (!delivered?.length) return content
+  for (const artifact of delivered) {
+    if (artifact?.file?.sha256 === ref && artifact?.file?.path === title) return ''
+  }
+  return content
+}

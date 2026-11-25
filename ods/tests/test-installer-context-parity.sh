@@ -205,6 +205,70 @@ HERMES_FALLBACK_EOF
 ) || fail "Linux Hermes fallback patcher did not preserve metacharacters or reject unsafe structure"
 pass "Linux Hermes fallback patcher treats sed metacharacters as data"
 
+# A held Pixel source update (phase 06) finishes only over the exact source
+# bytes it published, and the Hermes template is one of them. Phase 11 must
+# write the Hermes route after ods_pixel_install_default_agent finished that
+# update, and still before Compose starts Hermes.
+apply_template_block="$(function_block _phase11_apply_hermes_template)"
+hermes_setup_block="$(awk '
+    /^    if \[\[ "\$\{ENABLE_HERMES:-false\}" == "true" \]\]; then$/ { in_block=1 }
+    in_block { print }
+    in_block && /^    fi$/ { exit }
+' installers/phases/11-services.sh)"
+[[ -n "$apply_template_block" ]] || fail "could not extract the Linux Hermes template writer"
+[[ -n "$hermes_setup_block" ]] || fail "could not extract the Linux Hermes setup block"
+(
+    held_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ods-hermes-held.XXXXXX")"
+    trap 'rm -rf -- "$held_tmp"' EXIT
+    INSTALL_DIR="$held_tmp/install"
+    LOG_FILE="$held_tmp/install.log"
+    held_template="$INSTALL_DIR/extensions/services/hermes/cli-config.yaml.template"
+    mkdir -p "$(dirname "$held_template")"
+    printf '%s\n' 'model:' '  default: "qwen3.5-9b"' '  context_length: 131072' >"$held_template"
+    cp "$held_template" "$held_tmp/published"
+    ods_detect_python_cmd() { return 1; }
+    _phase11_external_llm() { return 1; }
+    _phase11_external_lemonade() { return 1; }
+    log() { :; }
+    warn() { :; }
+    ai_ok() { :; }
+    eval "$fallback_yaml_block"
+    eval "$fallback_patch_block"
+    eval "$apply_template_block"
+    ENABLE_HERMES=true
+    MAX_CONTEXT=65536
+    ODS_MODEL_SWITCHBOARD=enabled
+
+    ODS_PIXEL_SOURCE_TRANSACTION="$(printf '%064d' 0)"
+    _phase11_hermes_template_route=()
+    eval "$hermes_setup_block"
+    cmp -s "$held_template" "$held_tmp/published" || { echo "held update: template was rewritten" >&2; exit 1; }
+    (( ${#_phase11_hermes_template_route[@]} > 0 )) || { echo "held update: no route kept for later" >&2; exit 1; }
+    unset ODS_PIXEL_SOURCE_TRANSACTION
+    _phase11_apply_hermes_template "${_phase11_hermes_template_route[@]}"
+    grep -Fqx '  default: "ods/current"' "$held_template" || { echo "finished update: route not written" >&2; exit 1; }
+    grep -Fqx '  context_length: 65536' "$held_template" || { echo "finished update: context not written" >&2; exit 1; }
+
+    cp "$held_tmp/published" "$held_template"
+    _phase11_hermes_template_route=()
+    eval "$hermes_setup_block"
+    grep -Fqx '  default: "ods/current"' "$held_template" || { echo "no update held: route not written" >&2; exit 1; }
+    (( ${#_phase11_hermes_template_route[@]} == 0 )) || { echo "no update held: route also kept for later" >&2; exit 1; }
+) || fail "Linux Hermes template changed inside a held Pixel source update, or its route was lost"
+pass "Linux Hermes template keeps a held Pixel source update's bytes and gets its route afterwards"
+hermes_route_order="$(awk '
+    /if ! ods_pixel_install_default_agent; then/ && !pixel { pixel=NR }
+    /_phase11_apply_hermes_template "\$\{_phase11_hermes_template_route\[@\]\}"/ { apply=NR }
+    /"\$\{COMPOSE_FLAGS_ARR\[@\]\}" up -d --remove-orphans/ && !launch { launch=NR }
+    END { print pixel+0, apply+0, launch+0 }
+' installers/phases/11-services.sh)"
+read -r pixel_line apply_line launch_line <<<"$hermes_route_order"
+if (( pixel_line > 0 && pixel_line < apply_line && apply_line < launch_line )); then
+    pass "Linux phase 11 writes a waiting Hermes route after the Pixel update finishes and before Compose starts"
+else
+    fail "Linux phase 11 waiting Hermes route is not between ods_pixel_install_default_agent and Compose up ($hermes_route_order)"
+fi
+
 assert_grep "installers/macos/install-macos.sh" '--context-length "\$MAX_CONTEXT"' \
     "macOS Hermes patcher receives context length"
 assert_grep "installers/macos/ods-macos.sh" 'ENV_CTX_SIZE:-65536' \
@@ -221,9 +285,9 @@ assert_grep "installers/phases/07-devtools.sh" '_opencode_url="http://127\.0\.0\
     "Linux OpenCode generic external config routes through LiteLLM"
 assert_grep "installers/phases/07-devtools.sh" 'OpenCode config updated \(model, API key, and URL refreshed\)' \
     "Linux OpenCode reinstall migrates stale model route"
-assert_grep "installers/macos/install-macos.sh" '_opencode_switchboard_mode=.*ODS_MODEL_SWITCHBOARD' \
+assert_grep "installers/macos/lib/post-pixel-install.sh" '_opencode_switchboard_mode=.*ODS_MODEL_SWITCHBOARD' \
     "macOS OpenCode config reads switchboard mode"
-assert_grep "installers/macos/install-macos.sh" '_opencode_model="ods/current"' \
+assert_grep "installers/macos/lib/post-pixel-install.sh" '_opencode_model="ods/current"' \
     "macOS OpenCode config uses stable switchboard alias"
 assert_grep "installers/macos/lib/env-generator.sh" 'ODS_MODEL_SWITCHBOARD=\$\{switchboard_mode\}' \
     "macOS .env generation persists switchboard mode"
@@ -235,9 +299,9 @@ assert_grep "installers/macos/docker-compose.macos.yml" 'OPENAI_API_KEY: "\$\{OP
     "macOS Open WebUI compose route carries switchboard API key"
 assert_grep "installers/macos/install-macos.sh" 'render-runtime-configs\.py' \
     "macOS installer renders model-router runtime configs"
-assert_grep "installers/macos/install-macos.sh" 'PERPLEXICA_MODEL="ods/current"' \
+assert_grep "installers/macos/lib/post-pixel-install.sh" 'PERPLEXICA_MODEL="ods/current"' \
     "macOS Perplexica config uses stable switchboard alias"
-assert_grep "installers/macos/install-macos.sh" 'PERPLEXICA_BASE_URL="http://litellm:4000"' \
+assert_grep "installers/macos/lib/post-pixel-install.sh" 'PERPLEXICA_BASE_URL="http://litellm:4000"' \
     "macOS Perplexica config routes switchboard mode through LiteLLM"
 assert_grep "installers/phases/12-health.sh" 'ODS_MODEL_SWITCHBOARD' \
     "Linux Perplexica config reads switchboard mode"
@@ -380,7 +444,7 @@ assert_grep "installers/windows/lib/opencode-config.ps1" \
     'WriteAllText\(\$_ocCompatConfigFile' \
     "Windows OpenCode writer syncs config.json"
 
-assert_grep "installers/macos/install-macos.sh" \
+assert_grep "installers/macos/lib/post-pixel-install.sh" \
     'compat_path="\$\(dirname "\$config_path"\)/config\.json"' \
     "macOS OpenCode writer syncs config.json"
 
@@ -393,7 +457,7 @@ if [[ -n "$python_cmd" ]]; then
     opencode_writer="$tmp_opencode_dir/writer.sh"
     awk '/^_write_macos_opencode_config\(\) \{$/ {inside=1}
          inside {print}
-         inside && /^\}$/ {exit}' installers/macos/install-macos.sh \
+         inside && /^\}$/ {exit}' installers/macos/lib/post-pixel-install.sh \
         | sed "s#/usr/bin/python3#$python_cmd#" > "$opencode_writer"
 
     [[ -s "$opencode_writer" ]] || fail "could not extract _write_macos_opencode_config"

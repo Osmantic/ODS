@@ -25,6 +25,13 @@ try {
         throw 'Rejected install created a data directory.'
     }
     Write-Host 'PASS: standalone install rejects the full ODS data root without mutation'
+    # PowerShell 7 keeps a variable set to "" (what $null becomes) defined and
+    # empty, and an empty COMPOSE_FILE breaks later compose calls.
+    $source = Get-Content -LiteralPath $installer -Raw
+    if ($source -notmatch "\[Environment\]::SetEnvironmentVariable\(\`$name, \[NullString\]::Value, 'Process'\)") {
+        throw 'The environment restore must remove variables that were unset with [NullString]::Value.'
+    }
+    Write-Host 'PASS: the environment restore removes variables that were unset'
 } finally {
     $env:ODS_HOME = $priorHome
     if (Test-Path -LiteralPath $scratch) {

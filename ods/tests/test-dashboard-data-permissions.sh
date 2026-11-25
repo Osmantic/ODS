@@ -25,6 +25,22 @@ run_case() (
     warn() { echo "$*" >&2; }
     error() { echo "$*" >&2; return 1; }
     chown() { :; } # Existing unrelated Token Spy adjustment.
+    # This shell boundary fixture simulates group 1000. Execute the real lock
+    # helper with our available GID; numeric group authority is tested as root.
+    python3() {
+        if [[ "$1" == "$ROOT_DIR/installers/lib/dashboard-lock.py" && "$2" == repair ]]; then
+            command python3 - "$1" "$3" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("lock_fixture", sys.argv[1])
+helper = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(helper)
+helper._DASHBOARD_GID = os.getgid()
+helper.repair(sys.argv[2])
+PY
+        else
+            command python3 "$@"
+        fi
+    }
     ods_sudo_available() { return 0; }
     ods_sudo() {
         printf '%s\n' "$*" >> "$QA_CALLS"
@@ -43,7 +59,7 @@ run_case() (
     stat() {
         if [[ "$1" == -c && "$2" == '%g:%a' ]]; then
             printf '%s:%s\n' "$QA_GROUP" "$(command stat -c '%a' "$3")"
-        elif [[ "$1" == -c && "$2" == '%u:%g' && "$QA_SCENARIO" == chat_denied ]]; then
+        elif [[ "$1" == -c && "$2" == '%u:%g' && ( "$QA_SCENARIO" == chat_denied || "$QA_SCENARIO" == images_denied ) ]]; then
             printf '1001:2001\n'
         elif [[ "$1" == -c && "$2" == %g ]]; then
             printf '%s\n' "$QA_GROUP"
@@ -56,9 +72,19 @@ run_case() (
     docker_run() {
         printf '%s\n' "$*" >> "$QA_CALLS"
         [[ "$QA_SCENARIO" != rootless_denied ]] || return 1
+        if [[ "$1" == image && "$2" == inspect ]]; then
+            [[ "$QA_SCENARIO" != rootless_python_image_denied ]] || return 1
+            [[ "$3" == python:3.11-slim@sha256:* ]]
+            return $?
+        fi
         [[ "$*" == *'--network none'* && "$*" == *'--user 0:0'* ]] || return 1
         [[ "$*" == *"src=$INSTALL_DIR/data,dst=/data"* ]] || return 1
         [[ "$*" != *'chown -R '* ]] || return 1
+        if [[ "$*" == *'python3 - repair /data' ]]; then
+            # Preserve the exact stdin helper payload and simulate only GID.
+            command python3 -c 'import os,sys; ns={"__name__":"lock_fixture"}; exec(sys.stdin.read(), ns); ns["_DASHBOARD_GID"]=os.getgid(); ns["repair"](sys.argv[1])' "$INSTALL_DIR/data"
+            return $?
+        fi
         # Run the exact namespace command against this fixture's data root.
         local command_text="${!#}"
         command_text="${command_text//\/data/\"$INSTALL_DIR\/data\"}"
@@ -71,10 +97,12 @@ run_case() (
     fi
     [[ "$scenario" != chat_symlink ]] || ln -s private "$INSTALL_DIR/data/pixel-chat-results"
     [[ "$scenario" != chat_denied ]] || mkdir "$INSTALL_DIR/data/pixel-chat-results"
+    [[ "$scenario" != images_symlink ]] || ln -s private "$INSTALL_DIR/data/pixel-images"
+    [[ "$scenario" != images_denied ]] || mkdir "$INSTALL_DIR/data/pixel-images"
     local result=0
     source "$work/phase.sh" || result=$?
     case "$scenario" in
-        denied_group|denied_mode|symlink|chat_symlink|chat_denied|bad_readback|rootless_denied|rootless_image_denied)
+        denied_group|denied_mode|symlink|chat_symlink|chat_denied|images_symlink|images_denied|bad_readback|rootless_denied|rootless_image_denied|rootless_python_image_denied)
             [[ "$result" != 0 ]] || { echo "FAIL: $scenario did not stop phase 06"; exit 1; }
             [[ "$scenario" != symlink || ! -s "$QA_CALLS" ]] ;;
         *)
@@ -87,6 +115,6 @@ run_case() (
     [[ "$scenario" != current || ! -s "$QA_CALLS" ]]
     echo "PASS: $scenario"
 )
-for scenario in owner current rootless denied_group denied_mode bad_readback rootless_denied rootless_image_denied symlink chat_symlink chat_denied; do
+for scenario in owner current rootless denied_group denied_mode bad_readback rootless_denied rootless_image_denied rootless_python_image_denied symlink chat_symlink chat_denied images_symlink images_denied; do
     run_case "$scenario"
 done

@@ -11,6 +11,9 @@ cd "$ROOT_DIR"
 pass() { echo "  PASS: $1"; }
 fail() { echo "  FAIL: $1" >&2; exit 1; }
 
+# Keep agent-default selection outside these Hermes-only phase fixtures.
+ods_should_default_portal_chat() { return 1; }
+
 run_linux_phase_with_context() {
     local input_context="$1"
     (
@@ -21,7 +24,6 @@ run_linux_phase_with_context() {
         TIER=1
         ENABLE_HERMES=true
         ENABLE_COMFYUI=false
-        ENABLE_OPENCLAW=false
         ENABLE_APE=false
         ENABLE_PERPLEXICA=false
         ENABLE_PRIVACY_SHIELD=false
@@ -85,6 +87,7 @@ cp config/model-library.json "$fixture_dir/config/"
 cp installers/lib/model-selector.sh "$fixture_dir/installers/lib/"
 cp extensions/services/dashboard-api/model_memory.py \
     extensions/services/dashboard-api/model_selection.py \
+    extensions/services/dashboard-api/model_vllm.py \
     "$fixture_dir/extensions/services/dashboard-api/"
 cp lib/python-cmd.sh "$fixture_dir/lib/"
 
@@ -100,7 +103,6 @@ run_fit_case() {
         INSTALL_CHOICE=1
         ENABLE_HERMES=true
         ENABLE_COMFYUI=false
-        ENABLE_OPENCLAW=false
         ENABLE_APE=false
         ENABLE_PERPLEXICA=false
         ENABLE_PRIVACY_SHIELD=false
@@ -210,6 +212,36 @@ if command -v python3 >/dev/null 2>&1; then
     out="$(run_fit_case 49140 128 4 deepseek-r1-distill-llama-70b DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf 65536 installer         qwen3.6-35b-a3b Qwen3.6-35B-A3B-UD-Q4_K_M.gguf 131072)"
     [[ "$(field "$out" INSTALLER_RECOMMENDED_CONTEXT)" == "131072" ]]         || fail "the recommended Qwen3.6-35B-A3B must keep its 131072, not the preserved R1-70B 65536: $out"
     pass "Linux phase 03 records the served context only for this run's own pick"
+
+    # (h) Host-native llama-server (the Windows Portal): llama-server on the
+    # Windows host loaded the model at this context, so this run can neither
+    # re-pick (no 64K fit here) nor raise it (a fit here says nothing about
+    # the Windows GPU). It caps and says so.
+    for vram in 2048 49140; do
+        out="$(NATIVE_LLM_BASE_URL=http://127.0.0.1:8080 run_fit_case "$vram" 64 4 qwen3.6-35b-a3b Qwen3.6-35B-A3B-UD-Q4_K_M.gguf 32768 installer)"
+        [[ "$(field "$out" LLM_MODEL)" == "qwen3.6-35b-a3b" ]] || fail "the host-native model must not be re-picked ($vram MB): $out"
+        [[ "$(field "$out" MAX_CONTEXT)" == "32768" ]] || fail "the host-native context must not be raised ($vram MB): $out"
+        [[ "$(field "$out" HERMES_CONTEXT_BELOW_FLOOR)" == "true" ]] || fail "below-floor state must be exported ($vram MB): $out"
+        [[ "$(field "$out" WARNINGS)" == *"ODS Talk stays unavailable"* ]] || fail "the cap must say Talk is unavailable ($vram MB): $out"
+    done
+    pass "Linux Hermes floor keeps a host-native model at the context Windows loaded"
+
+    # A retained import has no curated fit record. An unknown fit is not
+    # permission to replace its proven 8K context with the Hermes 64K floor.
+    for origin in dashboard installer; do
+        out="$(run_fit_case 8192 64 1 hf-smollm2 hf-smollm2-Q5_K_M.gguf 8192 "$origin" qwen3.5-9b Qwen3.5-9B-Q4_K_M.gguf 65536)"
+        [[ "$(field "$out" MAX_CONTEXT)" == "8192" ]] || fail "an unknown retained import must keep 8K ($origin): $out"
+        [[ "$(field "$out" LLM_MODEL)" == "hf-smollm2" ]] || fail "an unknown retained import must not be replaced: $out"
+        [[ "$(field "$out" HERMES_CONTEXT_BELOW_FLOOR)" == "true" ]] || fail "unknown retained fit must report below-floor state: $out"
+        [[ "$(field "$out" INSTALLER_RECOMMENDED_CONTEXT)" == "65536" ]] || fail "an import must not overwrite the recommendation context: $out"
+        [[ "$(field "$out" WARNINGS)" == *"ODS Talk stays unavailable"* ]] || fail "unknown retained fit must explain Talk availability: $out"
+    done
+    pass "Linux Hermes floor preserves imported context when the real selector has no fit record"
+
+    out="$(ODS_DISABLE_CATALOG_MODEL_SELECTOR=true run_fit_case 8192 64 1 hf-smollm2 hf-smollm2-Q5_K_M.gguf 8192 dashboard qwen3.5-9b Qwen3.5-9B-Q4_K_M.gguf 65536)"
+    [[ "$(field "$out" MAX_CONTEXT)" == "8192" ]] || fail "a disabled selector must not inflate retained context: $out"
+    [[ "$(field "$out" HERMES_CONTEXT_BELOW_FLOOR)" == "true" ]] || fail "disabled-selector retained context must report below-floor state: $out"
+    pass "Linux Hermes floor preserves imported context with the selector disabled"
 else
     echo "  SKIP: python3 unavailable; fit re-check cases need the real selector"
 fi

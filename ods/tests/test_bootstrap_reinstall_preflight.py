@@ -28,6 +28,8 @@ MODEL = b'GGUF\x00retained-model-bytes\n'
 GIT_IDENTITY = ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid']
 # install-core.sh reads /etc/os-release and refuses root in its preflight.
 LINUX_USER = sys.platform.startswith('linux') and os.geteuid() != 0
+# Root lists every directory, so only another user can meet an unlistable one.
+NON_ROOT = hasattr(os, 'geteuid') and os.geteuid() != 0
 
 
 def function(source, name):
@@ -66,6 +68,7 @@ pathlib.Path(os.environ['RESULT']).write_text(json.dumps({
     'oldRuntime': (root / 'old-runtime').exists(),
     'leftover': (root / 'stranded-leftover').exists(),
     'env': (root / '.env').exists(),
+    'remoteRouteRemoved': os.environ.get('ODS_REINSTALL_REMOTE_ROUTE_REMOVED'),
 }))
 PY
 '''
@@ -79,7 +82,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --install-dir) INSTALL_DIR=$2; shift 2 ;;
         --keep-models) keep=true; shift ;;
-        --force|--non-interactive) shift ;;
+        --force|--non-interactive|--preserve-broker-state) shift ;;
         *) exit 66 ;;
     esac
 done
@@ -91,6 +94,30 @@ rm -rf "$INSTALL_DIR"
 
 
 class ReinstallPreflightTests(unittest.TestCase):
+    def test_older_candidate_keeps_its_strict_uninstall_contract(self):
+        self.make_installed()
+        older = self.root / 'older-uninstaller'
+        shutil.copytree(self.repo, older)
+        write(older / 'ods/ods-uninstall.sh', CANDIDATE_UNINSTALL.replace(
+            '--force|--non-interactive|--preserve-broker-state)',
+            '--force|--non-interactive)'), 0o755)
+        self.env.update(ODS_REPO_URL=str(older), ODS_REF=self.commit(older, 'older uninstaller'))
+        result, output = self.bootstrap()
+        self.assertEqual(result.returncode, 0, output)
+        self.assertNotIn('--preserve-broker-state', self.uninstall_args.read_text().split())
+        self.assertEqual(json.loads(self.result.read_text())['model'], MODEL.hex())
+
+    def test_broker_preservation_rejects_non_reinstall_invocations(self):
+        for flags in ([], ['--force', '--keep-data']):
+            with self.subTest(flags=flags):
+                result = subprocess.run(
+                    [real('bash'), str(ROOT / 'ods-uninstall.sh'),
+                     '--preserve-broker-state', '--non-interactive', *flags],
+                    text=True, capture_output=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('requires --force without --keep-data; nothing was changed',
+                              result.stdout + result.stderr)
+
     @classmethod
     def setUpClass(cls):
         cls.fixture = tempfile.TemporaryDirectory()
@@ -230,17 +257,31 @@ esac
         write(self.install / 'stranded-leftover', 'from the interrupted run\n')
         return inode
 
-    def bootstrap(self, *args, platform='macos', keep_models=True):
+    def make_unconfigured(self):
+        """What a fresh install leaves when it stops in its checks: source only."""
+        for name in ['ods-cli', 'ods-uninstall.sh', 'docker-compose.base.yml', 'install.sh']:
+            write(self.install / name, 'from the stopped attempt\n')
+        write(self.install / 'stranded-leftover', 'from the stopped attempt\n')
+
+    def bootstrap(self, *args, platform='macos', keep_models=True, interactive=False, force=True):
         env = dict(self.env, ODS_PLATFORM_OVERRIDE=platform)
         path = [str(self.common_bin), env['PATH']]
         if platform == 'macos':
             path.insert(0, str(self.macos_bin))
         env['PATH'] = os.pathsep.join(path)
-        flags = ['--non-interactive', '--force'] + (['--keep-models'] if keep_models else [])
+        if interactive:
+            flags = []
+        elif force:
+            flags = ['--non-interactive', '--force'] + (['--keep-models'] if keep_models else [])
+        else:
+            flags = ['--non-interactive']
         if platform == 'macos':
             flags += ['--recommended', '--pixel', '--no-bootstrap']
+        # A new session has no controlling terminal, as under CI or `curl | bash`
+        # in a non-interactive shell, so /dev/tty cannot be opened.
         result = subprocess.run(['bash', str(BOOTSTRAP), *flags, *args], env=env,
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120,
+            start_new_session=interactive)
         return result, result.stdout + result.stderr
 
     def assert_untouched(self, output, env=True):
@@ -266,11 +307,48 @@ esac
         result, output = self.bootstrap()
         self.assertEqual(result.returncode, 0, output)
         self.assertIn('--keep-models', self.uninstall_args.read_text().split())
+        self.assertIn('--preserve-broker-state', self.uninstall_args.read_text().split())
         value = json.loads(self.result.read_text())
         self.assertEqual(value['args'], ['--non-interactive', '--force', '--recommended', '--pixel', '--no-bootstrap'])
         self.assertEqual(value['model'], MODEL.hex())
         self.assertEqual(value['modelInode'], inode)
         self.assertFalse(value['oldRuntime'])
+
+    def test_keep_models_names_an_existing_backup_and_the_choices(self):
+        # Fleet row 29 (Tower3): the refusal named no path and no choices.
+        self.make_installed()
+        backup = Path(str(self.install) + '.models-backup')
+        backup.mkdir()
+        result, output = self.bootstrap()
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn(f'A model backup already exists at {backup}', output)
+        self.assertIn('rerun without --keep-models', output)
+        self.assertIn('Cannot preserve models', output)
+        self.assertIn('https://discord.gg/4ntNp9MAwC', output)
+        self.assertFalse(self.uninstall_args.exists(), output)
+        self.assertTrue(backup.is_dir(), output)
+        self.assertTrue((self.install / 'old-runtime').exists(), output)
+
+    def test_reinstall_says_it_removes_a_saved_model_api_connection(self):
+        # Fleet row 26 (Mac): the reinstall dropped the Settings > Remote model
+        # connection without a word.
+        self.make_installed()
+        write(self.install / 'data/remote-provider/provider-profile.json', '{}\n')
+        result, output = self.bootstrap()
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn('This reinstall removes your model API connection (Settings > Remote model)', output)
+        self.assertEqual(json.loads(self.result.read_text())['remoteRouteRemoved'], 'true')
+        for summary in ('installers/phases/13-summary.sh', 'installers/macos/install-macos.sh'):
+            text = (ROOT / summary).read_text()
+            self.assertIn('ODS_REINSTALL_REMOTE_ROUTE_REMOVED', text, summary)
+            self.assertIn('This reinstall removed your model API connection', text, summary)
+
+    def test_reinstall_without_a_model_api_connection_says_nothing_about_it(self):
+        self.make_installed()
+        result, output = self.bootstrap()
+        self.assertEqual(result.returncode, 0, output)
+        self.assertNotIn('model API connection', output)
+        self.assertIsNone(json.loads(self.result.read_text())['remoteRouteRemoved'])
 
     def test_disk_credit_counts_reclaimed_space_but_not_retained_models(self):
         self.make_installed()
@@ -380,6 +458,137 @@ esac
         self.assertIn('Removing incomplete install because --force was provided', output)
         self.assertNotIn('Resuming that reinstall', output)
         self.assertIsNone(json.loads(self.result.read_text())['model'])
+
+    def test_force_refuses_directory_without_ods_source(self):
+        # What `ods-uninstall.sh --keep-data` leaves behind: data only.
+        write(self.install / 'data/n8n/database.sqlite', 'kept workflows\n')
+        result, output = self.bootstrap(keep_models=False)
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn('Refusing to remove', output)
+        self.assertEqual((self.install / 'data/n8n/database.sqlite').read_text(), 'kept workflows\n')
+        self.assertFalse(self.uninstall_args.exists(), output)
+        self.assertFalse(self.result.exists(), output)
+        self.assertFalse(self.sudo_calls.exists(), output)
+
+    def test_force_replaces_empty_install_directory(self):
+        self.install.mkdir()
+        result, output = self.bootstrap(keep_models=False)
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn('Removing incomplete install because --force was provided', output)
+        self.assertTrue(self.result.exists(), output)
+
+    def test_prompt_without_terminal_leaves_incomplete_install(self):
+        self.make_stranded()
+        result, output = self.bootstrap(interactive=True)
+        self.assertEqual(result.returncode, 1, output)
+        self.assertIn('No terminal is available to answer', output)
+        self.assertTrue((self.install / 'stranded-leftover').exists(), output)
+        self.assertFalse(self.uninstall_args.exists(), output)
+        self.assertFalse(self.result.exists(), output)
+
+    def test_prompt_refuses_directory_without_ods_source(self):
+        write(self.install / 'data/open-webui/webui.db', 'kept chats\n')
+        result, output = self.bootstrap(interactive=True)
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn('Refusing to remove', output)
+        self.assertNotIn('Remove and reinstall?', output)
+        self.assertEqual((self.install / 'data/open-webui/webui.db').read_text(), 'kept chats\n')
+
+    def test_unconfigured_tree_is_replaced_by_the_same_command(self):
+        # Fleet 2026-10-18: a fresh install stopped in phase 04 (a port in use)
+        # and said to run the same command again, which then refused the source
+        # tree that attempt left until --force was added.
+        def stopped_attempt():
+            self.make_unconfigured()
+
+        def stopped_attempt_with_empty_data():
+            self.make_unconfigured()
+            (self.install / 'data').mkdir()
+
+        def empty_directory():
+            self.install.mkdir()
+
+        for prepare, interactive in [(stopped_attempt, False), (stopped_attempt, True),
+                                     (stopped_attempt_with_empty_data, False), (empty_directory, False)]:
+            with self.subTest(case=prepare.__name__, interactive=interactive):
+                shutil.rmtree(self.install, ignore_errors=True)
+                if self.result.exists():
+                    self.result.unlink()
+                prepare()
+                result, output = self.bootstrap(interactive=interactive, force=False)
+                self.assertEqual(result.returncode, 0, output)
+                self.assertIn('An earlier install attempt stopped before ODS was configured; '
+                              f'replacing its source files at {self.install}', output)
+                self.assertNotIn('Directory exists but incomplete install', output)
+                self.assertNotIn('Remove and reinstall?', output)
+                value = json.loads(self.result.read_text())
+                self.assertFalse(value['leftover'], output)
+                self.assertFalse(value['env'], output)
+                self.assertFalse(self.uninstall_args.exists(), output)
+                self.assertFalse(self.sudo_calls.exists(), output)
+
+    def test_tree_with_owner_data_keeps_the_incomplete_install_handling(self):
+        # data/ may hold what `ods-uninstall.sh --keep-data` kept, which also
+        # keeps .backups/ and presets/.
+        for kept in ['data/n8n/database.sqlite', '.backups/ods-backup.tar.gz', 'presets/mine.json']:
+            with self.subTest(kept=kept):
+                shutil.rmtree(self.install, ignore_errors=True)
+                self.make_unconfigured()
+                write(self.install / kept, 'owner data\n')
+                result, output = self.bootstrap(force=False)
+                self.assertEqual(result.returncode, 1, output)
+                self.assertIn('Directory exists but incomplete install', output)
+                self.assertNotIn('replacing its source files', output)
+                self.assertEqual((self.install / kept).read_text(), 'owner data\n')
+                self.assertTrue((self.install / 'stranded-leftover').exists(), output)
+                self.assertFalse(self.result.exists(), output)
+
+    def test_only_an_unconfigured_ods_tree_is_replaced_without_force(self):
+        def not_ods_source():
+            (self.install / 'ods-cli').unlink()
+
+        def dangling_env():
+            (self.install / '.env').symlink_to(self.root / 'missing-env')
+
+        def linked_empty_data():
+            target = self.root / 'data-elsewhere'
+            target.mkdir(exist_ok=True)
+            (self.install / 'data').symlink_to(target, target_is_directory=True)
+
+        # The bootstrap's copy has neither; a working checkout has one.
+        def checkout_tests():
+            write(self.install / 'tests/test-local-change.sh', 'uncommitted work\n')
+
+        def checkout_git():
+            write(self.install / '.git/HEAD', 'ref: refs/heads/main\n')
+
+        for mutate in [not_ods_source, dangling_env, linked_empty_data, checkout_tests, checkout_git]:
+            with self.subTest(case=mutate.__name__):
+                shutil.rmtree(self.install, ignore_errors=True)
+                self.make_unconfigured()
+                mutate()
+                result, output = self.bootstrap(force=False)
+                self.assertEqual(result.returncode, 1, output)
+                self.assertIn('Directory exists but incomplete install', output)
+                self.assertNotIn('replacing its source files', output)
+                self.assertTrue((self.install / 'stranded-leftover').exists(), output)
+                self.assertFalse(self.result.exists(), output)
+
+    @unittest.skipUnless(NON_ROOT, 'root can list any directory')
+    def test_unlistable_directory_is_not_taken_for_empty(self):
+        write(self.install / 'private.txt', 'not ours\n')
+        self.install.chmod(0o311)
+        self.addCleanup(self.install.chmod, 0o755)
+        for force in [False, True]:
+            with self.subTest(force=force):
+                result, output = self.bootstrap(force=force, keep_models=False)
+                self.assertNotEqual(result.returncode, 0, output)
+                self.assertNotIn('replacing its source files', output)
+                self.assertNotIn('Removing incomplete install', output)
+                self.assertFalse(self.sudo_calls.exists(), output)
+                self.assertFalse(self.result.exists(), output)
+        self.install.chmod(0o755)
+        self.assertEqual((self.install / 'private.txt').read_text(), 'not ours\n')
 
     def test_candidate_without_reinstall_preflight_is_refused_before_uninstall(self):
         self.make_installed()

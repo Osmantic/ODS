@@ -9,7 +9,9 @@
 #
 # Expects: jq, warn(), log()
 # Provides: detect_amd_topo(), amd_gpu_id(), amd_gfx_version(),
-#           amd_render_node()
+#           amd_render_node(), amd_gfx_targets(), amd_card_metrics_format(),
+#           amd_card_is_integrated(), amd_card_memory_type(),
+#           amd_inference_card_dirs()
 #
 # Modder notes:
 #   Detection fallback chain:
@@ -42,6 +44,75 @@ _amd_sort_card_dirs() {
     for card_dir in "$@"; do
         printf '%s\t%s\n' "$(_amd_card_id "$card_dir")" "$card_dir"
     done | sort -n -k1,1 | cut -f2-
+}
+
+# Print the gpu_metrics format revision of the AMD GPU at CARD_DIR, or
+# nothing when the kernel publishes no table. amdgpu uses the v2.x and v3.x
+# layouts, whose fields include CPU core temperatures and power, only for
+# APUs (renoir, vangogh, yellow_carp, smu_v13_0_4/5, smu_v14_0_0); discrete
+# GPUs use v1.x (navi10, sienna_cichlid, smu_v13_0_0/7, smu_v14_0_2, and the
+# CDNA parts). The revision is the third byte of the table header.
+amd_card_metrics_format() {
+    local card_dir="$1" header size_lo size_hi format content
+    # An unreadable table (older kernel or SMU) leaves the answer to callers.
+    header="$(od -An -tu1 -N4 "$card_dir/gpu_metrics" 2>/dev/null)" || return 0
+    read -r size_lo size_hi format content <<< "$header"
+    [[ "$format" =~ ^[0-9]+$ ]] && printf '%s\n' "$format"
+    return 0
+}
+
+# 0 when the AMD GPU at CARD_DIR is integrated (an APU's GPU). A missing or
+# unreadable gpu_metrics table counts as discrete.
+amd_card_is_integrated() {
+    local format
+    format="$(amd_card_metrics_format "$1")"
+    [[ "$format" == 2 || "$format" == 3 ]]
+}
+
+# Print "unified" or "discrete" for the AMD GPU at CARD_DIR: gpu_metrics when
+# the kernel publishes it, else the VRAM/GTT sizes (amd_memory_type), which
+# call a discrete GPU on a host with 64 GB or more of RAM unified.
+amd_card_memory_type() {
+    local card_dir="$1" vram_bytes gtt_bytes
+    case "$(amd_card_metrics_format "$card_dir")" in
+        2|3) echo "unified"; return 0 ;;
+        1) echo "discrete"; return 0 ;;
+    esac
+    # An unreadable counter reads as 0, which the heuristic treats as discrete.
+    vram_bytes=$(cat "$card_dir/mem_info_vram_total" 2>/dev/null) || vram_bytes=0
+    gtt_bytes=$(cat "$card_dir/mem_info_gtt_total" 2>/dev/null) || gtt_bytes=0
+    amd_memory_type "$vram_bytes" "$gtt_bytes"
+}
+
+# Print "<index>\t<card device dir>" for every AMD GPU ODS runs inference on,
+# in numeric DRM card order. <index> is the card's position among all AMD
+# cards (the rocm-smi/amd-smi GPU index). An integrated GPU next to a
+# discrete AMD GPU is left out: llama.cpp's default device list holds the
+# discrete GPUs and uses integrated ones only when there is none, so a
+# desktop Ryzen's 2-CU Radeon must not count as a second inference GPU.
+# An APU on its own (Strix Halo) is kept.
+amd_inference_card_dirs() {
+    local drm_sys="${ODS_DRM_SYS:-/sys/class/drm}" card_dir vendor idx=0 discrete=0
+    local cards=() kept=()
+    for card_dir in "$drm_sys"/card*/device; do
+        [[ -d "$card_dir" ]] || continue
+        # A card without a readable vendor ID is not one ODS can use.
+        vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
+        [[ "$vendor" == "0x1002" ]] && cards+=("$card_dir")
+    done
+    if [[ ${#cards[@]} -gt 1 ]]; then
+        mapfile -t cards < <(_amd_sort_card_dirs "${cards[@]}")
+    fi
+    for card_dir in "${cards[@]}"; do
+        amd_card_is_integrated "$card_dir" || discrete=$((discrete + 1))
+    done
+    for card_dir in "${cards[@]}"; do
+        if [[ "$discrete" -eq 0 ]] || ! amd_card_is_integrated "$card_dir"; then
+            kept+=("${idx}"$'\t'"${card_dir}")
+        fi
+        idx=$((idx + 1))
+    done
+    [[ ${#kept[@]} -eq 0 ]] || printf '%s\n' "${kept[@]}"
 }
 
 amd_memory_type() {
@@ -384,19 +455,27 @@ _sysfs_link_type() {
 # Main topology detection
 # ============================================================================
 
+# Print the gfx target of every AMD inference GPU (amd_inference_card_dirs),
+# one per line, in DRM card order. Works for a single GPU too;
+# detect_amd_topo() runs only for several. A target that cannot be read
+# prints as "unknown".
+amd_gfx_targets() {
+    local idx card_dir
+    while IFS=$'\t' read -r idx card_dir; do
+        [[ -n "$card_dir" ]] || continue
+        amd_gfx_version "$card_dir" "$idx"
+    done < <(amd_inference_card_dirs)
+}
+
 detect_amd_topo() {
-    # Discover all AMD GPU card dirs (vendor 0x1002)
-    local card_dirs=()
-    local drm_sys="${ODS_DRM_SYS:-/sys/class/drm}"
-    for card_dir in "$drm_sys"/card*/device; do
-        [[ -d "$card_dir" ]] || continue
-        local vendor
-        vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
-        [[ "$vendor" == "0x1002" ]] && card_dirs+=("$card_dir")
-    done
-    if [[ ${#card_dirs[@]} -gt 1 ]]; then
-        mapfile -t card_dirs < <(_amd_sort_card_dirs "${card_dirs[@]}")
-    fi
+    # Discover the AMD inference GPUs (vendor 0x1002; an integrated GPU next
+    # to a discrete one is left out, see amd_inference_card_dirs).
+    local card_dirs=() smi_indices=() _smi_idx _card_dir
+    while IFS=$'\t' read -r _smi_idx _card_dir; do
+        [[ -n "$_card_dir" ]] || continue
+        smi_indices+=("$_smi_idx")
+        card_dirs+=("$_card_dir")
+    done < <(amd_inference_card_dirs)
 
     local gpu_count=${#card_dirs[@]}
     if [[ $gpu_count -eq 0 ]]; then
@@ -414,10 +493,15 @@ detect_amd_topo() {
 
         device_id=$(cat "$card_dir/device" 2>/dev/null | sed 's/^0x//') || device_id="0000"
         vram_bytes=$(cat "$card_dir/mem_info_vram_total" 2>/dev/null) || vram_bytes=0
-        vram_gb=$(awk -v bytes="$vram_bytes" 'BEGIN { printf "%.1f", bytes / 1073741824 }')
+        # LC_ALL=C so the "%.1f" always uses a dot decimal. Without it, a
+        # decimal-comma parent locale (de_DE, fr_FR, ...) makes awk emit e.g.
+        # "24,0", which the `memory_gb: (.[2] | tonumber)` jq conversion below
+        # cannot parse — the whole AMD topology JSON then fails to build.
+        vram_gb=$(LC_ALL=C awk -v bytes="$vram_bytes" 'BEGIN { printf "%.1f", bytes / 1073741824 }')
 
-        uuid=$(amd_gpu_id "$card_dir" "$idx")
-        gfx_ver=$(amd_gfx_version "$card_dir" "$idx")
+        # amd-smi/rocm-smi number every AMD GPU, the left-out iGPU included.
+        uuid=$(amd_gpu_id "$card_dir" "${smi_indices[$idx]}")
+        gfx_ver=$(amd_gfx_version "$card_dir" "${smi_indices[$idx]}")
         render_node=$(amd_render_node "$card_dir")
         name=$(amd_gpu_name "$card_dir" "$device_id")
 
@@ -431,9 +515,8 @@ detect_amd_topo() {
             pcie_width=$(cat "$card_dir/max_link_width" 2>/dev/null | grep -oP '^\d+' || echo "unknown")
 
         # Detect memory type per card
-        local gtt_bytes mem_type
-        gtt_bytes=$(cat "$card_dir/mem_info_gtt_total" 2>/dev/null) || gtt_bytes=0
-        mem_type=$(amd_memory_type "$vram_bytes" "$gtt_bytes")
+        local mem_type
+        mem_type=$(amd_card_memory_type "$card_dir")
 
         gpus_tsv+="${idx}	${name}	${vram_gb}	${pcie_gen}	x${pcie_width}	${uuid}	${gfx_ver}	${render_node}	${mem_type}	${pci_bdf}"$'\n'
         idx=$((idx + 1))

@@ -5,7 +5,9 @@ import contextlib
 import hashlib
 import json
 import logging
+import mmap
 import os
+import platform
 import re
 import shutil
 import stat
@@ -18,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+from anyio import from_thread
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -25,8 +28,8 @@ from pydantic import BaseModel
 from config import (
     ALWAYS_ON_SERVICES, CORE_SERVICE_IDS, DATA_DIR,
     EXTENSION_CATALOG, EXTENSIONS_DIR,
-    EXTENSIONS_LIBRARY_DIR, GPU_BACKEND, SERVICES,
-    USER_EXTENSIONS_DIR,
+    EXTENSIONS_LIBRARY_DIR, GPU_BACKEND, LIBRARY_MANAGEABLE_BUILTINS, SERVICES,
+    USER_EXTENSIONS_DIR, normalize_llm_contract,
 )
 from host_agent_client import (
     AgentClientError,
@@ -50,7 +53,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["extensions"])
 
-_SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+# \Z, not $: "$" also matches before a final newline, which would admit "n8n\n".
+_SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*\Z")
 _MAX_EXTENSION_BYTES = 50 * 1024 * 1024  # 50 MB
 _LIBRARY_RECEIPT = ".ods-library-receipt.json"
 _LIBRARY_RECEIPT_SCHEMA = 1
@@ -263,21 +267,46 @@ def _cleanup_stale_progress() -> None:
             pass
 
 
+def _store_progress(service_id: str, record: dict) -> None:
+    """Replace a service's progress record, never rewriting it in place.
+
+    The host agent replaces the same records and the Extensions page polls
+    them, so a reader sees the old record or the new one. Where the install
+    owner is not UID 1000 this API cannot write the owner's progress
+    directory, and the refusal turned a failed start into an HTTP 500 that
+    also broke Retry (Workstation06, 2026-10-26). The host agent records the
+    outcome of starts and installs itself, so a refusal is logged instead.
+    """
+    progress_dir = Path(DATA_DIR) / "extension-progress"
+    temporary = None
+    try:
+        progress_dir.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(dir=progress_dir, prefix=f".{service_id}-", suffix=".tmp")
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(record, stream)
+        # mkstemp creates 0600; the host agent reads these records as the owner.
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, progress_dir / f"{service_id}.json")
+        temporary = None
+    except PermissionError as exc:
+        logger.warning("Progress record for %s was not written (%s); the host agent records "
+                       "start and install outcomes itself.", service_id, exc)
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
+
+
 def _write_initial_progress(service_id: str) -> None:
     """Write an initial progress file so the UI sees 'installing' immediately."""
-    progress_dir = Path(DATA_DIR) / "extension-progress"
-    progress_dir.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc).isoformat()
-    progress = {
+    _store_progress(service_id, {
         "service_id": service_id,
         "status": "pulling",
         "phase_label": "Starting installation...",
         "error": None,
         "started_at": now,
         "updated_at": now,
-    }
-    progress_file = progress_dir / f"{service_id}.json"
-    progress_file.write_text(json.dumps(progress), encoding="utf-8")
+    })
 
 
 def _write_error_progress(service_id: str, error_msg: str) -> None:
@@ -294,8 +323,25 @@ def _write_error_progress(service_id: str, error_msg: str) -> None:
     data["status"] = "error"
     data["error"] = error_msg
     data["updated_at"] = now
-    progress_file.parent.mkdir(parents=True, exist_ok=True)
-    progress_file.write_text(json.dumps(data), encoding="utf-8")
+    _store_progress(service_id, data)
+
+
+def _write_started_progress(service_id: str) -> None:
+    """Finish the initial receipt after a synchronous start succeeded.
+
+    Retry on an error card restarts an extension that is still selected: the
+    enable route writes the initial receipt and the host starts the service,
+    but nothing completed the receipt. The Extensions page polls until a
+    terminal status, so the card showed "Starting installation..." forever
+    (Strixy, 2026-10-03). A terminal receipt the host wrote itself (a
+    verified one-shot exit) is kept.
+    """
+    progress = _read_progress(service_id)
+    if not progress or progress.get("status") != "pulling":
+        return
+    progress.update(status="started", phase_label="Service started", error=None,
+                    updated_at=datetime.now(timezone.utc).isoformat())
+    _store_progress(service_id, progress)
 
 
 def _has_error_progress(service_id: str) -> bool:
@@ -373,12 +419,9 @@ def _is_one_shot_extension(ext: dict) -> bool:
     return ext.get("port") == 0 and ext.get("startup_check", False) is False
 
 
-_LIBRARY_QUALIFIED_BUILTINS = frozenset({"n8n"})
-
-
 def _qualified_builtin_selection(service_id: str) -> dict:
     """Expose Add controls only for individually qualified built-in services."""
-    if service_id not in _LIBRARY_QUALIFIED_BUILTINS or service_id in ALWAYS_ON_SERVICES:
+    if service_id not in LIBRARY_MANAGEABLE_BUILTINS or service_id in ALWAYS_ON_SERVICES:
         return {}
     directory = EXTENSIONS_DIR / service_id
     if directory.is_symlink() or not directory.is_dir():
@@ -459,12 +502,57 @@ def _opencode_extension_action(action: str) -> dict:
     return {"id": "opencode", "action": action, "state": status.get("state")}
 
 
+def _gpu_compatible(ext: dict) -> bool:
+    """True when this host's GPU backend can run the catalog entry."""
+    gpu_backends = ext.get("gpu_backends", [])
+    return not gpu_backends or "all" in gpu_backends or GPU_BACKEND in gpu_backends
+
+
+# Containers share the host kernel, so this API sees the Docker host's CPU
+# architecture and page size.
+_HOST_ARCH = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine().lower(), platform.machine().lower())
+_HOST_PAGE_SIZE = mmap.PAGESIZE
+
+
+def _host_unsupported_reason(ext: dict) -> str:
+    """Why this host cannot run the entry's image, or "" when it can.
+
+    Some upstream images exist for one CPU architecture, or abort on kernel
+    pages larger than 4 KB; on Workstation06 (arm64, 64 KB pages) they
+    crash-looped after an enable (#8257). Docker Desktop on macOS runs amd64
+    images under Rosetta 2, so architectures do not apply there.
+    """
+    requirements = ext.get("host_requirements")
+    if not isinstance(requirements, dict):
+        return ""
+    name = ext.get("name") or ext.get("id", "This extension")
+    architectures = requirements.get("architectures")
+    if isinstance(architectures, list) and GPU_BACKEND != "apple" and _HOST_ARCH not in architectures:
+        return f"{name}'s image is built for {' and '.join(architectures)} only; this machine is {_HOST_ARCH}."
+    max_page_size = requirements.get("max_page_size")
+    if type(max_page_size) is int and _HOST_PAGE_SIZE > max_page_size:
+        return f"{name}'s image cannot run with this machine's {_HOST_PAGE_SIZE // 1024} KB memory pages."
+    return ""
+
+
+def _service_starting(service) -> bool:
+    """Startup requires declared container health, not a slow/failed HTTP probe."""
+    return (service is not None and service.status in {"down", "degraded"}
+            and getattr(service, "startup_pending", False) is True)
+
+
 def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     """Compute the runtime status of an extension."""
     ext_id = ext["id"]
     if ext_id == "opencode" and ext_id in SERVICES:
         return _opencode_extension_status(services_by_id.get(ext_id))
     one_shot = _is_one_shot_extension(ext)
+
+    # A Library built-in this host's backend cannot run (ComfyUI needs AMD or
+    # NVIDIA) stays incompatible even though other hosts may add it; its
+    # selection and any receipt from a refused attempt are moot here.
+    if ext_id in LIBRARY_MANAGEABLE_BUILTINS and (not _gpu_compatible(ext) or _host_unsupported_reason(ext)):
+        return "incompatible"
 
     # Check for in-flight install operations (progress files take priority)
     progress = _read_progress(ext_id)
@@ -491,9 +579,10 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
             # show "installing". If older, the user likely stopped the
             # container afterwards â€” fall through to normal status logic.
             if not _is_stale(progress.get("updated_at", ""), max_age_seconds=300):
-                # Long-running services still need an observed healthy state.
+                # Long-running services still need an observed healthy state;
+                # a crash loop is a failure, not a slow first health check.
                 svc = services_by_id.get(ext_id)
-                if not (svc and svc.status == "healthy"):
+                if not (svc and (svc.status == "healthy" or getattr(svc, "crash_looping", False))):
                     return "installing"
 
     # The process imported SERVICES before a Library action could have
@@ -507,6 +596,8 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
         svc = services_by_id.get(ext_id)
         if svc and svc.status == "healthy":
             return "enabled"
+        if _service_starting(svc):
+            return "installing"
         if svc and svc.status in {"unhealthy", "degraded"}:
             return "unhealthy"
         return "stopped"
@@ -516,6 +607,8 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
         svc = services_by_id.get(ext_id)
         if svc and svc.status == "healthy":
             return "enabled"
+        if _service_starting(svc):
+            return "installing"
         return "disabled"
 
     # User-installed extension â€” health-based when compose.yaml exists
@@ -528,6 +621,8 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
             svc = services_by_id.get(ext_id)
             if svc and svc.status == "healthy":
                 return "enabled"
+            if _service_starting(svc):
+                return "installing"
             # HTTP 4xx/5xx from the health endpoint is the clearest "container
             # is up but broken" signal â€” surface it as "unhealthy" so the UI
             # can prompt a log check. Timeouts / connection refused / DNS
@@ -539,9 +634,8 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
         if (user_dir / "compose.yaml.disabled").exists():
             return "disabled"
 
-    # GPU incompatibility
-    gpu_backends = ext.get("gpu_backends", [])
-    if gpu_backends and "all" not in gpu_backends and GPU_BACKEND not in gpu_backends:
+    # GPU incompatibility, or an image this host cannot run
+    if not _gpu_compatible(ext) or _host_unsupported_reason(ext):
         return "incompatible"
 
     if ext.get("catalog_source") == "builtin":
@@ -561,7 +655,9 @@ def _llm_contract_for_extension(ext: dict) -> dict | None:
         return service_llm
     catalog_llm = ext.get("llm")
     if isinstance(catalog_llm, dict):
-        return catalog_llm
+        # SERVICES is loaded at process start, before a Library add may enable
+        # a built-in service. Keep the catalog fallback's contract equivalent.
+        return normalize_llm_contract(catalog_llm)
     return None
 
 
@@ -701,11 +797,24 @@ def _is_ods_nvidia_gpu_reservation(entry) -> bool:
 #     directory, which is the ODS install directory (the first -f file), not
 #     the extension's own directory: ./.env there is the owner's secrets and
 #     ./scripts is code the ods CLI runs on the host. An imported recipe may
-#     bind only its own ./data/<id> and ./config/<id>.
+#     bind only its own ./data/<id> and ./config/<id>, and never when <id>
+#     names a folder ODS keeps there itself (_COMPOSE_POLICY_RESERVED_NAMES).
 #   * PyYAML keeps the last of two duplicate keys and Compose refuses them;
 #     the loader refuses them too instead of judging a value Compose never
 #     sees.
 _COMPOSE_POLICY_FALSE = frozenset({"false", "no", "n", "off"})
+# Folders under ./data and ./config that belong to ODS itself, or to a
+# shipped extension whose folder differs from its id. No extension may use
+# one of these names as its id, because ./data/<id> and ./config/<id> are
+# where an extension's own files go.
+_COMPOSE_POLICY_RESERVED_NAMES = frozenset({
+    "auth", "backends", "backups", "config", "config-backups", "data",
+    "extension-progress", "extensions-library", "hermes-auth",
+    "installer-backups", "models", "openclaw", "paperless", "persona",
+    "piper", "pixel", "pixel-chat-results", "pixel-native",
+    "pixel-providers", "remote-provider", "state", "system-tuning",
+    "user-extensions",
+})
 # Top-level keys an extension compose file may declare (plus x-* fields).
 _COMPOSE_POLICY_TOP_LEVEL = frozenset({"services", "volumes", "networks", "version"})
 _COMPOSE_POLICY_TOP_LEVEL_REASONS = {
@@ -767,6 +876,11 @@ _COMPOSE_POLICY_ROOT_UID_RE = re.compile(r"[+-]?[0-9]+")
 _COMPOSE_POLICY_WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:[\\/]|[\\/]{2}")
 _COMPOSE_POLICY_RESERVATION_KEYS = frozenset({"cpus", "memory", "devices"})
 _COMPOSE_POLICY_NETWORK_KEYS = frozenset({"external", "name", "internal", "labels"})
+# Networks docker-compose.base.yml declares for the remote-provider egress
+# boundary. Compose merges every -f file into one project, so an extension
+# that declared or referenced one of these keys would join it and reach the
+# egress or the SSH tunnel. Only built-in LiteLLM joins them.
+_COMPOSE_POLICY_CORE_NETWORKS = frozenset({"remote-provider", "remote-provider-outbound"})
 _COMPOSE_POLICY_VOLUME_KEYS = frozenset({"labels"})
 _COMPOSE_POLICY_MARKER_MAX_BYTES = 524288
 # A Compose file with every alias expanded; ODS's largest is a few hundred
@@ -919,6 +1033,9 @@ def _compose_policy_volume_problems(name, volumes, *, builtin, namespace):
             if not parts or parts[0].startswith(".") or parts in (["data"], ["config"]):
                 problems.append(f"service '{name}' bind-mounts the ODS install directory or its "
                                 f"secrets ('{source}')")
+            elif namespace is not None and namespace in _COMPOSE_POLICY_RESERVED_NAMES:
+                problems.append(f"service '{name}' bind-mounts '{source}', but '{namespace}' "
+                                f"names a folder ODS keeps for itself")
             elif namespace is not None and (len(parts) < 2 or parts[0] not in ("data", "config")
                                             or parts[1] != namespace):
                 problems.append(f"service '{name}' bind-mounts '{source}' outside its own "
@@ -1008,8 +1125,14 @@ def _compose_policy_service_problems(name, service, *, own_services, accelerator
     return problems
 
 
-def _compose_policy_document_problems(data):
-    """Policy problems of the top level: keys, named networks and volumes."""
+def _compose_policy_document_problems(data, *, builtin=False):
+    """Policy problems of the top level: keys, named networks and volumes.
+
+    Also which networks each service joins: an extension may join only the
+    default network or one its own file declares, never an ODS core network.
+    ``builtin`` marks an extension shipped with ODS, which may join core
+    networks that docker-compose.base.yml declares.
+    """
     problems = []
     for key in data:
         if not isinstance(key, str) or not (key in _COMPOSE_POLICY_TOP_LEVEL or key.startswith("x-")):
@@ -1018,7 +1141,22 @@ def _compose_policy_document_problems(data):
     networks = data.get("networks")
     if networks is not None and not isinstance(networks, dict):
         problems.append("top-level networks must be a mapping")
+    declared = set(networks) if isinstance(networks, dict) else set()
+    services = data.get("services")
+    for name, service in (services.items() if isinstance(services, dict) else ()):
+        joined = service.get("networks") if isinstance(service, dict) else None
+        for key in (list(joined) if isinstance(joined, (dict, list)) else ()):
+            if not isinstance(key, str):
+                problems.append(f"service '{name}' lists an invalid network entry")
+            elif key in _COMPOSE_POLICY_CORE_NETWORKS:
+                if not builtin:
+                    problems.append(f"service '{name}' joins ODS core network '{key}'")
+            elif not builtin and key != "default" and key not in declared:
+                problems.append(f"service '{name}' joins network '{key}' that its file does not declare")
     for key, network in (networks.items() if isinstance(networks, dict) else ()):
+        if key in _COMPOSE_POLICY_CORE_NETWORKS:
+            problems.append(f"network '{key}' is reserved for ODS core")
+            continue
         if network is None:
             continue
         if not isinstance(network, dict) or set(network) - _COMPOSE_POLICY_NETWORK_KEYS:
@@ -1136,17 +1274,33 @@ def _scan_compose_content(
         if problems:
             raise HTTPException(status_code=400, detail=f"Extension rejected: {problems[0]}")
 
-    reject(_compose_policy_document_problems(data))
+    reject(_compose_policy_document_problems(data, builtin=builtin))
     services = data.get("services", {})
     if not isinstance(services, dict):
         return
     own_services = {str(name) for name in services}
 
-    for svc_name in services:
+    # Docker DNS answers to container names too, so a container named after a
+    # core service would shadow it for every caller on ods-network.
+    core_container_names = set(CORE_SERVICE_IDS) | {f"ods-{sid}" for sid in CORE_SERVICE_IDS}
+    for svc_name, svc_def in services.items():
         if not skip_name_collision and svc_name in CORE_SERVICE_IDS:
             raise HTTPException(
                 status_code=400,
                 detail=f"Extension rejected: service name '{svc_name}' conflicts with core service",
+            )
+        container_name = svc_def.get("container_name") if isinstance(svc_def, dict) else None
+        if skip_name_collision or container_name is None:
+            continue
+        if not isinstance(container_name, str) or _compose_policy_interpolates(container_name):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Extension rejected: service '{svc_name}' container name must be a literal string",
+            )
+        if container_name.lower() in core_container_names:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Extension rejected: container name '{container_name}' conflicts with core service",
             )
 
     for svc_name, svc_def in services.items():
@@ -1284,7 +1438,7 @@ def _scan_compose_content(
             if isinstance(port, dict):
                 # Dict-form: {target: 80, published: 8080, host_ip: ...}
                 host_ip = port.get("host_ip", "")
-                if port.get("published") and not _host_part_is_loopback(host_ip):
+                if not _host_part_is_loopback(host_ip):
                     raise HTTPException(
                         status_code=400,
                         detail=(
@@ -1384,6 +1538,14 @@ def _fetch_agent_logs(service_id: str, timeout: int) -> str:
     )
 
 
+# Why the host agent refused the last start or stop of each service. Each
+# _call_agent replaces it. _call_agent keeps its boolean contract for its many
+# callers; a failed start reads this, so the extension card shows the host's
+# reason (a host port another program holds, a Hermes route file it could not
+# write) instead of a generic message.
+_agent_refusals: dict[str, str] = {}
+
+
 def _call_agent(action: str, service_id: str) -> bool:
     """Call host agent to start/stop a service. Returns True on success.
 
@@ -1391,6 +1553,7 @@ def _call_agent(action: str, service_id: str) -> bool:
     background retry â€” caller should let the dashboard's progress poll surface
     the eventual outcome). Mirrors _call_agent_install's contract.
     """
+    _agent_refusals.pop(service_id, None)
     try:
         request_agent_json(
             "POST",
@@ -1399,12 +1562,25 @@ def _call_agent(action: str, service_id: str) -> bool:
             timeout=_AGENT_TIMEOUT,
         )
         return True
+    except AgentHTTPError as exc:
+        # The host agent redacts this reason before it answers.
+        _agent_refusals[service_id] = exc.detail[:2000]
+        logger.warning(
+            "Host agent could not %s %s (HTTP %d): %s",
+            action, service_id, exc.status_code, exc.detail,
+        )
+        return False
     except AgentClientError as exc:
         logger.warning(
             "Host agent unreachable at %s â€” fallback to restart_required: %s",
             "shared transport", exc,
         )
         return False
+
+
+def _agent_start_failure(service_id: str, fallback: str) -> str:
+    """The host agent's reason a start just failed, else ``fallback``."""
+    return _agent_refusals.pop(service_id, "") or fallback
 
 
 def _call_agent_invalidate_compose_cache() -> None:
@@ -1550,6 +1726,38 @@ def _call_agent_compose_rename(action: str, service_id: str) -> bool:
         return False
 
 
+def _select_extensions_on_host(
+    action: str, service_ids: list[str],
+    expected_sha256: dict[str, str] | None = None,
+) -> dict:
+    """Ask the host to validate and commit one dependency-safe selection plan."""
+    payload = {"action": action, "service_ids": service_ids}
+    if expected_sha256 is not None:
+        payload["expected_sha256"] = expected_sha256
+    try:
+        result = request_agent_json(
+            "POST", "/v1/extension/select",
+            payload=payload,
+            timeout=_AGENT_TIMEOUT,
+        )
+    except AgentHTTPError as exc:
+        if exc.status_code in (400, 409):
+            raise HTTPException(status_code=409, detail=exc.detail) from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"Host agent could not {action} extension selection: {exc.detail}",
+        ) from exc
+    except AgentClientError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Host agent could not {action} extension selection; check extension status before retrying",
+        ) from exc
+    expected = {"enabled", "already_enabled"} if action == "enable" else {"disabled"}
+    if result.get("action") not in expected or result.get("service_ids") != service_ids:
+        raise HTTPException(status_code=502, detail="Host agent returned an invalid selection result")
+    return result
+
+
 _agent_cache_lock = threading.Lock()
 _agent_cache = {"available": False, "checked_at": 0.0}
 
@@ -1599,7 +1807,7 @@ def _exclusive_file_lock(lock_path: Path):
 
 @contextlib.contextmanager
 def _extensions_lock():
-    """Acquire the global lock for short extension filesystem mutations."""
+    """Serialize extension selection and its dependent lifecycle transitions."""
     with _exclusive_file_lock(_extensions_lock_path()):
         yield
 
@@ -1631,36 +1839,71 @@ def _serialize_extension_operation(func):
     return wrapped
 
 
-def _extensions_lock_candidates() -> list[Path]:
-    data_path = Path(DATA_DIR)
-    return [
-        data_path / ".extensions-lock",
-        data_path / "config" / ".extensions-lock",
-    ]
+def _serialize_extension_group_operation(*, include_dependencies: bool):
+    """Own every service an enable/disable may affect, in template lock order."""
+    def decorate(func):
+        @wraps(func)
+        def wrapped(service_id: str, *args, **kwargs):
+            if not _SERVICE_ID_RE.match(service_id):
+                return func(service_id, *args, **kwargs)
+
+            def operation_ids():
+                with _extensions_lock():
+                    pending = [service_id]
+                    try:
+                        pending.extend(_feature_companions(service_id))
+                    except HTTPException:
+                        # The endpoint retains its normal validation response.
+                        pass
+                    visited = set()
+                    while pending:
+                        target = pending.pop()
+                        if target in visited:
+                            continue
+                        visited.add(target)
+                        if include_dependencies:
+                            try:
+                                pending.extend(_read_direct_deps(target))
+                            except HTTPException:
+                                pass
+                    return sorted(visited)
+
+            for _ in range(3):
+                planned = operation_ids()
+                # Never wait on operation locks while holding the graph lock,
+                # or acquire a dependency after holding its unsorted root.
+                with contextlib.ExitStack() as locks:
+                    for target in planned:
+                        locks.enter_context(_extension_operation_lock(target))
+                    if operation_ids() != planned:
+                        continue
+                    return func(service_id, *args, **kwargs)
+            raise HTTPException(
+                status_code=409,
+                detail="Extension dependencies changed; retry the operation",
+            )
+
+        return wrapped
+    return decorate
 
 
 def _extensions_lock_path() -> Path:
-    last_error: OSError | None = None
-    for lock_path in _extensions_lock_candidates():
-        try:
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            operation_lock_dir = lock_path.parent / ".extension-operation-locks"
-            if operation_lock_dir.is_symlink():
-                raise OSError("Extension operation lock directory is a symlink")
-            operation_lock_dir.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(
-                dir=operation_lock_dir,
-                prefix=".write-probe-",
-            ):
-                pass
-            lock_path.touch(exist_ok=True)
-            if lock_path != Path(DATA_DIR) / ".extensions-lock":
-                logger.warning("extensions lock falling back to %s", lock_path)
-            return lock_path
-        except OSError as exc:
-            last_error = exc
-    assert last_error is not None
-    raise last_error
+    """Use the same canonical lock file as the host selection helper.
+
+    A fallback lock has a different inode, so it cannot serialize Dashboard
+    install/update/uninstall with host CLI selection. If /data is unwritable,
+    reject the mutation instead of proceeding under an unrelated lock.
+    """
+    lock_path = Path(DATA_DIR) / ".extensions-lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    operation_lock_dir = lock_path.parent / ".extension-operation-locks"
+    if operation_lock_dir.is_symlink():
+        raise OSError("Extension operation lock directory is a symlink")
+    operation_lock_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=operation_lock_dir, prefix=".write-probe-"):
+        pass
+    lock_path.touch(exist_ok=True)
+    return lock_path
 
 
 async def _inspect_non_http_user_services(configs: dict, statuses: dict) -> None:
@@ -1680,20 +1923,28 @@ async def _inspect_non_http_user_services(configs: dict, statuses: dict) -> None
             containers = snapshot["containers"]
     except (AgentClientError, ValueError):
         pass
+    from helpers import container_crash_looping  # noqa: PLC0415 - avoid import cycle
+
     for sid, cfg in candidates.items():
         matches = [item for item in containers if isinstance(item, dict) and item.get("service_id") == sid]
         state = "unknown"
+        startup_pending = False
+        crash_looping = False
         # Ambiguous snapshots cannot establish readiness of this extension.
         if len(matches) == 1:
             item = matches[0]
-            if item.get("state") == "running":
+            if container_crash_looping(item):
+                state, crash_looping = "unhealthy", True
+            elif item.get("state") == "running":
                 state = {"healthy": "healthy", "unhealthy": "unhealthy"}.get(item.get("health"), "degraded")
+                startup_pending = item.get("health") == "starting"
             elif item.get("state") in {"exited", "dead", "removing", "created"}:
                 state = "down"
         statuses[sid] = ServiceStatus(
             id=sid, name=cfg.get("name", sid), port=cfg["port"],
             external_port=cfg.get("external_port", cfg["port"]),
             status=state, response_time_ms=None,
+            startup_pending=startup_pending, crash_looping=crash_looping,
         )
 
 
@@ -1704,32 +1955,23 @@ def _current_extension_catalog():
     return merge_local_catalog(installed, EXTENSIONS_LIBRARY_DIR, schema, proposals_only=True)
 
 
-@router.get("/api/webui/selection")
-async def webui_selection(api_key: str = Depends(verify_api_key)):
-    """Expose the installed base-service choice to its Extensions Library tile."""
+def _webui_selection() -> dict:
+    """Read the host-owned base-service choice for Library and templates."""
     try:
-        result = await asyncio.to_thread(request_agent_json, "GET", "/v1/webui/selection", timeout=5)
+        result = request_agent_json("GET", "/v1/webui/selection", timeout=5)
     except AgentClientError:
         raise HTTPException(status_code=503, detail="Open WebUI selection is unavailable") from None
     if (not isinstance(result, dict) or type(result.get("enabled")) is not bool
             or type(result.get("supported")) is not bool):
         raise HTTPException(status_code=502, detail="Open WebUI selection could not be verified")
-    return JSONResponse({"enabled": result["enabled"], "supported": result["supported"]},
-                        headers={"Cache-Control": "no-store"})
+    return {"enabled": result["enabled"], "supported": result["supported"]}
 
 
-@router.post("/api/webui/selection")
-async def enable_webui_from_library(request: Request, api_key: str = Depends(verify_api_key)):
-    """Add WebUI through its dedicated host-owned selection path."""
+def _enable_webui_selection() -> dict:
+    """Use the same verified host action for individual and template adds."""
     try:
-        payload = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid Open WebUI selection") from None
-    if not isinstance(payload, dict) or set(payload) != {"enabled"} or payload["enabled"] is not True:
-        raise HTTPException(status_code=400, detail="Only adding Open WebUI is supported")
-    try:
-        result = await asyncio.to_thread(request_agent_json, "POST", "/v1/webui/selection",
-                                         payload={"enabled": True}, timeout=900)
+        result = request_agent_json("POST", "/v1/webui/selection",
+                                    payload={"enabled": True}, timeout=900)
     except AgentHTTPError as exc:
         code = exc.status_code
         if code == 501:
@@ -1746,6 +1988,34 @@ async def enable_webui_from_library(request: Request, api_key: str = Depends(ver
     if (not isinstance(result, dict) or result.get("enabled") is not True
             or result.get("action") not in {"enabled", "already_selected"}):
         raise HTTPException(status_code=502, detail="Open WebUI result could not be verified")
+    return {"enabled": True, "action": result["action"]}
+
+
+@router.get("/api/webui/selection")
+async def webui_selection(api_key: str = Depends(verify_api_key)):
+    """Expose the installed base-service choice to its Extensions Library tile."""
+    result = await asyncio.to_thread(_webui_selection)
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@router.post("/api/webui/selection")
+async def enable_webui_from_library(request: Request, api_key: str = Depends(verify_api_key)):
+    """Add WebUI through its dedicated host-owned selection path."""
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid Open WebUI selection") from None
+    if not isinstance(payload, dict) or set(payload) != {"enabled"} or payload["enabled"] is not True:
+        raise HTTPException(status_code=400, detail="Only adding Open WebUI is supported")
+    result = await asyncio.to_thread(_enable_webui_selection)
+    # The Library immediately refetches catalog and detail after this action.
+    # Refresh this one cached health row now; the background all-service poll
+    # can otherwise leave a successful Add looking disabled until Refresh.
+    from helpers import refresh_cached_service_status
+    try:
+        await refresh_cached_service_status("open-webui")
+    except Exception:  # noqa: BLE001 - the host action already succeeded
+        logger.warning("Could not refresh Open WebUI health after selection", exc_info=True)
     return JSONResponse({"enabled": True, "action": result["action"]},
                         headers={"Cache-Control": "no-store"})
 
@@ -1827,6 +2097,7 @@ async def extensions_catalog(
         enriched = {
             **ext,
             "status": status,
+            "runtime_starting": status == "installing" and _service_starting(services_by_id.get(ext_id)),
             "installable": installable,
             "source": source,
             "has_data": has_data,
@@ -1838,10 +2109,17 @@ async def extensions_catalog(
         }
         if ext_id == "opencode" and ext_id in SERVICES:
             enriched.update(_opencode_catalog_fields(status))
+        unsupported = _host_unsupported_reason(ext)
+        if unsupported:
+            enriched["incompatible_reason"] = unsupported
         llm_contract = _llm_contract_for_extension(ext)
         if llm_contract is not None:
             enriched["llm"] = llm_contract
         service_config = user_svc_configs.get(ext_id, SERVICES.get(ext_id, {}))
+        if "ui_path" in service_config:
+            enriched["ui_path"] = service_config["ui_path"]
+        if "external_port" in service_config:
+            enriched["external_port"] = service_config["external_port"]
         if service_config.get("public_url"):
             enriched["public_url"] = service_config["public_url"]
         # Surface install-failure reason inline. The progress file already
@@ -1968,7 +2246,26 @@ def _compose_required_variables(extension_dir: Path) -> set[str]:
     return names
 
 
-def _missing_owner_configuration(service_id: str, *, installed: bool, setup_hook_runs: bool) -> tuple[str, list[dict]]:
+# `${NAME:-value}` / `${NAME-value}`: Compose supplies NAME itself when the
+# value is not empty, and that value may already have initialized data.
+_COMPOSE_DEFAULTED_VARIABLE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?-([^}]*)\}")
+
+
+def _compose_defaulted_variables(extension_dir: Path) -> set[str]:
+    """Names the extension's base Compose file gives a non-empty default."""
+    names: set[str] = set()
+    for name in ("compose.yaml", "compose.yaml.disabled"):
+        path = extension_dir / name
+        if path.is_symlink() or not path.is_file():
+            continue
+        for key, default in _COMPOSE_DEFAULTED_VARIABLE_RE.findall(path.read_text(encoding="utf-8")):
+            if default.strip():
+                names.add(key)
+    return names
+
+
+def _missing_owner_configuration(service_id: str, *, installed: bool, setup_hook_runs: bool,
+                                 builtin_dir: Path | None = None) -> tuple[str, list[dict]]:
     """Required settings the owner must supply before ODS starts this extension.
 
     Uses the same definition lookup, declaration rules and presence check as
@@ -1977,6 +2274,10 @@ def _missing_owner_configuration(service_id: str, *, installed: bool, setup_hook
     existing definition may already have initialized data with a Compose
     default, so only the settings its Compose file cannot resolve without are
     requested there. A setup hook that runs first writes its own settings.
+    A built-in (``builtin_dir``) is asked for every missing required setting
+    its Compose file does not give a non-empty default: without one it would
+    start with the setting empty (Brave Search without its API key) or fail
+    Compose for the whole stack.
 
     Presence never depends on the declared formats: an unusable format only
     leaves the dialog without a hint (and the configure endpoint refuses to
@@ -1998,6 +2299,9 @@ def _missing_owner_configuration(service_id: str, *, installed: bool, setup_hook
         if installed and missing:
             enforced = _compose_required_variables(USER_EXTENSIONS_DIR / service_id)
             missing = [field for field in missing if field["key"] in enforced]
+        elif builtin_dir is not None and missing:
+            defaulted = _compose_defaulted_variables(builtin_dir)
+            missing = [field for field in missing if field["key"] not in defaulted]
     except (ValueError, OSError, UnicodeError, yaml.YAMLError):
         return service_id, []
     try:
@@ -2012,10 +2316,10 @@ def _missing_owner_configuration(service_id: str, *, installed: bool, setup_hook
 
 
 def _refuse_missing_owner_configuration(service_id: str, *, installed: bool, setup_hook_runs: bool,
-                                        outcome: str) -> None:
+                                        outcome: str, builtin_dir: Path | None = None) -> None:
     """Fail before any file or container change when required settings are absent."""
     name, missing = _missing_owner_configuration(
-        service_id, installed=installed, setup_hook_runs=setup_hook_runs)
+        service_id, installed=installed, setup_hook_runs=setup_hook_runs, builtin_dir=builtin_dir)
     if not missing:
         return
     keys = [field["key"] for field in missing]
@@ -2213,7 +2517,18 @@ async def extension_install_next(service_id: str, api_key: str = Depends(verify_
         raise HTTPException(status_code=409, detail="Installation state requires inspection") from exc
 
 
-async def chat_extension_request_context(owner, chat_id, request_id, command, *, include_evidence=False):
+async def rollback_chat_extension_request(owner, chat_id, request_id, preparation):
+    from extension_requests import rollback_prepared_request
+
+    def rollback():
+        with _extensions_lock():
+            rollback_prepared_request(_extensions_lock_path().parent.resolve() / '.extension-requests',
+                                      owner, chat_id, request_id, preparation)
+    await asyncio.to_thread(rollback)
+
+
+async def chat_extension_request_context(owner, chat_id, request_id, command, *, include_evidence=False,
+                                         preparation=None):
     """Register routing before inference; recover it from storage on follow-ups."""
     from extension_requests import (active_chat_request, command_repository, create_request,
                                     model_request_context, cancel_request)
@@ -2230,7 +2545,7 @@ async def chat_extension_request_context(owner, chat_id, request_id, command, *,
                 if directory.is_symlink():
                     raise ValueError('Invalid request storage')
                 directory.mkdir(exist_ok=True)
-                current = create_request(directory, owner, chat_id, request_id, command)
+                current = create_request(directory, owner, chat_id, request_id, command, preparation=preparation)
         else:
             # Ordinary chat must not wait on an installation's global lock.
             # Atomic records are routing hints; proposal submission revalidates
@@ -2243,7 +2558,7 @@ async def chat_extension_request_context(owner, chat_id, request_id, command, *,
                 return None  # Unavailable hints must not break ordinary chat.
             if current and isinstance(command, str) and command.lstrip().startswith('/'):
                 with _extensions_lock():
-                    cancel_request(directory, owner, chat_id, current['requestId'])
+                    cancel_request(directory, owner, chat_id, current['requestId'], preparation=preparation)
                 return None
         if not current or current['state'] != 'pending':
             return None
@@ -2777,7 +3092,8 @@ async def _validated_github_recipe(candidate, api_key, *, replacing=None):
         schema_path = EXTENSIONS_DIR.parent / "schema" / "service-manifest.v1.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         catalog = await extensions_catalog(api_key=api_key)
-        reserved = set(CORE_SERVICE_IDS) | {entry['id'] for entry in catalog['extensions']}
+        reserved = (set(CORE_SERVICE_IDS) | _COMPOSE_POLICY_RESERVED_NAMES
+                    | {entry['id'] for entry in catalog['extensions']})
         roots = (USER_EXTENSIONS_DIR, EXTENSIONS_DIR, EXTENSIONS_LIBRARY_DIR)
         for root in roots:
             if root.is_symlink():
@@ -3269,11 +3585,15 @@ async def extension_detail(
         "description": ext.get("description", ""),
         "status": status,
         "error_message": error_message,
+        "incompatible_reason": _host_unsupported_reason(ext) or None,
+        "runtime_starting": status == "installing" and _service_starting(services_by_id.get(service_id)),
         "source": source,
         "installable": installable,
         **_qualified_builtin_selection(service_id),
         "llm": llm_contract,
         "public_url": public_url,
+        "ui_path": service_config.get("ui_path", ext.get("ui_path", "/")),
+        "external_port": service_config.get("external_port", ext.get("external_port_default", ext.get("port"))),
         "integration": integration,
         "manifest": manifest,
         "env_vars": ext.get("env_vars", []),
@@ -3434,10 +3754,10 @@ def _scan_installed_compose(service_id: str, ext_dir: Path, compose_path: Path, 
 
     Built-in extensions legitimately declare their own service name in their
     compose file, so skip the CORE_SERVICE_IDS name-collision check for them.
-    User extensions still get the full anti-shadowing scan. Some built-ins
+    User extensions still get the full anti-shadowing scan. A built-in may
     also legitimately need `user: "0:0"` to perform init-time chown before
-    dropping privileges via setpriv (e.g. openclaw), so skip the root-user
-    check for built-ins only. The `trusted` flag is separate: a curated
+    dropping privileges via setpriv, so skip the root-user check for
+    built-ins only. The `trusted` flag is separate: a curated
     library recipe keeps install's privileges (local `build:`, the
     host-gateway route) only while its installed files still match the
     library recipe it was installed from. When it lost them, a rejection
@@ -3560,7 +3880,9 @@ def _staged_library_extension(service_id: str, dest: Path):
                         'compose': yaml.safe_load(staged_compose.read_text(encoding='utf-8'))}
                     verify_package(staged, candidate)
                     schema = json.loads((EXTENSIONS_DIR.parent / 'schema/service-manifest.v1.json').read_text(encoding='utf-8'))
-                    validation = validate_recipe(candidate, schema, set(CORE_SERVICE_IDS), lambda path: True)
+                    validation = validate_recipe(candidate, schema,
+                                                 set(CORE_SERVICE_IDS) | _COMPOSE_POLICY_RESERVED_NAMES,
+                                                 lambda path: True)
                     if not validation['valid']:
                         raise ValueError('Imported recipe changed')
                 except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError):
@@ -4231,14 +4553,8 @@ def rollback_extension_update(
 
 def _parse_manifest_deps(manifest_path: Path) -> list[str]:
     """Reject unreadable dependency declarations rather than silently dropping them."""
+    svc = _load_dependency_manifest(manifest_path).get("service")
     error = f"Invalid dependency manifest for extension: {manifest_path.parent.name}"
-    try:
-        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    except (yaml.YAMLError, OSError, UnicodeError) as exc:
-        raise HTTPException(status_code=400, detail=error) from exc
-    if not isinstance(manifest, dict):
-        raise HTTPException(status_code=400, detail=error)
-    svc = manifest.get("service")
     if not isinstance(svc, dict):
         raise HTTPException(status_code=400, detail=error)
     depends_on = svc.get("depends_on", [])
@@ -4248,6 +4564,65 @@ def _parse_manifest_deps(manifest_path: Path) -> list[str]:
     ):
         raise HTTPException(status_code=400, detail=error)
     return list(dict.fromkeys(depends_on))
+
+
+def _load_dependency_manifest(manifest_path: Path) -> dict:
+    """Read one bounded, non-symlink manifest document."""
+    error = f"Invalid dependency manifest for extension: {manifest_path.parent.name}"
+    try:
+        if not stat.S_ISREG(manifest_path.lstat().st_mode):
+            raise ValueError("invalid dependency manifest file")
+        descriptor = os.open(
+            manifest_path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
+        with os.fdopen(descriptor, "rb") as stream:
+            selected = os.fstat(stream.fileno())
+            if not stat.S_ISREG(selected.st_mode) or selected.st_size > 1024 * 1024:
+                raise ValueError("invalid dependency manifest file")
+            raw = stream.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("oversize dependency manifest")
+        content = raw.decode("utf-8")
+        manifest = (json.loads(content) if manifest_path.suffix == ".json"
+                    else yaml.safe_load(content))
+    except (json.JSONDecodeError, yaml.YAMLError, OSError, UnicodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=error) from exc
+    if not isinstance(manifest, dict):
+        raise HTTPException(status_code=400, detail=error)
+    return manifest
+
+
+def _feature_companions(service_id: str) -> list[str]:
+    """Qualified built-ins a feature needs running alongside service_id.
+
+    A feature's manifest lists every service it runs on
+    (``enabled_services_all``). Hermes Agent is reachable only through
+    hermes-proxy, so adding Hermes from the Extensions page must add its
+    proxy too, or the owner has nothing to open. Only Library-manageable
+    built-ins can be companions; core services stay ODS-managed.
+    """
+    if service_id not in LIBRARY_MANAGEABLE_BUILTINS:
+        return []
+    for name in ("manifest.yaml", "manifest.yml", "manifest.json"):
+        candidate = EXTENSIONS_DIR / service_id / name
+        try:
+            candidate.lstat()
+        except FileNotFoundError:
+            continue
+        features = _load_dependency_manifest(candidate).get("features") or []
+        break
+    else:
+        return []
+    companions: list[str] = []
+    for feature in features if isinstance(features, list) else []:
+        members = feature.get("enabled_services_all") if isinstance(feature, dict) else None
+        for member in members if isinstance(members, list) else []:
+            if (isinstance(member, str) and member != service_id
+                    and member in LIBRARY_MANAGEABLE_BUILTINS
+                    and member not in ALWAYS_ON_SERVICES and member not in companions):
+                companions.append(member)
+    return companions
 
 
 def _read_direct_deps(service_id: str) -> list[str]:
@@ -4262,10 +4637,18 @@ def _read_direct_deps(service_id: str) -> list[str]:
         ext_dir = base / service_id
         if not ext_dir.is_dir():
             continue
-        for name in ("manifest.yaml", "manifest.yml"):
+        for name in ("manifest.yaml", "manifest.yml", "manifest.json"):
             candidate = ext_dir / name
-            if candidate.exists():
-                return _parse_manifest_deps(candidate)
+            try:
+                candidate.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid dependency manifest for extension: {service_id}",
+                ) from exc
+            return _parse_manifest_deps(candidate)
         return []
     return []
 
@@ -4311,9 +4694,9 @@ def _get_missing_deps_transitive(
     for dep in _read_direct_deps(service_id):
         if dep in _order:
             continue  # already queued from another branch
-        # An enabled service can still have a disabled dependency: disable
-        # warns about dependents but permits the operation. Walk its subtree
-        # before deciding whether this service itself needs activation.
+        # An enabled service can still have a disabled dependency after an
+        # older install or an out-of-band change. Walk its subtree before
+        # deciding whether this service itself needs activation.
         _get_missing_deps_transitive(
             dep, _visiting=_visiting, _order=_order, _visited=_visited,
         )
@@ -4339,8 +4722,35 @@ def _imported_extension_namespace(service_id: str, ext_dir: Path, is_builtin: bo
     return service_id
 
 
+_SELECTION_COMPOSE_MAX_BYTES = 1024 * 1024
+
+
+def _selection_compose_sha256(path: Path) -> str:
+    """Hash bounded regular Compose bytes without following a final symlink."""
+    try:
+        before = path.lstat()
+        if stat.S_ISLNK(before.st_mode):
+            raise HTTPException(status_code=400, detail="Compose file is a symlink")
+        if not stat.S_ISREG(before.st_mode) or before.st_size > _SELECTION_COMPOSE_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="Invalid selected Compose file")
+        descriptor = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
+        with os.fdopen(descriptor, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(opened.st_mode)
+                    or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+                raise ValueError("Compose file changed while opening")
+            raw = stream.read(_SELECTION_COMPOSE_MAX_BYTES + 1)
+        if len(raw) > _SELECTION_COMPOSE_MAX_BYTES:
+            raise ValueError("Compose file exceeds selection size limit")
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=f"Compose selection changed; retry: {exc}") from exc
+    return hashlib.sha256(raw).hexdigest()
+
+
 def _activate_service(service_id: str) -> dict:
-    """Core enable logic â€” NO lock acquisition. Called inside _extensions_lock.
+    """Validate and plan one activation without moving its Compose marker.
 
     Checks both USER_EXTENSIONS_DIR (user-installed) and EXTENSIONS_DIR
     (built-in) so templates can enable built-in extensions like n8n, tts, etc.
@@ -4354,36 +4764,29 @@ def _activate_service(service_id: str) -> dict:
     enabled_compose = ext_dir / "compose.yaml"
 
     # Already enabled â€” skip silently (idempotent for dep chains)
-    if enabled_compose.exists():
-        return {"id": service_id, "action": "already_enabled"}
-
-    if not disabled_compose.exists():
+    already_enabled = enabled_compose.exists() or enabled_compose.is_symlink()
+    compose_path = enabled_compose if already_enabled else disabled_compose
+    if not compose_path.exists() and not compose_path.is_symlink():
         raise HTTPException(
             status_code=404, detail=f"Extension has no compose file: {service_id}",
         )
 
-    # Re-scan compose content (TOCTOU prevention).
+    # Bind the policy scan to the same bytes that the host will check under
+    # its selection lock. This also covers an already-enabled dependency.
+    before_sha256 = _selection_compose_sha256(compose_path)
     is_builtin = ext_dir.is_relative_to(EXTENSIONS_DIR.resolve())
-    _scan_installed_compose(service_id, ext_dir, disabled_compose, is_builtin=is_builtin)
+    _scan_installed_compose(service_id, ext_dir, compose_path, is_builtin=is_builtin)
+    after_sha256 = _selection_compose_sha256(compose_path)
+    if before_sha256 != after_sha256:
+        raise HTTPException(status_code=409, detail="Compose file changed during validation; retry")
 
-    # Reject symlinks
-    st = os.lstat(disabled_compose)
-    if stat.S_ISLNK(st.st_mode):
-        raise HTTPException(
-            status_code=400, detail="Compose file is a symlink",
-        )
-
-    # Built-in extensions live on a :ro mount â€” delegate rename to host agent
-    if is_builtin:
-        if not _call_agent_compose_rename("activate", service_id):
-            raise HTTPException(
-                status_code=502,
-                detail=f"Host agent failed to activate extension: {service_id}",
-            )
-    else:
-        os.rename(str(disabled_compose), str(enabled_compose))
-    logger.info("Enabled extension (activate): %s", service_id)
-    return {"id": service_id, "action": "enabled"}
+    # The caller sends the complete dependency chain to the host in one
+    # selection transaction. A direct rename here could race the host CLI.
+    return {
+        "id": service_id,
+        "action": "already_enabled" if already_enabled else "enabled",
+        "sha256": after_sha256,
+    }
 
 
 def _failed_dependency_starts(service_id: str, failed: set[str], seen=None) -> list[str]:
@@ -4402,8 +4805,78 @@ def _failed_dependency_starts(service_id: str, failed: set[str], seen=None) -> l
     return list(dict.fromkeys(blockers))
 
 
+# The agent resolves Compose and inspects the images before it answers.
+_PREPARE_AGENT_TIMEOUT = 120
+
+
+def _enable_plan_companions(service_id: str, missing_deps: list[str]) -> list[str]:
+    """Feature companions an enable of ``service_id`` starts after it."""
+    return [
+        companion for companion in _feature_companions(service_id)
+        if companion not in missing_deps and not _is_dep_satisfied(companion)
+        and set(_get_missing_deps_transitive(companion)) <= set(missing_deps) | {service_id}
+    ]
+
+
+@router.post("/api/extensions/{service_id}/prepare")
+def prepare_extension_images(
+    service_id: str,
+    auto_enable_deps: bool = Query(False),
+    api_key: str = Depends(verify_api_key),
+):
+    """Download the images an enable will need, before anything is selected.
+
+    A first download can take far longer on a slow link than an enable request
+    may stay open. The Extensions page calls this first and follows the
+    download through /progress; the enable that follows starts from local
+    images. Answers 200 when every image is already here, 202 while they
+    download. Library recipes prepare their images in their own install.
+    """
+    _validate_service_id(service_id)
+    if service_id == "opencode" and service_id in SERVICES:
+        # A host application with no images: its enable starts the host service.
+        return JSONResponse({"status": "ready", "service_ids": []})
+    if service_id == "open-webui":
+        plan = ["open-webui"]
+    else:
+        _assert_not_core(service_id)
+        entry = next((e for e in EXTENSION_CATALOG if e.get("id") == service_id), {})
+        if service_id in LIBRARY_MANAGEABLE_BUILTINS and not _gpu_compatible(entry):
+            raise HTTPException(
+                status_code=409,
+                detail=f"{entry.get('name', service_id)} is not available on this hardware.",
+            )
+        unsupported = _host_unsupported_reason(entry)
+        if unsupported:
+            raise HTTPException(status_code=409, detail=unsupported)
+        bundled = EXTENSIONS_DIR.resolve()
+        if not _resolve_extension_dir(service_id).is_relative_to(bundled):
+            raise HTTPException(status_code=400, detail="Only services shipped with ODS prepare images ahead of enabling")
+        missing_deps = _get_missing_deps_transitive(service_id) if auto_enable_deps else []
+        companions = _enable_plan_companions(service_id, missing_deps)
+        # A dependency installed from the Library pulls its own image when it starts.
+        plan = [svc for svc in (*missing_deps, service_id, *companions)
+                if _resolve_extension_dir(svc).is_relative_to(bundled)]
+    try:
+        result = request_agent_json(
+            "POST", "/v1/extension/prepare-images",
+            payload={"service_ids": plan, "progress_id": service_id},
+            timeout=_PREPARE_AGENT_TIMEOUT,
+        )
+    except AgentHTTPError as exc:
+        if exc.status_code == 409:
+            raise HTTPException(status_code=409, detail="This extension is being changed; wait for that to finish") from None
+        raise HTTPException(status_code=502, detail="ODS could not prepare this extension's images") from None
+    except AgentClientError:
+        raise HTTPException(status_code=503, detail="Host agent unavailable") from None
+    if not isinstance(result, dict) or result.get("status") not in {"ready", "accepted"}:
+        raise HTTPException(status_code=502, detail="Image preparation could not be verified")
+    return JSONResponse({"status": result["status"], "service_ids": plan},
+                        status_code=202 if result["status"] == "accepted" else 200)
+
+
 @router.post("/api/extensions/{service_id}/enable")
-@_serialize_extension_operation
+@_serialize_extension_group_operation(include_dependencies=True)
 def enable_extension(
     service_id: str,
     auto_enable_deps: bool = Query(False),
@@ -4415,6 +4888,19 @@ def enable_extension(
         # Start never triggers a download. Owners can select Install explicitly.
         return _opencode_extension_action("start")
     _assert_not_core(service_id)
+    # The Compose resolver leaves a built-in out of the stack on an unsupported
+    # backend, so enabling it would only fail at start with a generic error.
+    entry = next((e for e in EXTENSION_CATALOG if e.get("id") == service_id), {})
+    if service_id in LIBRARY_MANAGEABLE_BUILTINS and not _gpu_compatible(entry):
+        backends = ", ".join(backend.upper() for backend in entry["gpu_backends"])
+        raise HTTPException(
+            status_code=409,
+            detail=f"{entry.get('name', service_id)} needs one of these GPU backends: {backends}. "
+                   "It is not available on this hardware.",
+        )
+    unsupported = _host_unsupported_reason(entry)
+    if unsupported:
+        raise HTTPException(status_code=409, detail=unsupported)
 
     ext_dir = _resolve_extension_dir(service_id)
 
@@ -4428,6 +4914,10 @@ def enable_extension(
         _refuse_missing_owner_configuration(
             service_id, installed=True, setup_hook_runs=_has_error_progress(service_id),
             outcome="started")
+    elif ext_dir.is_relative_to(EXTENSIONS_DIR.resolve()):
+        _refuse_missing_owner_configuration(
+            service_id, installed=False, setup_hook_runs=False, outcome="started",
+            builtin_dir=ext_dir)
 
     already_enabled = enabled_compose.exists()
     # A stopped target still needs the same dependency preflight as a disabled
@@ -4467,30 +4957,59 @@ def enable_extension(
                     dep, installed=True, setup_hook_runs=_has_error_progress(dep),
                     outcome="started")
 
+    # Feature companions start after the target in the same plan (Hermes
+    # Agent with its hermes-proxy). A companion whose own dependencies this
+    # plan does not satisfy stays off instead of failing the request.
+    companions = _enable_plan_companions(service_id, missing_deps)
+
     enabled_services: list[str] = []
+    expected_sha256: dict[str, str] = {}
 
     with _extensions_lock():
+        # Dependency selection can change while this request waits for the
+        # Dashboard lock. Reject a stale local plan; the host rechecks the
+        # desired graph under the CLI lock before moving any marker.
+        if _get_missing_deps_transitive(service_id) != missing_deps:
+            raise HTTPException(
+                status_code=409,
+                detail="Dependency selection changed; retry enabling this extension.",
+            )
+
         # Auto-enable missing deps first (already in dependency order â€” leaves first)
         if missing_deps and auto_enable_deps:
             for dep in missing_deps:
                 _validate_service_id(dep)
                 result = _activate_service(dep)
-                if result.get("action") == "enabled":
+                if result.get("action") in ("enabled", "already_enabled"):
                     enabled_services.append(dep)
+                    expected_sha256[dep] = result["sha256"]
 
         # Enable the target service
         result = _activate_service(service_id)
         if result.get("action") in ("enabled", "already_enabled"):
             enabled_services.append(service_id)
+            expected_sha256[service_id] = result["sha256"]
 
-        # Invalidate .compose-flags cache so ods-cli picks up the new enabled set
-        if enabled_services:
-            _call_agent_invalidate_compose_cache()
+        for companion in companions:
+            result = _activate_service(companion)
+            if result.get("action") in ("enabled", "already_enabled"):
+                enabled_services.append(companion)
+                expected_sha256[companion] = result["sha256"]
+
+    # The host validates the complete desired graph and commits all marker
+    # moves under the CLI's shared lock before any service is started.
+    # Avoid holding the Dashboard's container lock across this host RPC.
+    if enabled_services:
+        _select_extensions_on_host(
+            "enable", enabled_services, expected_sha256=expected_sha256,
+        )
 
     # Start all enabled services via agent (outside lock)
     agent_ok = True
     warnings: list[str] = []
     failed_services: list[str] = []
+    # The host agent's reason a start was refused, by service.
+    start_failures: dict[str, str] = {}
     for svc_id in enabled_services:
         blocked_deps = _failed_dependency_starts(svc_id, set(failed_services))
         if blocked_deps:
@@ -4507,10 +5026,13 @@ def enable_extension(
             if not _call_agent("start", svc_id):
                 agent_ok = False
                 failed_services.append(svc_id)
-                _write_error_progress(
+                start_failures[svc_id] = _agent_start_failure(
                     svc_id,
                     "Host agent failed to start extension. Run 'ods restart' to recover.",
                 )
+                _write_error_progress(svc_id, start_failures[svc_id])
+            else:
+                _write_started_progress(svc_id)
             continue
         # pre_start failure is terminal for this service â€” do not start it
         if not _call_agent_hook(svc_id, "pre_start"):
@@ -4524,7 +5046,9 @@ def enable_extension(
         if not _call_agent("start", svc_id):
             agent_ok = False
             failed_services.append(svc_id)
-            _write_error_progress(svc_id, "Host agent failed to start extension.")
+            start_failures[svc_id] = _agent_start_failure(
+                svc_id, "Host agent failed to start extension.")
+            _write_error_progress(svc_id, start_failures[svc_id])
             continue
         # post_start is non-terminal â€” log failure but don't fail the enable
         if not _call_agent_hook(svc_id, "post_start"):
@@ -4532,6 +5056,15 @@ def enable_extension(
             warnings.append(
                 f"{svc_id}: post_start hook failed â€” manual configuration may be needed",
             )
+
+    # FastAPI runs this sync endpoint in an AnyIO worker. Observe on the app
+    # loop, which owns the HTTP clients, while retaining the operation locks.
+    # User recipes are already probed live by catalog/detail.
+    started_builtins = [sid for sid in enabled_services
+                        if sid in LIBRARY_MANAGEABLE_BUILTINS and sid not in failed_services]
+    if started_builtins:
+        from helpers import refresh_cached_builtin_services
+        from_thread.run(refresh_cached_builtin_services, started_builtins)
 
     logger.info("Enabled extension: %s (deps: %s)", service_id,
                 enabled_services[:-1] if len(enabled_services) > 1 else "none")
@@ -4544,40 +5077,173 @@ def enable_extension(
         "warnings": warnings,
         "message": (
             "Extension enabled and started." if agent_ok
-            else "Extension enabled. Run 'ods restart' to start."
+            else _enable_start_failure_message(failed_services, start_failures)
         ),
     }
+
+
+_GENERIC_START_FAILURES = frozenset({
+    "Host agent failed to start extension.",
+    "Host agent failed to start extension. Run 'ods restart' to recover.",
+})
+
+
+def _enable_start_failure_message(failed: list[str], reasons: dict[str, str]) -> str:
+    """Name the first start the host agent refused, with its reason.
+
+    A refusal (for example a state folder the agent will not repair while
+    the container runs) names its own remedy, which a restart would not
+    fix. Other failures keep the restart advice.
+    """
+    for service in failed:
+        reason = reasons.get(service, "")
+        if reason and reason not in _GENERIC_START_FAILURES:
+            return f"Extension enabled, but {service} did not start: {reason}"
+    return "Extension enabled. Run 'ods restart' to start."
+
+
+_DEPENDENCY_COMPOSE_MAX_BYTES = 1024 * 1024
+
+
+def _selected_compose_dependencies(compose_path: Path) -> set[str]:
+    """Read active Compose dependencies without trusting manifest completeness."""
+    try:
+        if compose_path.is_symlink():
+            raise ValueError("symlink")
+        descriptor = os.open(
+            compose_path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
+        with os.fdopen(descriptor, "rb") as stream:
+            selected = os.fstat(stream.fileno())
+            if not stat.S_ISREG(selected.st_mode) or selected.st_size > _DEPENDENCY_COMPOSE_MAX_BYTES:
+                raise ValueError("invalid active Compose file")
+            raw = stream.read(_DEPENDENCY_COMPOSE_MAX_BYTES + 1)
+        if len(raw) > _DEPENDENCY_COMPOSE_MAX_BYTES:
+            raise ValueError("oversize active Compose file")
+        document = _compose_policy_load(raw.decode("utf-8"))
+        services = document.get("services") if isinstance(document, dict) else None
+        if not isinstance(services, dict):
+            raise ValueError("missing Compose services")
+        dependencies: set[str] = set()
+        for definition in services.values():
+            if not isinstance(definition, dict):
+                raise ValueError("invalid Compose service")
+            declared = definition.get("depends_on", [])
+            if isinstance(declared, list):
+                names = declared
+            elif isinstance(declared, dict):
+                if any(not isinstance(value, dict) for value in declared.values()):
+                    raise ValueError("invalid Compose dependency mapping")
+                names = declared.keys()
+            else:
+                raise ValueError("invalid Compose dependencies")
+            for name in names:
+                if not isinstance(name, str) or not name or "$" in name:
+                    raise ValueError("invalid Compose dependency name")
+                dependencies.add(name)
+        return dependencies
+    except (OSError, UnicodeError, ValueError) as exc:
+        logger.warning("Cannot inspect selected Compose dependencies for %s: %s",
+                       compose_path.parent.name, type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail=(f"Cannot inspect enabled dependencies for {compose_path.parent.name}; "
+                    "no service was disabled"),
+        ) from exc
 
 
 def _enabled_dependents(service_id: str) -> list[str]:
     """Return currently-enabled extensions that declare a dependency on service_id.
 
-    Scans user and built-in extensions; user dirs shadow built-ins of the same
-    id, mirroring _resolve_extension_dir. Only enabled peers (compose.yaml
-    present) count: a disabled dependent is unaffected, while an enabled one is
-    left pointing at a service the merged compose project no longer defines.
+    Scan every enabled user and built-in fragment: the Compose resolver can
+    select a bundled fragment even when an incomplete or disabled same-name
+    user directory exists. Only enabled peers (compose.yaml present) count.
     """
     dependents: list[str] = []
-    seen_peers: set[str] = set()
     for base in (USER_EXTENSIONS_DIR, EXTENSIONS_DIR):
         try:
-            peer_dirs = list(base.iterdir()) if base.is_dir() else []
-        except OSError:
+            if not stat.S_ISDIR(base.lstat().st_mode):
+                raise ValueError("extension root is not a directory")
+            peer_dirs = list(base.iterdir())
+        except FileNotFoundError:
             continue
+        except (OSError, ValueError) as exc:
+            logger.warning("Cannot inspect enabled extension dependencies under %s: %s", base, type(exc).__name__)
+            raise HTTPException(
+                status_code=503,
+                detail="Cannot inspect enabled extension dependencies; no service was disabled",
+            ) from exc
         for peer_dir in peer_dirs:
-            if (not peer_dir.is_dir() or peer_dir.name == service_id
-                    or peer_dir.name in seen_peers):
+            if peer_dir.name == service_id:
                 continue
-            seen_peers.add(peer_dir.name)
-            if not (peer_dir / "compose.yaml").exists():
+            try:
+                peer_stat = peer_dir.lstat()
+            except FileNotFoundError:
                 continue
-            if service_id in _read_direct_deps(peer_dir.name):
+            except OSError as exc:
+                logger.warning("Cannot inspect extension peer %s: %s", peer_dir.name, type(exc).__name__)
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Cannot inspect enabled dependencies for {peer_dir.name}; no service was disabled",
+                ) from exc
+            if stat.S_ISLNK(peer_stat.st_mode):
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Cannot inspect enabled dependencies for {peer_dir.name}; no service was disabled",
+                )
+            if not stat.S_ISDIR(peer_stat.st_mode):
+                continue
+            compose_path = peer_dir / "compose.yaml"
+            try:
+                selected = compose_path.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logger.warning("Cannot inspect selected Compose file for %s: %s",
+                               peer_dir.name, type(exc).__name__)
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Cannot inspect enabled dependencies for {peer_dir.name}; no service was disabled",
+                ) from exc
+            if not stat.S_ISREG(selected.st_mode):
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Cannot inspect enabled dependencies for {peer_dir.name}; no service was disabled",
+                )
+            declared: set[str] = set()
+            for name in ("manifest.yaml", "manifest.yml", "manifest.json"):
+                manifest_path = peer_dir / name
+                try:
+                    manifest_stat = manifest_path.lstat()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Cannot inspect enabled dependencies for {peer_dir.name}; no service was disabled",
+                    ) from exc
+                if not stat.S_ISREG(manifest_stat.st_mode):
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Cannot inspect enabled dependencies for {peer_dir.name}; no service was disabled",
+                    )
+                try:
+                    declared.update(_parse_manifest_deps(manifest_path))
+                except HTTPException as exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Cannot inspect enabled dependencies for {peer_dir.name}; no service was disabled",
+                    ) from exc
+                break
+            declared.update(_selected_compose_dependencies(compose_path))
+            if service_id in declared and peer_dir.name not in dependents:
                 dependents.append(peer_dir.name)
     return dependents
 
 
 @router.post("/api/extensions/{service_id}/disable")
-@_serialize_extension_operation
+@_serialize_extension_group_operation(include_dependencies=False)
 def disable_extension(service_id: str, include_data_info: bool = Query(True), api_key: str = Depends(verify_api_key)):
     """Disable an enabled extension."""
     _validate_service_id(service_id)
@@ -4586,75 +5252,58 @@ def disable_extension(service_id: str, include_data_info: bool = Query(True), ap
     ext_dir = _resolve_extension_dir(service_id)
 
     enabled_compose = ext_dir / "compose.yaml"
-    disabled_compose = ext_dir / "compose.yaml.disabled"
 
     if not enabled_compose.exists():
         raise HTTPException(
             status_code=409, detail=f"Extension already disabled: {service_id}",
         )
 
-    # Check reverse dependents (warn, don't block). Scan user and built-in
-    # extensions â€” user dirs shadow built-ins of the same id, mirroring
-    # _resolve_extension_dir. Only currently-enabled peers (compose.yaml
-    # present) are reported: a disabled dependent is unaffected, while an
-    # enabled one is left pointing at a service the merged compose project
-    # no longer defines, which fails compose config for the whole stack.
-    dependents_warning = _enabled_dependents(service_id)
-
-    # Call agent to stop BEFORE renaming (prevents zombie containers)
-    agent_ok = _call_agent("stop", service_id)
-    if not agent_ok:
-        # Do not rename an extension after a failed stop: uninstall only
-        # accepts disabled definitions, so continuing would make it possible
-        # to delete the definition while its container still serves traffic.
-        logger.error("Could not stop %s via agent; refusing to disable", service_id)
+    # Reject reverse dependents in every enabled Compose fragment. A
+    # same-name user directory does not remove the bundled fragment from the
+    # resolver's selected project.
+    # The host CLI owns the graph-wide lock. Keep this preflight for a useful
+    # error, then let the host recheck it under that lock through stop and
+    # marker change. No container lock is held across the host request.
+    dependents = _enabled_dependents(service_id)
+    # Feature companions Add started with this service (Hermes's
+    # hermes-proxy) stop with it; any other dependent still blocks.
+    companions = [c for c in _feature_companions(service_id) if c in dependents]
+    blocking = [d for d in dependents if d not in companions]
+    for companion in companions:
+        blocking += [d for d in _enabled_dependents(companion)
+                     if d != service_id and d not in companions and d not in blocking]
+    if blocking:
         raise HTTPException(
-            status_code=502,
-            detail=f"Host agent failed to stop extension: {service_id}; extension was not disabled",
+            status_code=409,
+            detail=(f"Cannot disable {service_id}: enabled extensions "
+                    f"{', '.join(blocking)} depend on it. Disable them first."),
         )
-
-    with _extensions_lock():
-        # lstat check inside lock (TOCTOU prevention)
+    try:
         st = os.lstat(enabled_compose)
-        if stat.S_ISLNK(st.st_mode):
-            raise HTTPException(
-                status_code=400, detail="Compose file is a symlink",
-            )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=409, detail=f"Extension selection changed: {service_id}; retry",
+        ) from exc
+    if stat.S_ISLNK(st.st_mode):
+        raise HTTPException(status_code=400, detail="Compose file is a symlink")
 
-        # Built-in extensions live on a :ro mount â€” delegate rename to host agent
-        is_builtin = ext_dir.is_relative_to(EXTENSIONS_DIR.resolve())
-        if is_builtin:
-            if not _call_agent_compose_rename("deactivate", service_id):
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Host agent failed to deactivate extension: {service_id}",
-                )
-        else:
-            os.rename(str(enabled_compose), str(disabled_compose))
-        _call_agent_invalidate_compose_cache()
+    # The host disables one service per request and rechecks dependents each
+    # time, so companions go first.
+    for target in (*companions, service_id):
+        _select_extensions_on_host("disable", [target])
+        # The host clears its own record; this covers an older host agent.
+        _clear_progress(target)
 
-        progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
-        progress_file.unlink(missing_ok=True)
-
-    logger.info("Disabled extension: %s", service_id)
-
-    message = (
-        "Extension disabled and stopped." if agent_ok
-        else "Extension disabled. Run 'ods restart' to apply changes."
-    )
-    if dependents_warning:
-        message = (
-            f"Warning: {', '.join(dependents_warning)} depend on {service_id}. "
-            + message
-        )
+    logger.info("Disabled extension: %s (companions: %s)", service_id, companions or "none")
 
     return {
         "id": service_id,
         "action": "disabled",
-        "restart_required": not agent_ok,
-        "dependents_warning": dependents_warning,
+        "restart_required": False,
+        "companions_disabled": companions,
+        "dependents_warning": [],
         "data_info": _get_service_data_info(service_id) if include_data_info else None,
-        "message": message,
+        "message": "Extension disabled and stopped.",
     }
 
 
@@ -4711,13 +5360,18 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True), 
                     f"({', '.join(dependents)}). Disable them first, then remove {service_id}."
                 ),
             )
-        # Stop BEFORE touching the definition (prevents zombie containers).
-        if not _call_agent("stop", service_id):
-            logger.error("Could not stop failed extension %s via agent; refusing to uninstall", service_id)
-            raise HTTPException(
-                status_code=502,
-                detail=f"Host agent failed to stop extension: {service_id}; extension was not removed",
-            )
+        # The host checks dependents, stops owned containers, and disables the
+        # marker under its graph lock. An independent stop followed by a
+        # Dashboard-side rename could race a CLI selection.
+        try:
+            _select_extensions_on_host("disable", [service_id])
+        except HTTPException as exc:
+            if exc.status_code == 502:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"{exc.detail}; extension was not removed",
+                ) from exc
+            raise
         stopped_before_removal = True
 
     with _extensions_lock():
@@ -4728,19 +5382,13 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True), 
                 status_code=400, detail="Extension directory is a symlink",
             )
 
-        if stopped_before_removal:
-            # Complete the disable step first, so a removal that fails part-way
-            # leaves a disabled definition that the ordinary path can remove.
-            try:
-                os.replace(enabled_compose, ext_dir / "compose.yaml.disabled")
-            except FileNotFoundError:
-                pass
-            except OSError as e:
-                logger.error("Failed to disable extension %s before removal: %s", service_id, e)
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Extension stopped, but its definition could not be disabled: {e}",
-                )
+        # Selection can change after the host RPC and before this lock. The
+        # host CLI uses the same lock, so this check protects the whole delete.
+        if enabled_compose.exists() or enabled_compose.is_symlink():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Extension selection changed: {service_id}; disable it and retry removal",
+            )
 
         try:
             shutil.rmtree(ext_dir)
@@ -4760,8 +5408,7 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True), 
             shutil.rmtree(backup)
         _invalidate_extension_digest_cache(ext_dir, backup)
 
-        progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
-        progress_file.unlink(missing_ok=True)
+        _clear_progress(service_id)
 
     logger.info("Uninstalled extension: %s (stopped first: %s)", service_id, stopped_before_removal)
     message = "Extension uninstalled. Docker volumes may remain; run 'docker volume ls' to check."
@@ -4781,6 +5428,15 @@ class PurgeRequest(BaseModel):
     confirm: bool = False
 
 
+def _is_known_extension(service_id: str) -> bool:
+    """An extension ODS ships, lists in its catalog, or has installed."""
+    if service_id in SERVICES:
+        return True
+    if any(entry.get("id") == service_id for entry in _current_extension_catalog()):
+        return True
+    return (Path(EXTENSIONS_DIR) / service_id).is_dir() or (USER_EXTENSIONS_DIR / service_id).is_dir()
+
+
 @router.delete("/api/extensions/{service_id}/data")
 @_serialize_extension_operation
 def purge_extension_data(
@@ -4794,8 +5450,12 @@ def purge_extension_data(
 
     if service_id in ALWAYS_ON_SERVICES:
         raise HTTPException(status_code=403, detail="Cannot purge always-on service data")
+    if service_id in _COMPOSE_POLICY_RESERVED_NAMES or service_id in CORE_SERVICE_IDS:
+        raise HTTPException(status_code=403, detail=f"data/{service_id} belongs to ODS, not to an extension")
 
     with _extensions_lock():
+        if not _is_known_extension(service_id):
+            raise HTTPException(status_code=404, detail=f"Unknown extension: {service_id}")
         # Check if service is still enabled (built-in or user extension)
         for check_dir in [Path(EXTENSIONS_DIR) / service_id, USER_EXTENSIONS_DIR / service_id]:
             if (check_dir / "compose.yaml").exists():
@@ -4826,8 +5486,7 @@ def purge_extension_data(
         # Also clean up the per-service install-progress file so
         # _compute_extension_status does not keep showing a stale "installing"
         # entry after the user purges an extension's data.
-        progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
-        progress_file.unlink(missing_ok=True)
+        _clear_progress(service_id)
 
         return {"id": service_id, "action": "purged", "size_gb_freed": size_gb}
 
@@ -4844,10 +5503,7 @@ def orphaned_storage(api_key: str = Depends(verify_api_key)):
     # Known system directories that are not service data.  Includes runtime
     # state created outside the installer: extension-progress (this router)
     # and config-backups (host agent's .env backup writer).
-    system_dirs = {
-        "models", "config", "user-extensions", "extensions-library",
-        "extension-progress", "config-backups",
-    }
+    system_dirs = set(_COMPOSE_POLICY_RESERVED_NAMES)
     known_ids = set(SERVICES.keys()) | system_dirs
 
     orphaned = []

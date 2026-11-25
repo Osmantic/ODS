@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {decodeChatImageTurn,nativeHistoryMessages,validateImageRoute} from '../host/chat_image_transport.mjs';
+import {CURRENT_IMAGE_NOTE,currentImageNote,decodeChatImageTurn,nativeHistoryMessages,validateImageRoute} from '../host/chat_image_transport.mjs';
 
 const data=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6ioAAAAASUVORK5CYII=','base64');
 const ref={id:'img-'+'a'.repeat(32),sha256:createHash('sha256').update(data).digest('hex')};
@@ -49,4 +49,15 @@ test('native history preserves retrieval identity without pretending it carries 
   assert.ok(!native.content.includes(data.toString('base64')));
   assert.deepEqual(archive,before);
   assert.deepEqual(nativeHistoryMessages([{role:'assistant',content:'hello'}]),[{role:'assistant',content:'hello'}]);
+});
+
+test('the current turn says its pictures are already in context instead of inviting a fetch',()=>{
+  const note=currentImageNote([{sha256:ref.sha256,id:ref.id}]);
+  assert.ok(note.startsWith(CURRENT_IMAGE_NOTE));
+  assert.match(note,/already in your context/);
+  assert.match(note,/No tool can fetch/);
+  assert.match(note,/never pass their identifiers to web, search, file or shell tools/);
+  assert.equal(note.slice(CURRENT_IMAGE_NOTE.length),JSON.stringify([ref]));
+  assert.ok(!note.includes('if needed'));
+  assert.throws(()=>currentImageNote([{...ref,path:'/tmp/x'}]),/invalid-image-reference/);
 });

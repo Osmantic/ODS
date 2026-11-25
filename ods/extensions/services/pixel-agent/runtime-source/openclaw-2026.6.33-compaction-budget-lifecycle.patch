@@ -1,0 +1,69 @@
+--- selection-BEwSQKM-.js (current reviewed ODS recipe)
++++ selection-BEwSQKM-.js (deferred precheck terminal event)
+@@ -14093,18 +14093,15 @@
+-				if (!beforeAgentFinalizeRevisionReason) runAgentEndSideEffects({
+-					event: {
+-						messages: messagesSnapshot,
+-						success: !aborted && !promptError,
+-						error: promptError ? formatErrorMessage(promptError) : void 0,
+-						durationMs: Date.now() - promptStartedAt
+-					},
+-					ctx: {
+-						runId: params.runId,
+-						trace: freezeDiagnosticTraceContext(diagnosticTrace),
+-						agentId: hookAgentId,
+-						sessionKey: params.sessionKey,
+-						sessionId: params.sessionId,
+-						workspaceDir: params.workspaceDir,
+-						trigger: params.trigger,
+-						...params.config ? { config: params.config } : {},
+-						...buildAgentHookContextChannelFields(params),
+-						...buildAgentHookContextIdentityFields({
++				if (!beforeAgentFinalizeRevisionReason) {
++					const agentEndSideEffects = {
++						event: {
++							messages: messagesSnapshot,
++							success: !aborted && !promptError,
++							error: promptError ? formatErrorMessage(promptError) : void 0,
++							durationMs: Date.now() - promptStartedAt
++						},
++						ctx: {
++							runId: params.runId,
++							trace: freezeDiagnosticTraceContext(diagnosticTrace),
++							agentId: hookAgentId,
++							sessionKey: params.sessionKey,
++							sessionId: params.sessionId,
++							workspaceDir: params.workspaceDir,
+@@ -14112,7 +14109,25 @@
+-							senderId: params.senderId,
+-							chatId: params.chatId,
+-							channelContext: params.channelContext
+-						})
+-					},
+-					hookRunner
+-				});
++							...params.config ? { config: params.config } : {},
++							...buildAgentHookContextChannelFields(params),
++							...buildAgentHookContextIdentityFields({
++								trigger: params.trigger,
++								senderId: params.senderId,
++								chatId: params.chatId,
++								channelContext: params.channelContext
++							})
++						},
++						hookRunner
++					};
++					const emitAgentEnd = () => runAgentEndSideEffects(agentEndSideEffects);
++					// A known pre-provider context precheck is an attempt boundary,
++					// not the terminal outcome of the native recovery loop. Keep its
++					// failure pending until a later attempt ends or recovery exits.
++					if (!aborted && promptErrorSource === "precheck" && promptError && preflightRecovery
++						&& preflightRecovery.source === void 0
++						&& ["compact_only", "compact_then_truncate"].includes(preflightRecovery.route)
++						&& typeof params.deferPreflightAgentEnd === "function") {
++						params.deferPreflightAgentEnd(emitAgentEnd);
++					} else {
++						params.deferPreflightAgentEnd?.();
++						emitAgentEnd();
++					}
++				}

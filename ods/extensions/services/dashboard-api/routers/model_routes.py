@@ -31,7 +31,6 @@ _STRING_FIELDS = {
     "endpointId",
     "path",
     "responseModel",
-    "lemonadeRoute",
     "instanceId",
 }
 _INT_FIELDS = {"routeSeq", "status"}

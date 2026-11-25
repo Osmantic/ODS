@@ -14,6 +14,8 @@ param(
     [switch]$OpenPortal,
     [string]$StateRoot = "",
     [string]$ReportPath = "$env:TEMP\\ods-windows-preflight.json",
+    # Linux flags for a new installation only; a rerun keeps the installed selection.
+    [string[]]$NewInstallationArgs = @(),
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$PassthroughArgs
 )
@@ -222,7 +224,19 @@ if ($lifetimeRequired) {
     try { $null = Start-ODSWslLifetime $lifetimeIdentity } finally { $lifetimeLock.Dispose() }
     Write-Host "ODS WSL lifetime is active independently of this installer window."
     $stateHint = if ($StateRoot) { " -StateRoot `"$StateRoot`"" } else { '' }
-    Write-Host "Lifecycle: powershell -File `"$PSScriptRoot\wsl-lifecycle.ps1`" -Action status|stop|start|restart -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`"$stateHint"
+    Write-Host "Lifecycle: powershell -NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\wsl-lifecycle.ps1`" -Action status|stop|start|restart -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`"$stateHint"
+    # Record, before install-core creates it, whether this root already holds
+    # an installation (every uninstall removes .env, even with --keep-data).
+    & wsl.exe --distribution $Distro --exec /usr/bin/test -e "$($lifetimeIdentity.installRoot)/.env"
+    $newInstallation = $LASTEXITCODE -eq 1
+    # Portal setup's -NewInstallationArgs apply to a new installation only. A
+    # rerun leaves them out, so install-core keeps the owner's current
+    # selection (for example Hermes added from the Extensions Library).
+    if ($newInstallation -and $NewInstallationArgs) {
+        $PassthroughArgs = @($PassthroughArgs | Where-Object { $null -ne $_ }) + @($NewInstallationArgs | Where-Object { $_ -cnotin $PassthroughArgs })
+        $wslCommand = New-ODSWslInstallerCommand $repoRootWsl $PassthroughArgs $lifetimeIdentity.installRoot
+        Write-Host "New installation: the Linux installer also gets $($NewInstallationArgs -join ' ')"
+    }
 }
 
 Write-Section "Running installer in WSL"
@@ -248,10 +262,11 @@ if ($installerExitCode -eq 0 -and $lifetimeRequired -and '--pixel' -cin $Passthr
         Write-Warning 'Pixel/Portal verification failed. ODS is not ready; inspect the reported service or endpoint and rerun the same install command. No Hermes fallback was started.'
     } else {
         # Only a verified installation receives automatic sign-in recovery.
-        # A prior explicit stop preference is preserved across installer reruns.
+        # A prior explicit stop preference is preserved across installer reruns;
+        # a new installation does not inherit the stop its uninstall recorded.
         if ($DockerDesktopPath -or (Test-Path -LiteralPath (Join-Path $lifetimeIdentity.directory 'startup-config.json'))) {
-            Enable-ODSWslStartup $lifetimeIdentity $DockerDesktopPath
-            Write-Host "Durable lifecycle: powershell -File `"$(Join-Path $lifetimeIdentity.directory 'startup.ps1')`" -Action status -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`"$stateHint"
+            Enable-ODSWslStartup $lifetimeIdentity $DockerDesktopPath -NewInstallation:$newInstallation
+            Write-Host "Durable lifecycle: powershell -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $lifetimeIdentity.directory 'startup.ps1')`" -Action status -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`"$stateHint"
         } else {
             Write-Warning 'Use the Windows Portal setup entry point to enable verified sign-in recovery.'
         }
@@ -259,10 +274,19 @@ if ($installerExitCode -eq 0 -and $lifetimeRequired -and '--pixel' -cin $Passthr
     if ($installerExitCode -eq 0 -and $OpenPortal) {
         $portalUrl = @($verifyOutput | ForEach-Object { if ($_ -match '^ODS_PORTAL_URL=(http://localhost:[0-9]{1,5}/pixel)$') { $Matches[1] } } | Select-Object -Last 1)
         if ($portalUrl.Count -eq 1) {
-            $desktopFolder = [Environment]::GetFolderPath('Desktop')
-            if ($desktopFolder) {
-                Set-Content -LiteralPath (Join-Path $desktopFolder 'ODS Portal.url') -Value @('[InternetShortcut]', "URL=$($portalUrl[0])") -Encoding ASCII
-                Write-Host "Created the desktop shortcut 'ODS Portal'."
+            # The ODS app (an Edge app window with the ODS icon), or the
+            # 'ODS Portal' web link when Edge or the shortcut is unavailable.
+            . (Join-Path $PSScriptRoot 'windows/lib/app-shortcut.ps1')
+            $appIcon = Join-Path (Split-Path -Parent $PSScriptRoot) 'extensions/services/dashboard/public/osmantic-os.ico'
+            $shortcuts = @(Publish-ODSPortalShortcut -PortalUrl $portalUrl[0] -IconSource $appIcon)
+            if ($shortcuts.Count -and $lifetimeRequired) {
+                # Uninstall (wsl-lifecycle disable-startup -RetireRelay) removes
+                # exactly these. Like the shortcut itself, never fail the install.
+                try {
+                    Write-ODSWslJson (Join-Path $lifetimeIdentity.directory 'shortcuts.json') @{ shortcuts = @(Get-ODSPortalShortcutRecord $shortcuts) }
+                } catch {
+                    Write-Warning "Uninstall will not remove the ODS shortcuts: their record was not saved: $($_.Exception.Message)"
+                }
             }
             Write-Host "Opening Portal: $($portalUrl[0])"
             Start-Process $portalUrl[0]

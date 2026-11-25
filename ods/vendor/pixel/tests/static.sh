@@ -382,6 +382,9 @@ grep -F 'org.osmantic.pixel.sandbox-uid=$sandbox_uid' scripts/bootstrap.sh >/dev
 grep -F 'ARG PIXEL_SANDBOX_UID=1000' deploy/sandbox/Dockerfile >/dev/null
 # shellcheck disable=SC2016
 grep -F 'LABEL org.osmantic.pixel.sandbox-uid="$PIXEL_SANDBOX_UID"' deploy/sandbox/Dockerfile >/dev/null
+grep -F 'LABEL org.osmantic.pixel.sandbox-node=' deploy/sandbox/Dockerfile >/dev/null
+# shellcheck disable=SC2016
+grep -F 'pixel_prove_sandbox_runtime "$candidate_sandbox_id" "$PIXEL_GENERATED_SANDBOX_NODE_VERSION"' scripts/bootstrap.sh >/dev/null
 # Assert the literal shell variable is absent.
 # shellcheck disable=SC2016
 if grep -F 'tar -C / -czf "$archive"' scripts/backup-private-state.sh; then echo "Private backup writes plaintext" >&2; exit 1; fi

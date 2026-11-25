@@ -52,6 +52,9 @@ test('all registered Pixel schemas compile together, including deferred speciali
   () => compileSchema(combinedToolSchema(registered)));
 
 for (const [tool, samples] of [
+  [registered.find(tool => tool.name === 'pixel_ods_workspace_artifact'),
+    [{relativePath:'report.pdf'}, {relativePath:'project.zip',sourcePath:'Playground/project'},
+      {relativePath:'single.zip',sourcePath:'Playground/main.py'}]],
   [registered.find(tool => tool.name === 'pixel_ods_image_read'), [{id:'img-'+'a'.repeat(32),sha256:'b'.repeat(64)}]],
   [registered.find(tool => tool.name === 'pixel_ods_workspace_bundle'),
     [{files:[{source:'project/source.py',key:'source.py',copyTo:'source.txt'}],mappingPath:'sources.json',outputRoot:'project/public'}]],

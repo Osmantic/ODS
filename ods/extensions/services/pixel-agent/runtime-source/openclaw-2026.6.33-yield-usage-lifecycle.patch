@@ -1,0 +1,13 @@
+--- embedded-agent-CJx-nG3W.js (current reviewed ODS recipe)
++++ embedded-agent-CJx-nG3W.js (deferred precheck terminal event)
+@@ -2837,0 +2838 @@
++			let deferredPreflightAgentEnd;
+@@ -3005,0 +3007 @@
++						deferPreflightAgentEnd: (emit) => { deferredPreflightAgentEnd = emit; },
+@@ -4458,0 +4461,6 @@
++				// Flush a pending precheck failure on every terminal recovery exit,
++				// including thrown errors, aborts and exhausted compaction. A real
++				// later attempt end clears it before publishing its own outcome.
++				const emitPreflightFailure = deferredPreflightAgentEnd;
++				deferredPreflightAgentEnd = void 0;
++				emitPreflightFailure?.();

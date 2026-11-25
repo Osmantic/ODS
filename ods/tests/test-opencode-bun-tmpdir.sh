@@ -7,7 +7,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE="$ROOT_DIR/opencode/opencode-web.service"
-MACOS_INSTALLER="$ROOT_DIR/installers/macos/install-macos.sh"
+MACOS_INSTALLER="$ROOT_DIR/installers/macos/lib/post-pixel-install.sh"
 MACOS_CONSTANTS="$ROOT_DIR/installers/macos/lib/constants.sh"
 WINDOWS_PHASE="$ROOT_DIR/installers/windows/phases/07-devtools.ps1"
 

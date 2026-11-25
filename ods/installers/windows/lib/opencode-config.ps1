@@ -210,7 +210,6 @@ function Sync-WindowsOpenCodeConfigFromEnv {
         [string]$ConfigDir = $script:OPENCODE_CONFIG_DIR,
         [string]$GpuBackend = "",
         [string]$NativeBackend = "",
-        [switch]$UseLemonade,
         [switch]$CloudMode,
         [string]$DefaultModelId = "",
         [string]$DefaultModelName = "",
@@ -221,10 +220,14 @@ function Sync-WindowsOpenCodeConfigFromEnv {
     $_envMap = Get-WindowsODSEnvMap -InstallDir $InstallDir
     $_llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $InstallDir -EnvMap $_envMap `
         -GpuBackend $GpuBackend -NativeBackend $NativeBackend `
-        -UseLemonade:$UseLemonade -CloudMode:$CloudMode
+        -CloudMode:$CloudMode
     $_modelId = Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("GGUF_FILE") -Default $DefaultModelId
     $_modelName = Get-WindowsODSEnvValue -EnvMap $_envMap -Keys @("LLM_MODEL") -Default $DefaultModelName
     $_apiKey = "no-key"
+    if ($_llmEndpoint.ContainsKey("ApiKey") -and -not [string]::IsNullOrWhiteSpace([string]$_llmEndpoint.ApiKey)) {
+        # The native Windows llama-server (AMD) requires its key.
+        $_apiKey = [string]$_llmEndpoint.ApiKey
+    }
     $_providerName = "llama-server (local)"
     # New installers write "enabled" explicitly. Preserve the legacy direct
     # route when this key is absent from an existing installation.

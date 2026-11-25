@@ -87,7 +87,7 @@ else
 fi
 
 # 4. .env with all required keys (minimal) → exit 0
-# Schema required: WEBUI_SECRET, SEARXNG_SECRET, N8N_USER, N8N_PASS, LITELLM_KEY, OPENCLAW_TOKEN
+# Schema required: WEBUI_SECRET, SEARXNG_SECRET, N8N_USER, N8N_PASS, LITELLM_KEY
 # Values must satisfy the schema minLength (10) on these secret keys, so use
 # realistic-length placeholders rather than short tokens like "admin"/"testkey".
 cat > "$TMP_DIR/valid.env" <<'EOF'
@@ -96,7 +96,6 @@ SEARXNG_SECRET=test-searxng-secret
 N8N_USER=admin@ods.local
 N8N_PASS=test-pass-1234
 LITELLM_KEY=sk-test-key-1234
-OPENCLAW_TOKEN=test-openclaw-token
 EOF
 set +e
 "$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/valid.env" "$ROOT_DIR/.env.schema.json" >/dev/null 2>&1
@@ -156,11 +155,10 @@ else
 fi
 
 cat > "$TMP_DIR/missing.env" <<'EOF'
-WEBUI_SECRET=test-secret
-SEARXNG_SECRET=searxsecret
-N8N_USER=admin
-N8N_PASS=testpass
-LITELLM_KEY=testkey
+WEBUI_SECRET=test-webui-secret
+SEARXNG_SECRET=test-searxng-secret
+N8N_USER=admin@ods.local
+N8N_PASS=test-pass-1234
 EOF
 set +e
 out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/missing.env" "$ROOT_DIR/.env.schema.json" 2>&1)
@@ -171,10 +169,58 @@ if [[ $r -eq 2 ]]; then
 else
     fail "Missing required key should yield exit 2, got $r"
 fi
-if echo "$out" | grep -q "Missing required\|OPENCLAW_TOKEN"; then
-    pass "Output mentions missing key or required"
+if echo "$out" | grep -q "Missing required" && echo "$out" | grep -q "LITELLM_KEY"; then
+    pass "Output names the missing required key"
 else
-    pass "Script produced validation output"
+    fail "Output should name the missing required key"
+fi
+
+# 5b. The legacy OpenClaw extension was removed. New installs no longer write
+# its keys, but an older .env that still carries them must keep validating.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/retired-openclaw.env"
+cat >> "$TMP_DIR/retired-openclaw.env" <<'EOF'
+OPENCLAW_TOKEN=test-openclaw-token
+OPENCLAW_PORT=7860
+OPENCLAW_DANGEROUSLY_DISABLE_DEVICE_AUTH=
+OPENCLAW_LLM_URL=
+OPENCLAW_HTTP_API=
+OPENCLAW_CONFIG=openclaw.json
+OPENCLAW_API_KEY=test-key
+BOOTSTRAP_MODEL=qwen3:8b-q4_K_M
+HOST_LAN_IP=192.0.2.10
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/retired-openclaw.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 0 ]]; then
+    pass "Retired legacy OpenClaw keys in an older .env still validate"
+else
+    echo "$out"
+    fail "Retired legacy OpenClaw keys should still validate, got $r"
+fi
+
+# 5c. The AMD GAIA library recipe was removed. An older .env that still sets
+# its keys, which a GAIA copy installed before then still reads, must keep
+# validating.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/retired-gaia.env"
+cat >> "$TMP_DIR/retired-gaia.env" <<'EOF'
+GAIA_PORT=7822
+GAIA_AGENT_UI_VERSION=0.19.0
+GAIA_LEMONADE_BASE_URL=
+GAIA_SKIP_GAIA_INIT=true
+GAIA_UI_SERVE_ONLY=false
+GAIA_DISABLE_UPDATE=1
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/retired-gaia.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 0 ]]; then
+    pass "Retired AMD GAIA keys in an older .env still validate"
+else
+    echo "$out"
+    fail "Retired AMD GAIA keys should still validate, got $r"
 fi
 
 # 6. Unknown key (not in schema) → exit 2
@@ -184,7 +230,6 @@ SEARXNG_SECRET=test-secret
 N8N_USER=admin
 N8N_PASS=testpass
 LITELLM_KEY=testkey
-OPENCLAW_TOKEN=testtoken
 UNKNOWN_KEY=value
 EOF
 set +e
@@ -206,7 +251,6 @@ SEARXNG_SECRET=test-searxng-secret
 N8N_USER=admin@ods.local
 N8N_PASS=test-pass-1234
 LITELLM_KEY=sk-test-key-1234
-OPENCLAW_TOKEN=test-openclaw-token
 EOF
 set +e
 out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/short.env" "$ROOT_DIR/.env.schema.json" 2>&1)
@@ -623,6 +667,83 @@ elif [[ "$out" == *"DIFY_PORT: value is > maximum 65535"* ]]; then
 else
     fail "Library port was rejected for the wrong reason: $out"
 fi
+
+# 25. Pixel runtime directory pattern validation. The two keys accept the
+# exact Linux/WSL fixed paths or a canonical absolute POSIX path ending in
+# data/pixel-native/(optional home/)unused-docker-{ingress,preview}. The
+# validator must enforce the schema pattern generically, reject malformed
+# values closed, and never echo the value or the pattern in diagnostics.
+PIXEL_INGRESS_MAC_HOME='/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-ingress'
+PIXEL_PREVIEW_MAC_HOME='/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-preview'
+PIXEL_INGRESS_MAC_LEGACY='/Users/michaelbradley/ods/data/pixel-native/unused-docker-ingress'
+PIXEL_PREVIEW_MAC_LEGACY='/Users/michaelbradley/ods/data/pixel-native/unused-docker-preview'
+PIXEL_INGRESS_MAC_SPACE='/Users/michael bradley/ods/data/pixel-native/home/unused-docker-ingress'
+PIXEL_PREVIEW_MAC_SPACE='/Users/michael bradley/ods/data/pixel-native/unused-docker-preview'
+
+for pixel_pair in \
+    "PIXEL_INGRESS_RUNTIME_DIR=$PIXEL_INGRESS_MAC_HOME" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=$PIXEL_PREVIEW_MAC_HOME" \
+    "PIXEL_INGRESS_RUNTIME_DIR=$PIXEL_INGRESS_MAC_LEGACY" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=$PIXEL_PREVIEW_MAC_LEGACY" \
+    "PIXEL_INGRESS_RUNTIME_DIR=$PIXEL_INGRESS_MAC_SPACE" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=$PIXEL_PREVIEW_MAC_SPACE" \
+    "PIXEL_INGRESS_RUNTIME_DIR=/run/ods-pixel" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=/run/ods-pixel-preview" \
+    "PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/ingress" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/preview"; do
+    cp "$TMP_DIR/valid.env" "$TMP_DIR/pixel-valid.env"
+    printf '%s\n' "$pixel_pair" >> "$TMP_DIR/pixel-valid.env"
+    if out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" \
+        "$TMP_DIR/pixel-valid.env" "$ROOT_DIR/.env.schema.json" 2>&1); then
+        pass "Pixel runtime dir accepted: ${pixel_pair%%=*}"
+    else
+        fail "Pixel runtime dir should be accepted: ${pixel_pair%%=*} (exit $?): $out"
+    fi
+done
+
+for pixel_pair in \
+    "PIXEL_INGRESS_RUNTIME_DIR=/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-preview" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=/Users/michaelbradley/ods/data/pixel-native/home/unused-docker-ingress" \
+    "PIXEL_INGRESS_RUNTIME_DIR=/Users/../ods/data/pixel-native/home/unused-docker-ingress" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=/Users/./ods/data/pixel-native/unused-docker-preview" \
+    "PIXEL_INGRESS_RUNTIME_DIR=/Users//ods/data/pixel-native/home/unused-docker-ingress" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=Users/ods/data/pixel-native/unused-docker-preview" \
+    "PIXEL_INGRESS_RUNTIME_DIR=/Users/ods\\data/pixel-native/home/unused-docker-ingress" \
+    "PIXEL_PREVIEW_RUNTIME_DIR=/data/pixel-native/unused-docker-preview"; do
+    cp "$TMP_DIR/valid.env" "$TMP_DIR/pixel-invalid.env"
+    printf '%s\n' "$pixel_pair" >> "$TMP_DIR/pixel-invalid.env"
+    set +e
+    out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" \
+        "$TMP_DIR/pixel-invalid.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+    r=$?
+    set -e
+    pixel_key="${pixel_pair%%=*}"
+    pixel_value="${pixel_pair#*=}"
+    if [[ $r -eq 2 ]] && echo "$out" | grep -q "$pixel_key"; then
+        if echo "$out" | grep -qF -- "$pixel_value"; then
+            fail "Pixel runtime dir diagnostic leaked the value for $pixel_key"
+        else
+            pass "Pixel runtime dir rejected without leaking value: $pixel_key"
+        fi
+    else
+        fail "Pixel runtime dir should be rejected: $pixel_key (exit $r)"
+    fi
+done
+
+# Pattern errors must fail closed and keep values out of diagnostics.
+for expression in '^allowed$' '['; do
+    jq -n --arg pattern "$expression" '{type:"object",properties:{PRIVATE_TOKEN:{type:"string",pattern:$pattern}}}' > "$TMP_DIR/pattern-schema.json"
+    printf 'PRIVATE_TOKEN=private-pattern-sentinel-8454\n' > "$TMP_DIR/pattern-secret.env"
+    set +e
+    out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/pattern-secret.env" "$TMP_DIR/pattern-schema.json" 2>&1)
+    r=$?
+    set -e
+    if [[ $r -eq 2 && "$out" == *"PRIVATE_TOKEN: value does not match required pattern"* && "$out" != *"private-pattern-sentinel-8454"* ]]; then
+        pass "String pattern rejects mismatch or malformed regex without exposing values"
+    else
+        fail "String pattern mismatch or malformed regex was not safely rejected"
+    fi
+done
 
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

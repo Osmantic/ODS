@@ -14,9 +14,33 @@ pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux process-l
 def running(pid):
     try:
         status = Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[1]
-        return not status.startswith("Z ")
+        # Reaping can expose X (dead) after Z and before /proc disappears.
+        # x is the historical dead-state spelling; neither can execute work.
+        return not status.startswith(("Z ", "X ", "x "))
     except (FileNotFoundError, ProcessLookupError):
         return False
+
+
+@pytest.mark.parametrize("state,expected", [
+    ("R", True), ("S", True), ("D", True), ("T", True), ("t", True),
+    ("I", True), ("Z", False), ("X", False), ("x", False),
+])
+def test_process_liveness_distinguishes_terminal_states(monkeypatch, state, expected):
+    monkeypatch.setattr(Path, "read_text", lambda self: f"123 (diagnostic child) {state} 1 2 3\n")
+    assert running(123) is expected
+
+
+def test_reaping_does_not_make_a_dead_child_appear_running(monkeypatch):
+    states = iter(["Z", "X", None])
+
+    def stat_text(self):
+        state = next(states)
+        if state is None:
+            raise FileNotFoundError
+        return f"123 (diagnostic child) {state} 1 2 3\n"
+
+    monkeypatch.setattr(Path, "read_text", stat_text)
+    assert [running(123) for _ in range(3)] == [False, False, False]
 
 
 @pytest.mark.parametrize("parent_waits", [True, False], ids=["waiting-shell", "exited-shell"])

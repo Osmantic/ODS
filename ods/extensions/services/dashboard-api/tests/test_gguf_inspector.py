@@ -13,6 +13,7 @@ import struct
 
 import pytest
 
+import gguf_inspector
 from gguf_inspector import inspect_gguf
 
 # GGUF value type ids (see gguf_inspector._GGUF_VALUE_TYPES).
@@ -431,3 +432,38 @@ def test_boolean_metadata_value_is_ignored_for_integer_fields(tmp_path):
 
     assert result["readable"] is True
     assert result["context_length"] is None
+
+
+def tensor_info(name: str, dims: tuple[int, ...], ggml_type: int, offset: int = 0) -> bytes:
+    """One GGUF tensor-info entry: name, dimension count, dimensions, ggml type, offset."""
+    out = _enc_str(name) + struct.pack("<I", len(dims))
+    for dim in dims:
+        out += struct.pack("<Q", dim)
+    return out + struct.pack("<I", ggml_type) + struct.pack("<Q", offset)
+
+
+def _with_tensors(*types: int) -> bytes:
+    kvs = [("general.architecture", STR, "llama"), ("general.file_type", U32, 15)]
+    table = b"".join(tensor_info(f"blk.{index}.weight", (4096, 4096), ggml_type)
+                     for index, ggml_type in enumerate(types))
+    return build_gguf(kvs, tensor_count=len(types)) + table
+
+
+def test_tensor_table_types_are_read_after_the_metadata():
+    parsed = gguf_inspector.parse_gguf_metadata(_with_tensors(12, 14, 0, 12, 42))
+    assert parsed["tensor_types"] == [0, 12, 14, 42]
+    assert parsed["tensor_count"] == 5
+
+
+def test_a_tensor_table_cut_short_leaves_the_types_unknown_but_keeps_the_metadata():
+    blob = _with_tensors(12, 14, 0)
+    parsed = gguf_inspector.parse_gguf_metadata(blob[:-10])
+    assert parsed["tensor_types"] is None
+    assert parsed["architecture"] == "llama"
+
+
+def test_a_tensor_with_absurd_dimensions_is_unreadable():
+    kvs = [("general.architecture", STR, "llama")]
+    bad = _enc_str("t") + struct.pack("<I", 99)
+    with pytest.raises(ValueError, match="dimensions"):
+        gguf_inspector.parse_gguf_metadata(build_gguf(kvs, tensor_count=1) + bad + b"\0" * 1024)

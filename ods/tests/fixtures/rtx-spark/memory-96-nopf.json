@@ -1,0 +1,25 @@
+{
+  "_source": "Synthesized, not measured: the raised 96 GB split with no page file (30.49 GiB visible, 98,240 MiB carve-out), no .wslconfig, 400 GiB free.",
+  "VisibleGiB": 30.49,
+  "CommitLimitGiB": 30.49,
+  "CommittedGiB": 12.0,
+  "CarveOutMiB": 98240,
+  "SystemDrive": "C:",
+  "PageFileActiveGiB": 0,
+  "PageFileConfiguredGiB": 0,
+  "OtherPageFileGiB": 0.0,
+  "PageFileAutomatic": false,
+  "PageFilePending": false,
+  "PagingFiles": [],
+  "WslConfig": {
+    "GiB": null,
+    "Owner": null
+  },
+  "WslNowGiB": null,
+  "RunningModelGiB": 0,
+  "ModelsDrive": "C:",
+  "FreeGiB": {
+    "C:": 400
+  },
+  "StackPresent": true
+}

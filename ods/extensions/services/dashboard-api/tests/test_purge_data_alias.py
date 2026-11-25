@@ -11,6 +11,7 @@ def test_purge_refuses_sibling_data_alias(test_client, monkeypatch, tmp_path):
     monkeypatch.setattr(extensions, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(extensions, "EXTENSIONS_DIR", tmp_path / "builtin")
     monkeypatch.setattr(extensions, "USER_EXTENSIONS_DIR", tmp_path / "user")
+    (tmp_path / "user" / "my-ext").mkdir(parents=True)
     sibling = tmp_path / "another-service"
     sibling.mkdir()
     evidence = sibling / "keep.db"
@@ -43,6 +44,7 @@ def test_purge_supports_a_configured_data_root_alias(test_client, monkeypatch, t
     monkeypatch.setattr(extensions, "DATA_DIR", str(configured))
     monkeypatch.setattr(extensions, "EXTENSIONS_DIR", tmp_path / "builtin")
     monkeypatch.setattr(extensions, "USER_EXTENSIONS_DIR", tmp_path / "user")
+    (tmp_path / "user" / "my-ext").mkdir(parents=True)
 
     response = test_client.request(
         "DELETE", "/api/extensions/my-ext/data",

@@ -52,7 +52,9 @@ grep -Fxq "runtime=$expected_runtime" "$capture_uninstall"
 grep -Fxq "bus=unix:path=$expected_runtime/bus" "$capture_uninstall"
 grep -Fxq 'args=--user disable --now opencode-web.service' "$capture_uninstall"
 
-grep -Fq 'ods_systemctl_user enable --now "${timer}.timer"' \
+# Phase 10 no longer enables timers; its remaining user-scope call retires the
+# legacy OpenClaw session-cleanup timer and must use the same wrapper.
+grep -Fq 'ods_systemctl_user disable --now openclaw-session-cleanup.timer' \
     "$ROOT/installers/phases/10-amd-tuning.sh"
 [[ "$(grep -Fc 'ods_systemctl_user is-active opencode-web' \
     "$ROOT/installers/phases/13-summary.sh")" -eq 2 ]]

@@ -87,10 +87,24 @@ get_last_access_days() {
     echo "$(( age_secs / 86400 ))"
 }
 
+path_exists() {
+    [[ -e "$1" || -L "$1" ]]
+}
+
+link_targets() {
+    local target
+    [[ -L "$1" ]] || return 1
+    target="$(readlink "$1")" || return 1
+    [[ "$target" == "$2" ]]
+}
+
+# These guards preserve conflicting paths. Run with no external cache writers:
+# shell checks cannot serialize arbitrary programs creating a destination.
 do_archive() {
     local dry_run="${1:-true}"
     local archived=0
     local skipped=0
+    local failed=0
 
     log "========== LLM cold storage scan started (dry_run=$dry_run) =========="
 
@@ -124,22 +138,52 @@ do_archive() {
         if (( idle_days >= MAX_IDLE_DAYS )); then
             if [[ "$dry_run" == "true" ]]; then
                 log "WOULD ARCHIVE: $name ($size, idle ${idle_days}d)"
+                ((archived++))
             else
                 log "ARCHIVING: $name ($size, idle ${idle_days}d)"
+                local cache_path="${model_dir%/}" cold_path="$COLD_DIR/$name"
+                if ! mkdir -p "$COLD_DIR"; then
+                    log "ERROR: cannot create cold directory: $COLD_DIR"
+                    ((failed++))
+                    continue
+                fi
+                if path_exists "$cold_path"; then
+                    log "ERROR: cold destination already exists: $cold_path"
+                    ((failed++))
+                    continue
+                fi
                 # Move to cold storage
-                mv "$model_dir" "$COLD_DIR/$name"
-                # Create symlink so HF cache still resolves
-                ln -s "$COLD_DIR/$name" "${model_dir%/}"
-                log "ARCHIVED: $name -> $COLD_DIR/$name"
+                if mv "$cache_path" "$cold_path"; then
+                    # Create symlink so HF cache still resolves
+                    if ln -s "$cold_path" "$cache_path" && link_targets "$cache_path" "$cold_path"; then
+                        log "ARCHIVED: $name -> $cold_path"
+                        ((archived++))
+                    else
+                        log "ERROR: could not publish the cache link for $name"
+                        if ! path_exists "$cache_path"; then
+                            if mv "$cold_path" "$cache_path"; then
+                                log "ROLLBACK: restored $name to the hot cache"
+                            else
+                                log "ERROR: rollback failed; inspect $cold_path and $cache_path"
+                            fi
+                        else
+                            log "ERROR: cache path exists; preserving it and the cold copy at $cold_path"
+                        fi
+                        ((failed++))
+                    fi
+                else
+                    log "ERROR: failed to move $name to cold storage"
+                    ((failed++))
+                fi
             fi
-            ((archived++))
         else
             log "SKIP (recent, ${idle_days}d): $name ($size)"
             ((skipped++))
         fi
     done
 
-    log "========== Scan complete: $archived archived, $skipped skipped =========="
+    log "========== Scan complete: $archived archived, $skipped skipped, $failed failed =========="
+    (( failed == 0 ))
 }
 
 do_restore() {
@@ -149,43 +193,67 @@ do_restore() {
     if [[ "$name" != models--* ]]; then
         name="models--$(echo "$name" | sed 's/\//--/g')"
     fi
+    if [[ "$name" == */* || "$name" == models-- ]]; then
+        log "ERROR: invalid model name"
+        return 1
+    fi
 
     local cold_path="$COLD_DIR/$name"
     local cache_path="$HF_CACHE/$name"
 
-    if [[ ! -d "$cold_path" ]]; then
+    if [[ ! -d "$cold_path" || -L "$cold_path" ]]; then
         echo "ERROR: Model not found in cold storage: $cold_path"
-        exit 1
+        return 1
     fi
 
-    # Remove symlink if it exists
-    if [[ -L "$cache_path" ]]; then
-        rm "$cache_path"
+    if ! mkdir -p "$HF_CACHE"; then
+        log "ERROR: cannot create cache directory: $HF_CACHE"
+        return 1
+    fi
+    local removed_link=false
+    if path_exists "$cache_path"; then
+        if ! link_targets "$cache_path" "$cold_path"; then
+            log "ERROR: refusing to replace existing cache path: $cache_path"
+            return 1
+        fi
+        if ! rm "$cache_path"; then
+            log "ERROR: could not remove owned cache link: $cache_path"
+            return 1
+        fi
+        removed_link=true
     fi
 
     log "RESTORING: $name to $cache_path"
-    mv "$cold_path" "$cache_path"
+    if ! mv "$cold_path" "$cache_path"; then
+        log "ERROR: restore failed; inspect $cold_path and $cache_path"
+        if [[ "$removed_link" == true && -d "$cold_path" ]] && ! path_exists "$cache_path"; then
+            if ln -s "$cold_path" "$cache_path" && link_targets "$cache_path" "$cold_path"; then
+                log "ROLLBACK: reinstated the cold-storage link for $name"
+            else
+                log "ERROR: could not reinstate the cache link for $name"
+            fi
+        fi
+        return 1
+    fi
     log "RESTORED: $name"
     echo "Restored: $name"
 }
 
 do_restore_all() {
     log "========== Restoring all archived models =========="
+    local restored=0 failed=0
     for cold_model in "$COLD_DIR"/models--*/; do
         [[ -d "$cold_model" ]] || continue
         local name
         name="$(basename "$cold_model")"
-        local cache_path="$HF_CACHE/$name"
-
-        if [[ -L "$cache_path" ]]; then
-            rm "$cache_path"
+        if do_restore "$name"; then
+            ((restored++))
+        else
+            ((failed++))
         fi
-
-        log "RESTORING: $name"
-        mv "$cold_model" "$cache_path"
-        log "RESTORED: $name"
     done
-    log "========== All models restored =========="
+    log "========== Restore complete: $restored restored, $failed failed =========="
+    (( failed == 0 ))
 }
 
 show_status() {

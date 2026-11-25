@@ -81,6 +81,7 @@ for i in 1 2 3 4 5 6; do
   mkdir -p "$d"
   echo '{"backup_type": "user-data", "description": "old"}' > "$d/manifest.json"
 done
+
 mkdir -p "$LIFECYCLE_DIR/my-notes"
 
 # #2299: the host agent's BACKUP_ID_RE accepts hyphenated multi-segment labels
@@ -212,3 +213,6 @@ for compressed in false true; do
   done
   pass "--list orders mixed IDs and archives by creation timestamp"
 done
+
+# Failed transfers and compression must never publish a selectable snapshot.
+bash "$SCRIPT_DIR/test-backup-publication.sh"

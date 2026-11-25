@@ -1,9 +1,10 @@
 # ODS -- Windows AMD Overlay
-# Inference server (Lemonade or llama-server) runs natively on Windows host.
-# All other services remain in Docker, reaching the host via host.docker.internal.
+# ggml-org llama-server.exe (llama.cpp, Vulkan) runs natively on the Windows
+# host; WSL2 and Docker Desktop cannot drive an AMD GPU. All other services
+# remain in Docker, reaching the host via host.docker.internal.
 #
-# Lemonade: OpenAI-compatible API at /api/v1 (NPU + Vulkan + ROCm)
-# llama-server fallback: OpenAI-compatible API at /v1 (Vulkan only)
+# llama-server: OpenAI-compatible API at /v1, loopback only, and every request
+# except /health and /v1/models needs LLAMA_SERVER_API_KEY as a Bearer token.
 #
 # Use with: docker compose -f docker-compose.base.yml -f installers/windows/docker-compose.windows-amd.yml up -d
 
@@ -16,7 +17,7 @@ services:
   dashboard-api:
     environment:
       - OLLAMA_URL=http://host.docker.internal:${AMD_INFERENCE_PORT:-8080}
-      - LLM_BACKEND=${LLM_BACKEND:-lemonade}
+      - LLM_BACKEND=${LLM_BACKEND:-llama-server}
       - LLM_API_BASE_PATH=${LLM_API_BASE_PATH:-/v1}
       - AMD_INFERENCE_RUNTIME=${AMD_INFERENCE_RUNTIME:-}
       - AMD_INFERENCE_BACKEND=${AMD_INFERENCE_BACKEND:-}
@@ -26,16 +27,23 @@ services:
       - AMD_INFERENCE_RUNTIME_MODE=${AMD_INFERENCE_RUNTIME_MODE:-unknown}
       - AMD_INFERENCE_MANAGED=${AMD_INFERENCE_MANAGED:-false}
       - ODS_TALK_HERMES_TIMEOUT=${ODS_TALK_HERMES_TIMEOUT:-900}
+      # Bearer key of the native llama-server (/props, /slots, /metrics).
+      - LLAMA_SERVER_API_KEY=${LLAMA_SERVER_API_KEY:-}
       # The base compose default points ODS Talk image attachments at the
       # in-network llama-server service. On Windows AMD, inference runs on the
       # host instead, so route vision calls through host.docker.internal using
       # the same API path selected by the installer.
       - ODS_TALK_VISION_URL=${ODS_TALK_VISION_URL:-http://host.docker.internal:${AMD_INFERENCE_PORT:-8080}${LLM_API_BASE_PATH:-/v1}}
 
+  model-router:
+    environment:
+      # The router's llama-server-default endpoint is the keyed native server.
+      - LLAMA_SERVER_API_KEY=${LLAMA_SERVER_API_KEY:-}
+
   open-webui:
     environment:
-      # LLM_API_BASE_PATH set by installer: /api/v1 for Lemonade, /v1 for llama-server
       # Switchboard mode writes OPEN_WEBUI_LLM_BASE_URL/API_KEY in .env so
       # Open WebUI follows the stable ods/current route through LiteLLM.
+      # Otherwise it calls the native llama-server (/v1) with its key.
       OPENAI_API_BASE_URL: "${OPEN_WEBUI_LLM_BASE_URL:-http://host.docker.internal:${AMD_INFERENCE_PORT:-8080}${LLM_API_BASE_PATH:-/v1}}"
-      OPENAI_API_KEY: "${OPEN_WEBUI_LLM_API_KEY:-${OPENAI_API_KEY:-}}"
+      OPENAI_API_KEY: "${OPEN_WEBUI_LLM_API_KEY:-${LLAMA_SERVER_API_KEY:-${OPENAI_API_KEY:-}}}"

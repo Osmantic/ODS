@@ -2,7 +2,8 @@
 
 The protected access configuration binds the owner and ODS root. Retirement
 quarantines fixed native paths only after all six launchd jobs are absent and
-their observed process trees have exited. Unknown or transitional state fails
+their observed process trees have exited, or an explicit preserved-plist reboot
+barrier proves the old processes cannot survive. Unknown or transitional state fails
 before stopping services. The dedicated Operations identity is retained.
 """
 import argparse
@@ -17,6 +18,7 @@ from pathlib import Path
 import plistlib
 import pwd
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -72,7 +74,8 @@ def state_name_allowed(name):
     return (name in RETAIN | {'installation.json', 'installation-edge.json', 'lock',
              'model-before.json', 'model-completed.json',
              'model-route-completed.json', 'model-promotion-completed.json',
-             'service-installation.json', 'service-baseline.json', 'verified.json', 'retirement.json'}
+             'service-installation.json', 'service-baseline.json', 'verified.json', 'retirement.json',
+             'retirement-plists'}
         or re.fullmatch(r'runtime-upgrade-[a-f0-9]{64}\.completed\.json', name)
         or re.fullmatch(r'runtime-upgrade-(?:context|edge)-[a-f0-9]{64}\.json', name)
         or re.fullmatch(r'runtime-upgrade-stop-[a-f0-9]{64}-(?:candidate|previous)-(?:access|gateway|manager|operations|promoter|relay)\.json', name)
@@ -193,6 +196,27 @@ class NativeSandboxes:
             if selected: result.append(selected)
         return result
 
+    def prune_retired(self, keep):
+        """Remove stopped sandboxes that earlier, completed retirements kept.
+
+        Only this owner's exact Pixel sandbox under its retired name qualifies;
+        the sandboxes this retirement just preserved are kept.
+        """
+        ids = self.call('ps', '-aq', '--no-trunc').splitlines()
+        if len(ids) > 256 or any(not re.fullmatch('[a-f0-9]{64}', cid) for cid in ids):
+            raise ValueError('native-retirement-sandbox-inventory-invalid')
+        for cid in ids:
+            if cid in keep:
+                continue
+            value = self.inspect(cid)
+            labels = value.get('Config', {}).get('Labels') or {}
+            if (value.get('Name') == '/ods-pixel-retired-' + cid[:16]
+                    and value.get('State', {}).get('Running') is False
+                    and labels.get('openclaw.sandbox') == '1'
+                    and labels.get('openclaw.sessionKey') == 'agent:pixel'
+                    and labels.get('org.osmantic.pixel.sandbox-uid') == str(self.owner.pw_uid)):
+                self.call('rm', cid)
+
     def preserve(self, plans):
         for plan in plans:
             current = self.inspect(plan['id'])
@@ -213,6 +237,31 @@ class NativeSandboxes:
                 raise ValueError('native-retirement-sandbox-retirement-unconfirmed')
 
 
+def prune_superseded_retirements(current):
+    """Keep only the newest completed retirement archive.
+
+    Each retirement moves the retired release's pinned runtimes (about
+    0.5 GB), service definitions and access state into a new archive, and
+    nothing reads an archive once its retirement completed: fleet Macs held 60
+    archives (34 GB) after repeated reinstalls. Older archives whose own
+    receipt records a completed retirement are removed; any other entry,
+    including an interrupted retirement, is kept for inspection.
+    """
+    for entry in current.parent.iterdir():
+        if entry == current or not re.fullmatch('[0-9a-f]{32}', entry.name):
+            continue
+        info = entry.lstat()
+        # The helper runs as root, which owns every archive it creates.
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+            continue
+        try:
+            value = json.loads((entry / 'receipt.json').read_text())
+        except (OSError, ValueError):
+            continue  # Missing or partial receipt: not provably complete.
+        if isinstance(value, dict) and value.get('schema') == 1 and value.get('status') == 'retired':
+            shutil.rmtree(entry)
+
+
 def verify_witness(value, *, owner, boot, hashes, targets):
     if (type(value) is not dict or value.get('schema') != 1 or value.get('owner') != owner
             or value.get('boot') != boot or value.get('hashes') != hashes
@@ -227,7 +276,10 @@ def verify_witness(value, *, owner, boot, hashes, targets):
     return value['trees']
 
 
-def retire(install_dir, owner_name, *, validate_only=False):
+def retire(install_dir, owner_name, *, validate_only=False,
+           prepare_stopped_recovery=False, resume_stopped_recovery=False):
+    if sum(bool(value) for value in (validate_only, prepare_stopped_recovery, resume_stopped_recovery)) > 1:
+        raise ValueError('native-retirement-conflicting-modes')
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise ValueError('native-retirement-macos-root-required')
     sys.path.insert(0, str(HERE.parents[2] / 'bin'))
@@ -260,6 +312,12 @@ def retire(install_dir, owner_name, *, validate_only=False):
             validate_state_names(os.listdir(directory))
             def record(path):
                 return json.loads(custody.protected_bytes(path, limit=32 * 1024 * 1024))
+            reboot = helper('pixel-native-retirement-reboot').Recovery(STATE, plists,
+                read=lambda path: custody.protected_bytes(path, limit=32 * 1024 * 1024),
+                directory=custody.protected_directory, save=atomic_json,
+                command=command, absent=prove_absent)
+            if resume_stopped_recovery and reboot.document is None:
+                raise ValueError('native-retirement-reboot-preparation-required')
             settings = record(SETTINGS)
             installation = record(STATE / 'installation.json')
             services = record(STATE / 'service-installation.json')
@@ -292,8 +350,9 @@ def retire(install_dir, owner_name, *, validate_only=False):
             if {p.name for p in config_root.iterdir()} != {str(owner.pw_uid)}:
                 raise ValueError('native-retirement-foreign-config-owner')
             # Snapshot all root-controlled files used as retirement authority.
-            snapshots = {str(p): custody.protected_bytes(p, limit=32 * 1024 * 1024)
-                         for p in [SETTINGS, *plists, *(STATE / n for n in os.listdir(directory) if n != 'retirement.json')]}
+            snapshots = {str(p): custody.protected_bytes(reboot.path(p), limit=32 * 1024 * 1024)
+                         for p in [SETTINGS, *plists, *(STATE / n for n in os.listdir(directory)
+                             if n not in ('retirement.json', 'retirement-plists'))]}
             gateway = plistlib.loads(snapshots[str(plists[0])])
             if launchd_definition_digest(gateway, ValueError) != settings.get('gateway_binding', {}).get('definition'):
                 raise ValueError('native-retirement-gateway-binding-mismatch')
@@ -336,7 +395,17 @@ def retire(install_dir, owner_name, *, validate_only=False):
             boot = str(uuid.UUID(boot_result.stdout.strip()))
             witness_path = STATE / 'retirement.json'
             targets = [target for target, _, _ in jobs]
-            if os.path.lexists(witness_path):
+            if prepare_stopped_recovery:
+                if reboot.document is None and all(loaded and tree for _, tree, loaded in jobs):
+                    raise ValueError('native-retirement-running-jobs-use-normal-retirement')
+                return reboot.prepare(owner=owner.pw_uid, boot=boot, hashes=hashes, snapshots=snapshots)
+            if reboot.document is not None:
+                if not (resume_stopped_recovery or validate_only):
+                    raise ValueError('native-retirement-use-resume-stopped-recovery')
+                trees = reboot.verify_reboot(owner=owner.pw_uid, boot=boot,
+                    hashes=hashes, snapshots=snapshots)
+                jobs = [(target, (), False) for target in targets]
+            elif os.path.lexists(witness_path):
                 witness = record(witness_path)
                 trees = verify_witness(witness, owner=owner.pw_uid,
                     boot=boot, hashes=hashes, targets=targets)
@@ -354,9 +423,7 @@ def retire(install_dir, owner_name, *, validate_only=False):
                 trees = {target: [list(row) for row in tree] for target, tree, _ in jobs}
             if validate_only:
                 return {'status': 'validated', 'owner': owner.pw_uid, 'installDir': str(root)}
-            for path, body in snapshots.items():
-                if custody.protected_bytes(path, limit=32 * 1024 * 1024) != body:
-                    raise ValueError('native-retirement-authority-changed')
+            reboot.unchanged(snapshots)
             if not os.path.lexists(witness_path):
                 atomic_json(witness_path, {'schema': 1, 'owner': owner.pw_uid,
                     'boot': boot, 'hashes': hashes, 'trees': trees, 'sandboxes': sandbox_plans})
@@ -380,9 +447,7 @@ def retire(install_dir, owner_name, *, validate_only=False):
             # install root. Preserve the container, but vacate its live name and
             # stop its processes before moving any native or workspace paths.
             sandboxes.preserve(sandbox_plans)
-            for path, body in snapshots.items():
-                if custody.protected_bytes(path, limit=32 * 1024 * 1024) != body:
-                    raise ValueError('native-retirement-authority-changed-after-stop')
+            reboot.unchanged(snapshots, code='native-retirement-authority-changed-after-stop')
             archive = Path('/private/var/lib/ods-pixel-retired') / uuid.uuid4().hex
             with custody.protected_directory(archive, create=True): pass
             os.chmod(archive, 0o700)
@@ -418,6 +483,10 @@ def retire(install_dir, owner_name, *, validate_only=False):
             receipt['status'] = 'retired'
             save()
             account.verify_empty_home_only() if os.path.lexists(BROKER) else account.verify_identity_only()
+            # This retirement is complete and is now the recovery record;
+            # earlier completed ones and their stopped sandboxes are only disk.
+            sandboxes.prune_retired({plan['id'] for plan in sandbox_plans})
+            prune_superseded_retirements(archive)
             return {'status': 'retired', 'archive': str(archive)}
         finally:
             os.close(lock)
@@ -427,13 +496,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--install-dir', required=True)
     parser.add_argument('--owner', required=True)
-    parser.add_argument('--validate-only', action='store_true')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--validate-only', action='store_true')
+    mode.add_argument('--prepare-stopped-recovery', action='store_true',
+        help='Preserve autostart plists and unload verified jobs; requires an explicit Mac reboot before retirement')
+    mode.add_argument('--resume-stopped-recovery', action='store_true',
+        help='After that reboot, verify preserved authority and retire the native deployment')
     args = parser.parse_args()
     try:
-        print(json.dumps(retire(args.install_dir, args.owner, validate_only=args.validate_only)))
+        print(json.dumps(retire(args.install_dir, args.owner, validate_only=args.validate_only,
+            prepare_stopped_recovery=args.prepare_stopped_recovery,
+            resume_stopped_recovery=args.resume_stopped_recovery)))
         return 0
     except Exception as error:
         print('Native Pixel retirement refused (' + type(error).__name__ + '): ' + str(error), file=sys.stderr)
+        if str(error) == 'native-retirement-stopped-job-needs-witness':
+            print('Keep native state intact. Maintainer-assisted --prepare-stopped-recovery requires a Mac restart; '
+                  'see docs/MACOS_PIXEL_RETIREMENT_RECOVERY.md before using it.', file=sys.stderr)
         return 1
 
 

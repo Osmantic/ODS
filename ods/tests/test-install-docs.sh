@@ -109,19 +109,38 @@ def has_retired_reference(value, *, allow_fleet=False):
         if not (allow_fleet and pattern is retired_fleet_pattern)
     )
 
-# The migration must recognize these two historical declarations verbatim to
-# remove a shipped default without rewriting owner-customized policy. This is
-# not permission to use the name in any other code, comment, prose, or path.
+# Migrations must recognize what earlier releases wrote, verbatim, to remove a
+# shipped default without touching anything an owner changed. Each exception
+# below is one exact line in one file. It is not permission to use a retired
+# name in any other code, comment, prose, or path.
+#
+# The guidance migration removes the shipped workspace contract by its two
+# historical declarations.
 guidance_migration_path = "ods/installers/lib/pixel-workspace-guidance.py"
 historical_fleet_label = retired_product_prefix.title() + " " + retired_fleet_name.title()
 historical_guidance_declarations = {
     "LEGACY_HEADING = b'## " + historical_fleet_label + " Local-First Operating Contract (canonical)\\n'",
     "MARKER = b'" + historical_fleet_label + " Local-First Operating Contract'",
 }
+# Releases up to v2.5.3 installed under the retired product's directory name,
+# and their legacy OpenClaw session-cleanup unit runs a script there. Phase 10
+# retires that unit only while its ExecStart is one a release shipped, and its
+# test covers both install directories.
+historical_install_root = retired_product_prefix + "-" + retired_product_name
+historical_lines = {
+    guidance_migration_path: historical_guidance_declarations,
+    "ods/installers/phases/10-amd-tuning.sh": {
+        "        && grep -Eqx 'ExecStart=%h/(ods|" + historical_install_root
+        + ")/scripts/session-cleanup\\.sh' \"$_phase10_cleanup_service\"; then",
+    },
+    "ods/tests/test-phase10-skip-templated-user-units.sh": {
+        "for install_root in ods " + historical_install_root + "; do",
+    },
+}
 
 
 def has_retired_content(relative_path, line, *, allow_fleet=False):
-    if relative_path == guidance_migration_path and line in historical_guidance_declarations:
+    if line in historical_lines.get(relative_path, ()):
         return False
     return has_retired_reference(line, allow_fleet=allow_fleet)
 
@@ -149,25 +168,27 @@ if (has_retired_reference(retired_product_prefix + retired_fleet_name, allow_fle
         or not has_retired_reference(retired_product_prefix + retired_product_name, allow_fleet=True)):
     raise SystemExit("[FAIL] Vendored Pixel exception is broader than the Fleet name")
 
-for declaration in historical_guidance_declarations:
-    if (not has_retired_reference(declaration)
-            or has_retired_content(guidance_migration_path, declaration)):
-        raise SystemExit("[FAIL] Exact historical guidance declaration is not recognized")
-    rejected_guidance_samples = [
-        ("README.md", declaration),
-        (guidance_migration_path + ".backup", declaration),
-        ("other/" + guidance_migration_path, declaration),
-        (guidance_migration_path, "# " + declaration),
-        (guidance_migration_path, "    " + declaration),
-        (guidance_migration_path, declaration + " # unrelated comment"),
-        (guidance_migration_path, declaration + "; print('extra code')"),
-        (guidance_migration_path, declaration.lower()),
-        (guidance_migration_path, "Use " + historical_fleet_label + " for every task."),
-        (guidance_migration_path, "OTHER = " + repr(historical_fleet_label)),
-        (guidance_migration_path, retired_product_prefix + retired_product_name),
-    ]
-    if any(not has_retired_content(path, line) for path, line in rejected_guidance_samples):
-        raise SystemExit("[FAIL] Historical guidance exception permits other code or prose")
+for exact_path, exact_lines in historical_lines.items():
+    for declaration in exact_lines:
+        if (not has_retired_reference(declaration)
+                or has_retired_content(exact_path, declaration)):
+            raise SystemExit("[FAIL] Exact historical line is not recognized: " + exact_path)
+        rejected_samples = [
+            ("README.md", declaration),
+            (exact_path + ".backup", declaration),
+            ("other/" + exact_path, declaration),
+            (exact_path, "# " + declaration),
+            (exact_path, "    " + declaration),
+            (exact_path, declaration + " # unrelated comment"),
+            (exact_path, declaration + "; print('extra code')"),
+            (exact_path, declaration.swapcase()),
+            (exact_path, "Use " + historical_fleet_label + " for every task."),
+            (exact_path, "OTHER = " + repr(historical_fleet_label)),
+            (exact_path, retired_product_prefix + retired_product_name),
+            (exact_path, "cd ~/" + historical_install_root),
+        ]
+        if any(not has_retired_content(path, line) for path, line in rejected_samples):
+            raise SystemExit("[FAIL] Historical line exception permits other code or prose: " + exact_path)
 if not has_retired_reference("ods/installers/" + historical_fleet_label + "/migration.py"):
     raise SystemExit("[FAIL] Historical guidance exception permits a retired path")
 
@@ -273,12 +294,16 @@ fi
 
 for file in "${windows_copy_paste_docs[@]}"; do
     require_literal "$file" "$WINDOWS_SOURCE_ZIP_URL" "Windows no-Git source ZIP install"
-    require_literal "$file" '[guid]::NewGuid().ToString("N")' "Windows collision-free temporary source directory"
-    require_literal "$file" 'Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force' "Windows source ZIP expansion"
     if [[ "$file" == "$ROOT_DIR/docs/WINDOWS-INSTALL-WALKTHROUGH.md" ]]; then
+        require_literal "$file" '[guid]::NewGuid().ToString("N")' "Windows collision-free temporary source directory"
+        require_literal "$file" 'Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force' "Windows source ZIP expansion"
         require_literal "$file" '.\ods\installers\windows\install-windows.ps1' "Legacy native installer invocation"
     else
-        require_literal "$file" '.\install.ps1' "Windows installer invocation"
+        require_literal "$file" "[guid]::NewGuid().ToString('N')" "Windows collision-free temporary source directory"
+        require_literal "$file" 'Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc' "Windows source ZIP expansion"
+        require_literal "$file" "\$ErrorActionPreference = 'Stop'" "Windows fail-fast bootstrap"
+        require_literal "$file" "'ODS-main\\install.ps1'" "Exact Windows installer archive entry"
+        require_literal "$file" '& $odsEntry' "Windows installer invocation"
     fi
     if grep -qF 'Remove-Item -LiteralPath $odsSrc -Recurse' "$file"; then
         fail "Windows copy/paste install must not recursively delete a reusable temporary path in ${file#"$REPO_ROOT"/}"
@@ -315,9 +340,13 @@ require_literal "$trust_doc" 'verify-hosted-bootstrap.sh' "Hosted bootstrap depl
 require_literal "$REPO_ROOT/README.md" "\`$PUBLISHED_TAG\` is the latest published source release" "README published release"
 require_literal "$REPO_ROOT/README.md" "[![Release](https://img.shields.io/badge/release-$PUBLISHED_TAG-blue)](https://github.com/Osmantic/ODS/releases/tag/$PUBLISHED_TAG)" "README published-version badge and tag link"
 require_literal "$release_doc" "latest published source release is \`$PUBLISHED_TAG\`" "Release channel published release"
-require_literal "$trust_doc" "--branch $PUBLISHED_TAG $CANONICAL_REPO_URL" "Manual published-tag clone"
-require_literal "$trust_doc" "ODS_REF=$PUBLISHED_TAG" "Published bootstrap ref guidance"
-
+# The published tag is affected by a critical advisory whose fix is only on
+# main. Installation guidance must warn against pinning it, never recommend it.
+require_literal "$trust_doc" "Do not pin \`$PUBLISHED_TAG\` for an installation" "Published-tag advisory warning"
+require_literal "$trust_doc" "GHSA-vqpg-pvjj-4cmq" "Published-tag advisory reference"
+if grep -qF -- "--branch $PUBLISHED_TAG" "$trust_doc"; then
+    fail "INSTALLER_TRUST.md must not recommend cloning the advisory-affected $PUBLISHED_TAG"
+fi
 if grep -qF "Do not pass \`$PUBLISHED_TAG\` through \`ODS_REF\`" "$trust_doc"; then
     fail "$PUBLISHED_TAG must be documented as compatible with the sparse-checkout bootstrap"
 fi

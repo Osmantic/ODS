@@ -62,11 +62,7 @@ KNOWN_VALID_ANTHROPIC_MODELS = {
 # (https://code.claude.com/docs/en/model-config). The workflows' cost notes
 # name Sonnet 4.6, so they pin the full ID.
 # Last checked 2026-09-25 against the Anthropic docs and the Models API.
-KNOWN_VALID_CI_MODELS = KNOWN_VALID_ANTHROPIC_MODELS | {
-    # Opus 4.5 snapshot, used by claude-review.yml: retires no sooner than
-    # 2026-11-24.
-    "claude-opus-4-5-20251101",
-}
+KNOWN_VALID_CI_MODELS = KNOWN_VALID_ANTHROPIC_MODELS
 
 # Claude model IDs in vendored Pixel that are not in
 # KNOWN_VALID_ANTHROPIC_MODELS. ODS cannot change them in place: vendor/pixel
@@ -346,15 +342,11 @@ def test_github_automation_models_are_allowlisted() -> None:
         "docs and GET /v1/models/<id> before allowlisting):\n" + describe(unknown)
     )
 
-    # An all-clear only counts if the scan reached the workflows that pass
-    # --model to Claude Code.
-    sonnet_files = {where.rsplit(":", 1)[0] for where in model_args.get("claude-sonnet-4-6", [])}
-    for name in ("issue-to-pr.yml", "nightly-code-review.yml", "nightly-docs-update.yml"):
-        assert f".github/workflows/{name}" in sonnet_files, (
-            f"scan did not find --model claude-sonnet-4-6 in .github/workflows/{name}"
-        )
-    arg_files = {where.rsplit(":", 1)[0] for sites in model_args.values() for where in sites}
-    assert ".github/workflows/claude-review.yml" in arg_files, arg_files
+    # The AI automation workflows that passed --model to Claude Code were
+    # retired on 2026-10-03 (.github/scripts/test_security_workflows.py keeps
+    # them out). An all-clear still only counts if the scan reached the
+    # workflow files.
+    assert any(workflows.glob("*.yml")), f"no workflow files under {workflows}"
 
 
 def test_vendored_pixel_claude_ids_are_tracked() -> None:

@@ -6,6 +6,22 @@ const safe = {available: true, surface: 'linux-systemd', configured_mode: 'sandb
   runtime_verified: false, revision: 'a'.repeat(64), busy: false, pending: false, reason: 'runtime-proof-required'}
 afterEach(() => vi.unstubAllGlobals())
 
+it('identifies a model hold without assuming its coordinator is alive or blocking recovery', async () => {
+  let reason = 'model-transition-pending'
+  const fetch = vi.fn(async () => ({ok:true,json:async()=>({...safe,pending:true,reason})}))
+  vi.stubGlobal('fetch', fetch)
+  render(<PixelAccessCard />)
+  expect(await screen.findByText(/A model transition is holding new messages/)).toBeVisible()
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(screen.getByRole('button',{name:'Restore Sandbox'})).toBeEnabled()
+  expect(screen.getByRole('button',{name:'Enable Full Access'})).toBeDisabled()
+  reason = 'model-transition-recovery-required'
+  fireEvent.click(screen.getByRole('button',{name:'Refresh status'}))
+  expect(await screen.findByRole('alert')).toHaveTextContent('The model update needs recovery')
+  expect(screen.getByRole('button',{name:'Restore Sandbox'})).toBeEnabled()
+  expect(fetch.mock.calls.every(([,options])=>options?.method !== 'POST')).toBe(true)
+})
+
 it('explains incomplete installation without enabling access changes', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok: true, json: async () => ({
     ...safe, available: false, revision: null, reason: 'managed-installation-incomplete',
@@ -70,6 +86,19 @@ describe('Pixel access confirmation and effective status', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(4))
     await waitFor(() => expect(screen.queryByText(/Changing access and checking/)).toBeNull())
     expect(screen.getByRole('alert')).toHaveTextContent('The change was not verified')
+    expect(fetch.mock.calls.filter(call => call[1]?.method === 'POST')).toHaveLength(1)
+  })
+
+  it('says nothing changed when the host refuses an access change as busy', async () => {
+    const fetch = vi.fn(async (_url, options) => options?.method === 'POST'
+      ? {ok: false, status: 409, json: async () => ({detail: {code: 'model_lifecycle_busy', message: 'busy'}})}
+      : {ok: true, json: async () => safe})
+    vi.stubGlobal('fetch', fetch)
+    render(<PixelAccessCard />)
+    await screen.findByText('Not verified')
+    fireEvent.click(screen.getByRole('button', {name: 'Verify Sandbox'}))
+    expect(await screen.findByRole('alert')).toHaveTextContent('ODS is busy')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('not verified')
     expect(fetch.mock.calls.filter(call => call[1]?.method === 'POST')).toHaveLength(1)
   })
 

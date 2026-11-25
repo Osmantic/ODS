@@ -3,11 +3,12 @@
 # ODS Installer — Phase 11: Start Services
 # ============================================================================
 # Part of: installers/phases/
-# Purpose: Download GGUF model, SDXL Lightning model, generate models.ini, launch
-#          Docker Compose stack
+# Purpose: Download the GGUF model (or the vLLM engine's model snapshot),
+#          SDXL Lightning model, generate models.ini, launch Docker Compose stack
 #
 # Expects: DRY_RUN, INSTALL_DIR, LOG_FILE, GPU_BACKEND,
 #           GGUF_FILE, GGUF_URL, LLM_MODEL, MAX_CONTEXT,
+#           LLM_BACKEND (vllm: VLLM_MODEL_DIR, VLLM_SERVED_MODEL, LLM_MODEL_SIZE_MB),
 #           DOCKER_COMPOSE_CMD, COMPOSE_FLAGS, BGRN, RED, AMB, NC,
 #           show_phase(), bootline(), signal(), ai(), ai_ok(), ai_bad(),
 #           ai_warn(), log(), spin_task(), ui_status_line()
@@ -96,6 +97,18 @@ _phase11_refresh_litellm() {
     fi
 }
 
+_phase11_refresh_hermes_mounts() {
+    [[ "${ENABLE_HERMES:-false}" == true ]] || return 0
+    local python_cmd flag
+    local -a args=()
+    python_cmd="${ODS_PYTHON_CMD:-$(command -v python3 2>/dev/null || true)}"
+    [[ -n "$python_cmd" ]] || return 1
+    for flag in "${COMPOSE_FLAGS_ARR[@]}"; do args+=("--compose-arg=$flag"); done
+    "$python_cmd" "$INSTALL_DIR/scripts/refresh-hermes-mounts.py" \
+        --install-dir "$INSTALL_DIR" --docker-command "$DOCKER_CMD" \
+        --compose-command "$DOCKER_COMPOSE_CMD" "${args[@]}" >>"$LOG_FILE" 2>&1
+}
+
 _phase11_build_local_images() {
     local -a build_services=("$@")
     local -a failed_build_services=()
@@ -158,6 +171,15 @@ except Exception:
                 break
             fi
 
+            # A build also fails when Docker itself has stopped. That needs
+            # Docker started again, not a retry or a build fix.
+            if ! $DOCKER_CMD info --format '{{.ServerVersion}}' >/dev/null 2>&1; then
+                ui_status_line warn "Docker is not responding"
+                ai_bad "Docker stopped responding while ${svc} was building."
+                ai "Start Docker again (Linux: sudo systemctl start docker; Docker Desktop: open it and wait until it shows Running), then rerun the same install command. Finished downloads are reused."
+                return 1
+            fi
+
             ui_status_line warn "$svc build failed (attempt $attempt/$max_attempts)"
             if (( attempt < max_attempts )); then
                 ai_warn "$svc build failed; retrying in ${retry_delay}s (attempt $((attempt + 1))/$max_attempts)..."
@@ -173,6 +195,14 @@ except Exception:
                 tail -n 120 "$build_log" 2>/dev/null || true
             } >> "$LOG_FILE"
             ai "Build log: $build_log"
+            # The host curl preflight does not exercise the build network.
+            # Diagnose only failed builds with name-resolution error evidence;
+            # npm's generic "Exit handler never called" is not DNS evidence.
+            if grep -Eqi '(^|[^[:alnum:]_])(EAI_AGAIN|ENOTFOUND)([^[:alnum:]_]|$)|Temporary failure (in name resolution|resolving)|Could not resolve (host|proxy)|Name or service not known|no such host' "$build_log"; then
+                ai_warn "Build log contains a name-resolution error; check DNS in the selected container builder. Host network checks alone do not verify build DNS."
+                ai "On systemd-resolved hosts, check the real uplink resolvers as well as the 127.0.0.53 stub. The stub alone does not prove a fault. Use resolvers reachable from this build network; preserve existing daemon settings."
+                ai "See docs/INSTALL-TROUBLESHOOTING.md#container-build-dns for checks and operator-managed recovery. ODS has not changed DNS settings or restarted Docker for this diagnostic."
+            fi
             failed_build_services+=("$svc")
         else
             ui_status_line ok "$svc built"
@@ -321,6 +351,15 @@ _phase11_prefetch_embeddings_model() {
     fi
 
     mkdir -p "$cache_dir"
+    # Embeddings added after install (from Extensions) have the TEI container
+    # download the model itself, as root. That cache belongs to the running
+    # service, which completes it on its own; an installer rerun cannot write
+    # into it and must not stop an update over it.
+    local model_cache="$cache_dir/models--${model//\//--}"
+    if [[ -d "$model_cache" && ! -w "$model_cache" ]]; then
+        ai_ok "Embeddings model already cached by the Embeddings service"
+        return 0
+    fi
     ai "Caching embeddings model for RAG: $model"
     if [[ -n "$revision" ]]; then
         "$python_cmd" "$helper" "$model" "$cache_dir" --revision "$revision" >> "$LOG_FILE" 2>&1 &
@@ -338,12 +377,23 @@ _phase11_prefetch_embeddings_model() {
     return 1
 }
 
+_phase11_model_sha256() {
+    local path="$1" python_cmd="${ODS_PYTHON_CMD:-python3}" actual_hash
+    local helper="$SCRIPT_DIR/lib/model-file-sha256.py"
+    [[ -f "$helper" ]] || return 1
+    if ! actual_hash="$("$python_cmd" "$helper" "$path")"; then
+        return 1
+    fi
+    # A failed or malformed helper response must never authorize removal.
+    [[ "$actual_hash" =~ ^[a-f0-9]{64}$ ]] || return 1
+    printf '%s\n' "$actual_hash"
+}
+
 _phase11_model_file_valid() {
     local path="$1" expected_sha="${2:-}" actual_hash
     [[ -s "$path" ]] || return 1
     if [[ -n "$expected_sha" ]]; then
-        command -v sha256sum >/dev/null 2>&1 || return 1
-        actual_hash="$(sha256sum "$path" 2>/dev/null | awk '{print $1}')"
+        actual_hash="$(_phase11_model_sha256 "$path")" || return 1
         [[ -n "$actual_hash" && "$actual_hash" == "$expected_sha" ]] || return 1
     fi
     return 0
@@ -387,6 +437,71 @@ _phase11_patch_hermes_with_sed() {
         && grep -Fqx "  context_length: ${context_length}" "$template_path"
 }
 
+# Write the selected model route into the Hermes template, then verify it.
+# Arguments: python, template, model, context, request timeout, base URL, API key.
+_phase11_apply_hermes_template() {
+    local _python_cmd="$1" _hermes_tpl="$2" _hermes_model="$3" _hermes_context="$4"
+    local _hermes_request_timeout="$5" _hermes_base_url="$6" _hermes_api_key="$7"
+    local _hermes_patcher="$INSTALL_DIR/scripts/patch-hermes-config.py"
+    local _hermes_model_yaml _hermes_model_yaml_valid=false
+    local -a _hermes_patcher_args
+    if [[ -n "$_python_cmd" && -f "$_hermes_patcher" ]]; then
+        _hermes_patcher_args=("$_hermes_tpl" --model "$_hermes_model" --context-length "$_hermes_context")
+        if [[ -n "$_hermes_base_url" ]]; then
+            _hermes_patcher_args+=(--base-url "$_hermes_base_url")
+        fi
+        if [[ -n "$_hermes_api_key" ]]; then
+            _hermes_patcher_args+=(--api-key "$_hermes_api_key")
+        fi
+        _hermes_patcher_args+=(--request-timeout-seconds "$_hermes_request_timeout")
+        "$_python_cmd" "$_hermes_patcher" "${_hermes_patcher_args[@]}" >>"$LOG_FILE" 2>&1 || \
+            warn "Hermes config patcher failed for $_hermes_tpl"
+    else
+        _phase11_patch_hermes_with_sed \
+            "$_hermes_tpl" "$_hermes_model" "$_hermes_context" "$_hermes_request_timeout" \
+            2>>"$LOG_FILE" || warn "Hermes fallback config patcher failed for $_hermes_tpl"
+    fi
+    if _hermes_model_yaml="$(_phase11_yaml_double_quoted_scalar_content "$_hermes_model")"; then
+        _hermes_model_yaml_valid=true
+    fi
+    if $_hermes_model_yaml_valid && \
+       grep -Fqx "  default: \"$_hermes_model_yaml\"" "$_hermes_tpl" && \
+       grep -Fqx "  context_length: ${_hermes_context}" "$_hermes_tpl"; then
+        ai_ok "Patched Hermes template: model.default=$_hermes_model, context=$_hermes_context"
+    else
+        warn "Hermes template substitution didn't take effect — Hermes may 404 every chat completion. Hand-edit $_hermes_tpl after install if Hermes prompts hang."
+    fi
+}
+
+# Copy the finished example projects ODS ships (Elf of Doom) into the owner's
+# Portal workspace whenever Playground/elf-of-doom is absent and this workspace
+# has never received it, so a deleted or renamed example stays that way. The
+# record of received examples lives in Portal's state folder, which the
+# agent's sandbox never mounts. Portal's sidebar then lists it with the other
+# projects; the installer prints nothing about it. Runs after Portal is
+# verified; a failure never fails the install. The outcome, and a workspace
+# layout the helper never writes into (exit status 3, which stays as the owner
+# made it), go only to the install log: log() would also print them in the
+# plain display. Only a failure warns, with its cause, recovery and help link.
+_phase11_add_example_projects() {
+    [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
+    local owner home status code=0
+    if ! owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" || ! home="$(ods_pixel_owner_home "$owner")"; then
+        ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: it could not find the Portal owner's account or home folder. Nothing in your Portal workspace was changed. Ask on Discord if you need help: ${ODS_HELP_DISCORD_URL} (details: $LOG_FILE)"
+        return 0
+    fi
+    status="$(ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 -B \
+        "${INSTALL_DIR:?}/installers/lib/pixel-example-projects.py" \
+        --workspace "$home/.openclaw/workspace-pixel" --state-dir "$home/.openclaw" 2>>"$LOG_FILE")" || code=$?
+    case "$code" in
+        0) printf 'Portal example projects: %s\n' "$status" >>"$LOG_FILE" ;;
+        3) printf 'Portal example projects not added: %s\n' "$status" >>"$LOG_FILE" ;;
+        4) ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: $status Nothing in your Portal workspace was replaced. Ask on Discord if you need help: ${ODS_HELP_DISCORD_URL} (details: $LOG_FILE)" ;;
+        *) ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: its copy step stopped unexpectedly (exit $code). Nothing in your Portal workspace was replaced. Ask on Discord with the details from $LOG_FILE: ${ODS_HELP_DISCORD_URL}" ;;
+    esac
+    return 0
+}
+
 ods_progress 75 "services" "Starting services"
 show_phase 5 6 "Starting Services" "~2-3 minutes"
 
@@ -417,12 +532,10 @@ else
         echo "$default"
     }
 
-    _phase11_external_lemonade() {
-        local external managed mode
-        external="${LEMONADE_EXTERNAL:-$(_phase11_env_get LEMONADE_EXTERNAL false)}"
-        managed="${AMD_INFERENCE_MANAGED:-$(_phase11_env_get AMD_INFERENCE_MANAGED "")}"
-        mode="${ODS_MODE:-$(_phase11_env_get ODS_MODE local)}"
-        [[ "${external,,}" == "true" ]] || [[ "${mode,,}" == "lemonade" && "${managed,,}" == "false" ]]
+    # A host-native llama-server (the Windows Portal's llama-server.exe) serves
+    # the model from outside this stack.
+    _phase11_host_native_llm() {
+        [[ -n "${NATIVE_LLM_BASE_URL:-$(_phase11_env_get NATIVE_LLM_BASE_URL "")}" ]]
     }
 
     _phase11_external_llm() {
@@ -431,6 +544,89 @@ else
         model="${EXTERNAL_LLM_MODEL:-$(_phase11_env_get EXTERNAL_LLM_MODEL "")}"
         skip="${SKIP_MODEL_DOWNLOAD:-$(_phase11_env_get SKIP_MODEL_DOWNLOAD false)}"
         [[ -n "$url" && -n "$model" && "${skip,,}" == "true" ]]
+    }
+
+    # The vLLM engine (vllm-server) serves the model instead of llama-server.
+    _phase11_vllm_engine() {
+        [[ "${LLM_BACKEND:-$(_phase11_env_get LLM_BACKEND "")}" == "vllm" ]]
+    }
+
+    # The llama-server container ids Compose still knows for this project, in
+    # any state: the vLLM overlay keeps the service behind its local-inference
+    # profile, where `up --remove-orphans` never removes it.
+    _phase11_old_llama_containers() {
+        $DOCKER_COMPOSE_CMD --profile local-inference "${COMPOSE_FLAGS_ARR[@]}" \
+            ps -a -q llama-server 2>>"$LOG_FILE"
+    }
+
+    _phase11_old_llama_stuck() {
+        ai_bad "The previous llama-server container could not be removed, and it would hold GPU memory the vLLM engine needs (details in $LOG_FILE)."
+        ai "Remove it with: docker rm -f ods-llama-server, then run the same install command again. Its models stay in data/models."
+        ai "Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+        exit 1
+    }
+
+    # spin_task's live status for the vLLM model download: the downloader's
+    # latest "progress: N% x of y GB" line.
+    _phase11_vllm_download_status() {
+        awk '/^progress: / { line = substr($0, 11) } END { print (line == "" ? "checking files" : line) }' \
+            "$ODS_VLLM_DOWNLOAD_LOG"
+    }
+
+    # The vLLM engine's model is a whole pinned Hugging Face snapshot: every
+    # file goes to data/models/<VLLM_MODEL_DIR>/ and is verified against the
+    # catalog by scripts/download-hf-manifest.py, which keeps verified files
+    # and partial bytes when it stops, so another run resumes. A stop (exit 1)
+    # resumes up to twice here; a checksum mismatch (3) or a full disk (4)
+    # needs the owner and ends the install with what to do.
+    _phase11_download_vllm_model() {
+        local python_cmd="${ODS_PYTHON_CMD:-python3}" name size_gb attempt pid status=0 detail
+        name="${VLLM_SERVED_MODEL:-$LLM_MODEL}"
+        size_gb=$(( (${LLM_MODEL_SIZE_MB:-0} + 999) / 1000 ))
+        ODS_VLLM_DOWNLOAD_LOG="$INSTALL_DIR/logs/vllm-model-download.log"
+        mkdir -p "$INSTALL_DIR/logs"
+        : >> "$ODS_VLLM_DOWNLOAD_LOG"
+        ai "Getting ${name} for the vLLM engine (about ${size_gb} GB into data/models/${VLLM_MODEL_DIR}). Files already here are checked, not downloaded again."
+        for attempt in 1 2 3; do
+            printf '=== %s attempt %s of 3\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$attempt" >> "$ODS_VLLM_DOWNLOAD_LOG"
+            "$python_cmd" "$INSTALL_DIR/scripts/download-hf-manifest.py" \
+                --catalog "$INSTALL_DIR/config/model-library.json" \
+                --model-id "$LLM_MODEL" \
+                --models-dir "$INSTALL_DIR/data/models" >> "$ODS_VLLM_DOWNLOAD_LOG" 2>&1 &
+            pid=$!
+            ODS_ACTIVE_DOWNLOAD_PID="$pid"
+            status=0
+            spin_task "$pid" "Downloading ${name}" "" 0 _phase11_vllm_download_status || status=$?
+            ODS_ACTIVE_DOWNLOAD_PID=""
+            if [[ "$status" -eq 0 ]]; then
+                ui_status_line ok "Model downloaded and verified: ${name}"
+                return 0
+            fi
+            [[ "$status" -eq 1 && "$attempt" -lt 3 ]] || break
+            ai "The download paused (network or Hugging Face); resuming from the files kept so far (attempt $((attempt + 1)) of 3)."
+            sleep "${ODS_VLLM_DOWNLOAD_RETRY_DELAY_SECONDS:-5}"
+        done
+        detail="$(awk '/^error: / { line = substr($0, 8) } END { print line }' "$ODS_VLLM_DOWNLOAD_LOG")"
+        case "$status" in
+            1)
+                ai_bad "The download of ${name} stopped before it finished${detail:+: $detail}"
+                ai "Run the same install command again: it keeps the verified files and resumes. Details: $ODS_VLLM_DOWNLOAD_LOG"
+                ;;
+            3)
+                ai_bad "A downloaded file of ${name} did not match the catalog checksum, so it was deleted${detail:+: $detail}"
+                ai "Run the same install command again to fetch that file again. Details: $ODS_VLLM_DOWNLOAD_LOG"
+                ;;
+            4)
+                ai_bad "There is not enough free disk space for ${name}${detail:+: $detail}"
+                ai "Free up space on that disk, then run the same install command again (files already downloaded are kept). Or install with --llm-backend llama-server, which uses a smaller model."
+                ;;
+            *)
+                ai_bad "The download of ${name} ended unexpectedly (exit ${status})${detail:+: $detail}"
+                ai "Run the same install command again; files already verified are kept. Details: $ODS_VLLM_DOWNLOAD_LOG"
+                ;;
+        esac
+        ai "Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+        return 1
     }
 
     _phase11_close_inherited_fds_for_daemon() {
@@ -462,15 +658,20 @@ else
             log "CPU fallback tier selected: $TIER"
         fi
 
+        _phase11_env_set GPU_BACKEND "cpu"
+        if _phase11_host_native_llm; then
+            # The Linux container cannot use the GPU, but the selected model
+            # is served by Windows. Keep its persisted route and model values.
+            ai_ok "Retained the host-native llama-server route during CPU device fallback"
+            return 0
+        fi
+
         load_backend_contract "cpu" || true
         LLM_HEALTHCHECK_URL="${BACKEND_PUBLIC_HEALTH_URL:-http://localhost:8080/health}"
         LLM_PUBLIC_API_PORT="${BACKEND_PUBLIC_API_PORT:-8080}"
-        OPENCLAW_PROVIDER_NAME_DEFAULT="${BACKEND_PROVIDER_NAME:-local-llama}"
-        OPENCLAW_PROVIDER_URL_DEFAULT="${BACKEND_PROVIDER_URL:-http://llama-server:8080/v1}"
         resolve_tier_config
         GPU_BACKEND="cpu"
 
-        _phase11_env_set GPU_BACKEND "$GPU_BACKEND"
         _phase11_env_set ODS_MODE "local"
         _phase11_env_set LLM_API_URL "http://llama-server:8080"
         _phase11_env_set LLM_MODEL "$LLM_MODEL"
@@ -562,30 +763,26 @@ else
             "ods-host-agent"
     }
 
-    _phase11_allow_external_lemonade_firewall() {
-        _phase11_external_lemonade || return 0
+    # LiteLLM and model-router reach the host-native llama-server through the
+    # Docker host gateway; with default-DROP UFW/firewalld that needs a rule
+    # scoped to the Docker subnet, as for the host agent.
+    _phase11_allow_host_native_llm_firewall() {
+        _phase11_host_native_llm || return 0
 
         local network_name="${1:-ods-network}"
-        local port base without_scheme host_port
+        local port base
         port="${AMD_INFERENCE_PORT:-$(_phase11_env_get AMD_INFERENCE_PORT "")}"
-        base="${LEMONADE_BASE_URL:-$(_phase11_env_get LEMONADE_BASE_URL "http://localhost:13305")}"
-        base="${base%/}"
         if [[ -z "$port" ]]; then
-            without_scheme="${base#*://}"
-            host_port="${without_scheme%%/*}"
-            if [[ "$host_port" == *:* ]]; then
-                port="${host_port##*:}"
-            else
-                port="13305"
-            fi
+            base="${NATIVE_LLM_BASE_URL:-$(_phase11_env_get NATIVE_LLM_BASE_URL "")}"
+            port="$(ods_native_llm_origin_port "$base")" || return 0
         fi
 
         _phase11_allow_container_host_firewall \
             "$network_name" \
             "$port" \
-            "ods-external-lemonade" \
+            "ods-native-llm" \
             "" \
-            "external Lemonade"
+            "host-native llama-server"
     }
 
     _phase11_allow_external_llm_firewall() {
@@ -622,16 +819,17 @@ else
         _phase11_apply_cpu_fallback "$_amd_missing_devices"
     fi
 
-    # An owned Windows Lemonade task serves its private Windows model store.
-    # Register that read-only API mount before resolving the Compose overlays.
-    if [[ "${LEMONADE_HOST_TRANSPORT:-$(_phase11_env_get LEMONADE_HOST_TRANSPORT direct)}" == "model-router" ]]; then
+    # An owned Windows llama-server task serves its private Windows model
+    # store. Register that read-only API mount before resolving the Compose
+    # overlays.
+    if [[ "${ODS_HOST_LLM_TRANSPORT:-$(_phase11_env_get ODS_HOST_LLM_TRANSPORT direct)}" == "model-router" ]]; then
         _wsl_store_python="${ODS_PYTHON_CMD:-}"
         if [[ -z "$_wsl_store_python" ]]; then
             _wsl_store_python="$(command -v python3 || command -v python)"
         fi
         if ! "$_wsl_store_python" "$INSTALL_DIR/scripts/configure-wsl-model-store.py" \
             --install-dir "$INSTALL_DIR" >> "$LOG_FILE" 2>&1; then
-            error "The registered Windows Lemonade runtime could not be verified; stopping before service configuration."
+            error "The registered Windows llama-server runtime could not be verified; stopping before service configuration."
             return 1
         fi
     fi
@@ -802,7 +1000,7 @@ else
         return 1
     }
 
-    # Cloud/external Lemonade modes skip ODS-managed GGUF downloads and
+    # Cloud and host-native modes skip ODS-managed GGUF downloads and
     # auto-enable LiteLLM because it is the routing surface for both paths.
     if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
         ai "Cloud mode — skipping model download"
@@ -813,13 +1011,13 @@ else
             mv "$litellm_disabled" "$litellm_cf"
             ai_ok "Auto-enabled litellm for cloud mode"
         fi
-    elif _phase11_external_lemonade; then
-        ai "Existing Lemonade mode - skipping ODS-managed GGUF download"
+    elif _phase11_host_native_llm; then
+        ai "Host-native llama-server - the model is on Windows; skipping the GGUF download here"
         litellm_cf="$INSTALL_DIR/extensions/services/litellm/compose.yaml"
         litellm_disabled="${litellm_cf}.disabled"
         if [[ -f "$litellm_disabled" && ! -f "$litellm_cf" ]]; then
             mv "$litellm_disabled" "$litellm_cf"
-            ai_ok "Auto-enabled litellm for external Lemonade mode"
+            ai_ok "Auto-enabled litellm for the host-native llama-server"
         fi
     elif _phase11_external_llm; then
         ai "External ${EXTERNAL_LLM_PROVIDER:-LLM} mode - skipping ODS-managed GGUF download"
@@ -833,7 +1031,8 @@ else
     # immediately. The full model downloads in the background and hot-swaps.
     [[ -f "$SCRIPT_DIR/installers/lib/bootstrap-model.sh" ]] && . "$SCRIPT_DIR/installers/lib/bootstrap-model.sh"
     _BOOTSTRAP_ACTIVE=false
-    if ! _phase11_external_llm && type bootstrap_needed &>/dev/null && bootstrap_needed; then
+    if ! _phase11_external_llm && ! _phase11_host_native_llm \
+        && type bootstrap_needed &>/dev/null && bootstrap_needed; then
         _BOOTSTRAP_ACTIVE=true
         # Save full model config for the background upgrade
         FULL_GGUF_FILE="$GGUF_FILE"
@@ -857,19 +1056,15 @@ else
     ods_progress 76 "services" "Checking AI model"
     GGUF_DIR="$INSTALL_DIR/data/models"
     if [[ "${ODS_MODE:-local}" != "cloud" && -n "$GGUF_URL" ]] \
-        && ! _phase11_external_lemonade \
+        && ! _phase11_host_native_llm \
         && ! _phase11_external_llm; then
         # Check if model exists and verify integrity
         if [[ -f "$GGUF_DIR/$GGUF_FILE" ]]; then
             if [[ -n "$GGUF_SHA256" ]]; then
-                if command -v sha256sum &>/dev/null; then
-                    ai "Verifying model integrity (SHA256)..."
-                    ACTUAL_HASH=$(sha256sum "$GGUF_DIR/$GGUF_FILE" 2>/dev/null | awk '{print $1}')
-                    if [[ -n "$ACTUAL_HASH" && "$ACTUAL_HASH" == "$GGUF_SHA256" ]]; then
+                ai "Verifying model integrity (SHA256)..."
+                if ACTUAL_HASH="$(_phase11_model_sha256 "$GGUF_DIR/$GGUF_FILE")"; then
+                    if [[ "$ACTUAL_HASH" == "$GGUF_SHA256" ]]; then
                         ai_ok "Model verified: $GGUF_FILE"
-                    elif [[ -z "$ACTUAL_HASH" ]]; then
-                        ai_warn "Could not compute checksum for existing model file"
-                        ai_ok "GGUF model already present: $GGUF_FILE (verification skipped)"
                     else
                         ai_warn "Model file is corrupt (SHA256 mismatch)."
                         ai "  Expected: $GGUF_SHA256"
@@ -878,8 +1073,8 @@ else
                         rm -f "$GGUF_DIR/$GGUF_FILE"
                     fi
                 else
-                    ai_warn "sha256sum not available, skipping integrity check"
-                    ai_ok "GGUF model already present: $GGUF_FILE (verification skipped)"
+                    ai_bad "Could not verify existing model file. File preserved; stopping installation."
+                    exit 1
                 fi
             else
                 ai_ok "GGUF model already present: $GGUF_FILE"
@@ -969,14 +1164,10 @@ else
             else
                 # Verify freshly downloaded file
                 if [[ -n "$GGUF_SHA256" ]]; then
-                    if command -v sha256sum &>/dev/null; then
-                        ai "Verifying download integrity (SHA256)..."
-                        ACTUAL_HASH=$(sha256sum "$GGUF_DIR/$GGUF_FILE" 2>/dev/null | awk '{print $1}')
-                        if [[ -n "$ACTUAL_HASH" && "$ACTUAL_HASH" == "$GGUF_SHA256" ]]; then
+                    ai "Verifying download integrity (SHA256)..."
+                    if ACTUAL_HASH="$(_phase11_model_sha256 "$GGUF_DIR/$GGUF_FILE")"; then
+                        if [[ "$ACTUAL_HASH" == "$GGUF_SHA256" ]]; then
                             ai_ok "Download verified OK"
-                        elif [[ -z "$ACTUAL_HASH" ]]; then
-                            ai_warn "Could not compute checksum for downloaded file"
-                            ai_warn "Proceeding without verification (file may be corrupt)"
                         else
                             ui_status_line error "Downloaded file is corrupt (SHA256 mismatch)"
                             ai "  Expected: $GGUF_SHA256"
@@ -986,8 +1177,8 @@ else
                             _dl_success=false
                         fi
                     else
-                        ai_warn "sha256sum not available, skipping integrity check"
-                        ai_warn "Proceeding without verification (file may be corrupt)"
+                        ai_bad "Could not verify downloaded model file. File preserved; stopping installation."
+                        exit 1
                     fi
                 fi
             fi
@@ -996,12 +1187,20 @@ else
 
         # Abort if model download/verification failed
         if [[ "${ODS_MODE:-local}" != "cloud" && -n "$GGUF_URL" && ! -f "$GGUF_DIR/$GGUF_FILE" ]] \
-            && ! _phase11_external_lemonade \
+            && ! _phase11_host_native_llm \
             && ! _phase11_external_llm; then
             ai_bad "Model file missing or verification failed. Cannot proceed without a valid model."
             ai "Re-run the installer to retry the download."
             exit 1
         fi
+    fi
+
+    # The vLLM engine's model (GGUF_URL is empty on that route, so the block
+    # above did nothing). vllm-server mounts the folder read-only, so it must
+    # be complete before the stack starts.
+    if _phase11_vllm_engine; then
+        ods_progress 77 "services" "Downloading AI model"
+        _phase11_download_vllm_model || exit 1
     fi
 
     # ── SDXL Lightning model download (ComfyUI image generation) ──
@@ -1034,19 +1233,19 @@ else
         fi
         # NVIDIA ComfyUI also needs output/input/workflows bind-mount dirs
         if [[ "$GPU_BACKEND" == "nvidia" ]]; then
-            mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows,user}
+            mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows,user,cuda-cache}
             if ! _phase11_prepare_uid1000_bind_data \
-                "$INSTALL_DIR/data/comfyui" models output input user; then
+                "$INSTALL_DIR/data/comfyui" models output input user cuda-cache; then
                 ai_bad "Could not prepare NVIDIA ComfyUI data for its container user."
                 exit 1
             fi
         fi
 
+        # The checkpoint ComfyUI's default image pack (comfyui/model-packs.json) pins.
         SDXL_MODEL="sdxl_lightning_4step.safetensors"
-        SDXL_URL="https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step.safetensors"
 
         if [[ ! -f "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
-            ai "Downloading SDXL Lightning 4-step (~6.5GB) for image generation..."
+            ai "Downloading SDXL Lightning 4-step (6.9 GB) for image generation..."
 
             # Source background task tracking
             if [[ -f "$SCRIPT_DIR/installers/lib/background-tasks.sh" ]]; then
@@ -1054,27 +1253,26 @@ else
             fi
 
             # This daemon must not inherit the installer model lifecycle lock;
-            # otherwise full-model activation waits for an unrelated 6.5 GB
+            # otherwise full-model activation waits for an unrelated 6.9 GB
             # image download after the installer itself releases the lock.
+            # It runs the downloader the Extensions page uses, from the install
+            # directory (which outlives the installer's source): the pinned URL,
+            # size and SHA-256 come from model-packs.json, a dropped connection
+            # resumes (six tries, as curl --retry 5 did), and a file that fails
+            # its checksum is deleted. The summary reads this log for ERROR, so
+            # any non-zero exit, even one the downloader did not foresee, ends
+            # with an ERROR line.
             (
                 _phase11_close_inherited_fds_for_daemon
                 exec nohup env \
-                    SDXL_CHECKPOINT_DIR="$SDXL_CHECKPOINT_DIR" \
-                    SDXL_MODEL="$SDXL_MODEL" \
-                    SDXL_URL="$SDXL_URL" \
+                    ODS_ASSETS_PYTHON="${ODS_PYTHON_CMD:-python3}" \
+                    ODS_ASSETS="$INSTALL_DIR/bin/extension_assets.py" \
+                    COMFYUI_EXT_DIR="$INSTALL_DIR/extensions/services/comfyui" \
+                    INSTALL_DIR="$INSTALL_DIR" \
+                    GPU_BACKEND="$GPU_BACKEND" \
                     bash -c '
-                        echo "[SDXL] Starting SDXL Lightning model download..."
-                        if [[ ! -f "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
-                            echo "[SDXL] Downloading $SDXL_MODEL (~6.5GB)..."
-                            curl -fSL -C - --connect-timeout 30 --max-time 3600 \
-                                --retry 5 --retry-delay 10 --retry-all-errors \
-                                -o "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" \
-                                "$SDXL_URL" 2>&1 && \
-                                mv "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" && \
-                                echo "[SDXL] $SDXL_MODEL complete" || \
-                                echo "[SDXL] ERROR: Failed to download $SDXL_MODEL"
-                        fi
-                        echo "[SDXL] SDXL Lightning model download finished."
+                        "$ODS_ASSETS_PYTHON" "$ODS_ASSETS" --attempts 6 "$COMFYUI_EXT_DIR" "$INSTALL_DIR" "$GPU_BACKEND" \
+                            || echo "[SDXL] ERROR: the model download exited with status $?; see the lines above"
                     ' > "$INSTALL_DIR/logs/sdxl-download.log" 2>&1
             ) &
 
@@ -1086,7 +1284,7 @@ else
             fi
 
             log "Background SDXL download started (PID: $sdxl_pid). Check: tail -f $INSTALL_DIR/logs/sdxl-download.log"
-            ai "SDXL Lightning downloading in background (~6.5GB). ComfyUI will be ready once complete."
+            ai "SDXL Lightning downloading in background (6.9 GB). ComfyUI will be ready once complete."
         else
             ai_ok "SDXL Lightning model already present"
         fi
@@ -1102,10 +1300,12 @@ else
         fi
     fi
 
-    # Generate models.ini for llama-server (skip in cloud mode)
+    # Generate models.ini for llama-server (skip in cloud mode, and where the
+    # model runs outside the stack or in the vLLM engine)
     if [[ "${ODS_MODE:-local}" != "cloud" ]] \
-        && ! _phase11_external_lemonade \
-        && ! _phase11_external_llm; then
+        && ! _phase11_host_native_llm \
+        && ! _phase11_external_llm \
+        && ! _phase11_vllm_engine; then
         mkdir -p "$INSTALL_DIR/config/llama-server"
         cat > "$INSTALL_DIR/config/llama-server/models.ini" << MODELS_INI_EOF
 [${LLM_MODEL}]
@@ -1165,6 +1365,7 @@ MODELS_INI_EOF
         fi
     fi
 
+    _phase11_hermes_template_route=()
     if [[ "${ENABLE_HERMES:-false}" == "true" ]]; then
         # The Hermes Agent extension ships a config template at
         # extensions/services/hermes/cli-config.yaml.template which is
@@ -1177,9 +1378,8 @@ MODELS_INI_EOF
         # Two values vary per platform / backend and the template ships
         # placeholders for both:
         #   model.default — Hermes asks the LLM server for this exact name.
-        #                   llama.cpp serves under "<file>.gguf"; Lemonade
-        #                   (AMD) wraps it as "extra.<file>.gguf". Asking
-        #                   for the wrong name 404s every chat completion.
+        #                   llama.cpp serves under "<file>.gguf" (its
+        #                   --alias) on every GPU.
         #   model.base_url — llama-server's URL. The compose bridge name
         #                   "llama-server:8080" works for the Linux installs,
         #                   but on macOS llama-server runs native on the
@@ -1191,8 +1391,8 @@ MODELS_INI_EOF
         _python_cmd="$(ods_detect_python_cmd 2>/dev/null || command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
         _hermes_tpl="$INSTALL_DIR/extensions/services/hermes/cli-config.yaml.template"
         if [[ -f "$_hermes_tpl" ]]; then
-            # Model name: cloud mode uses the routed model id; Lemonade
-            # prefixes GGUF files with "extra."; llama.cpp uses the file name.
+            # Model name: cloud mode uses the routed model id; llama.cpp
+            # serves the GGUF file name.
             _hermes_switchboard_mode="$(printf '%s' "${ODS_MODEL_SWITCHBOARD:-enabled}" | tr '[:upper:]' '[:lower:]')"
             if [[ "$_hermes_switchboard_mode" == "enabled" ]]; then
                 _hermes_model="ods/current"
@@ -1200,18 +1400,13 @@ MODELS_INI_EOF
                 _hermes_model="${LLM_MODEL:-default}"
             elif _phase11_external_llm; then
                 _hermes_model="${EXTERNAL_LLM_MODEL:-$(_phase11_env_get EXTERNAL_LLM_MODEL "${LLM_MODEL:-default}")}"
-            elif _phase11_external_lemonade; then
-                _hermes_model="${LEMONADE_MODEL:-$(_phase11_env_get LEMONADE_MODEL "${LLM_MODEL:-default}")}"
             else
                 _hermes_model="$GGUF_FILE"
             fi
-            if [[ "${GPU_BACKEND:-}" == "amd" && "${ODS_MODE:-local}" != "cloud" ]] && ! _phase11_external_lemonade; then
-                _hermes_model="extra.$GGUF_FILE"
-            fi
             # Local switchboard mode routes Hermes through model-router so a
             # disconnected Talk request cancels the backend operation instead
-            # of leaving LiteLLM retries alive. Cloud/external and legacy AMD
-            # modes retain their authenticated/normalised LiteLLM paths.
+            # of leaving LiteLLM retries alive. Cloud, external and host-native
+            # routes use the authenticated LiteLLM gateway.
             _hermes_base_url=""
             _hermes_api_key=""
             if [[ "$_hermes_switchboard_mode" == "enabled" ]]; then
@@ -1223,7 +1418,7 @@ MODELS_INI_EOF
             elif _phase11_external_llm; then
                 _hermes_base_url="${HERMES_LLM_BASE_URL:-$(_phase11_env_get HERMES_LLM_BASE_URL "")}"
                 _hermes_api_key="${HERMES_LLM_API_KEY:-$(_phase11_env_get HERMES_LLM_API_KEY not-needed)}"
-            elif [[ "${GPU_BACKEND:-}" == "amd" ]] || _phase11_external_lemonade; then
+            elif _phase11_host_native_llm; then
                 _hermes_base_url="http://litellm:4000/v1"
                 _hermes_api_key="${LITELLM_KEY:-}"
             fi
@@ -1231,38 +1426,23 @@ MODELS_INI_EOF
             _hermes_request_timeout=180
             if [[ "$_hermes_switchboard_mode" == "enabled" ]]; then
                 _hermes_request_timeout=900
-            elif [[ "${ODS_MODE:-local}" != "cloud" ]] && { [[ "${GPU_BACKEND:-}" == "amd" ]] || _phase11_external_lemonade; }; then
+            elif [[ "${ODS_MODE:-local}" != "cloud" ]] && { [[ "${GPU_BACKEND:-}" == "amd" ]] || _phase11_host_native_llm; }; then
+                # Large models on AMD APUs take minutes to answer an agent turn.
                 _hermes_request_timeout=900
             elif _phase11_external_llm; then
                 _hermes_request_timeout=900
             fi
-            _hermes_patcher="$INSTALL_DIR/scripts/patch-hermes-config.py"
-            if [[ -n "$_python_cmd" && -f "$_hermes_patcher" ]]; then
-                _hermes_patcher_args=("$_hermes_tpl" --model "$_hermes_model" --context-length "$_hermes_context")
-                if [[ -n "$_hermes_base_url" ]]; then
-                    _hermes_patcher_args+=(--base-url "$_hermes_base_url")
-                fi
-                if [[ -n "$_hermes_api_key" ]]; then
-                    _hermes_patcher_args+=(--api-key "$_hermes_api_key")
-                fi
-                _hermes_patcher_args+=(--request-timeout-seconds "$_hermes_request_timeout")
-                "$_python_cmd" "$_hermes_patcher" "${_hermes_patcher_args[@]}" >>"$LOG_FILE" 2>&1 || \
-                    warn "Hermes config patcher failed for $_hermes_tpl"
+            _phase11_hermes_template_route=("$_python_cmd" "$_hermes_tpl" "$_hermes_model" \
+                "$_hermes_context" "$_hermes_request_timeout" "$_hermes_base_url" "$_hermes_api_key")
+            if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+                # Phase 06 published this template in the Pixel source update
+                # it still holds, and that update finishes only over the exact
+                # bytes it published. The route is written once the Pixel
+                # install below has finished the update, before Compose.
+                log "Hermes template route waits for the held Pixel source update to finish"
             else
-                _phase11_patch_hermes_with_sed \
-                    "$_hermes_tpl" "$_hermes_model" "$_hermes_context" "$_hermes_request_timeout" \
-                    2>>"$LOG_FILE" || warn "Hermes fallback config patcher failed for $_hermes_tpl"
-            fi
-            _hermes_model_yaml_valid=false
-            if _hermes_model_yaml="$(_phase11_yaml_double_quoted_scalar_content "$_hermes_model")"; then
-                _hermes_model_yaml_valid=true
-            fi
-            if $_hermes_model_yaml_valid && \
-               grep -Fqx "  default: \"$_hermes_model_yaml\"" "$_hermes_tpl" && \
-               grep -Fqx "  context_length: ${_hermes_context}" "$_hermes_tpl"; then
-                ai_ok "Patched Hermes template: model.default=$_hermes_model, context=$_hermes_context"
-            else
-                warn "Hermes template substitution didn't take effect — Hermes may 404 every chat completion. Hand-edit $_hermes_tpl after install if Hermes prompts hang."
+                _phase11_apply_hermes_template "${_phase11_hermes_template_route[@]}"
+                _phase11_hermes_template_route=()
             fi
         fi
 
@@ -1326,6 +1506,35 @@ MODELS_INI_EOF
     fi
     ai_ok "Compose configuration valid"
 
+    if _phase11_host_native_llm &&
+       ! ods_host_native_assert_no_managed_llama "${COMPOSE_FLAGS_ARR[@]}" 2>>"$LOG_FILE"; then
+        ai_bad "Host-native llama-server Compose could start the in-stack llama-server; inspect $LOG_FILE and clear COMPOSE_PROFILES."
+        exit 1
+    fi
+
+    if _phase11_vllm_engine &&
+       ! ods_vllm_assert_engine_stack "${COMPOSE_FLAGS_ARR[@]}" 2>>"$LOG_FILE"; then
+        ai_bad "The vLLM engine's Compose stack is not the expected one (details in $LOG_FILE); clear COMPOSE_PROFILES and rerun the installer."
+        exit 1
+    fi
+
+    if _phase11_vllm_engine; then
+        # A rerun that moves a llama.cpp installation to the vLLM engine leaves
+        # the old llama-server container, which would hold GPU memory vLLM
+        # needs: stop and remove it before the launch.
+        _vllm_old_llama="$(_phase11_old_llama_containers)" || _phase11_old_llama_stuck
+        if [[ -n "$_vllm_old_llama" ]]; then
+            if ! $DOCKER_COMPOSE_CMD --profile local-inference "${COMPOSE_FLAGS_ARR[@]}" \
+                rm --stop --force llama-server >>"$LOG_FILE" 2>&1; then
+                _phase11_old_llama_stuck
+            fi
+            _vllm_old_llama="$(_phase11_old_llama_containers)" || _phase11_old_llama_stuck
+            [[ -z "$_vllm_old_llama" ]] || _phase11_old_llama_stuck
+            ai_ok "Removed the previous llama-server container; its models stay in data/models"
+        fi
+        unset _vllm_old_llama
+    fi
+
     if [[ "${ENABLE_OPEN_WEBUI:-true}" != true ]] &&
        ! ods_compose_assert_no_webui "${COMPOSE_FLAGS_ARR[@]}" 2>>"$LOG_FILE"; then
         ai_bad "No-WebUI Compose could start Open WebUI; inspect $LOG_FILE and clear COMPOSE_PROFILES."
@@ -1378,7 +1587,6 @@ MODELS_INI_EOF
     # installer refuses to launch any potentially stale image.
     _candidate_build_services=(dashboard dashboard-api model-router remote-provider-egress remote-provider-ssh-tunnel ape token-spy privacy-shield brave-search pixel-edge pixel-model-relay pixel-inference langfuse-minio langfuse-minio-init)
     [[ "$ENABLE_COMFYUI" == "true" ]] && _candidate_build_services+=(comfyui)
-    [[ "$GPU_BACKEND" == "amd" ]] && _candidate_build_services+=(llama-server)
     if ! _enabled_compose_services="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --services 2>>"$LOG_FILE")"; then
         ai_bad "Could not resolve compose services before local image builds."
         ai "Inspect compose config with: $(_phase11_compose_command_text) config --services"
@@ -1405,8 +1613,7 @@ MODELS_INI_EOF
     # on each retry. --pull never is intentional too: Phase 08 and the preflight
     # below own registry access through pull_with_progress, so compose-up cannot
     # die mid-launch on an unbounded TLS handshake timeout.
-    # Up to 3 attempts with increasing wait between retries — on AMD/Lemonade,
-    # the first boot builds a cached llama-server binary which can take 3-5 min.
+    # Up to 3 attempts with increasing wait between retries.
     if ! _phase11_pre_pull_compose_images; then
         exit 1
     fi
@@ -1420,7 +1627,13 @@ MODELS_INI_EOF
         ai_bad "Pixel default-agent setup failed before the ODS stack launch."
         exit 1
     fi
+    # The Pixel source update is finished now; Hermes has not started yet.
+    # (":-" keeps set -u safe where tests run this block without the setup.)
+    if [[ -n "${_phase11_hermes_template_route[*]:-}" ]]; then
+        _phase11_apply_hermes_template "${_phase11_hermes_template_route[@]}"
+    fi
     _phase11_write_compose_launch_record
+    _phase11_add_example_projects
     for _attempt in 1 2 3; do
         $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build --pull never >> "$LOG_FILE" 2>&1 &
         compose_pid=$!
@@ -1487,7 +1700,7 @@ MODELS_INI_EOF
     # traffic. Add a scoped rule only after compose has created ods-network,
     # so we allow the actual Docker subnet instead of a broad RFC1918 range.
     _phase11_allow_host_agent_firewall ods-network
-    _phase11_allow_external_lemonade_firewall ods-network
+    _phase11_allow_host_native_llm_firewall ods-network
     _phase11_allow_external_llm_firewall ods-network
 
     _compose_started_with_delayed_health=false
@@ -1538,6 +1751,8 @@ MODELS_INI_EOF
             echo ""
             if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
                 ai_ok "Services started (external model through LiteLLM)"
+            elif _phase11_vllm_engine; then
+                ai_ok "Services started (vLLM engine; it loads the model next)"
             else
                 ai_ok "Services started (llama-server)"
             fi
@@ -1554,6 +1769,15 @@ MODELS_INI_EOF
         if [[ -n "${_python_cmd:-}" ]] && [[ -f "$INSTALL_DIR/scripts/build-installation-context.py" ]]; then
             "$_python_cmd" "$INSTALL_DIR/scripts/build-installation-context.py" >>"$LOG_FILE" 2>&1 || \
                 warn "Installation-context SOUL.md regen failed post-launch (non-fatal — earlier static SOUL.md is in place)"
+        fi
+        # Source publication replaces file inodes while an unchanged running
+        # Hermes can retain old binds. Check after the final SOUL render, before
+        # copying that mounted persona; preserve the existing live config.
+        if ! _phase11_refresh_hermes_mounts; then
+            ai_bad "Could not verify Hermes mounted files. See $LOG_FILE."
+            exit 1
+        fi
+        if [[ -n "${_python_cmd:-}" ]] && [[ -f "$INSTALL_DIR/scripts/build-installation-context.py" ]]; then
             if $DOCKER_CMD ps --format '{{.Names}}' 2>/dev/null | grep -qx 'ods-hermes'; then
                 $DOCKER_CMD exec ods-hermes cp /opt/hermes/docker/SOUL.md /opt/data/SOUL.md \
                     >>"$LOG_FILE" 2>&1 || \
@@ -1625,6 +1849,14 @@ MODELS_INI_EOF
         if command -v systemd-run >/dev/null 2>&1 \
             && [[ -d "$_upgrade_runtime_dir" && -S "$_upgrade_runtime_dir/bus" ]] \
             && "${_upgrade_systemd_env[@]}" systemctl --user show-environment >/dev/null 2>&1; then
+            # Without lingering, the user manager stops when the installer's
+            # login session ends and takes this unit with it. OpenCode (phase
+            # 07) and AMD tuning (phase 10) enable it already; default NVIDIA
+            # and CPU installs reach this point without it. Each attempt's
+            # error output is dropped because the next step covers it.
+            loginctl enable-linger "$(whoami)" 2>/dev/null \
+                || { ods_sudo_available && ods_sudo loginctl enable-linger "$(whoami)" 2>/dev/null; } \
+                || ai_warn "Could not enable linger. The background model download may stop after logout. Run: loginctl enable-linger $(whoami)"
             "${_upgrade_systemd_env[@]}" systemctl --user stop "$_upgrade_unit" >/dev/null 2>&1 || true
             "${_upgrade_systemd_env[@]}" systemctl --user reset-failed "$_upgrade_unit" >/dev/null 2>&1 || true
             if "${_upgrade_systemd_env[@]}" systemd-run --user --unit="${_upgrade_unit%.service}" --no-block \

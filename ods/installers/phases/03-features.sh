@@ -6,22 +6,28 @@
 # Purpose: Interactive feature selection menu
 #
 # Expects: INTERACTIVE, DRY_RUN, TIER, ENABLE_VOICE, ENABLE_WORKFLOWS,
-#           ENABLE_RAG, ENABLE_HERMES, ENABLE_OPENCLAW, ENABLE_OPENCODE,
+#           ENABLE_RAG, ENABLE_HERMES, ENABLE_OPENCODE,
 #           GPU_COUNT, GPU_BACKEND,
 #           HOST_ARCH, HOST_PAGE_SIZE,
 #           GPU_TOPOLOGY_JSON, LLM_MODEL_SIZE_MB, SCRIPT_DIR, VERBOSE, DEBUG,
 #           GPU_INDICES, GPU_UUIDS (arrays from topology),
+#           LLM_BACKEND and VLLM_GPU_UUID (phase 02; vllm pins the LLM GPU),
 #           show_phase(), show_install_menu(), chapter(), bootline(),
 #           success(), log(), warn(), error(), signal()
 # Provides: ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_EMBEDDINGS,
-#           ENABLE_QDRANT, ENABLE_HERMES, ENABLE_OPENCLAW, ENABLE_SEARXNG,
-#           ENABLE_WEB_SEARCH, OPENCLAW_CONFIG, GPU_ASSIGNMENT_JSON,
+#           ENABLE_QDRANT, ENABLE_HERMES, ENABLE_SEARXNG,
+#           ENABLE_WEB_SEARCH, GPU_ASSIGNMENT_JSON,
 #           LLAMA_SERVER_GPU_UUIDS, WHISPER_GPU_UUID, COMFYUI_GPU_UUID,
 #           EMBEDDINGS_GPU_UUID, LLAMA_ARG_SPLIT_MODE, LLAMA_ARG_TENSOR_SPLIT
 #
 # Modder notes:
 #   Add new optional features to the Custom menu here.
 # ============================================================================
+
+# Isolated phase reuse (tests) gets the route predicate installers/lib/
+# native-llm.sh gives install-core: a host-native llama-server is in use.
+declare -F ods_native_llm_requested >/dev/null 2>&1 \
+    || ods_native_llm_requested() { [[ -n "${NATIVE_LLM_BASE_URL:-}" ]]; }
 
 # Require Bash 4+ (associative arrays used for GPU topology/link maps)
 if (( BASH_VERSINFO[0] < 4 )); then
@@ -75,7 +81,6 @@ if $INTERACTIVE && ! $DRY_RUN; then
         _phase03_prompt_bool ENABLE_RAG "Enable Qdrant vector database (for RAG)?"
         # Explicit agent flags also take precedence over the Custom menu.
         [[ "${HERMES_EXPLICIT:-false}" == true ]] || _phase03_prompt_bool ENABLE_HERMES "Enable Hermes Agent?"
-        [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || _phase03_prompt_bool ENABLE_OPENCLAW "Enable OpenClaw AI agent framework (DEPRECATED - Hermes replaces it)?"
         _phase03_prompt_bool ENABLE_OPENCODE "Enable the OpenCode browser IDE extension?"
         [[ "${DEVTOOLS_EXPLICIT:-false}" == true ]] || _phase03_prompt_bool ENABLE_DEVTOOLS "Install Claude Code and Codex CLI on this host?"
         _phase03_prompt_bool ENABLE_COMFYUI "Enable image generation (ComfyUI + SDXL Lightning, ~6.5GB)?"
@@ -101,7 +106,10 @@ fi
 
 # Tier safety net: disable ComfyUI on Tier 0/1 in non-interactive mode.
 # Interactive mode has its own tier checks in the menu — this catches --non-interactive.
-if ! $INTERACTIVE && [[ "$ENABLE_COMFYUI" == "true" ]]; then
+# A rerun keeps a ComfyUI that this install already runs (for example one added
+# from the Extensions Library), as the interactive "Keep current selection" does.
+if ! $INTERACTIVE && [[ "$ENABLE_COMFYUI" == "true" ]] &&
+   [[ "$(ods_installed_service_default "$INSTALL_DIR" comfyui false)" != "true" ]]; then
     case "${TIER:-}" in
         0|1)
             ENABLE_COMFYUI=false
@@ -111,8 +119,9 @@ if ! $INTERACTIVE && [[ "$ENABLE_COMFYUI" == "true" ]]; then
 fi
 
 # The ComfyUI extension has only AMD and NVIDIA Docker overlays. A host GPU
-# served by an external runtime does not make those devices available inside
-# this install (for example, AMD Lemonade on Windows with a CPU-only WSL VM).
+# served by a runtime outside the stack does not make those devices available
+# inside this install (for example, the Windows Portal's llama-server with a
+# CPU-only WSL VM).
 # Resolve this before compose selection and the later ComfyUI health gate.
 if [[ "${ENABLE_COMFYUI:-false}" == "true" ]]; then
     case "${GPU_BACKEND:-cpu}" in
@@ -135,7 +144,8 @@ fi
 ENABLE_PIXEL_RUNTIME=false
 if [[ "$PIXEL_AGENT_MODE" == "pixel" ]]; then
     _pixel_model_route_class="$(ods_pixel_model_route_class \
-        "${ODS_MODE:-local}" "${EXTERNAL_LLM_URL:-}" "${LEMONADE_EXTERNAL:-false}")" || {
+        "${ODS_MODE:-local}" "${EXTERNAL_LLM_URL:-}" \
+        "$(ods_native_llm_requested && echo true || echo false)")" || {
         ai_bad "Pixel received an unsupported ODS model route."
         return 1 2>/dev/null || exit 1
     }
@@ -185,8 +195,8 @@ fi
 #                            ODS Talk stays unavailable until a smaller model
 #                            is chosen (the Dashboard shows the same reason).
 # A context above the model's native maximum never "fits" (llama.cpp caps the
-# slot there). Without the selector (no Python) the raise is applied
-# unverified, as before.
+# slot there). Without the selector, only this run's own fresh pick may
+# use the legacy unverified raise; a retained model keeps its context.
 #
 # "This run's own pick": phase 02 records its fresh recommendation in
 # INSTALLER_RECOMMENDED_*; a rerun may then keep an older active model
@@ -209,11 +219,24 @@ if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]];
             . "$SCRIPT_DIR/installers/lib/model-selector.sh"
         fi
         _hermes_floor_action="raise-unverified"
+        # The catalog has no fit record for community imports. A missing or
+        # failed fit check must not inflate a retained model's proven context.
+        if ! _ods_model_is_current_pick; then
+            _hermes_floor_action="cap"
+        fi
         _hermes_python=""
         if declare -F ods_catalog_fit_check >/dev/null 2>&1 \
             && [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" ]] \
             && [[ -f "$SCRIPT_DIR/scripts/select-model.py" && -f "$SCRIPT_DIR/config/model-library.json" ]]; then
             _hermes_python="$(ods_model_selector_python)"
+        fi
+        if ods_native_llm_requested || [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+            # llama-server on the Windows host loaded this model at this
+            # context, and a vLLM model serves the context its --max-model-len
+            # (VLLM_ARGS) fixes; this run can neither pick another model nor
+            # resize it (the llama.cpp fit check does not apply).
+            _hermes_floor_action="cap"
+            _hermes_python=""
         fi
         if [[ -n "$_hermes_python" ]]; then
             _hermes_fit_status=0
@@ -229,8 +252,9 @@ if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]];
                         _hermes_floor_action="cap"
                     fi
                     ;;
-                # Not a catalog model (an import) or the selector failed.
-                *) _hermes_floor_action="raise-unverified" ;;
+                # Keep the default: only a fresh installer pick can use the
+                # unverified fallback. Imports and other retained picks cap.
+                *) : ;;
             esac
         fi
         if [[ "$_hermes_floor_action" == "reselect" ]]; then
@@ -250,6 +274,8 @@ if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]];
                 unset LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V
                 unset LLAMA_ARG_N_CPU_MOE LLAMA_ARG_NO_CACHE_PROMPT LLAMA_ARG_CHECKPOINT_EVERY_NT
                 unset LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_RAM
+                unset LLAMA_ARG_UBATCH LLAMA_ARG_FIT_TARGET
+                unset LLAMA_ARG_MMPROJ MODEL_CHAT_TEMPLATE_OVERRIDE LLAMA_ARG_CHAT_TEMPLATE_FILE
                 load_model_selector_env_from_output <<< "$_hermes_env"
                 ai_warn "Hermes needs 64K context: ${_hermes_previous_model} (at ${_hermes_previous_context}) cannot serve 64K here, so ${LLM_MODEL} was selected at ${MAX_CONTEXT}."
                 log "Hermes floor: re-selected ${LLM_MODEL} at ${MAX_CONTEXT} (was ${_hermes_previous_model} at ${_hermes_previous_context})"
@@ -275,10 +301,10 @@ if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]];
                 ;;
             cap)
                 HERMES_CONTEXT_BELOW_FLOOR=true
-                ai_warn "Hermes needs at least 64K context, but ${LLM_MODEL:-this model} runs at ${MAX_CONTEXT} here (64K does not fit or exceeds its native context)."
+                ai_warn "Hermes needs at least 64K context, but ${LLM_MODEL:-this model} keeps its ${MAX_CONTEXT} context (a safe 64K runtime was not established)."
                 ai_warn "ODS Talk stays unavailable (the Dashboard says why) until you choose a model that fits 64K in Models."
-                log "Hermes floor: kept ${LLM_MODEL:-model} at ${MAX_CONTEXT}; it cannot serve 64K here and it is not replaced (not this run's pick, or no installable model fits at 64K)"
-                MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON:-} Hermes requires 64K context, which does not fit here; ODS Talk is unavailable with this model."
+                log "Hermes floor: kept ${LLM_MODEL:-model} at ${MAX_CONTEXT}; no safe 64K runtime was established and the retained model was not replaced."
+                MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON:-} Hermes requires 64K context, but a safe 64K runtime was not established; ODS Talk is unavailable with this model."
                 ;;
         esac
         unset _hermes_floor_action _hermes_python _hermes_fit_status
@@ -382,11 +408,17 @@ _sync_extension_compose() {
 # Held transactions already projected exact counterpart removals; no late code
 # renames are allowed to invalidate their after-inventory.
 _ods_apply_deferred_feature_state() {
-    local i svc flag candidate installed temporary owner
+    local i svc flag candidate installed temporary owner suffix counterpart candidate_counterpart
+    local initial_copy=false requested_ref="${1:-}"
     local -a selection=("${_ODS_DEFERRED_FEATURE_SELECTION[@]}")
     if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
         owner="$(ods_pixel_install_owner)" || return 1
         _ods_pixel_check_source_transaction "$owner" || return 1
+    elif _ods_feature_source_managed && [[ -n "$requested_ref" ]]; then
+        owner="$(ods_pixel_install_owner)" || return 1
+        if _ods_pixel_initial_source_copy_allowed "$owner" "$HOME" "$requested_ref"; then
+            initial_copy=true
+        fi
     fi
     for ((i=0; i<${#selection[@]}; i+=2)); do
         svc="${selection[i]}"
@@ -395,6 +427,26 @@ _ods_apply_deferred_feature_state() {
         installed="$INSTALL_DIR/extensions/services/$svc/compose.yaml"
         [[ -e "$candidate" || -e "${candidate}.disabled" ]] || continue
         if _ods_feature_source_managed || [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+            if [[ "$initial_copy" == true ]]; then
+                # An inert bootstrap uses the ordinary source copy, which
+                # retains the old opposite filename. Retire only that exact
+                # counterpart after the selected candidate bytes were copied.
+                suffix=.disabled; counterpart="$installed"; candidate_counterpart="$candidate"
+                if [[ "$flag" == true ]]; then
+                    suffix=""; counterpart="${installed}.disabled"; candidate_counterpart="${candidate}.disabled"
+                fi
+                if [[ ! -L "$SCRIPT_DIR/extensions" && ! -L "$SCRIPT_DIR/extensions/services" \
+                    && ! -L "$SCRIPT_DIR/extensions/services/$svc" \
+                    && ! -L "$INSTALL_DIR/extensions" && ! -L "$INSTALL_DIR/extensions/services" \
+                    && ! -L "$INSTALL_DIR/extensions/services/$svc" \
+                    && ! -L "$candidate$suffix" && ! -L "$installed$suffix" \
+                    && ! -e "$candidate_counterpart" && ! -L "$candidate_counterpart" \
+                    && -f "$candidate$suffix" && -f "$installed$suffix" \
+                    && ! -L "$counterpart" && -f "$counterpart" ]] \
+                    && cmp -s -- "$candidate$suffix" "$installed$suffix"; then
+                    rm -f -- "$counterpart" || return 1
+                fi
+            fi
             _ods_feature_pair_equal "$candidate" "$installed" || {
                 error "Feature source was not reconciled by the held source transaction."
                 return 1
@@ -404,7 +456,9 @@ _ods_apply_deferred_feature_state() {
         fi
     done
     if [[ -n "${_ODS_DEFERRED_GPU_TOPOLOGY:-}" ]]; then
-        if _ods_feature_source_managed && [[ -z "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+        # The same rechecked inert bootstrap authority covers its generated
+        # topology; deployed runtimes still require the authenticated hold.
+        if _ods_feature_source_managed && [[ -z "${ODS_PIXEL_SOURCE_TRANSACTION:-}" && "$initial_copy" != true ]]; then
             error "GPU topology changes require the authenticated source transaction."
             return 1
         fi
@@ -443,20 +497,20 @@ if ! $DRY_RUN; then
                 ENABLE_QDRANT=false
             fi
         fi
-
-        if [[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]]; then
-            ai_warn "Embeddings (TEI): upstream image is amd64-only - disabled on aarch64."
-            ENABLE_EMBEDDINGS=false
-        fi
+        # Embeddings (TEI) runs here from its arm64 pin in
+        # extensions/services/embeddings/compose.arm64.yaml.
     fi
     unset _host_arch _host_page_size
 
-    if [[ "${ENABLE_HERMES:-false}" != "true" && "${ENABLE_OPENCLAW:-false}" != "true" ]]; then
+    if [[ "${ENABLE_HERMES:-false}" != "true" ]]; then
         ENABLE_APE=false
     fi
     _pixel_support_services="${ENABLE_RECOMMENDED:-false}"
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && _pixel_support_services=true
     [[ -n "${EXTERNAL_LLM_URL:-}" ]] && _pixel_support_services=true
+    # Services reach the vLLM engine through LiteLLM and model-router, as on
+    # the host-native route (phase 06 sets LLM_API_URL to the gateway).
+    [[ "${LLM_BACKEND:-}" == "vllm" ]] && _pixel_support_services=true
     # With the default ODS_MODEL_SWITCHBOARD=enabled, phase 06 routes Open WebUI
     # through the gateway (OPEN_WEBUI_LLM_BASE_URL=http://litellm:4000), so it
     # must run even when recommended services are off. Resolve the mode as
@@ -499,8 +553,7 @@ if ! $DRY_RUN; then
     if [[ "${ENABLE_RECOMMENDED:-false}" == "true" ||
           "$PIXEL_RESOLVED_WEB_SEARCH_PROVIDER" == "searxng" ||
           "${ENABLE_PERPLEXICA:-false}" == "true" ||
-          "${ENABLE_HERMES:-false}" == "true" ||
-          "${ENABLE_OPENCLAW:-false}" == "true" ]]; then
+          "${ENABLE_HERMES:-false}" == "true" ]]; then
         ENABLE_SEARXNG=true
     else
         ENABLE_SEARXNG=false
@@ -525,7 +578,6 @@ if ! $DRY_RUN; then
     _sync_extension_compose "${ENABLE_HERMES:-}"     hermes-proxy  "Hermes proxy"  "Hermes agent not enabled" || return 1
     _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-edge "Pixel edge" "Pixel host not qualified" || return 1
     _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-model-relay "Pixel model relay" "Pixel host not qualified" || return 1
-    _sync_extension_compose "${ENABLE_OPENCLAW:-}"   openclaw   "OpenClaw"      "agent framework not enabled" || return 1
     _sync_extension_compose "${ENABLE_APE:-}"        ape        "APE"           "agent governance not enabled" || return 1
     _sync_extension_compose "${ENABLE_COMFYUI:-}"    comfyui    "ComfyUI"       "image generation not enabled" || return 1
     _sync_extension_compose "${ENABLE_PERPLEXICA:-}" perplexica "Perplexica"    "deep research not enabled" || return 1
@@ -571,20 +623,6 @@ fi
 
 # All services are core — no profiles needed (compose profiles removed)
 
-# Select tier-appropriate OpenClaw config
-if [[ "$ENABLE_OPENCLAW" == "true" ]]; then
-    case $TIER in
-        NV_ULTRA) OPENCLAW_CONFIG="pro.json" ;;
-        SH_LARGE|SH_COMPACT) OPENCLAW_CONFIG="openclaw-strix-halo.json" ;;
-        1) OPENCLAW_CONFIG="openclaw.json" ;;
-        2) OPENCLAW_CONFIG="openclaw.json" ;;
-        3) OPENCLAW_CONFIG="openclaw.json" ;;
-        4) OPENCLAW_CONFIG="pro.json" ;;
-        *) OPENCLAW_CONFIG="openclaw.json" ;;
-    esac
-    log "OpenClaw config: $OPENCLAW_CONFIG (matched to Tier $TIER)"
-fi
-
 log "All services enabled (core install)"
 
 # No GPU (CPU-only) — nothing to assign. Say so plainly instead of falling
@@ -612,6 +650,11 @@ fi
 if [[ "$GPU_COUNT" -le 1 ]]; then
     if [[ "${GPU_BACKEND:-}" == "nvidia" ]]; then
         _single_gpu_uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader,nounits 2>/dev/null | sed -n '1p' || true)
+        # The vLLM engine owns the GPU its selector sized the model for.
+        if [[ "${LLM_BACKEND:-}" == "vllm" && "$_single_gpu_uuid" != "${VLLM_GPU_UUID:-}" ]]; then
+            error "The vLLM engine was planned for GPU ${VLLM_GPU_UUID:-unknown}, but nvidia-smi lists ${_single_gpu_uuid:-no GPU}. Rerun the installer; if it happens again, rerun with --llm-backend llama-server. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+            return 1
+        fi
         if [[ -n "$_single_gpu_uuid" ]]; then
             GPU_ASSIGNMENT_JSON=$(jq -n \
                 --arg uuid "$_single_gpu_uuid" \
@@ -693,8 +736,13 @@ run_automatic() {
   echo ""
 
   local result
+  # The vLLM engine owns exactly the GPU its selector sized the model for
+  # (VLLM_GPU_UUID): a model that fits one GPU is never split across GPUs,
+  # and the other services take the remaining GPUs.
+  local -a pin_args=()
+  [[ "${LLM_BACKEND:-}" != "vllm" ]] || pin_args=(--pin-llm-gpu "$VLLM_GPU_UUID")
   result=$(python3 "$ASSIGN_GPUS_SCRIPT" \
-    --topology "$TOPOLOGY_FILE" --model-size "$LLM_MODEL_SIZE_MB" 2>&1) || {
+    --topology "$TOPOLOGY_FILE" --model-size "$LLM_MODEL_SIZE_MB" ${pin_args[@]+"${pin_args[@]}"} 2>&1) || {
     echo -e "  ${RED}Assignment failed:${NC}\n  $result"
     error "GPU assignment failed: $result"
   }
@@ -904,8 +952,20 @@ _load_existing_gpu_assignment_json() {
 # --- Multi-GPU Config TUI ---
 GPU_ASSIGNMENT_JSON=""
 
+if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+    # The vLLM engine's GPU is fixed, so there is nothing to choose. A saved
+    # assignment is reused only when it gives the LLM exactly that GPU.
+    if _existing_assignment=$(_load_existing_gpu_assignment_json) \
+        && jq -e --arg uuid "$VLLM_GPU_UUID" '.gpu_assignment.services.llama_server.gpus == [$uuid]' \
+            <<< "$_existing_assignment" >/dev/null; then
+        GPU_ASSIGNMENT_JSON="$_existing_assignment"
+        success "Reusing existing GPU assignment from .env"
+    else
+        log "vLLM runs on GPU ${VLLM_GPU_UUID}; the other services take the remaining GPUs."
+        run_automatic
+    fi
 # If it is not an interactive session, run automatic assignment with default values
-if ! $INTERACTIVE || $DRY_RUN; then
+elif ! $INTERACTIVE || $DRY_RUN; then
     if _existing_assignment=$(_load_existing_gpu_assignment_json); then
         GPU_ASSIGNMENT_JSON="$_existing_assignment"
         success "Reusing existing GPU assignment from .env"
@@ -943,24 +1003,35 @@ if [[ "$VENDOR" == "nvidia" ]]; then
     if [[ -z "$LLAMA_SERVER_GPU_UUIDS" ]]; then
         error "GPU assignment did not select any NVIDIA device for llama-server"
     fi
+    # On the vLLM route the LLM role is the vLLM engine's one GPU. The
+    # multi-GPU overlay still needs LLAMA_SERVER_GPU_UUIDS for the profiled-out
+    # llama-server (Compose interpolates disabled services), so it names the
+    # same GPU.
+    if [[ "${LLM_BACKEND:-}" == "vllm" && "$LLAMA_SERVER_GPU_UUIDS" != "${VLLM_GPU_UUID:-}" ]]; then
+        error "GPU assignment gave the LLM ${LLAMA_SERVER_GPU_UUIDS}, but the vLLM engine owns GPU ${VLLM_GPU_UUID:-unknown}"
+    fi
     WHISPER_GPU_UUID=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.whisper.gpus[0]?')
     COMFYUI_GPU_UUID=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.comfyui.gpus[0]?')
     EMBEDDINGS_GPU_UUID=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.embeddings.gpus[0]?')
 elif [[ "$VENDOR" == "amd" ]]; then
     LLAMA_SERVER_GPU_INDICES=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.llama_server.gpu_indices // [] | map(tostring) | join(",")')
+    # docker-compose.multigpu-amd.yml scopes llama-server to these indices; an
+    # empty list would hide every GPU from the Vulkan image.
+    if [[ -z "$LLAMA_SERVER_GPU_INDICES" ]]; then
+        error "GPU assignment did not select any AMD device for llama-server"
+    fi
     WHISPER_GPU_INDEX=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.whisper.gpu_indices[0] // 0')
     COMFYUI_GPU_INDEX=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.comfyui.gpu_indices[0] // 0')
     EMBEDDINGS_GPU_INDEX=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.embeddings.gpu_indices[0] // 0')
 fi
 
 _mode=$(echo "$GPU_ASSIGNMENT_JSON" | jq -r '.gpu_assignment.services.llama_server.parallelism.mode // "none"')
-# NVIDIA: layer split for every multi-GPU mode. CUDA row split is not
-# fleet-qualified and fails at model load from llama.cpp b9890 ("does not
-# support split buffers"). AMD (Lemonade) keeps row for tensor/hybrid.
+# Layer split for every multi-GPU mode. CUDA row split is not fleet-qualified
+# and fails at model load from llama.cpp b9890 ("does not support split
+# buffers"); Vulkan has no row split, and the HIP backend shares CUDA's code.
 case "$_mode" in
-  tensor|hybrid) if [[ "$VENDOR" == "nvidia" ]]; then LLAMA_ARG_SPLIT_MODE="layer"; else LLAMA_ARG_SPLIT_MODE="row"; fi ;;
-  pipeline)      LLAMA_ARG_SPLIT_MODE="layer" ;;
-  *)             LLAMA_ARG_SPLIT_MODE="none"  ;;
+  tensor|hybrid|pipeline) LLAMA_ARG_SPLIT_MODE="layer" ;;
+  *)                      LLAMA_ARG_SPLIT_MODE="none"  ;;
 esac
 unset _mode
 

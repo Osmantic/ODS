@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 
 def _route_state(
     model: str = "qwen/remote:latest",
@@ -132,6 +134,15 @@ def test_overall_status_requires_a_proven_consumer_activation():
         },
     ) == "degraded"
 
+    # A route is used only in cloud mode: drift on a local or hybrid install
+    # is an installer (or `ods mode`) pause, not a fault (fleet, laptop).
+    drift = {"valid": False, "proven": False, "reason": "consumer_drift"}
+    assert rps._overall_status(route, egress, drift, "local") == "paused"
+    assert rps._overall_status(route, {"reachable": False}, drift, "hybrid") == "paused"
+    assert rps._overall_status(route, egress, drift, "cloud") == "degraded"
+    assert rps._overall_status(route, egress, drift) == "degraded"
+    assert rps._overall_status({**route, "enabled": False}, egress, drift, "local") == "disabled"
+
 
 def test_activation_status_rejects_incomplete_ready_claim(monkeypatch, tmp_path):
     from routers import remote_provider_status as rps
@@ -241,6 +252,165 @@ def test_activation_reconciliation_accepts_exact_remote_host_runtime(monkeypatch
     result = asyncio.run(rps._reconcile_activation_with_host(activation))
 
     assert result == activation
+
+
+def _reconciled_activation():
+    return {
+        "valid": True,
+        "active": True,
+        "proven": True,
+        "reason": "active_and_proven",
+        "model": "remote-owner-model",
+        "contextLength": 131072,
+        "maxTokens": 16384,
+        "reasoning": False,
+        "pixel": "reconciled",
+    }
+
+
+def test_activation_reconciliation_waits_out_a_cold_host_readback(monkeypatch):
+    # A cold host cache answers without activeRuntime while it proves the
+    # runtime in the background; a proven route must not read as drift.
+    from routers import remote_provider_status as rps
+
+    replies = [
+        {"status": "failed", "modelTransactionPending": False},
+        {
+            "status": "failed",
+            "activeAgentViable": True,
+            "activeRuntime": {
+                "source": "remote-provider",
+                "model": "remote-owner-model",
+                "contextLength": 131072,
+                "maxTokens": 16384,
+                "reasoning": False,
+            },
+        },
+    ]
+    calls = []
+
+    async def warming_runtime(*_args, **_kwargs):
+        calls.append(1)
+        return replies[min(len(calls), len(replies)) - 1]
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(rps, "async_request_agent_json", warming_runtime)
+    monkeypatch.setattr(rps.asyncio, "sleep", no_sleep)
+    activation = _reconciled_activation()
+    result = asyncio.run(rps._reconcile_activation_with_host(activation))
+
+    assert result == activation
+    assert len(calls) == 2
+
+
+def test_activation_reconciliation_reports_a_still_cold_readback_as_unverified(monkeypatch):
+    from routers import remote_provider_status as rps
+
+    clock = [0.0]
+    calls = []
+
+    async def cold_runtime(*_args, **kwargs):
+        calls.append(clock[0])
+        assert 0 < kwargs["timeout"] <= min(2.0, 3.0 - clock[0])
+        return {"status": "idle", "modelTransactionPending": False}
+
+    async def advance(delay):
+        assert 0 < delay <= 0.25
+        clock[0] += delay
+
+    monkeypatch.setattr(rps, "monotonic", lambda: clock[0], raising=False)
+    monkeypatch.setattr(rps, "async_request_agent_json", cold_runtime)
+    monkeypatch.setattr(rps.asyncio, "sleep", advance)
+    result = asyncio.run(rps._reconcile_activation_with_host(_reconciled_activation()))
+
+    assert clock[0] == 3.0
+    assert len(calls) == 12
+    assert max(calls) < 3.0
+    assert result["valid"] is False
+    assert result["proven"] is False
+    assert result["reason"] == "consumer_status_unavailable"
+    assert result["pixel"] == "unverified"
+
+
+@pytest.mark.parametrize("ready_after", [1.5, 2.5])
+def test_activation_reconciliation_uses_full_cold_readback_window(monkeypatch, ready_after):
+    from routers import remote_provider_status as rps
+
+    clock = [0.0]
+    calls = []
+    activation = _reconciled_activation()
+
+    async def warming_runtime(*_args, **kwargs):
+        calls.append(clock[0])
+        assert 0 < kwargs["timeout"] <= min(2.0, 3.0 - clock[0])
+        status = {"status": "idle", "modelTransactionPending": False}
+        if clock[0] >= ready_after:
+            status.update(activeAgentViable=True, activeRuntime={
+                "source": "remote-provider",
+                **{key: activation[key] for key in
+                   ("model", "contextLength", "maxTokens", "reasoning")},
+            })
+        return status
+
+    async def advance(delay):
+        assert 0 < delay <= 0.25
+        clock[0] += delay
+
+    monkeypatch.setattr(rps, "monotonic", lambda: clock[0], raising=False)
+    monkeypatch.setattr(rps, "async_request_agent_json", warming_runtime)
+    monkeypatch.setattr(rps.asyncio, "sleep", advance)
+    result = asyncio.run(rps._reconcile_activation_with_host(activation))
+
+    assert result == activation
+    assert clock[0] == ready_after
+    assert calls[-1] == ready_after
+
+
+@pytest.mark.parametrize("malformed_status", [[], {}])
+def test_activation_reconciliation_rejects_non_string_host_status(monkeypatch, malformed_status):
+    from routers import remote_provider_status as rps
+
+    async def malformed_runtime(*_args, **_kwargs):
+        return {"status": malformed_status, "modelTransactionPending": False}
+
+    monkeypatch.setattr(rps, "async_request_agent_json", malformed_runtime)
+    result = asyncio.run(rps._reconcile_activation_with_host(_reconciled_activation()))
+
+    assert result["valid"] is False
+    assert result["proven"] is False
+    assert result["reason"] == "consumer_drift"
+    assert result["pixel"] == "drifted"
+
+
+def test_activation_reconciliation_deadline_cancels_host_poll(monkeypatch):
+    from routers import remote_provider_status as rps
+
+    cancelled = []
+
+    async def hanging_runtime(*_args, **_kwargs):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    real_wait_for = asyncio.wait_for
+
+    async def short_wait_for(awaitable, timeout):
+        assert timeout == 3.0
+        return await real_wait_for(awaitable, timeout=0.02)
+
+    monkeypatch.setattr(rps, "async_request_agent_json", hanging_runtime)
+    monkeypatch.setattr(rps.asyncio, "wait_for", short_wait_for)
+    result = asyncio.run(rps._reconcile_activation_with_host(_reconciled_activation()))
+
+    assert cancelled == [True]
+    assert result["valid"] is False
+    assert result["proven"] is False
+    assert result["reason"] == "consumer_status_unavailable"
+    assert result["pixel"] == "unverified"
 
 
 def test_activation_reconciliation_fails_closed_when_host_status_is_unavailable(monkeypatch):
@@ -1132,6 +1302,32 @@ def test_remote_provider_status_invalid_state_is_diagnostic(
     assert body["routeState"]["errors"]
 
 
+def test_remote_provider_status_reports_a_route_paused_by_a_local_install(
+    test_client,
+    monkeypatch,
+    tmp_path,
+):
+    state_path = tmp_path / "routing-state.json"
+    state_path.write_text(json.dumps(_route_state()), encoding="utf-8")
+    rps = _patch_state_path(monkeypatch, state_path)
+
+    async def fake_fetch():
+        return {"reachable": True, "valid": True, "ready": True, "status": "ok",
+                "secret": {"configured": True, "bytes": 26}, "resolution": None}
+
+    async def drifted(_activation):
+        return {"valid": False, "proven": False, "reason": "consumer_drift", "pixel": "drifted"}
+
+    monkeypatch.setattr(rps, "_fetch_egress_health", fake_fetch)
+    monkeypatch.setattr(rps, "_reconcile_activation_with_host", drifted)
+    monkeypatch.setattr(rps, "read_live_env_value", lambda key, default="": "local" if key == "ODS_MODE" else default)
+
+    resp = test_client.get("/api/remote-provider/status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "paused"
+
+
 def test_remote_provider_status_reports_unreachable_egress(
     test_client,
     monkeypatch,
@@ -1250,7 +1446,7 @@ def test_remote_provider_probe_posts_to_egress_and_sanitizes_receipt(
 ):
     from routers import remote_provider_status as rps
 
-    calls = []
+    calls: list[tuple[object, ...]] = []
     agent_calls = []
 
     class FakeResponse:
@@ -1300,11 +1496,14 @@ def test_remote_provider_probe_posts_to_egress_and_sanitizes_receipt(
         async def __aexit__(self, *_args):
             return False
 
-        async def post(self, url):
-            calls.append(("post", url))
+        async def post(self, url, headers=None):
+            calls.append(("post", url, headers))
             return FakeResponse()
 
     monkeypatch.setattr(rps, "EGRESS_URL", "http://egress.internal:8091/")
+    # The egress admits only the LiteLLM gateway key, read live from .env.
+    monkeypatch.setattr(rps, "read_live_env_value",
+                        lambda key, default="": "sk-ods-gateway" if key == "LITELLM_KEY" else default)
     monkeypatch.setattr(rps.httpx, "AsyncClient", FakeAsyncClient)
     async def fake_agent_request(method, path, *, payload, timeout):
         agent_calls.append((method, path, payload, timeout))
@@ -1330,6 +1529,7 @@ def test_remote_provider_probe_posts_to_egress_and_sanitizes_receipt(
     assert resp.status_code == 200
     assert body == {
         "schema": "ods.remote-provider-egress-probe.v1",
+        "dashboardMode": rps._dashboard_mode(),
         "ok": True,
         "transport": "ssh",
         "probe": {
@@ -1371,7 +1571,7 @@ def test_remote_provider_probe_posts_to_egress_and_sanitizes_receipt(
     }
     assert calls == [
         ("timeout", 60.0),
-        ("post", "http://egress.internal:8091/probe"),
+        ("post", "http://egress.internal:8091/probe", {"Authorization": "Bearer sk-ods-gateway"}),
     ]
     assert agent_calls == [
         (
@@ -1444,7 +1644,7 @@ def test_remote_provider_probe_reports_nonfatal_proof_record_failure(
         async def __aexit__(self, *_args):
             return False
 
-        async def post(self, _url):
+        async def post(self, _url, headers=None):
             return FakeResponse()
 
     async def fake_agent_request(*_args, **_kwargs):
@@ -1470,6 +1670,45 @@ def test_remote_provider_probe_reports_nonfatal_proof_record_failure(
     }
     assert "unit-test-provider-token" not in dumped
     assert "ssh-identity" not in dumped
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (
+            {"error": "The remote provider did not serve a completion through the active route",
+             "code": "provider_not_serving", "providerStatus": 500, "providerMessage": "Connection error."},
+            {"recorded": False, "reachable": True, "reason": "provider_not_serving", "statusCode": 502,
+             "providerStatus": 500, "providerMessage": "Connection error."},
+        ),
+        (
+            {"code": "provider_not_serving", "providerStatus": 503, "providerMessage": "line\nbreak"},
+            {"recorded": False, "reachable": True, "reason": "provider_not_serving", "statusCode": 502,
+             "providerStatus": 503},
+        ),
+        (
+            {"code": "provider_not_serving", "providerStatus": "500", "providerMessage": "unit-test-provider-token"},
+            {"recorded": False, "reachable": True, "reason": "host_agent_http_502", "statusCode": 502},
+        ),
+        (
+            {"error": "unit-test-provider-token ssh-identity"},
+            {"recorded": False, "reachable": True, "reason": "host_agent_http_502", "statusCode": 502},
+        ),
+    ],
+)
+def test_remote_provider_proof_names_a_provider_that_serves_no_chat(monkeypatch, response, expected):
+    """Fleet 2026-10-18: an outage read "probe: ok" with no cause."""
+    from routers import remote_provider_status as rps
+
+    async def fake_agent_request(*_args, **_kwargs):
+        raise rps.AgentHTTPError(502, "detail", json.dumps(response))
+
+    monkeypatch.setattr(rps, "async_request_agent_json", fake_agent_request)
+
+    proof = asyncio.run(rps._record_egress_probe_proof({"ok": True}))
+
+    assert proof == expected
+    assert "unit-test-provider-token" not in json.dumps(proof)
 
 
 def test_remote_provider_probe_preserves_sanitized_egress_errors(
@@ -1503,7 +1742,7 @@ def test_remote_provider_probe_preserves_sanitized_egress_errors(
         async def __aexit__(self, *_args):
             return False
 
-        async def post(self, _url):
+        async def post(self, _url, headers=None):
             return FakeResponse()
 
     monkeypatch.setattr(rps.httpx, "AsyncClient", FakeAsyncClient)
@@ -1723,3 +1962,55 @@ def test_remote_provider_enable_reports_unexpected_rollback_failure(
     assert body["detail"]["error"] == "remote_provider_enable_failed"
     assert body["detail"]["rollback"] == {"attempted": True, "ok": False}
     assert actions == ["enable", "disable"]
+
+
+def _vision_status(state, **receipt):
+    from routers import remote_provider_status as rps
+
+    return {"proven": True, "reason": "provider-handshake-ok", "vision": {
+        "schema": "ods.remote-provider-vision-receipt.v1", "imageInput": "supported",
+        "routeFingerprint": rps._route_fingerprint(state), "verifiedAt": "2026-10-30T12:00:00+00:00",
+        **receipt}}
+
+
+@pytest.mark.parametrize("receipt, shown", [
+    ({}, {"imageInput": "supported", "verifiedAt": "2026-10-30T12:00:00+00:00"}),
+    ({"imageInput": "unsupported"}, {"imageInput": "unsupported", "verifiedAt": "2026-10-30T12:00:00+00:00"}),
+    # Measured on another route, or not a verdict: nothing is shown.
+    ({"routeFingerprint": "f" * 64}, None),
+    ({"imageInput": "unknown"}, None),
+    ({"schema": "ods.remote-provider-probe-receipt.v1"}, None),
+])
+def test_remote_provider_status_shows_the_vision_verdict_of_its_own_route(
+    test_client, monkeypatch, tmp_path, receipt, shown,
+):
+    state = _route_state()
+    state["status"] = _vision_status(state, **receipt)
+    state_path = tmp_path / "routing-state.json"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    rps = _patch_state_path(monkeypatch, state_path)
+
+    async def fake_fetch():
+        return {"reachable": True, "valid": True, "ready": True, "status": "ok", "reason": "ready",
+                "secret": {"configured": True, "bytes": 24}, "resolution": {"ok": True, "addressCount": 1}}
+
+    monkeypatch.setattr(rps, "_fetch_egress_health", fake_fetch)
+
+    body = test_client.get("/api/remote-provider/status", headers=test_client.auth_headers).json()
+
+    assert body["routeState"]["status"].get("vision") == shown
+    assert "routeFingerprint" not in json.dumps(body["routeState"]["status"])
+
+
+def test_a_proof_record_keeps_the_vision_verdict_and_a_deferred_image_check():
+    from routers import remote_provider_status as rps
+
+    status = _vision_status(_route_state())
+    record = {"schema": "ods.remote-provider-proof-record.v1", "recorded": True, "status": status,
+              "imageCheck": {"applied": False, "imageInput": "supported", "reason": "portal-busy", "raw": "x"}}
+    clean = rps._safe_proof_record(record)
+    assert clean["status"]["vision"] == {"imageInput": "supported", "verifiedAt": "2026-10-30T12:00:00+00:00"}
+    assert clean["imageCheck"] == {"applied": False, "imageInput": "supported", "reason": "portal-busy"}
+    for image_check in ({"applied": True, "imageInput": "supported"}, {"applied": False, "imageInput": "unknown"},
+                        "portal-busy"):
+        assert "imageCheck" not in rps._safe_proof_record({**record, "imageCheck": image_check})

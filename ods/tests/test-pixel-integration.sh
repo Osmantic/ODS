@@ -400,21 +400,29 @@ fi
 
 section "ods_pixel_model_route_class"
 
+# The third argument says whether a host-native llama-server (the Windows
+# Portal's) serves the model; LiteLLM holds its key, so Pixel uses the gateway.
 for route_case in \
     "local||false|local" \
     "cloud||false|managed-gateway" \
     "hybrid||false|managed-gateway" \
     "local||true|managed-gateway" \
     "local|http://127.0.0.1:1234|false|managed-gateway"; do
-    IFS='|' read -r route_mode route_url route_lemonade route_expected <<<"$route_case"
-    result="$(ods_pixel_model_route_class "$route_mode" "$route_url" "$route_lemonade")"
+    IFS='|' read -r route_mode route_url route_native route_expected <<<"$route_case"
+    result="$(ods_pixel_model_route_class "$route_mode" "$route_url" "$route_native")"
     if [[ "$result" == "$route_expected" ]]; then
-        pass "model route $route_mode/$route_lemonade/$route_url -> $route_expected"
+        pass "model route $route_mode/$route_native/$route_url -> $route_expected"
     else
-        fail "model route $route_mode/$route_lemonade/$route_url expected $route_expected, got $result"
+        fail "model route $route_mode/$route_native/$route_url expected $route_expected, got $result"
     fi
 done
-unset route_case route_mode route_url route_lemonade route_expected
+unset route_case route_mode route_url route_native route_expected
+# install-core reads the retired ODS_MODE=lemonade as local before Pixel runs.
+if ods_pixel_model_route_class lemonade '' false >/dev/null 2>&1; then
+    fail "the retired lemonade mode must not be a Pixel model route"
+else
+    pass "the retired lemonade mode is not a Pixel model route"
+fi
 
 if ! ods_pixel_model_route_class invalid-mode "" false >/dev/null 2>&1; then
     pass "invalid Pixel model route mode is rejected"
@@ -599,7 +607,7 @@ if (
         bundled "$ODS_PIXEL_BUNDLED_REF" ""
     python3 -c 'import os
 assert os.environ["PIXEL_SOURCE_URL"] == "bundled"
-assert os.environ["PIXEL_SOURCE_REF"] == "9f3b6ecd25db3ab51bef4091473d88ee5824bc3b"
+assert os.environ["PIXEL_SOURCE_REF"] == "3d2acd8f22a53d28b36b7e6ee017bb3143dc428b"
 assert os.environ["PIXEL_SOURCE_DIR"] == ""'
 ); then
     pass "Validated Pixel source contract persists across installer phases"
@@ -699,7 +707,7 @@ fi
 
 section "Pixel .env schema contract"
 if python3 - "$SCRIPT_DIR/../.env.schema.json" <<'PY'
-import json, sys
+import json, re, sys
 
 properties = json.load(open(sys.argv[1], encoding="utf-8"))["properties"]
 expected = {
@@ -712,8 +720,22 @@ assert expected <= properties.keys()
 assert properties["PIXEL_SOURCE_REF"]["pattern"] == "^[0-9a-f]{40}$"
 assert properties["PIXEL_OPENWEBUI_KEY"]["minLength"] == 64
 assert properties["PIXEL_OPENWEBUI_KEY"]["maxLength"] == 64
-assert properties["PIXEL_PREVIEW_RUNTIME_DIR"]["enum"] == ["/run/ods-pixel-preview", "/mnt/wsl/ods-portal-runtime/preview"]
-assert properties["PIXEL_INGRESS_RUNTIME_DIR"]["enum"] == ["/run/ods-pixel", "/mnt/wsl/ods-portal-runtime/ingress"]
+for kind in ("ingress", "preview"):
+    prop = properties[f"PIXEL_{kind.upper()}_RUNTIME_DIR"]
+    linux = "/run/ods-pixel" + ("-preview" if kind == "preview" else "")
+    native = f"/Users/Example Owner/ods/data/pixel-native/unused-docker-{kind}"
+    accepted = (linux, f"/mnt/wsl/ods-portal-runtime/{kind}", native,
+                native.replace("/unused-docker-", "/home/unused-docker-"))
+    other = "preview" if kind == "ingress" else "ingress"
+    rejected = (f"/mnt/wsl/ods-portal-runtime/{other}",
+                native.replace(f"unused-docker-{kind}", f"unused-docker-{other}"),
+                native + "/", native + "\n", native.lstrip("/"),
+                native.replace("/ods/", "/../"), native.replace("/ods/", "/./"),
+                native.replace("/ods/", "//"))
+    for value in accepted:
+        assert re.search(prop["pattern"], value), f"{kind} rejected {value!r}"
+    for value in rejected:
+        assert not re.search(prop["pattern"], value), f"{kind} accepted {value!r}"
 assert properties["PIXEL_RUNTIME_BIND_PROPAGATION"]["enum"] == ["rprivate", "rshared"]
 assert properties["PIXEL_INGRESS_GID"]["minimum"] == 1
 assert "PIXEL_LICENSE_ACCEPTED" not in properties

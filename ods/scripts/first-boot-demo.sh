@@ -293,7 +293,6 @@ echo -e "${BOLD}Next steps:${NC}"
 echo "  1. Open ${WEBUI_URL} and start chatting"
 echo "  2. Import workflows from ./workflows/ into n8n"
 echo "  3. Try the voice demo: ./scripts/voice-demo.sh"
-echo "  4. OpenClaw agent: http://localhost:7860"
 echo ""
 
 echo -e "${CYAN}Everything runs locally. Your data stays private. Enjoy! 🚀${NC}"

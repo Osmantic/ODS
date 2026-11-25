@@ -1,0 +1,22 @@
+# These SQLite stores enforce inode ownership. Keep them on the Docker VM's
+# filesystem, outside the macOS shared /data bind and its caller-dependent IDs.
+# The installer/CLI migrates stopped legacy stores before starting the API.
+# nocopy leaves an unprepared volume root-owned, so the existing store custody
+# checks refuse it rather than silently opening an empty replacement store.
+services:
+  dashboard-api:
+    volumes:
+      - type: volume
+        source: dashboard-pixel-images
+        target: /data/pixel-images
+        volume:
+          nocopy: true
+      - type: volume
+        source: dashboard-pixel-chat-results
+        target: /data/pixel-chat-results
+        volume:
+          nocopy: true
+
+volumes:
+  dashboard-pixel-images:
+  dashboard-pixel-chat-results:

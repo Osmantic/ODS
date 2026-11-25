@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import ServiceMap, { buildTopology } from './ServiceMap'
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
@@ -31,6 +31,21 @@ it('fits the map initially, offers actual size, and opens details by keyboard', 
   expect(screen.queryByRole('button', { name: 'Close service details' })).toBeNull()
 })
 
+it('re-checks the ODS session before opening Hermes from its details', async () => {
+  vi.stubGlobal('fetch', vi.fn(async url => url === '/api/auth/verify-session'
+    ? {ok:false,status:401}
+    : {ok:true,json:async () => ({services:[{id:'hermes-proxy',name:'Hermes Auth Proxy',status:'healthy',port:9120,ui_path:'/auth/ods'}]})}))
+  const tab = {opener:window,closed:false,location:{replace:vi.fn()}}
+  const open = vi.spyOn(window, 'open').mockReturnValue(tab)
+  render(<ServiceMap compact />)
+  fireEvent.click(await screen.findByRole('button',{name:/Hermes Auth Proxy/}))
+  expect(fireEvent.click(screen.getByRole('link',{name:'Open service'}))).toBe(false)
+  expect(open).toHaveBeenCalledWith('', '_blank')
+  await waitFor(() => expect(tab.location.replace).toHaveBeenCalledWith('http://localhost:9120/auth/ods'))
+  expect(fetch).toHaveBeenCalledWith('/api/auth/admin-session', expect.objectContaining({method:'POST'}))
+  open.mockRestore()
+})
+
 it('starts with readable service rows in a panel and keeps the full map accessible', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok:true,json:async () => statusPayload}))
   render(<ServiceMap compact />)
@@ -56,7 +71,6 @@ const statusPayload = {
     { id: 'litellm', name: 'LiteLLM (API Gateway)', status: 'healthy', port: 4000, uptime: 120 },
     { id: 'n8n', name: 'n8n (Workflows)', status: 'healthy', port: 5678, uptime: 120 },
     { id: 'open-webui', name: 'Open WebUI (Chat)', status: 'healthy', port: 3000, uptime: 120 },
-    { id: 'openclaw', name: 'OpenClaw (Agents)', status: 'healthy', port: 7860, uptime: 120 },
     { id: 'opencode', name: 'OpenCode (IDE)', status: 'healthy', port: 3003, uptime: 120 },
     { id: 'perplexica', name: 'Perplexica (Deep Research)', status: 'healthy', port: 3004, uptime: 120 },
     { id: 'privacy-shield', name: 'Privacy Shield (PII Protection)', status: 'healthy', port: 8085, uptime: 120 },
@@ -94,7 +108,6 @@ const expectedIds = [
   'litellm',
   'n8n',
   'open-webui',
-  'openclaw',
   'opencode',
   'perplexica',
   'privacy-shield',
@@ -121,7 +134,6 @@ const expectedCategories = {
   'open-webui': 'user-facing',
   perplexica: 'user-facing',
   n8n: 'user-facing',
-  openclaw: 'user-facing',
   dashboard: 'user-facing',
   comfyui: 'user-facing',
   opencode: 'user-facing',
@@ -134,8 +146,6 @@ const expectedEdges = [
   ['perplexica', 'litellm', 'LLM proxy'],
   ['n8n', 'litellm', 'LLM proxy'],
   ['n8n', 'qdrant', 'vector store'],
-  ['openclaw', 'litellm', 'LLM proxy'],
-  ['openclaw', 'qdrant', 'vector store'],
   ['litellm', 'langfuse', 'observability'],
   ['qdrant', 'embeddings', 'embeddings'],
   ['open-webui', 'whisper', 'voice input'],

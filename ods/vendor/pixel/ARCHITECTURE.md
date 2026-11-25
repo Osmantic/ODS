@@ -198,7 +198,12 @@ plugin still have neither raw network nor execution credentials.
 
 The Docker sandbox remains networkless with a read-only root, all Linux capabilities
 dropped, a non-root identity, bounded processes/memory, and one writable Pixel
-workspace. Its config is rebuilt from fixed safe fields, so an old config cannot retain
+workspace. Its image carries bash, python3 without pip, git, rg, jq and the official
+Node.js `node` binary pinned per architecture in `RELEASE-MANIFEST.json`, without npm,
+npx or corepack: code can be run and checked offline, and no package can be installed.
+Bootstrap runs that node once, offline, before any live change and refuses a candidate
+with another version or architecture or with a package manager. Its config is rebuilt
+from fixed safe fields, so an old config cannot retain
 host binds, a setup command, environment secrets, or namespace-join flags. CLI tools
 cannot reach the source token or projection host paths. Public web
 rendering remains limited by the Courier's SSRF, method, download, size, DNS-rebinding,

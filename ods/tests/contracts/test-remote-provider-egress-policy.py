@@ -596,7 +596,7 @@ def test_lifecycle_configure_operation_is_redacted_and_typed() -> None:
         "default remote-provider context drifted",
     )
     assert_true(
-        operation["route"]["provider"]["maxTokens"] == 4096,
+        operation["route"]["provider"]["maxTokens"] == 8192,
         "default remote-provider output limit drifted",
     )
     assert_true(

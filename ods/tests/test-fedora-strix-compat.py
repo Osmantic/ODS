@@ -2,7 +2,6 @@
 """Fedora/Strix compatibility contracts.
 
 These checks cover regressions reported by Fedora Workstation + Strix Halo users:
-- Docker build args used in later FROM instructions must be globally scoped.
 - Relative bind mounts need shared SELinux labels for enforcing Fedora/RHEL hosts.
 - gpu_backends: [all] must be treated as a wildcard by ods-doctor.
 - TOKEN_SPY_API_KEY must be wired to both Token Spy and dashboard-api.
@@ -44,20 +43,6 @@ def compose_files() -> list[Path]:
     files += sorted((ROOT / "extensions/services").glob("*/compose*.yml"))
     files += sorted((ROOT / "extensions/services").glob("*/compose*.yaml"))
     return files
-
-
-def test_amd_dockerfile_arg_scope() -> None:
-    dockerfile = ROOT / "extensions/services/llama-server/Dockerfile.amd"
-    lines = dockerfile.read_text(encoding="utf-8").splitlines()
-    try:
-        first_from = next(i for i, line in enumerate(lines, 1) if line.startswith("FROM "))
-    except StopIteration as exc:
-        raise AssertionError("Dockerfile.amd has no FROM instruction") from exc
-    arg_lines = [i for i, line in enumerate(lines, 1) if line.startswith("ARG LEMONADE_SERVER_IMAGE")]
-    if not arg_lines:
-        fail("Dockerfile.amd must declare LEMONADE_SERVER_IMAGE")
-    if min(arg_lines) > first_from:
-        fail("LEMONADE_SERVER_IMAGE must be declared before the first FROM so Docker can use it in later FROM instructions")
 
 
 def test_selinux_labels_on_relative_bind_mounts() -> None:
@@ -114,7 +99,6 @@ def test_token_spy_key_wiring() -> None:
 
 def main() -> None:
     tests = [
-        test_amd_dockerfile_arg_scope,
         test_selinux_labels_on_relative_bind_mounts,
         test_ods_doctor_all_backend_wildcard,
         test_token_spy_key_wiring,

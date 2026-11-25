@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import logging
 import math
 import os
 import re
@@ -22,6 +23,8 @@ from usage_timeline import minute_timeline, MAX_EVENTS
 from config import EXTENSIONS_DIR, SERVICES, USER_EXTENSIONS_DIR, read_live_env_value
 from helpers import check_service_health, get_cached_services
 from security import verify_api_key
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/usage", tags=["usage"])
 
@@ -344,7 +347,14 @@ def _configured_local_runtime_metrics_urls() -> list[str]:
     if explicit:
         return [item.strip() for item in explicit.split(",") if item.strip()]
 
-    base = os.environ.get("LLM_API_URL") or os.environ.get("OLLAMA_URL") or "http://llama-server:8080"
+    # Cloud and hybrid modes route LLM_API_URL through LiteLLM, which does not
+    # serve llama.cpp's counters; read them from llama-server itself.
+    base = "http://llama-server:8080"
+    for key in ("LLM_API_URL", "OLLAMA_URL"):
+        value = (os.environ.get(key) or "").strip()
+        if value and "litellm" not in value.lower():
+            base = value
+            break
     parsed = urllib.parse.urlparse(base.rstrip("/"))
     path = parsed.path.rstrip("/")
     if path in {"/v1", "/api/v1"}:
@@ -375,13 +385,11 @@ async def _fetch_token_spy_report(start: str, end: str) -> dict[str, Any]:
         )
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        return _empty_report(
-            start,
-            end,
-            detail=f"Token Spy returned HTTP {exc.code}: {detail[:160]}",
-        )
+        logger.warning("Token Spy report returned HTTP %s: %s", exc.code, detail[:160])
+        return _empty_report(start, end, detail=f"Token Spy returned HTTP {int(exc.code)}")
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return _empty_report(start, end, detail=f"Token Spy unavailable: {exc}")
+        logger.warning("Token Spy report unavailable: %s", exc)
+        return _empty_report(start, end, detail="Token Spy unavailable")
 
 
 def _request_token_spy_report(start: str, end: str, headers: dict[str, str]) -> dict[str, Any]:

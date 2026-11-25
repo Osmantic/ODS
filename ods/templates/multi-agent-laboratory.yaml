@@ -5,7 +5,7 @@ template:
   description: "Build and observe autonomous multi-agent systems with full tracing and vector memory."
   icon: Bot
   tags: [agents, experimental, gpu-recommended]
-  services: [crewai, langflow, openclaw, chromadb, langfuse, n8n]
+  services: [crewai, langflow, chromadb, langfuse, n8n]
   tier_minimum: T3
   estimated_disk_gb: 20
   service_notes:

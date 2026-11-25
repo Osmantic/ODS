@@ -1,6 +1,7 @@
 import {createWorkspaceArtifactAdmission,createWorkspaceArtifactTool} from './workspace-artifact.mjs';
 import {createAgentSkillTool} from './agent-skills.mjs';
 import {registerProjectBuild} from './project-registration.mjs';
+import {projectCapabilityOutputLimit} from './project-capabilities.mjs';
 import {createProjectRunControl} from './project-run-control.mjs';
 import {registerBootstrapCapabilities} from './bootstrap-capabilities.mjs';
 import {registerStableRuntimeLine} from './runtime-line.mjs';
@@ -9,6 +10,7 @@ import {createRuntimeIdentity} from './runtime-identity.mjs';
 import {fileURLToPath} from 'node:url';
 import {subagentDeliveryFor,delegationAccessIdentity} from './subagent-delivery.mjs';
 import {createActivityTool, ACTIVITY_CONTRACT} from './activity-display.mjs';
+import {inResponseLanguage, readResponseLanguage, responseLanguageTurnContext} from './response-language.mjs';
 import {previewRecoveryAllowed} from './preview-delivery-recovery.mjs';
 import {compactToolResultEnvelope} from './tool-result-envelope.mjs';
 import {withPiToolErrorContract} from './pi-tool-result.mjs';
@@ -43,9 +45,10 @@ import {
   statusFileFromEnv,
   statusPayload,
 } from "./projection.mjs";
-import { promptContractForAgent } from "./prompt-contract.mjs";
+import { longTaskContract, promptContractForAgent } from "./prompt-contract.mjs";
 import { executionContext } from "./completion-assurance.mjs";
 import { createAskUserTool } from "./ask-user.mjs";
+import { createPendingClarifications } from "./pending-clarification.mjs";
 import {
   appsToolText,
   statusToolText,
@@ -55,9 +58,11 @@ import {
   createExecCancellationControl,
   createRunAbortAdapter,
   createToolLoopGuardRegistry,
+  managedTeamRole,
   privateBrowserAccessForAgent,
 } from "./tool-loop-guard.mjs";
 import { withPixelCronDeliveryDefault } from "./cron-delivery-default.mjs";
+import { withCronCommandPayloadBlock } from "./cron-command-payload-guard.mjs";
 import { withPixelSubagentWorkspace } from "./subagent-workspace.mjs";
 import { createPublicPageReader, createPublicWebExtractTool } from "./web-extract.mjs";
 import { citationPageReadsAllowed, createHostCitationVerifier } from "./citation-verification.mjs";
@@ -78,12 +83,15 @@ import {
   createHostObserveTool,
 } from "./host-observe.mjs";
 import { createEvidenceArtifactWriter } from "./evidence-artifact.mjs";
-import { createWorkspacePreviewTool, createWorkspacePreviewVerifier } from "./workspace-preview.mjs";
+import { createWorkspacePreviewPublisher, createWorkspacePreviewTool, createWorkspacePreviewVerifier } from "./workspace-preview.mjs";
+import { createExampleProjectRoute } from "./example-projects.mjs";
 import { createWorkspacePreviewInspectTool } from "./workspace-preview-inspect.mjs";
+import { previewScreenshotCapability } from "./preview-screenshot.mjs";
 import {createWorkspaceBundleAdmission, createWorkspaceBundleService, createWorkspaceBundleTool} from './workspace-bundle.mjs';
 import {createWorkspaceBundleExecution} from './workspace-bundle-execution.mjs';
 import { createTaskActivity } from "./task-activity.mjs";
 import { createWorkspaceProjects } from "./workspace-projects.mjs";
+import { createProjectRestoreRoute, createProjectSnapshots } from "./project-snapshots.mjs";
 import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs";
 import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
 import {createContextCompaction, readContextRequest, prepareStableContextModel} from './context-compaction.mjs';
@@ -102,9 +110,14 @@ const toolLoopGuardRegistry = createToolLoopGuardRegistry();
 const projectRunControl = createProjectRunControl();
 const goalProgress = createGoalProgress({agentId:AGENT_ID});
 const workspaceProjects = createWorkspaceProjects();
+// A clarification card's answer gets its request back as model-only context,
+// even when OpenClaw runs it in a replacement native session. Conversation
+// deletion removes the chat's card with its transcripts.
+const pendingClarifications = createPendingClarifications();
 const taskActivity = createTaskActivity({agentId:AGENT_ID, goalForRun:id=>goalProgress.projection(id),projectsForSession:key=>workspaceProjects.forSession(key)});
 let execCancellationControl;
 let accessRuntime;
+let projectSnapshots;
 let contextCompaction;
 let conversationImageLifecycle;
 let currentManagedRuntime;
@@ -309,6 +322,7 @@ export default definePluginEntry({
     conversationImageLifecycle ??= createConversationImageLifecycle({
       readConfig:()=>api.runtime?.config?.current?.()??api.config,
       getSessionEntry,patchSessionEntry,resolveStorePath,callGateway:callGatewayTool,compactor:contextCompaction,
+      forgetConversation:sessionKey=>pendingClarifications.forget(sessionKey),
     });
     conversationImageLifecycle.register(api);
     api.on('before_agent_run',(_event,context)=>{
@@ -329,6 +343,8 @@ export default definePluginEntry({
     const statusFile = statusFileFromEnv();
     const configuredContextWindow = api.pluginConfig?.modelContextWindow;
     const configuredLeanPrompt = api.pluginConfig?.leanPrompt === true;
+    // An owner can fix Pixel to English (PIXEL_RESPONSE_LANGUAGE=en in .env).
+    const configuredResponseLanguage = readResponseLanguage(undefined, message => api.logger.warn(message));
     // OpenClaw registers gateway HTTP routes and per-agent runtime hooks in
     // separate passes. Keep one process-local guard so the route can see the
     // opaque user -> active session mapping observed by the runtime hook.
@@ -364,8 +380,21 @@ export default definePluginEntry({
       // After a tool-limit stop without an answer: one tool-free completion by
       // the same configured model, from the pages the run read.
       stopSynthesis: createStopSynthesisClient({runtime: api.runtime, agentId: AGENT_ID}),
+      responseLanguage: configuredResponseLanguage,
+      pendingClarifications,
+      // The final reply a failed preview delivery keeps is the visible text of
+      // the transcript's last assistant message, as the harness computes it.
+      finalText: extractAssistantVisibleText,
       warn: (message) => api.logger.warn(message),
       info: (message) => api.logger.info?.(message),
+      exampleOwnerRun: context => delegationDelivery.ownerRunOf(context),
+      goalRun: runId => goalProgress.active(runId),
+      // Only a remote API route carries a route fingerprint
+      // (model-runtime-readback.mjs); its output limit is the owner's setting.
+      remoteModelRoute: () => typeof (api.runtime?.config?.current?.() ?? api.config)
+        ?.plugins?.entries?.['pixel-ods']?.config?.modelRouteFingerprint === 'string',
+      // The per-result cap a tool-limit stop's result must fit (4,000 when unset).
+      toolResultMaxChars: () => projectCapabilityOutputLimit(api.runtime?.config?.current?.() ?? api.config, AGENT_ID),
     });
     const bundleExecution = createWorkspaceBundleExecution({
       readConfig: () => api.runtime?.config?.current?.() ?? api.config,
@@ -391,6 +420,19 @@ export default definePluginEntry({
         return !resolveActiveEmbeddedRunSessionId(sessionKey);
       },
     });
+    // Before a response first touches a Playground project, a copy of its
+    // files; the owner's "Put back files" restores one, never while a Portal
+    // run, tool or background command is alive.
+    projectSnapshots ??= createProjectSnapshots({
+      workspaceRoot: () => api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
+        ?? api.config?.agents?.defaults?.workspace,
+      ownerRun: context => delegationDelivery.ownerRunOf(context),
+      busy: user => Boolean(resolveActiveEmbeddedRunSessionId(`agent:${AGENT_ID}:openai-user:${user}`))
+        || delegationDelivery.pending(user, key => Boolean(resolveActiveEmbeddedRunSessionId(key))),
+      portalActive: () => (currentManagedRuntime?.status() ?? accessRuntime.status())?.active !== 0,
+      changed: (root, name) => toolLoopGuard.exampleOwnerChanged(root, name),
+      warn: message => api.logger.warn(message),
+    });
     api.on('subagent_spawned',(event,context)=>delegationDelivery.nativeSpawn(event,context));
     api.on('gateway_stop',()=>delegationDelivery.invalidate());
     const executeBundle = createWorkspaceBundleService({runHelper: bundleExecution.runHelper,
@@ -411,14 +453,19 @@ export default definePluginEntry({
       const workspaceRoot = api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
         ?? api.config?.agents?.defaults?.workspace;
       const executionHost = executionHostForAgent(api.config, AGENT_ID);
-      toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess, workspaceRoot, executionHost });
-      if (!accessRuntime.isProbe(context)) delegationDelivery.observe(event,context);
+      // The run deadline the runtime just armed for this attempt.
+      const runTimeoutSeconds = (api.runtime?.config?.current?.() ?? api.config)?.agents?.defaults?.timeoutSeconds;
+      toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess, workspaceRoot, executionHost, runTimeoutSeconds });
+      // After delegation custody, which links a child or continuation to its
+      // owner run: the shipped example's guard starts with the run.
+      if (!accessRuntime.isProbe(context)) { delegationDelivery.observe(event,context); toolLoopGuard.observeExampleRun(context, AGENT_ID); }
       const ownerEvent = toolLoopGuard.ownerIntentEventForRun(context?.runId ?? event?.runId, event);
       if (!accessRuntime.isProbe(context)) { goalProgress.begin(ownerEvent, context); taskActivity.begin(ownerEvent, {...context,workspaceRoot}); }
       const contract = promptContractForAgent(context, AGENT_ID, ownerEvent, {
         verificationStatus: toolLoopGuard.verificationStatus(context?.runId),
         configuredContextWindow,
         configuredLeanPrompt,
+        configuredResponseLanguage,
         privateBrowserAccess,
         executionHost,
       });
@@ -427,8 +474,27 @@ export default definePluginEntry({
       // Per-attempt, model-only context: not part of the cached system prompt.
       const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
       const deliveryContext = delegationDelivery.promptContext(context);
-      const prependContext = [contract?.prependContext,cancelContext,deliveryContext].filter(Boolean).join('\n\n');
-      return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : prependContext ? {prependContext} : undefined;
+      // A turn that mentions the shipped example without naming it.
+      const exampleContext = toolLoopGuard.exampleContextForRun(context?.runId ?? event?.runId);
+      const prependContext = [contract?.prependContext,cancelContext,deliveryContext,exampleContext].filter(Boolean).join('\n\n');
+      // Beside the owner turn (OpenClaw appendContext), also model-only. A
+      // child's announce continuation of a clarification answer carries that
+      // answer's note too: in a replacement session only the note names the
+      // request, and the answer run's success already settled the card.
+      // Portal wrote most of a team or goal message: a note says where the
+      // owner's own words are, for the response-language rule. English-only
+      // mode puts its reminder there instead, on every turn.
+      const languageNote = responseLanguageTurnContext(configuredResponseLanguage,
+        {goal: goalProgress.active(context?.runId ?? event?.runId), teamRole: managedTeamRole(ownerEvent)});
+      const goalContract = inResponseLanguage(GOAL_CONTRACT, configuredResponseLanguage);
+      const appendContext = [goalProgress.active(context?.runId ?? event?.runId) ? goalContract : '', languageNote,
+        toolLoopGuard.clarificationContextForRun(context?.runId ?? event?.runId) ??
+          toolLoopGuard.clarificationContextForRun(delegationDelivery.ownerRunFor(context))].filter(Boolean).join('\n\n');
+      // Ordinary workspace work only: Operations, exact downloads and managed
+      // extension requests refuse update_plan, and read-only roles cannot edit.
+      const longTask = toolLoopGuard.longTaskEligible(context?.runId ?? event?.runId)
+        ? longTaskContract(context, ownerEvent, {configuredContextWindow, configuredLeanPrompt}) : '';
+      return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(appendContext ? {appendContext} : {}), appendSystemContext: `${inResponseLanguage(ACTIVITY_CONTRACT, configuredResponseLanguage)} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? goalContract : ""} ${contract.appendSystemContext}${longTask ? ` ${longTask}` : ''} ${inResponseLanguage(executionContext(), configuredResponseLanguage)} ${repositoryEvidence}` } : prependContext ? {prependContext} : undefined;
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
@@ -465,7 +531,9 @@ export default definePluginEntry({
       try {conversationImageLifecycle.observe(context);}catch {api.logger.warn('Portal conversation image custody could not be updated.');}
       toolLoopGuard.endPreviewRevalidation(event, context);
       toolLoopGuard.observeAgentEnd(event, context);
-      if (!accessRuntime.isProbe(context)) { goalProgress.finish(event, context); taskActivity.finish(event, context); }
+      if (!accessRuntime.isProbe(context)) {
+        goalProgress.finish(event, context); taskActivity.finish(event, context); void projectSnapshots.end(event, context);
+      }
       if (!managedRuntime) return accessRuntime.finish({runId: event.runId}, context);
     });
     api.on("before_tool_call", async (event, context) => {
@@ -473,19 +541,22 @@ export default definePluginEntry({
       const interrupted=delegationDelivery.blocked(context,event);
       if (interrupted) return interrupted;
       let guard = withPixelCronDeliveryDefault(
-        await toolLoopGuard.beforeToolCall(event, context, AGENT_ID),
+        await toolLoopGuard.beforeToolCall(event, context, AGENT_ID,
+          delegationDelivery.hasPendingChildren(context)),
         event, context, AGENT_ID,
       );
       const runtimeConfig = api.runtime?.config?.current?.() ?? api.config;
       guard = withPixelSubagentWorkspace(guard, event, context, AGENT_ID, runtimeConfig,
         scope => getSessionEntry({...scope,
           storePath: resolveStorePath(runtimeConfig?.session?.store, {agentId: AGENT_ID})}), {resolveUserPath, resolveAgentWorkspaceDir});
+      guard = withCronCommandPayloadBlock(guard, event, context);
       const decision = guard?.block ? guard : delegationDelivery.blocked(context,event) ?? goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
       delegationDelivery.before(event,context,decision);
       bundleAdmission.before(event, context, decision);
       artifactAdmission.before(event, context, decision);
       projectRunControl.before(event, context, decision);
       taskActivity.before(event, context, decision?.block === true);
+      await projectSnapshots.before(event, context, decision);
       return decision;
     });
     api.on("after_tool_call", (event, context) => {
@@ -573,9 +644,11 @@ export default definePluginEntry({
       return message !== original ? {...decision, message} : decision;
     });
     // Observation only (never blocks or rewrites): after a tool-limit stop the
-    // answer turn's message can carry partial-answer text with its tool calls.
+    // answer turn's message can carry partial-answer text with its tool calls,
+    // and the last reply's stop reason shows an output-limit cut.
     api.on("before_message_write", (event, context) => {
       toolLoopGuard.observeAssistantMessage(event, context, AGENT_ID);
+      toolLoopGuard.observeReplyEnd(event, context, AGENT_ID);
     });
     api.on("before_agent_finalize", async (event, context) => {
       await toolLoopGuard.revalidateWorkspacePreview(event, context, AGENT_ID);
@@ -590,7 +663,10 @@ export default definePluginEntry({
       return decision;
     });
     // Delivery rewriting is limited to host-authoritative failed or pending
-    // verification state. It neither requests nor receives conversation data.
+    // verification state. It neither requests nor receives conversation data;
+    // a failed or pending preview delivery carries the agent's final reply,
+    // seen at before_agent_finalize, ahead of Portal's one line about it
+    // (preview-explanation.mjs).
     api.on("reply_payload_sending", (event) =>
       toolLoopGuard.replyPayloadSending(event)
     );
@@ -607,9 +683,10 @@ export default definePluginEntry({
         // Both synchronous fences are installed before either native abort
         // awaits drainage; queued announcements cannot steal owner custody.
         const delegatedPending=delegationDelivery.cancel(parsed.user);
+        const compactionPending=contextCompaction.cancelPending(parsed.user);
         const parentPending=toolLoopGuard.abortUserRun(parsed.user);
-        const [delegated,parentAborted]=await Promise.all([delegatedPending,parentPending]);
-        sendJson(res, 200, { aborted: delegated.tracked ? delegated.aborted : parentAborted });
+        const [delegated,parentAborted,compactionAborted]=await Promise.all([delegatedPending,parentPending,compactionPending]);
+        sendJson(res, 200, { aborted: delegated.tracked ? delegated.aborted : parentAborted || compactionAborted });
         return true;
       },
     });
@@ -632,7 +709,7 @@ export default definePluginEntry({
           const value=JSON.parse(Buffer.concat(chunks).toString('utf8'));
           if (!value || Object.keys(value).sort().join()!=='runId,user' || !OPENAI_RUN_ID.test(value.runId ?? '') || !/^ods-[a-f0-9]{64}$/.test(value.user ?? '')) throw Error();
           const finalRun=delegationDelivery.finalRun(value.user,value.runId);
-          if (finalRun) await toolLoopGuard.settleDelivery(finalRun);
+          if (finalRun) await toolLoopGuard.settleDelivery(finalRun,{delegated:true});
           // Recheck cancellation/access/owner custody after asynchronous receipt settlement.
           sendJson(res,200,delegationDelivery.read(value.user,value.runId));
         } catch {sendJson(res,409,{error:'delegated delivery unavailable'});}
@@ -643,8 +720,14 @@ export default definePluginEntry({
         handler:async (req,res) => {
           const parsed = await readContextRequest(req, operation === 'compact');
           if (parsed.status !== 200) {sendJson(res,parsed.status,{error:'invalid context request'});return true;}
-          const result = operation === 'compact' ? await contextCompaction.compact(parsed.user,parsed.requestId)
+          let result = operation === 'compact' ? await contextCompaction.compact(parsed.user,parsed.requestId)
             : contextCompaction.context(parsed.user);
+          // The owner session can be idle while children it delegated to still
+          // run or will report back into this chat. Then the chat is busy, so
+          // restart recovery and a new turn wait for that work instead of
+          // treating the turn as over.
+          if (operation === 'context' && ['ready','missing'].includes(result?.status)
+              && delegationDelivery.pending(parsed.user,key => Boolean(resolveActiveEmbeddedRunSessionId(key)))) result = {...result,status:'busy'};
           sendJson(res,200,result);return true;
         }});
     }
@@ -735,6 +818,27 @@ export default definePluginEntry({
         sendJson(res, 200, blocked);
         return true;
       },
+    });
+    // Portal's "Put back files": the owner restores one Playground project to
+    // the copy kept before a turn touched it (the host ingress calls it under
+    // the chat's history lock), and asks which turns offer it.
+    api.registerHttpRoute({path: '/pixel-ods/project-restore', auth: 'gateway', match: 'exact',
+      handler: createProjectRestoreRoute({snapshots: projectSnapshots, sendJson})});
+    api.registerHttpRoute({path: '/pixel-ods/project-restore-options', auth: 'gateway', match: 'exact',
+      handler: createProjectRestoreRoute({snapshots: projectSnapshots, sendJson, kind: 'options'})});
+    // Portal's sidebar lists the shipped example project (Elf of Doom) like
+    // any other Playground project while its folder exists, and opens it with
+    // a create-only preview publication of that folder: no model run.
+    api.registerHttpRoute({
+      path: "/pixel-ods/example-projects",
+      auth: "gateway",
+      match: "exact",
+      handler: createExampleProjectRoute({
+        workspaceRoot: () => api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
+          ?? api.config?.agents?.defaults?.workspace,
+        publish: createWorkspacePreviewPublisher({transport: api.pluginConfig?.workspacePreviewTransport}),
+        sendJson,
+      }),
     });
 
     registerTool(
@@ -846,7 +950,7 @@ export default definePluginEntry({
       transport:api.pluginConfig?.workspacePreviewTransport,
     })), {names:['pixel_ods_workspace_artifact']});
     registerTool(api, createAgentSkillTool(), {names:['pixel_ods_skill']});
-    registerTool(api, createAskUserTool(), {names:['pixel_ods_ask_user']});
+    registerTool(api, createAskUserTool({responseLanguage: configuredResponseLanguage}), {names:['pixel_ods_ask_user']});
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
     registerTool(api, createActivityTool(), {names:['pixel_ods_activity']});
     registerProjectBuild(api, onlyPixel, projectRunControl);
@@ -867,12 +971,19 @@ export default definePluginEntry({
     });
 
     if (["unix", "native"].includes(api.pluginConfig?.workspacePreviewInspectionTransport)) {
-      registerTool(api, createWorkspacePreviewInspectTool({
+      // Per run context: the screenshot gate reads this run's model.
+      api.registerTool(onlyPixel(context => createWorkspacePreviewInspectTool({
         transport: api.pluginConfig.workspacePreviewInspectionTransport,
         // Finalize-time revisions do not reach the model after a plugin tool
         // call; an untested requested show/hide change is reported here.
         transitionRequirement: (toolCallId, params) => toolLoopGuard.previewInspectionTransition(toolCallId, params),
-      }), { names: ["pixel_ods_workspace_preview_inspect"] });
+        // One bounded screenshot for a model declared to accept images, the
+        // same declaration Portal's owner-image path reads.
+        screenshots: {
+          capability: () => previewScreenshotCapability(api.runtime?.config?.current?.() ?? api.config, context?.activeModel),
+          reserve: (toolCallId, params) => toolLoopGuard.reservePreviewScreenshot(toolCallId, params),
+        },
+      })), { names: ["pixel_ods_workspace_preview_inspect"] });
     }
 
   },

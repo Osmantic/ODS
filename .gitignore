@@ -62,6 +62,10 @@ ods/.pytest_cache/
 ods/tests/__pycache__/
 ods/internal/
 ods/.cache/
+ods/**/.venv/
+ods/**/coverage.lcov
+# Pixel onboarding answers can hold API keys, account names and the owner name
+ods/vendor/pixel/onboarding.json
 
 # ============================================
 # Archived / deprecated code (pre-v2.0)

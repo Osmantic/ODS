@@ -38,9 +38,15 @@ trap 'rm -rf "$FIXTURE"' EXIT
 # ---------------------------------------------------------------------------
 # Fixture: minimal install dir the CLI accepts (check_install + sr_load)
 # ---------------------------------------------------------------------------
-mkdir -p "$FIXTURE/lib" "$FIXTURE/extensions/services" "$FIXTURE/data/user-extensions"
+mkdir -p "$FIXTURE/bin" "$FIXTURE/lib" "$FIXTURE/scripts" "$FIXTURE/extensions/services" "$FIXTURE/data/user-extensions"
 cp "$ROOT_DIR/ods-cli" "$FIXTURE/ods-cli"
 cp "$ROOT_DIR"/lib/*.sh "$FIXTURE/lib/"
+cp "$ROOT_DIR/scripts/extension-selection.py" "$FIXTURE/scripts/"
+cat > "$FIXTURE/bin/docker" <<'SH'
+#!/bin/sh
+exit 0
+SH
+chmod +x "$FIXTURE/bin/docker"
 : > "$FIXTURE/docker-compose.base.yml"
 echo "GPU_BACKEND=nvidia" > "$FIXTURE/.env"
 
@@ -69,7 +75,7 @@ USEREXT="$FIXTURE/data/user-extensions/usvc"
 
 run_cli() {
     # Never let a non-zero CLI exit kill the test; callers assert on output/state
-    ODS_HOME="$FIXTURE" bash "$FIXTURE/ods-cli" "$@" 2>&1 || true
+    ODS_HOME="$FIXTURE" PATH="$FIXTURE/bin:$PATH" bash "$FIXTURE/ods-cli" "$@" 2>&1 || true
 }
 
 echo ""
@@ -109,9 +115,15 @@ if echo "$output" | grep -q "depends on disabled services: usvc"; then
 else
     fail "enable missed disabled user-extension dependency: $output"
 fi
+if [[ -f "$BUILTIN/compose.yaml.disabled" ]] && \
+   echo "$output" | grep -q "Cancelled enabling bsvc"; then
+    pass "declining dependency enable leaves the target disabled"
+else
+    fail "declining dependency enable changed selection or misreported result: $output"
+fi
 
 # ---------------------------------------------------------------------------
-# 3. disable: an enabled user-extension dependent triggers the warning
+# 3. disable: an enabled user-extension dependent is refused
 # ---------------------------------------------------------------------------
 rm -rf "$BUILTIN" "$USEREXT"
 write_ext "$BUILTIN" bsvc "[]"
@@ -124,9 +136,25 @@ else
     fail "disable missed enabled user-extension dependent: $output"
 fi
 if [[ -f "$BUILTIN/compose.yaml" ]]; then
-    pass "disable was cancelled after the warning"
+    pass "disable preserved the selected dependency"
 else
     fail "disable proceeded despite user answering no"
+fi
+
+# A selected Compose-only dependency is just as binding, and answering yes
+# cannot override the safety check.
+write_ext "$USEREXT" usvc "[]"
+cat > "$USEREXT/compose.yaml" <<'YAML'
+services:
+  usvc:
+    image: example:latest
+    depends_on: [bsvc]
+YAML
+output=$(printf 'y\n' | run_cli disable bsvc)
+if echo "$output" | grep -q "depend on bsvc: usvc" && [[ -f "$BUILTIN/compose.yaml" ]]; then
+    pass "disable rejects a Compose-only dependent even after explicit yes"
+else
+    fail "disable allowed a selected Compose-only dependent: $output"
 fi
 
 # ---------------------------------------------------------------------------
@@ -176,6 +204,22 @@ if [[ ! -d "$FIXTURE/data/usvc" ]]; then
     pass "purge removes data of disabled user extension"
 else
     fail "purge left data of disabled user extension: $output"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. enable: a profiled-out core dependency does not force managed inference
+# ---------------------------------------------------------------------------
+rm -rf "$BUILTIN" "$USEREXT"
+write_ext "$BUILTIN" bsvc "[]"
+sed -i 's/category: optional/category: core/' "$BUILTIN/manifest.yaml"
+mv "$BUILTIN/compose.yaml" "$BUILTIN/compose.yaml.disabled"
+write_ext "$USEREXT" usvc "[bsvc]"
+mv "$USEREXT/compose.yaml" "$USEREXT/compose.yaml.disabled"
+output=$(run_cli enable usvc)
+if [[ -f "$USEREXT/compose.yaml" && -f "$BUILTIN/compose.yaml.disabled" ]]; then
+    pass "enable keeps a profiled-out core dependency disabled"
+else
+    fail "enable forced a profiled-out core dependency: $output"
 fi
 
 echo ""

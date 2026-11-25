@@ -41,6 +41,8 @@ if [[ "${1:-}" == "compose" ]]; then
     exit 0
 fi
 if [[ "${1:-}" == "ps" ]]; then exit 0; fi
+# This fixture has no Hermes; restart's Hermes readiness wait must skip it.
+if [[ "${1:-}" == "inspect" && " $* " == *" ods-hermes "* ]]; then exit 1; fi
 exit 0
 DOCKER
 

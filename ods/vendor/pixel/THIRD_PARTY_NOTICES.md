@@ -52,3 +52,15 @@ SOFTWARE.
 OpenClaw's package includes its upstream `LICENSE` and
 `THIRD_PARTY_NOTICES.md` files, including notices for third-party material
 incorporated into OpenClaw itself.
+
+## Node.js
+
+Pixel's agent sandbox image (`deploy/sandbox/Dockerfile`) installs the
+official Node.js 24.21.0 `node` binary for Linux from nodejs.org,
+pinned by SHA-256 in `RELEASE-MANIFEST.json`. Node.js is not part of this
+repository and is not relicensed under Pixel's ODS-specific license. It is
+MIT-licensed and incorporates third-party components under their own
+licenses. The image keeps the complete upstream license text, including those
+notices, at `/usr/local/share/doc/nodejs/LICENSE`:
+
+- [Node.js 24.21.0 license](https://github.com/nodejs/node/blob/v24.21.0/LICENSE)

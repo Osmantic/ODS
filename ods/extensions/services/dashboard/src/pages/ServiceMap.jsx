@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ExternalLink, GitBranch, RefreshCw, X } from 'lucide-react'
 import { serviceUrl } from '../lib/serviceUrls'
+import { openWithFreshSession, opensWithOdsSession } from '../lib/odsSession'
 import PanelSelect from '../components/PanelSelect'
 import IntegrationSnapshotDownload from '../components/IntegrationSnapshotDownload'
 
@@ -38,7 +39,6 @@ const CATEGORY_MAP = {
   'open-webui': 'user-facing',
   perplexica: 'user-facing',
   n8n: 'user-facing',
-  openclaw: 'user-facing',
   dashboard: 'user-facing',
   comfyui: 'user-facing',
   opencode: 'user-facing',
@@ -54,7 +54,6 @@ const NAME_TO_ID = {
   'llama-server (LLM Inference)': 'llama-server',
   'n8n (Workflows)': 'n8n',
   'Open WebUI (Chat)': 'open-webui',
-  'OpenClaw (Agents)': 'openclaw',
   'OpenCode (IDE)': 'opencode',
   'Perplexica (Deep Research)': 'perplexica',
   'Privacy Shield (PII Protection)': 'privacy-shield',
@@ -73,8 +72,6 @@ const KNOWN_EDGES = [
   ['perplexica', 'litellm', 'LLM proxy'],
   ['n8n', 'litellm', 'LLM proxy'],
   ['n8n', 'qdrant', 'vector store'],
-  ['openclaw', 'litellm', 'LLM proxy'],
-  ['openclaw', 'qdrant', 'vector store'],
   ['litellm', 'langfuse', 'observability'],
   ['qdrant', 'embeddings', 'embeddings'],
   ['open-webui', 'whisper', 'voice input'],
@@ -246,7 +243,7 @@ function DetailPanel({ node, edges, onClose, inline = false }) {
         <div className="flex justify-between"><span className="text-theme-text-muted">Layer</span><span className="text-theme-text">{node.category}</span></div>
         {upstream.length > 0 && <DependencyList label="Used by" edges={upstream} field="source" />}
         {downstream.length > 0 && <DependencyList label="Depends on" edges={downstream} field="target" />}
-        {url && <a href={url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-theme-accent hover:underline"><ExternalLink size={12} />Open service</a>}
+        {url && <a href={url} target="_blank" rel="noreferrer" onClick={opensWithOdsSession(node.id) ? openWithFreshSession : undefined} className="flex items-center gap-1.5 text-theme-accent hover:underline"><ExternalLink size={12} />Open service</a>}
       </div>
     </div>
   )

@@ -3,19 +3,180 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import runpy
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import patch
 
 
+# The code under test refuses group-writable state. Create every fixture with
+# the installer's modes, whatever the host's umask (Ubuntu's default 0002
+# would otherwise make them unsafe).
+os.umask(0o022)
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "preserve-active-model.py"
 
+SAVED_CUDA_IMAGE = "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
 
-def write_model_fixture(root: Path, *, imported: bool = False) -> tuple[Path, Path, Path, Path]:
+# A vision import's projector, named as the Models page names its downloads.
+PROJECTOR = "hf-osmantic-agent-test-mmproj-F16-0a1b2c3d.gguf"
+PROJECTOR_BYTES = 2048
+# A fixed chat template (any-model WP5) as config/chat-templates/index.json lists it.
+TEMPLATE_ID = "fixed-agent-tools"
+TEMPLATE_FILE = "upstream-b9014/Agent-Test.jinja"
+TEMPLATE_BODY = b"{%- for message in messages %}{{ message.content }}{% endfor %}\n"
+ACTIVATION_KEYS = ("LLAMA_ARG_MMPROJ", "MODEL_CHAT_TEMPLATE_OVERRIDE", "LLAMA_ARG_CHAT_TEMPLATE_FILE")
+
+
+def image_phase_rerun(saved_backend: str, detected_backend: str, *,
+                      reselect: bool = False, image: str = SAVED_CUDA_IMAGE) -> dict[str, str]:
+    def prepare(install: Path, source: Path) -> Path:
+        env, catalog, _, _ = write_model_fixture(install)
+        replace_env(env, "MODEL_RUNTIME_PROFILE=nvidia-8gb-64k", "MODEL_RUNTIME_PROFILE=")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write(f"GPU_BACKEND={saved_backend}\nLLAMA_SERVER_IMAGE={image}\n")
+        return catalog
+    return installer_rerun(prepare, detected_backend, reselect=reselect)
+
+
+def installer_rerun(prepare: Callable[[Path, Path], Path], detected_backend: str = "nvidia", *,
+                    reselect: bool = False, caller_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Run the shipped preservation block, AMD filter and full .env template.
+
+    ``prepare(install, source)`` writes the retained installation and returns
+    its catalog. Hardware detection/service setup is outside this fixture. No
+    Docker, model load or installed paths are used; the catalog artifact is a
+    four-KiB file. ``caller_env`` is exported by whoever runs the installer.
+    """
+    detection = (ROOT / "installers/phases/02-detection.sh").read_text(encoding="utf-8")
+    phase02 = detection[detection.index("# The tier/catalog result is a recommendation."):
+                        detection.index("\nunset _native_python", detection.index("# The tier/catalog result is a recommendation."))]
+    directories = (ROOT / "installers/phases/06-directories.sh").read_text(encoding="utf-8")
+    reader_start = directories.index("    _env_get() {")
+    reader_end = directories.index("\n    }", reader_start) + len("\n    }")
+    reader = directories[reader_start:reader_end]
+    image_filter = directories[directories.index("    # The AMD overlays pin their own llama.cpp images."):
+                               directories.index('    LLAMA_SERVER_MEMORY_LIMIT_VALUE=""')]
+    template_start = directories.index('        cat > "$INSTALL_DIR/.env" << ENV_EOF')
+    template_end = directories.index('\nENV_EOF', template_start) + len('\nENV_EOF')
+    template = directories[template_start:template_end]
+    carry_start = directories.index('    chmod 600 "$INSTALL_DIR/.env"', template_end)
+    carry_end = directories.index('    unset _phase06_previous_env', carry_start) + len('    unset _phase06_previous_env')
+    carry = directories[carry_start:carry_end]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        install = root / "install"
+        install.mkdir()
+        source = root / "source"
+        (source / "config").mkdir(parents=True)
+        catalog = prepare(install, source)
+        env = install / ".env"
+        shutil.copyfile(catalog, source / "config/model-library.json")
+        for name in ("lib", "scripts", "installers"):
+            (source / name).symlink_to(ROOT / name, target_is_directory=True)
+        script = root / "rerun.sh"
+        script.write_text('''set -eo pipefail
+SCRIPT_DIR=$1
+INSTALL_DIR=$2
+_selector_python=$3
+GPU_BACKEND=$4
+ODS_RESELECT_MODEL=$5
+source "$SCRIPT_DIR/lib/safe-env.sh"
+source "$SCRIPT_DIR/lib/dotenv-quote.sh"
+source "$SCRIPT_DIR/installers/lib/external-services.sh"
+source "$SCRIPT_DIR/installers/lib/native-llm.sh"
+source "$SCRIPT_DIR/installers/lib/amd-runtime.sh"
+log() { :; }
+ai_warn() { :; }
+error() { printf '%s\\n' "$*" >&2; return 1; }
+LOG_FILE="$INSTALL_DIR/phase.log"
+TIER=1
+GPU_MEMORY_TYPE=discrete
+GPU_VRAM=8192
+RAM_GB=32
+HOST_ARCH=amd64
+LLM_MODEL=recommended-other
+GGUF_FILE=recommended-other.gguf
+MAX_CONTEXT=32768
+LLAMA_SERVER_IMAGE=registry.example/recommended-current:fixture
+''' + phase02 + '''
+_phase06_previous_env="$INSTALL_DIR/previous.env"
+cp "$INSTALL_DIR/.env" "$_phase06_previous_env"
+EXTERNAL_LLM_ACTIVE=false
+NATIVE_LLM_ACTIVE=false
+ODS_MODE_VALUE=local
+GPU_COUNT=1
+_env_existing="$_phase06_previous_env"
+''' + reader + '\n' + image_filter + '\n' + template + '\n' + carry + '\n', encoding="utf-8")
+        completed = subprocess.run(
+            ["bash", str(script), str(source), str(install), sys.executable,
+             detected_backend, str(reselect).lower()],
+            env={**(caller_env or {}), "PATH": os.environ["PATH"], "HOME": str(root), "LC_ALL": "C"},
+            text=True, capture_output=True, timeout=20,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert not completed.stderr, completed.stderr
+        values = {}
+        for line in env.read_text(encoding="utf-8").splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                values[key] = value
+        return values
+
+
+def test_same_backend_image_pin_survives_actual_installer_phases() -> None:
+    values = image_phase_rerun("nvidia", "nvidia")
+    assert values.get("LLAMA_SERVER_IMAGE") == SAVED_CUDA_IMAGE, values.get("LLAMA_SERVER_IMAGE")
+    assert (values["GPU_BACKEND"], values["LLM_BACKEND"], values["LLM_MODEL"],
+            values["GGUF_FILE"], values["MAX_CONTEXT"]) == (
+                "nvidia", "llama-server", "agent-test", "Agent-Test-Q4_K_M.gguf", "65536")
+    # Equal-to-default is still a saved pin, not permission to delete it.
+    default_image = "ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c"
+    assert image_phase_rerun("nvidia", "nvidia", image=default_image)["LLAMA_SERVER_IMAGE"] == default_image
+
+
+def test_image_pin_does_not_cross_backend_or_reselection_boundaries() -> None:
+    for saved, detected in (("nvidia", "amd"), ("nvidia", "cpu"), ("", "nvidia")):
+        values = image_phase_rerun(saved, detected)
+        assert "LLAMA_SERVER_IMAGE" not in values, (saved, detected, values.get("LLAMA_SERVER_IMAGE"))
+    values = image_phase_rerun("nvidia", "nvidia", reselect=True)
+    assert values["LLAMA_SERVER_IMAGE"] == "registry.example/recommended-current:fixture"
+    assert values["LLM_MODEL"] == "recommended-other"
+    # Existing AMD safety filtering still rejects an incompatible CUDA pin.
+    assert "LLAMA_SERVER_IMAGE" not in image_phase_rerun("amd", "amd")
+
+
+def test_invalid_saved_image_is_not_emitted_or_executed() -> None:
+    for kind in ("whitespace", "substitution"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / "image-executed"
+            image = ("registry.example/llama:tag bad" if kind == "whitespace" else
+                     f"registry.example/llama:$(touch {shlex.quote(str(marker))})")
+            env, catalog, imports, models_dir = write_model_fixture(root)
+            with env.open("a", encoding="utf-8") as handle:
+                handle.write(f"GPU_BACKEND=nvidia\nLLAMA_SERVER_IMAGE='{image}'\n")
+            before = env.read_bytes()
+            assert run_helper(env, catalog, imports, models_dir) == {}
+            assert env.read_bytes() == before
+            assert not marker.exists()
+
+
+def write_model_fixture(root: Path, *, imported: bool = False,
+                        projector: bool = False) -> tuple[Path, Path, Path, Path]:
+    """A retained installation whose Dashboard-activated model is on disk.
+
+    ``projector``: the model is a vision import that model activation started
+    with its projector (LLAMA_ARG_MMPROJ, as bin/ods-host-agent.py writes it).
+    """
     models_dir = root / "data" / "models"
     models_dir.mkdir(parents=True)
     model_file = models_dir / "Agent-Test-Q4_K_M.gguf"
@@ -51,6 +212,15 @@ def write_model_fixture(root: Path, *, imported: bool = False) -> tuple[Path, Pa
             }
         ],
     }
+    if projector:
+        (models_dir / PROJECTOR).write_bytes(b"P" * PROJECTOR_BYTES)
+        record.update({
+            "mmproj_file": PROJECTOR,
+            "mmproj_url": "https://huggingface.co/osmantic/agent-test/resolve/pinned/mmproj-F16.gguf",
+            "mmproj_sha256": "c" * 64,
+            "mmproj_size_bytes": PROJECTOR_BYTES,
+            "mmproj_source_file": "mmproj-F16.gguf",
+        })
     catalog = root / "catalog.json"
     imports = root / "model-imports.json"
     if imported:
@@ -81,12 +251,36 @@ def write_model_fixture(root: Path, *, imported: bool = False) -> tuple[Path, Pa
                 "LLAMA_ARG_FLASH_ATTN=on",
                 "LLAMA_ARG_CACHE_TYPE_K=q4_0",
                 "LLAMA_ARG_CACHE_TYPE_V=q4_0",
+                *([f"LLAMA_ARG_MMPROJ=/models/{PROJECTOR}"] if projector else []),
             ]
         )
         + "\n",
         encoding="utf-8",
     )
     return env, catalog, imports, models_dir
+
+
+def write_chat_templates(parent: Path) -> Path:
+    """``parent``/chat-templates with one fixed template, laid out as config/chat-templates."""
+    root = parent / "chat-templates"
+    (root / TEMPLATE_FILE).parent.mkdir(parents=True)
+    (root / TEMPLATE_FILE).write_bytes(TEMPLATE_BODY)
+    (root / "index.json").write_text(json.dumps({"schemaVersion": 1, "overrides": [{
+        "id": TEMPLATE_ID,
+        "embeddedTemplateSha256": "d" * 64,
+        "file": TEMPLATE_FILE,
+        "fileSha256": hashlib.sha256(TEMPLATE_BODY).hexdigest(),
+        "builds": ["b9014"],
+        "reason": "Fixture: the model's own template drops tool calls.",
+    }]}), encoding="utf-8")
+    return root
+
+
+def add_fixed_template(env: Path) -> None:
+    """The two keys activation writes for a container that runs the fixed template."""
+    with env.open("a", encoding="utf-8") as handle:
+        handle.write(f"MODEL_CHAT_TEMPLATE_OVERRIDE={TEMPLATE_ID}\n"
+                     f"LLAMA_ARG_CHAT_TEMPLATE_FILE=/chat-templates/{TEMPLATE_FILE}\n")
 
 
 def run_helper(env: Path, catalog: Path, imports: Path, models_dir: Path, **overrides: object) -> dict[str, str]:
@@ -114,7 +308,18 @@ def run_helper(env: Path, catalog: Path, imports: Path, models_dir: Path, **over
     ]
     if overrides.get("state") is not None:
         command.extend(["--state", str(overrides["state"])])
+    if overrides.get("external_lemonade"):
+        command.append("--external-lemonade")
+    if overrides.get("native_llm"):
+        command.append("--native-llm")
+    if overrides.get("served_model") is not None:
+        command.extend(["--served-model", str(overrides["served_model"])])
+    if overrides.get("chat_templates") is not None:
+        command.extend(["--chat-templates", str(overrides["chat_templates"])])
     result = subprocess.run(command, check=True, capture_output=True, text=True)
+    log = overrides.get("log")
+    if isinstance(log, list):
+        log.append(result.stderr)  # phase 02 appends it to the install log
     values: dict[str, str] = {}
     for line in result.stdout.splitlines():
         key, raw = line.split("=", 1)
@@ -169,6 +374,71 @@ def test_cpu_profile_host_ram_caps_are_preserved() -> None:
         assert "LLAMA_ARG_CTX_CHECKPOINTS" not in run_helper(env, catalog, imports, models_dir)
 
 
+def test_container_performance_tuning_survives_actual_installer_rerun() -> None:
+    def prepare(install: Path, source: Path) -> Path:
+        env, catalog, _, _ = write_model_fixture(install)
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("GPU_BACKEND=nvidia\nLLAMA_ARG_UBATCH=128\nLLAMA_ARG_FIT_TARGET=512\n")
+        return catalog
+
+    kept = installer_rerun(prepare)
+    assert kept["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+    assert kept["LLAMA_ARG_UBATCH"] == "128"
+    assert kept["LLAMA_ARG_FIT_TARGET"] == "512"
+    changed = installer_rerun(prepare, "amd")
+    assert "LLAMA_ARG_UBATCH" not in changed
+    assert "LLAMA_ARG_FIT_TARGET" not in changed
+    reselected = installer_rerun(prepare, reselect=True)
+    assert "LLAMA_ARG_UBATCH" not in reselected
+    assert "LLAMA_ARG_FIT_TARGET" not in reselected
+
+
+def test_helper_omitted_container_tuning_drops_stale_caller_values() -> None:
+    # A successful helper returns the active model but intentionally omits
+    # disallowed knobs (e.g. after a backend change). The preservation
+    # branches must clear the caller's stale values before loading the helper
+    # output, so phase 06 cannot resurrect them from the caller environment.
+    def prepare(install: Path, source: Path) -> Path:
+        env, catalog, _, _ = write_model_fixture(install)
+        replace_env(env, "MODEL_RUNTIME_PROFILE=nvidia-8gb-64k", "MODEL_RUNTIME_PROFILE=")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("GPU_BACKEND=nvidia\nLLAMA_ARG_UBATCH=128\nLLAMA_ARG_FIT_TARGET=512\n")
+        return catalog
+
+    caller = {"LLAMA_ARG_UBATCH": "256", "LLAMA_ARG_FIT_TARGET": "1024"}
+    kept = installer_rerun(prepare, caller_env=caller)
+    assert kept["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+    assert kept["LLAMA_ARG_UBATCH"] == "128"
+    assert kept["LLAMA_ARG_FIT_TARGET"] == "512"
+    changed = installer_rerun(prepare, "amd", caller_env=caller)
+    assert changed["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+    assert "LLAMA_ARG_UBATCH" not in changed
+    assert "LLAMA_ARG_FIT_TARGET" not in changed
+
+
+def test_invalid_container_tuning_does_not_discard_active_model() -> None:
+    for key, bad in (("LLAMA_ARG_UBATCH", "513"), ("LLAMA_ARG_FIT_TARGET", "511")):
+        with tempfile.TemporaryDirectory() as tmp:
+            env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+            with env.open("a", encoding="utf-8") as handle:
+                handle.write(f"GPU_BACKEND=nvidia\n{key}={bad}\n")
+            values = run_helper(env, catalog, imports, models_dir)
+            assert values["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+            assert key not in values
+
+
+def test_container_tuning_numeric_boundaries() -> None:
+    valid = runpy.run_path(str(HELPER))["valid_runtime_value"]
+    for key, good, bad in (
+        ("LLAMA_ARG_UBATCH", ("1", "128", "512"), ("0", "513")),
+        ("LLAMA_ARG_FIT_TARGET", ("512", "1024", "65536"), ("511", "65537")),
+    ):
+        for value in good:
+            assert valid(key, value), (key, value)
+        for value in (*bad, "", "-1", "+512", " 512", "0512", "5_12", "512,512", "ï¼‘ï¼’ï¼˜", "$(touch marker)"):
+            assert not valid(key, value), (key, value)
+
+
 def test_preserved_context_is_clamped_to_the_declared_native_context() -> None:
     # The fixture declares max_context_length 131072. A recorded context above
     # it (the old 131072 auto-picks of a 40960-token Qwen3-30B-A3B) is never
@@ -184,6 +454,56 @@ def test_preserved_context_is_clamped_to_the_declared_native_context() -> None:
         assert run_helper(env, catalog, imports, models_dir)["MAX_CONTEXT"] == "98304"
 
 
+def test_an_import_the_catalog_now_ships_does_not_drop_the_active_model() -> None:
+    # An owner imported a model from the Hub before the catalog added the same
+    # file (Qwen3.6 27B, after v3.0.0). The rerun must keep the active model.
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        record = json.loads(catalog.read_text(encoding="utf-8"))["models"][0]
+        stale_import = dict(record, id="hf-osmantic-agent-test-0123456789ab", source="huggingface")
+        imports.write_text(json.dumps({"models": [stale_import]}), encoding="utf-8")
+        values = run_helper(env, catalog, imports, models_dir)
+        assert values.get("LLM_MODEL") == "agent-test", values
+        assert values.get("GGUF_FILE") == "Agent-Test-Q4_K_M.gguf", values
+
+
+def test_an_unreadable_import_registry_does_not_drop_a_catalog_model() -> None:
+    for content in ("{not json", '{"models": {"bad": true}}', '{"models": ["not-a-record"]}'):
+        with tempfile.TemporaryDirectory() as tmp:
+            env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+            imports.write_text(content, encoding="utf-8")
+            values = run_helper(env, catalog, imports, models_dir)
+            assert values.get("GGUF_FILE") == "Agent-Test-Q4_K_M.gguf", (content, values)
+
+
+def test_import_permission_error_keeps_catalog_records() -> None:
+    helper = runpy.run_path(str(HELPER))
+    with tempfile.TemporaryDirectory() as tmp:
+        _, catalog, imports, _ = write_model_fixture(Path(tmp))
+        imports.write_text('{"models": []}', encoding="utf-8")
+        expected = json.loads(catalog.read_text(encoding="utf-8"))["models"]
+        original_read = Path.read_text
+
+        def read_with_denied_import(path: Path, *args, **kwargs):
+            if path == imports:
+                raise PermissionError("fixture import registry is private")
+            return original_read(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", read_with_denied_import):
+            assert helper["load_records"](catalog, imports) == expected
+
+
+def test_corrupt_import_registry_does_not_select_an_unrelated_catalog_model() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp), imported=True)
+        record = json.loads(imports.read_text(encoding="utf-8"))["models"][0]
+        other = dict(record, id="other-model", gguf_file="Other-Model.gguf")
+        other.pop("source")
+        catalog.write_text(json.dumps({"models": [other]}), encoding="utf-8")
+        imports.write_text("{broken", encoding="utf-8")
+        assert run_helper(env, catalog, imports, models_dir) == {}
+
+
 def test_valid_dashboard_import_is_preserved() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         env, catalog, imports, models_dir = write_model_fixture(Path(tmp), imported=True)
@@ -195,6 +515,8 @@ def test_verified_switchboard_state_recovers_an_interrupted_installer_env() -> N
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         env, catalog, imports, models_dir = write_model_fixture(root)
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write(f"GPU_BACKEND=nvidia\nLLAMA_SERVER_IMAGE={SAVED_CUDA_IMAGE}\n")
         state = root / "data" / "model-state.json"
         state.write_text(
             json.dumps(
@@ -244,6 +566,7 @@ def test_verified_switchboard_state_recovers_an_interrupted_installer_env() -> N
         assert values["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
         assert values["MAX_CONTEXT"] == "65536"
         assert values["MODEL_SELECTION_SOURCE"] == "dashboard"
+        assert not values.get("LLAMA_SERVER_IMAGE")  # The pin belongs to another model.
         assert values["MODEL_RUNTIME_PROFILE"] == ""
         assert values["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
         assert values["LLAMA_ARG_CACHE_TYPE_V"] == "q4_0"
@@ -261,6 +584,7 @@ def test_verified_switchboard_state_recovers_an_interrupted_installer_env() -> N
             vram_mb=4096,
         )
         assert matching_env_values["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+        assert matching_env_values["LLAMA_SERVER_IMAGE"] == SAVED_CUDA_IMAGE
         assert matching_env_values["MODEL_RUNTIME_PROFILE"] == ""
         assert matching_env_values["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
         assert matching_env_values["LLAMA_ARG_CACHE_TYPE_V"] == "q4_0"
@@ -351,10 +675,15 @@ def test_installer_keeps_recommendation_and_active_model_separate() -> None:
     detection = (ROOT / "installers" / "phases" / "02-detection.sh").read_text(encoding="utf-8")
     env_writer = (ROOT / "installers" / "phases" / "06-directories.sh").read_text(encoding="utf-8")
     assert "--reselect-model) ODS_RESELECT_MODEL=true" in installer
-    assert detection.index('INSTALLER_RECOMMENDED_MODEL="${LLM_MODEL:-}"') < detection.index(
-        'preserve-active-model.py'
-    )
-    assert detection.index("unset LLAMA_ARG_N_CPU_MOE") < detection.index(
+    recommendation = detection.index('INSTALLER_RECOMMENDED_MODEL="${LLM_MODEL:-}"')
+    preservation = detection.index('_preserve_script="$SCRIPT_DIR/scripts/preserve-active-model.py"')
+    # A Windows-hosted served model is this run's pick, so it is recorded
+    # before the recommendation; retained-model preservation runs after it.
+    projection = next((detection.index(flag) for flag in ("--project-native-llm", "--project-external-lemonade")
+                       if flag in detection), None)
+    assert projection is not None, "phase 02 must record the Windows-hosted served model"
+    assert projection < recommendation < preservation
+    assert detection.index("unset LLAMA_ARG_N_CPU_MOE", preservation) < detection.index(
         'load_model_selector_env_from_output <<< "$_preserved_model_env"'
     )
     assert '--state "$INSTALL_DIR/data/model-state.json"' in detection
@@ -398,6 +727,115 @@ def test_comments_do_not_hide_external_runtime_selection() -> None:
             replace_env(env, f"{key}={old}", f"{key}={selected} # chosen by the operator")
             assert run_helper(env, catalog, imports, models_dir) == {}, key
 
+
+def test_dashboard_selected_external_lemonade_model_survives_retained_rerun() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        replace_env(env, "ODS_MODE=local", "ODS_MODE=lemonade")
+        replace_env(env, "LLM_BACKEND=llama-server", "LLM_BACKEND=lemonade")
+        replace_env(env, "LEMONADE_EXTERNAL=false", "LEMONADE_EXTERNAL=true")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("MODEL_SELECTION_SOURCE=dashboard\nLEMONADE_MODEL=Agent-Test-Q4_K_M\n")
+        # The Windows-hosted model has no GGUF in the Linux model directory.
+        (models_dir / "Agent-Test-Q4_K_M.gguf").unlink()
+        values = run_helper(env, catalog, imports, models_dir, external_lemonade=True)
+        assert values["LLM_MODEL"] == "agent-test"
+        assert values["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+        assert values["MAX_CONTEXT"] == "65536"
+        assert values["MODEL_SELECTION_SOURCE"] == "dashboard"
+        assert values["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
+        assert values["MODEL_RUNTIME_PROFILE"] == "nvidia-8gb-64k"
+        assert run_helper(env, catalog, imports, models_dir) == {}
+
+
+def test_external_lemonade_preservation_rejects_missing_provenance() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        replace_env(env, "ODS_MODE=local", "ODS_MODE=lemonade")
+        replace_env(env, "LLM_BACKEND=llama-server", "LLM_BACKEND=lemonade")
+        replace_env(env, "LEMONADE_EXTERNAL=false", "LEMONADE_EXTERNAL=true")
+        try:
+            run_helper(env, catalog, imports, models_dir, external_lemonade=True)
+            assert False, "ambiguous retained external route must stop before .env rewrite"
+        except subprocess.CalledProcessError as exc:
+            assert exc.returncode == 2
+
+
+def test_external_lemonade_preserves_catalog_35b_without_linux_artifact() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        record = next(
+            model for model in json.loads((ROOT / "config/model-library.json").read_text(encoding="utf-8"))["models"]
+            if model.get("gguf_file") == "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+        )
+        env = root / ".env"
+        env.write_text("\n".join((
+            "ODS_MODE=lemonade", "LLM_BACKEND=lemonade", "LEMONADE_EXTERNAL=true",
+            "LEMONADE_MODEL=Qwen3.6-35B-A3B-UD-Q4_K_M",
+            "MODEL_SELECTION_SOURCE=dashboard", "EXTERNAL_LLM_URL=",
+            f"LLM_MODEL={record['llm_model_name']}", f"GGUF_FILE={record['gguf_file']}",
+            f"GGUF_URL={record['gguf_url']}", f"GGUF_SHA256={record['gguf_sha256']}",
+            "LLM_MODEL_SIZE_MB=21110", "MAX_CONTEXT=131072", "CTX_SIZE=131072",
+            "MODEL_RUNTIME_PROFILE=", "MODEL_RUNTIME_PROFILE_LABEL=",
+            "LLAMA_ARG_CACHE_TYPE_K=f16", "LLAMA_ARG_CACHE_TYPE_V=f16",
+            "LLAMA_ARG_FLASH_ATTN=auto", "ODS_ACTIVE_MODEL_STORE=default",
+        )) + "\n", encoding="utf-8")
+        values = run_helper(env, ROOT / "config/model-library.json", root / "no-imports.json",
+                            root / "no-model-artifacts", external_lemonade=True)
+        assert values["LLM_MODEL"] == "qwen3.6-35b-a3b"
+        assert values["MAX_CONTEXT"] == "131072"
+        assert values["MODEL_SELECTION_SOURCE"] == "dashboard"
+        assert values["LLAMA_ARG_CACHE_TYPE_K"] == "f16"
+        assert values["MODEL_RUNTIME_PROFILE"] == ""
+        assert "ODS_ACTIVE_MODEL_STORE" not in values  # phase 06 defaults to this
+
+
+def test_invalid_external_dashboard_contract_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        replace_env(env, "ODS_MODE=local", "ODS_MODE=lemonade")
+        replace_env(env, "LLM_BACKEND=llama-server", "LLM_BACKEND=lemonade")
+        replace_env(env, "LEMONADE_EXTERNAL=false", "LEMONADE_EXTERNAL=true")
+        replace_env(env, "MAX_CONTEXT=65536", "MAX_CONTEXT=garbled")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("MODEL_SELECTION_SOURCE=dashboard\nLEMONADE_MODEL=host-model\n")
+        command = [sys.executable, str(HELPER), "--external-lemonade", "--env", str(env),
+                   "--catalog", str(catalog), "--models-dir", str(models_dir)]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert "Invalid retained external Lemonade model contract" in result.stderr
+
+
+def test_conflicting_external_provider_does_not_silently_reselect() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        replace_env(env, "ODS_MODE=local", "ODS_MODE=lemonade")
+        replace_env(env, "LLM_BACKEND=llama-server", "LLM_BACKEND=lemonade")
+        replace_env(env, "LEMONADE_EXTERNAL=false", "LEMONADE_EXTERNAL=true")
+        replace_env(env, "EXTERNAL_LLM_URL=", "EXTERNAL_LLM_URL=https://other.invalid/v1")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("MODEL_SELECTION_SOURCE=dashboard\nLEMONADE_MODEL=host-model\n")
+        command = [sys.executable, str(HELPER), "--external-lemonade", "--env", str(env),
+                   "--catalog", str(catalog), "--models-dir", str(models_dir)]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+
+def test_external_lemonade_alias_must_match_saved_catalog_artifact() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        replace_env(env, "ODS_MODE=local", "ODS_MODE=lemonade")
+        replace_env(env, "LLM_BACKEND=llama-server", "LLM_BACKEND=lemonade")
+        replace_env(env, "LEMONADE_EXTERNAL=false", "LEMONADE_EXTERNAL=true")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("MODEL_SELECTION_SOURCE=dashboard\nLEMONADE_MODEL=Different-Model\n")
+        command = [sys.executable, str(HELPER), "--external-lemonade", "--env", str(env),
+                   "--catalog", str(catalog), "--models-dir", str(models_dir)]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode == 2
+        assert result.stdout == ""
 
 def test_literal_hashes_and_invalid_values_are_not_comments() -> None:
     with tempfile.TemporaryDirectory() as tmp:
@@ -467,10 +905,740 @@ def test_external_registered_model_store_is_preserved() -> None:
         assert preserved["LLAMA_ARG_SPEC_DRAFT_TYPE_K"] == "q4_0"
 
 
+CATALOG = ROOT / "config/model-library.json"
+SERVED_35B = "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+SERVED_35B_ID = "Qwen3.6-35B-A3B-UD-Q4_K_M"
+
+
+def catalog_record(gguf_file: str) -> dict:
+    return next(model for model in json.loads(CATALOG.read_text(encoding="utf-8"))["models"]
+                if model.get("gguf_file") == gguf_file)
+
+
+def run_mode(env: Path, catalog: Path, *mode: str) -> subprocess.CompletedProcess[str]:
+    command = [sys.executable, str(HELPER), "--env", str(env), "--catalog", str(catalog),
+               "--models-dir", str(env.parent / "no-model-artifacts"), *mode]
+    return subprocess.run(command, capture_output=True, text=True)
+
+
+def parse_contract(stdout: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in stdout.splitlines():
+        key, raw = line.split("=", 1)
+        parsed = shlex.split(raw, comments=False, posix=True)
+        values[key] = parsed[0] if parsed else ""
+    return values
+
+
+def write_fresh_install_mismatch(directory: Path) -> Path:
+    """The .env a fresh Windows-AMD install wrote before the fix (observed on Strix Halo).
+
+    LEMONADE_MODEL names the model Lemonade serves; the model fields are the
+    Linux host's own CPU pick, because WSL cannot see the Windows GPU.
+    """
+    linux_pick = catalog_record("Qwen3.5-9B-Q4_K_M.gguf")
+    env = directory / ".env"
+    env.write_text("\n".join((
+        "ODS_MODE=lemonade", "LLM_BACKEND=lemonade", "LEMONADE_EXTERNAL=true",
+        f"LEMONADE_MODEL={SERVED_35B_ID}", "EXTERNAL_LLM_URL=",
+        f"LLM_MODEL={linux_pick['llm_model_name']}", f"GGUF_FILE={linux_pick['gguf_file']}",
+        f"GGUF_URL={linux_pick['gguf_url']}", f"GGUF_SHA256={linux_pick['gguf_sha256']}",
+        "LLM_MODEL_SIZE_MB=5760", "MAX_CONTEXT=65536", "CTX_SIZE=65536",
+        "MODEL_SELECTION_SOURCE=installer", "ODS_ACTIVE_MODEL_STORE=default",
+        f"MODEL_RECOMMENDED_MODEL={linux_pick['llm_model_name']}",
+        f"MODEL_RECOMMENDED_GGUF={linux_pick['gguf_file']}", "MODEL_RECOMMENDED_CONTEXT=65536",
+        "MODEL_RUNTIME_PROFILE='cpu-64k-q8-kv'",
+        "LLAMA_ARG_CACHE_TYPE_K=q8_0", "LLAMA_ARG_CACHE_TYPE_V=q8_0",
+    )) + "\n", encoding="utf-8")
+    return env
+
+
+def test_external_lemonade_projection_records_the_served_catalog_model() -> None:
+    record = catalog_record(SERVED_35B)
+    with tempfile.TemporaryDirectory() as tmp:
+        env = Path(tmp) / ".env"  # a fresh install has none yet
+        for model_id in (SERVED_35B_ID, f"extra.{SERVED_35B}"):
+            result = run_mode(env, CATALOG, "--project-external-lemonade", model_id)
+            assert result.returncode == 0, result.stderr
+            assert parse_contract(result.stdout) == {
+                "LLM_MODEL": record["llm_model_name"],
+                "GGUF_FILE": SERVED_35B,
+                "GGUF_URL": record["gguf_url"],
+                "GGUF_SHA256": record["gguf_sha256"],
+                "MAX_CONTEXT": str(record["context_length"]),
+                "LLM_MODEL_SIZE_MB": str(record["size_mb"]),
+                "MODEL_RUNTIME_PROFILE": "",
+                "MODEL_RUNTIME_PROFILE_LABEL": "",
+                "MODEL_RUNTIME_PROFILE_SOURCE": "",
+                "MODEL_SELECTION_SOURCE": "installer",
+            }, result.stdout
+        loaded = run_mode(env, CATALOG, "--project-external-lemonade", SERVED_35B_ID, "--context", "32768")
+        assert parse_contract(loaded.stdout)["MAX_CONTEXT"] == "32768"
+        above_native = run_mode(env, CATALOG, "--project-external-lemonade", SERVED_35B_ID, "--context", "9999999")
+        assert parse_contract(above_native.stdout)["MAX_CONTEXT"] == str(record["max_context_length"])
+
+
+def test_external_lemonade_projection_refuses_ids_it_cannot_name() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env = root / ".env"
+        # Unknown, case-changed and empty ids name no model.
+        for model_id in ("Not-A-Catalog-Model", SERVED_35B_ID.lower(), SERVED_35B.lower(), ""):
+            result = run_mode(env, CATALOG, "--project-external-lemonade", model_id)
+            assert result.returncode == 2 and result.stdout == "", (model_id, result.stdout)
+            assert "refusing to record a different model" in result.stderr
+        record = catalog_record(SERVED_35B)
+        twins = root / "catalog.json"
+        twins.write_text(json.dumps({"models": [record, {**record, "id": "twin"}]}), encoding="utf-8")
+        ambiguous = run_mode(env, twins, "--project-external-lemonade", SERVED_35B_ID)
+        assert ambiguous.returncode == 2 and ambiguous.stdout == ""
+        for context in ("1023", "0", "-1", "128k", "65536 "):
+            result = run_mode(env, CATALOG, "--project-external-lemonade", SERVED_35B_ID, "--context", context)
+            assert result.returncode == 2 and result.stdout == "", context
+        both = run_mode(env, CATALOG, "--project-external-lemonade", SERVED_35B_ID, "--external-lemonade")
+        assert both.returncode == 2 and both.stdout == ""
+
+
+def test_projected_external_lemonade_record_passes_the_rerun_check() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env = root / ".env"
+        projected = parse_contract(run_mode(
+            env, CATALOG, "--project-external-lemonade", SERVED_35B_ID, "--context", "65536").stdout)
+        # Phase 06 writes the projection next to the route and its runtime defaults.
+        env.write_text("\n".join([
+            "ODS_MODE=lemonade", "LLM_BACKEND=lemonade", "LEMONADE_EXTERNAL=true",
+            f"LEMONADE_MODEL={SERVED_35B_ID}", "EXTERNAL_LLM_URL=",
+            *(f"{key}={shlex.quote(value)}" for key, value in projected.items()),
+            f"CTX_SIZE={projected['MAX_CONTEXT']}", "ODS_ACTIVE_MODEL_STORE=default",
+            f"MODEL_RECOMMENDED_MODEL={projected['LLM_MODEL']}",
+            f"MODEL_RECOMMENDED_GGUF={projected['GGUF_FILE']}",
+            "LLAMA_ARG_FLASH_ATTN=auto", "LLAMA_ARG_CACHE_TYPE_K=f16", "LLAMA_ARG_CACHE_TYPE_V=f16",
+        ]) + "\n", encoding="utf-8")
+        preserved = run_helper(env, CATALOG, root / "no-imports.json", root / "no-model-artifacts",
+                               external_lemonade=True)
+        for key in ("LLM_MODEL", "GGUF_FILE", "GGUF_URL", "GGUF_SHA256", "MAX_CONTEXT",
+                    "LLM_MODEL_SIZE_MB", "MODEL_SELECTION_SOURCE", "MODEL_RUNTIME_PROFILE"):
+            assert preserved[key] == projected[key], key
+        # Nothing for the repair mode to do on a consistent record.
+        assert run_mode(env, CATALOG, "--repair-external-lemonade").returncode == 2
+
+
+def test_fresh_install_mismatch_is_repaired_from_the_served_model() -> None:
+    record = catalog_record(SERVED_35B)
+    with tempfile.TemporaryDirectory() as tmp:
+        env = write_fresh_install_mismatch(Path(tmp))
+        before = env.read_bytes()
+        stopped = run_mode(env, CATALOG, "--external-lemonade")
+        assert stopped.returncode == 2 and stopped.stdout == ""
+        repaired = run_mode(env, CATALOG, "--repair-external-lemonade", "--context", "131072")
+        assert repaired.returncode == 0, repaired.stderr
+        values = parse_contract(repaired.stdout)
+        assert values["LLM_MODEL"] == record["llm_model_name"]
+        assert values["GGUF_FILE"] == SERVED_35B
+        assert values["GGUF_SHA256"] == record["gguf_sha256"]
+        assert values["MAX_CONTEXT"] == "131072"
+        assert values["MODEL_SELECTION_SOURCE"] == "installer"
+        assert values["MODEL_RUNTIME_PROFILE"] == ""
+        assert "LLAMA_ARG_CACHE_TYPE_K" not in values  # the CPU pick's tuning is not carried over
+        assert f"({SERVED_35B_ID})" in repaired.stderr
+        assert f"LLM_MODEL qwen3.5-9b -> {record['llm_model_name']}" in repaired.stderr
+        assert "The served model is unchanged" in repaired.stderr
+        assert env.read_bytes() == before  # the installer writes .env later, from this contract
+        catalog_context = run_mode(env, CATALOG, "--repair-external-lemonade")
+        assert parse_contract(catalog_context.stdout)["MAX_CONTEXT"] == str(record["context_length"])
+
+
+def test_repair_refuses_anything_but_the_installer_written_mismatch() -> None:
+    for old, new in (
+        ("MODEL_SELECTION_SOURCE=installer", "MODEL_SELECTION_SOURCE=dashboard"),
+        ("MODEL_SELECTION_SOURCE=installer", "MODEL_SELECTION_SOURCE=operator"),
+        ("MODEL_RECOMMENDED_GGUF=Qwen3.5-9B-Q4_K_M.gguf", "MODEL_RECOMMENDED_GGUF=Other-Q4_K_M.gguf"),
+        ("MODEL_RECOMMENDED_MODEL=qwen3.5-9b", "MODEL_RECOMMENDED_MODEL=other"),
+        (f"LEMONADE_MODEL={SERVED_35B_ID}", "LEMONADE_MODEL=Not-A-Catalog-Model"),
+        (f"LEMONADE_MODEL={SERVED_35B_ID}", "LEMONADE_MODEL=Qwen3.5-9B-Q4_K_M"),  # already consistent
+        ("ODS_ACTIVE_MODEL_STORE=default", "ODS_ACTIVE_MODEL_STORE=ssd"),
+        ("EXTERNAL_LLM_URL=", "EXTERNAL_LLM_URL=https://other.invalid/v1"),
+        ("LEMONADE_EXTERNAL=true", "LEMONADE_EXTERNAL=false"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = write_fresh_install_mismatch(Path(tmp))
+            replace_env(env, old, new)
+            result = run_mode(env, CATALOG, "--repair-external-lemonade")
+            assert result.returncode == 2 and result.stdout == "", (new, result.stdout)
+            assert "refusing to change them" in result.stderr
+
+
+def write_host_native_fixture(directory: Path, *, served: str = SERVED_35B, **values: str) -> Path:
+    """A migrated WSL Portal .env: llama-server.exe on Windows serves the model."""
+    record = catalog_record(served)
+    fields = {
+        "ODS_MODE": "local", "LLM_BACKEND": "llama-server", "AMD_INFERENCE_RUNTIME": "llama-server",
+        "AMD_INFERENCE_RUNTIME_MODE": "windows-portal-llama-server", "AMD_INFERENCE_LOCATION": "host",
+        "ODS_HOST_LLM_TRANSPORT": "model-router",
+        "NATIVE_LLM_BASE_URL": "http://localhost:13305",
+        "NATIVE_LLM_CONTAINER_BASE_URL": "http://host.docker.internal:13305",
+        "EXTERNAL_LLM_URL": "", "MODEL_SELECTION_SOURCE": "dashboard",
+        "LLM_MODEL": record["llm_model_name"], "GGUF_FILE": record["gguf_file"],
+        "GGUF_URL": record["gguf_url"], "GGUF_SHA256": record["gguf_sha256"],
+        "LLM_MODEL_SIZE_MB": str(record["size_mb"]), "MAX_CONTEXT": "65536", "CTX_SIZE": "65536",
+        "ODS_ACTIVE_MODEL_STORE": "default",
+        "MODEL_RECOMMENDED_MODEL": record["llm_model_name"], "MODEL_RECOMMENDED_GGUF": record["gguf_file"],
+        **values,
+    }
+    env = directory / ".env"
+    env.write_text("".join(f"{key}={shlex.quote(value)}\n" for key, value in fields.items()), encoding="utf-8")
+    return env
+
+
+def test_native_projection_records_the_served_catalog_model() -> None:
+    record = catalog_record(SERVED_35B)
+    expected = {
+        "LLM_MODEL": record["llm_model_name"],
+        "GGUF_FILE": SERVED_35B,
+        "GGUF_URL": record["gguf_url"],
+        "GGUF_SHA256": record["gguf_sha256"],
+        "MAX_CONTEXT": str(record["context_length"]),
+        "LLM_MODEL_SIZE_MB": str(record["size_mb"]),
+        "MODEL_RUNTIME_PROFILE": "",
+        "MODEL_RUNTIME_PROFILE_LABEL": "",
+        "MODEL_RUNTIME_PROFILE_SOURCE": "",
+        "MODEL_SELECTION_SOURCE": "installer",
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        env = Path(tmp) / ".env"  # a fresh install has none yet
+        # The --alias filename first; the retired Lemonade ids for one release.
+        for model_id in (SERVED_35B, SERVED_35B_ID, f"extra.{SERVED_35B}", f"user.{SERVED_35B}"):
+            result = run_mode(env, CATALOG, "--project-native-llm", model_id)
+            assert result.returncode == 0, (model_id, result.stderr)
+            assert parse_contract(result.stdout) == expected, (model_id, result.stdout)
+        legacy_flag = run_mode(env, CATALOG, "--project-external-lemonade", SERVED_35B)
+        assert legacy_flag.returncode == 0 and parse_contract(legacy_flag.stdout) == expected
+        loaded = run_mode(env, CATALOG, "--project-native-llm", SERVED_35B, "--context", "32768")
+        assert parse_contract(loaded.stdout)["MAX_CONTEXT"] == "32768"
+        above_native = run_mode(env, CATALOG, "--project-native-llm", SERVED_35B, "--context", "9999999")
+        assert parse_contract(above_native.stdout)["MAX_CONTEXT"] == str(record["max_context_length"])
+
+
+def test_native_projection_refuses_ids_it_cannot_name() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env = root / ".env"
+        for model_id in ("Not-A-Catalog-Model", SERVED_35B.lower(), SERVED_35B_ID.upper(),
+                         f"models/{SERVED_35B}", f"C:\\models\\{SERVED_35B}", f"extra.{SERVED_35B_ID}",
+                         # A Lemonade user model names a checkpoint, not a catalog file.
+                         "user.Qwen3.6-35B-A3B-Vision", f"{SERVED_35B} ", ""):
+            result = run_mode(env, CATALOG, "--project-native-llm", model_id)
+            assert result.returncode == 2 and result.stdout == "", (model_id, result.stdout)
+            assert "refusing to record a different model" in result.stderr
+        record = catalog_record(SERVED_35B)
+        twins = root / "catalog.json"
+        twins.write_text(json.dumps({"models": [record, {**record, "id": "twin"}]}), encoding="utf-8")
+        ambiguous = run_mode(env, twins, "--project-native-llm", SERVED_35B)
+        assert ambiguous.returncode == 2 and ambiguous.stdout == ""
+        for mode in (("--native-llm",), ("--external-lemonade",), ("--project-external-lemonade", SERVED_35B),
+                     ("--repair-native-llm", SERVED_35B)):
+            both = run_mode(env, CATALOG, "--project-native-llm", SERVED_35B, *mode)
+            assert both.returncode == 2 and both.stdout == "", mode
+        alone = run_mode(env, CATALOG, "--served-model", SERVED_35B)
+        assert alone.returncode == 2 and "--served-model applies only to --native-llm" in alone.stderr
+
+
+def test_projected_record_passes_the_host_native_rerun_check() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        projected = parse_contract(run_mode(
+            root / ".env", CATALOG, "--project-native-llm", SERVED_35B, "--context", "65536").stdout)
+        # Phase 06 writes the projection next to the migrated host-native route.
+        env = write_host_native_fixture(root, **projected)  # selected by the installer
+        preserved = run_helper(env, CATALOG, root / "no-imports.json", root / "no-model-artifacts",
+                               native_llm=True, served_model=SERVED_35B)
+        for key in ("LLM_MODEL", "GGUF_FILE", "GGUF_URL", "GGUF_SHA256", "MAX_CONTEXT",
+                    "LLM_MODEL_SIZE_MB", "MODEL_SELECTION_SOURCE", "MODEL_RUNTIME_PROFILE"):
+            assert preserved[key] == projected[key], key
+        # Nothing for the repair mode to do on a consistent record.
+        repair = run_mode(env, CATALOG, "--repair-native-llm", SERVED_35B)
+        assert repair.returncode == 2 and repair.stdout == ""
+
+
+def test_host_native_selection_survives_a_rerun_without_a_linux_artifact() -> None:
+    record = catalog_record(SERVED_35B)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        # A retired line left in the .env never relabels the served model.
+        env = write_host_native_fixture(root, LEMONADE_MODEL="Different-Model", LLAMA_ARG_CACHE_TYPE_K="f16",
+                                        LLAMA_ARG_CACHE_TYPE_V="f16", GPU_BACKEND="nvidia",
+                                        LLAMA_SERVER_IMAGE=SAVED_CUDA_IMAGE)
+        before = env.read_bytes()
+        values = run_helper(env, CATALOG, root / "no-imports.json", root / "no-model-artifacts", native_llm=True)
+        assert values["GGUF_FILE"] == SERVED_35B
+        assert values["LLM_MODEL"] == record["llm_model_name"]
+        assert values["MAX_CONTEXT"] == "65536"
+        assert values["MODEL_SELECTION_SOURCE"] == "dashboard"
+        assert values["LLAMA_ARG_CACHE_TYPE_K"] == "f16"
+        assert values.get("LLAMA_SERVER_IMAGE") != SAVED_CUDA_IMAGE
+        assert env.read_bytes() == before
+        # The local mode still requires this host's artifact.
+        assert run_helper(env, CATALOG, root / "no-imports.json", root / "no-model-artifacts") == {}
+        # The Windows host serves another model than the retained record: stop.
+        other = run_mode(env, CATALOG, "--native-llm", "--served-model", "Qwen3.5-9B-Q4_K_M.gguf")
+        assert other.returncode == 2 and other.stdout == ""
+        assert "refusing to replace it" in other.stderr
+        for key, value in (("MAX_CONTEXT", "garbled"), ("MODEL_SELECTION_SOURCE", ""),
+                           ("EXTERNAL_LLM_URL", "https://other.invalid/v1"),
+                           ("GGUF_SHA256", "0" * 64)):
+            broken = write_host_native_fixture(root, **{key: value})
+            result = run_mode(broken, CATALOG, "--native-llm")
+            assert result.returncode == 2 and result.stdout == "", key
+    with tempfile.TemporaryDirectory() as tmp:
+        # A local .env is not a Windows-hosted record: nothing to preserve here.
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        assert run_helper(env, catalog, imports, models_dir, native_llm=True) == {}
+
+
+def test_served_model_check_reads_retired_lemonade_ids_of_the_same_file() -> None:
+    record = catalog_record(SERVED_35B)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env = root / ".env"
+        env.write_text("\n".join((
+            "ODS_MODE=lemonade", "LLM_BACKEND=lemonade", "LEMONADE_EXTERNAL=true",
+            f"LEMONADE_MODEL=extra.{SERVED_35B}",
+            "MODEL_SELECTION_SOURCE=dashboard", "EXTERNAL_LLM_URL=",
+            f"LLM_MODEL={record['llm_model_name']}", f"GGUF_FILE={record['gguf_file']}",
+            f"GGUF_URL={record['gguf_url']}", f"GGUF_SHA256={record['gguf_sha256']}",
+            "MAX_CONTEXT=131072", "CTX_SIZE=131072", "ODS_ACTIVE_MODEL_STORE=default",
+        )) + "\n", encoding="utf-8")
+        # The first round F rerun: the Portal names the GGUF, the .env Lemonade's id.
+        values = run_helper(env, CATALOG, root / "no-imports.json", root / "no-model-artifacts",
+                            native_llm=True, served_model=SERVED_35B)
+        assert values["GGUF_FILE"] == SERVED_35B and values["MAX_CONTEXT"] == "131072"
+        other = run_mode(env, CATALOG, "--native-llm", "--served-model", "Qwen3.5-9B-Q4_K_M.gguf")
+        assert other.returncode == 2 and other.stdout == ""
+        assert "Invalid retained external Lemonade model contract" in other.stderr
+
+
+def test_fresh_install_mismatch_is_repaired_from_the_served_gguf() -> None:
+    record = catalog_record(SERVED_35B)
+    with tempfile.TemporaryDirectory() as tmp:
+        # The pre-round-F .env of an earlier fresh install, repaired from the
+        # GGUF the Windows host now serves.
+        env = write_fresh_install_mismatch(Path(tmp))
+        before = env.read_bytes()
+        repaired = run_mode(env, CATALOG, "--repair-native-llm", SERVED_35B, "--context", "131072")
+        assert repaired.returncode == 0, repaired.stderr
+        values = parse_contract(repaired.stdout)
+        assert values["GGUF_FILE"] == SERVED_35B
+        assert values["LLM_MODEL"] == record["llm_model_name"]
+        assert values["MAX_CONTEXT"] == "131072"
+        assert values["MODEL_SELECTION_SOURCE"] == "installer"
+        assert "LLAMA_ARG_CACHE_TYPE_K" not in values
+        assert f"({SERVED_35B})" in repaired.stderr
+        assert f"GGUF_FILE Qwen3.5-9B-Q4_K_M.gguf -> {SERVED_35B}" in repaired.stderr
+        assert "The served model is unchanged" in repaired.stderr
+        assert env.read_bytes() == before
+    linux_pick = catalog_record("Qwen3.5-9B-Q4_K_M.gguf")
+    with tempfile.TemporaryDirectory() as tmp:
+        # The same mismatch after the .env migration: no Lemonade line is left,
+        # so only the served GGUF names the model.
+        env = write_host_native_fixture(
+            Path(tmp), served="Qwen3.5-9B-Q4_K_M.gguf", MODEL_SELECTION_SOURCE="installer",
+            MODEL_RECOMMENDED_MODEL=linux_pick["llm_model_name"], MODEL_RECOMMENDED_GGUF=linux_pick["gguf_file"])
+        repaired = run_mode(env, CATALOG, "--repair-native-llm", SERVED_35B)
+        assert repaired.returncode == 0, repaired.stderr
+        assert parse_contract(repaired.stdout)["GGUF_FILE"] == SERVED_35B
+        legacy_flag = run_mode(env, CATALOG, "--repair-external-lemonade")
+        assert legacy_flag.returncode == 2 and legacy_flag.stdout == ""
+
+
+def test_native_repair_refuses_anything_but_the_installer_written_mismatch() -> None:
+    for old, new in (
+        ("MODEL_SELECTION_SOURCE=installer", "MODEL_SELECTION_SOURCE=dashboard"),
+        ("MODEL_SELECTION_SOURCE=installer", "MODEL_SELECTION_SOURCE=operator"),
+        ("MODEL_RECOMMENDED_GGUF=Qwen3.5-9B-Q4_K_M.gguf", "MODEL_RECOMMENDED_GGUF=Other-Q4_K_M.gguf"),
+        ("MODEL_RECOMMENDED_MODEL=qwen3.5-9b", "MODEL_RECOMMENDED_MODEL=other"),
+        # The .env's own record of the served model names another one.
+        (f"LEMONADE_MODEL={SERVED_35B_ID}", "LEMONADE_MODEL=Not-A-Catalog-Model"),
+        (f"LEMONADE_MODEL={SERVED_35B_ID}", "LEMONADE_MODEL=Qwen3.5-9B-Q4_K_M"),
+        ("ODS_ACTIVE_MODEL_STORE=default", "ODS_ACTIVE_MODEL_STORE=ssd"),
+        ("EXTERNAL_LLM_URL=", "EXTERNAL_LLM_URL=https://other.invalid/v1"),
+        ("LEMONADE_EXTERNAL=true", "LEMONADE_EXTERNAL=false"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = write_fresh_install_mismatch(Path(tmp))
+            replace_env(env, old, new)
+            result = run_mode(env, CATALOG, "--repair-native-llm", SERVED_35B)
+            assert result.returncode == 2 and result.stdout == "", (new, result.stdout)
+            assert "refusing to change them" in result.stderr
+    with tempfile.TemporaryDirectory() as tmp:
+        env = write_fresh_install_mismatch(Path(tmp))
+        # The served model already is the recorded one, or is no catalog model.
+        for served in ("Qwen3.5-9B-Q4_K_M.gguf", "Not-A-Catalog-Model.gguf", ""):
+            result = run_mode(env, CATALOG, "--repair-native-llm", served)
+            assert result.returncode == 2 and result.stdout == "", served
+
+
+def test_legacy_managed_lemonade_install_is_preserved_on_the_migration_rerun() -> None:
+    """R1: the first round F rerun keeps a pre-round-F managed AMD model."""
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        replace_env(env, "ODS_MODE=local", "ODS_MODE=lemonade")
+        replace_env(env, "LLM_BACKEND=llama-server", "LLM_BACKEND=lemonade")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("GPU_BACKEND=amd\nMODEL_SELECTION_SOURCE=dashboard\n"
+                         "LEMONADE_MODEL=extra.Agent-Test-Q4_K_M.gguf\n")
+        values = run_helper(env, catalog, imports, models_dir)
+        assert values["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+        assert values["LLM_MODEL"] == "agent-test"
+        assert values["MODEL_SELECTION_SOURCE"] == "dashboard"
+        assert values["MAX_CONTEXT"] == "65536"
+        for old, new in (
+            # Lemonade's id names another model than the recorded file.
+            ("LEMONADE_MODEL=extra.Agent-Test-Q4_K_M.gguf", "LEMONADE_MODEL=extra.Other.gguf"),
+            # An unmanaged or external Lemonade is not this host's model.
+            ("LEMONADE_EXTERNAL=false", "LEMONADE_EXTERNAL=true"),
+            ("GPU_BACKEND=amd", "GPU_BACKEND=amd\nAMD_INFERENCE_RUNTIME=lemonade\nAMD_INFERENCE_MANAGED=false"),
+        ):
+            replace_env(env, old, new)
+            assert run_helper(env, catalog, imports, models_dir) == {}, new
+            replace_env(env, new, old)
+        (models_dir / "Agent-Test-Q4_K_M.gguf").unlink()
+        assert run_helper(env, catalog, imports, models_dir) == {}
+
+
+# F14 (fleet test, Windows 11 + WSL2, RTX 5070, 2026-10-18): an installer rerun
+# kept a vision import active but rewrote .env without LLAMA_ARG_MMPROJ, so
+# llama-server answered every image with HTTP 500 ("image input is not
+# supported - hint: if this is unexpected, you may need to provide the mmproj").
+
+KEPT_MODEL = "Agent-Test-Q4_K_M.gguf"
+
+
+def update_import(imports: Path, **fields: object) -> None:
+    """Change the import record; a None value removes the field."""
+    payload = json.loads(imports.read_text(encoding="utf-8"))
+    record = payload["models"][0]
+    for key, value in fields.items():
+        if value is None:
+            record.pop(key, None)
+        else:
+            record[key] = value
+    imports.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def write_switchboard_state(path: Path, gguf_file: str = KEPT_MODEL) -> Path:
+    """A completed switchboard proof that ``gguf_file`` (record agent-test-q4) is served."""
+    path.write_text(json.dumps({
+        "schema": "ods.model-state.v1", "seq": 5, "routeSeq": 4, "operation": None,
+        "desired": {"catalogId": "agent-test-q4"},
+        "active": {
+            "routeSeq": 4, "catalogId": "agent-test-q4", "runtimeModelId": gguf_file,
+            "publicModel": "ods/current",
+            "backend": {"kind": "llama-server", "endpointId": "llama-server-default", "nativeRoute": None},
+            "contextLength": 65536, "verifiedAt": "2026-10-18T09:00:00Z",
+            "proof": {"identity": gguf_file, "completion": True},
+        },
+        "availability": {"mode": "serve_active", "queueDeadline": None},
+    }) + "\n", encoding="utf-8")
+    return path
+
+
+def test_same_vision_import_keeps_its_projector() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp), imported=True, projector=True)
+        log: list[str] = []
+        values = run_helper(env, catalog, imports, models_dir, log=log)
+        assert (values["GGUF_FILE"], values["MODEL_SELECTION_SOURCE"]) == (KEPT_MODEL, "dashboard")
+        assert values["LLAMA_ARG_MMPROJ"] == f"/models/{PROJECTOR}"
+        assert log == [""]
+        # A quoted or commented line is the same setting.
+        replace_env(env, f"LLAMA_ARG_MMPROJ=/models/{PROJECTOR}",
+                    f"LLAMA_ARG_MMPROJ='/models/{PROJECTOR}' # vision")
+        assert run_helper(env, catalog, imports, models_dir)["LLAMA_ARG_MMPROJ"] == f"/models/{PROJECTOR}"
+    with tempfile.TemporaryDirectory() as tmp:
+        # An import's projector lives beside its weights in its registered store.
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root, imported=True, projector=True)
+        external = root / "ssd-models"
+        external.mkdir()
+        for name in (KEPT_MODEL, PROJECTOR):
+            (models_dir / name).rename(external / name)
+        (root / "data/model-stores.json").write_text(json.dumps({"schemaVersion": 1, "stores": [
+            {"id": "ssd", "hostPath": str(external), "containerPath": "/model-stores/ssd"}]}))
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("ODS_ACTIVE_MODEL_STORE=ssd\n")
+        values = run_helper(env, catalog, imports, models_dir)
+        assert (values["ODS_ACTIVE_MODEL_STORE"], values["LLAMA_ARG_MMPROJ"]) == ("ssd", f"/models/{PROJECTOR}")
+    with tempfile.TemporaryDirectory() as tmp:
+        # A text model never gets one.
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp), imported=True)
+        values = run_helper(env, catalog, imports, models_dir)
+        assert values["GGUF_FILE"] == KEPT_MODEL and "LLAMA_ARG_MMPROJ" not in values
+
+
+def test_projector_is_dropped_unless_it_is_the_models_own_file_on_disk() -> None:
+    def missing(models_dir: Path, imports: Path) -> None:
+        (models_dir / PROJECTOR).unlink()
+
+    def directory(models_dir: Path, imports: Path) -> None:
+        (models_dir / PROJECTOR).unlink()
+        (models_dir / PROJECTOR).mkdir()
+
+    def partial(models_dir: Path, imports: Path) -> None:
+        (models_dir / PROJECTOR).write_bytes(b"P" * (PROJECTOR_BYTES // 2))
+
+    def empty(models_dir: Path, imports: Path) -> None:
+        (models_dir / PROJECTOR).write_bytes(b"")
+        update_import(imports, mmproj_size_bytes=None)
+
+    def another_models_projector(models_dir: Path, imports: Path) -> None:
+        # The file is there, but this import brings a different projector.
+        update_import(imports, mmproj_file="hf-osmantic-other-mmproj-F16-99999999.gguf")
+
+    def imported_without_vision(models_dir: Path, imports: Path) -> None:
+        update_import(imports, mmproj_file=None, mmproj_url=None, mmproj_sha256=None,
+                      mmproj_size_bytes=None, mmproj_source_file=None)
+
+    def names_the_weights(models_dir: Path, imports: Path) -> None:
+        update_import(imports, mmproj_file=KEPT_MODEL, mmproj_size_bytes=None)
+
+    for change in (missing, directory, partial, empty, another_models_projector,
+                   imported_without_vision, names_the_weights):
+        with tempfile.TemporaryDirectory() as tmp:
+            env, catalog, imports, models_dir = write_model_fixture(Path(tmp), imported=True, projector=True)
+            if change is names_the_weights:
+                replace_env(env, f"LLAMA_ARG_MMPROJ=/models/{PROJECTOR}", f"LLAMA_ARG_MMPROJ=/models/{KEPT_MODEL}")
+            change(models_dir, imports)
+            log: list[str] = []
+            values = run_helper(env, catalog, imports, models_dir, log=log)
+            # The model itself is still kept; only its projector setting goes.
+            assert values["GGUF_FILE"] == KEPT_MODEL, change.__name__
+            assert "LLAMA_ARG_MMPROJ" not in values, change.__name__
+            assert "Not keeping LLAMA_ARG_MMPROJ" in log[0], (change.__name__, log)
+
+
+def test_a_linked_projector_is_not_kept() -> None:
+    for inside_models_dir in (True, False):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env, catalog, imports, models_dir = write_model_fixture(root, imported=True, projector=True)
+            target = (models_dir if inside_models_dir else root) / "real-projector.gguf"
+            (models_dir / PROJECTOR).rename(target)
+            (models_dir / PROJECTOR).symlink_to(target)
+            values = run_helper(env, catalog, imports, models_dir)
+            assert values["GGUF_FILE"] == KEPT_MODEL
+            assert "LLAMA_ARG_MMPROJ" not in values, inside_models_dir
+
+
+def test_malformed_projector_values_are_dropped_without_running_them() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root, imported=True, projector=True)
+        marker = root / "projector-value-executed"
+        saved = f"LLAMA_ARG_MMPROJ=/models/{PROJECTOR}"
+        # Each names the real projector file in a form activation never writes.
+        for value in (
+            f"/models/../models/{PROJECTOR}",
+            f"/models/./{PROJECTOR}",
+            f"/models//{PROJECTOR}",
+            f"{models_dir}/{PROJECTOR}",
+            PROJECTOR,
+            f"models/{PROJECTOR}",
+            f"/model-stores/ssd/{PROJECTOR}",
+            f"/chat-templates/{PROJECTOR}",
+            f"'/models/$(touch {shlex.quote(str(marker))}){PROJECTOR}'",
+            f"/models/{PROJECTOR}`touch {marker}`",
+        ):
+            replace_env(env, saved, f"LLAMA_ARG_MMPROJ={value}")
+            values = run_helper(env, catalog, imports, models_dir)
+            assert values["GGUF_FILE"] == KEPT_MODEL, value
+            assert "LLAMA_ARG_MMPROJ" not in values, value
+            replace_env(env, f"LLAMA_ARG_MMPROJ={value}", saved)
+        assert not marker.exists()
+        # A projector that is not a GGUF, even when the record names it.
+        binary = PROJECTOR.removesuffix(".gguf") + ".bin"
+        (models_dir / PROJECTOR).rename(models_dir / binary)
+        update_import(imports, mmproj_file=binary)
+        replace_env(env, saved, f"LLAMA_ARG_MMPROJ=/models/{binary}")
+        values = run_helper(env, catalog, imports, models_dir)
+        assert values["GGUF_FILE"] == KEPT_MODEL and "LLAMA_ARG_MMPROJ" not in values
+
+
+def test_activation_settings_never_reach_another_model_or_runtime() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root, imported=True, projector=True)
+        add_fixed_template(env)
+        templates = write_chat_templates(root / "release")
+        # A file name that differs from the record only in case is not the
+        # file activation started (Linux names are case-sensitive).
+        replace_env(env, f"GGUF_FILE={KEPT_MODEL}", f"GGUF_FILE={KEPT_MODEL.lower()}")
+        values = run_helper(env, catalog, imports, models_dir, chat_templates=templates)
+        assert values["GGUF_FILE"] == KEPT_MODEL
+        assert not any(key in values for key in ACTIVATION_KEYS), values
+        replace_env(env, f"GGUF_FILE={KEPT_MODEL.lower()}", f"GGUF_FILE={KEPT_MODEL}")
+        # Native macOS takes both as llama-server arguments, never from these keys.
+        replace_env(env, "MODEL_RUNTIME_PROFILE=nvidia-8gb-64k", "MODEL_RUNTIME_PROFILE=")
+        values = run_helper(env, catalog, imports, models_dir, chat_templates=templates, backend="apple")
+        assert values["GGUF_FILE"] == KEPT_MODEL
+        assert not any(key in values for key in ACTIVATION_KEYS), values
+    with tempfile.TemporaryDirectory() as tmp:
+        # A Windows-hosted llama-server takes its projector from its own plan.
+        root = Path(tmp)
+        env = write_host_native_fixture(root, LLAMA_ARG_MMPROJ=f"/models/{PROJECTOR}",
+                                        MODEL_CHAT_TEMPLATE_OVERRIDE=TEMPLATE_ID,
+                                        LLAMA_ARG_CHAT_TEMPLATE_FILE=f"/chat-templates/{TEMPLATE_FILE}")
+        (root / "no-model-artifacts").mkdir()
+        (root / "no-model-artifacts" / PROJECTOR).write_bytes(b"P" * PROJECTOR_BYTES)
+        values = run_helper(env, CATALOG, root / "no-imports.json", root / "no-model-artifacts",
+                            native_llm=True, served_model=SERVED_35B,
+                            chat_templates=write_chat_templates(root / "release"))
+        assert values["GGUF_FILE"] == SERVED_35B
+        assert not any(key in values for key in ACTIVATION_KEYS), values
+
+
+def test_switchboard_recovery_keeps_activation_settings_only_for_the_same_file() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root, imported=True, projector=True)
+        add_fixed_template(env)
+        templates = write_chat_templates(root / "release")
+        state = write_switchboard_state(root / "data" / "model-state.json")
+        values = run_helper(env, catalog, imports, models_dir, state=state, chat_templates=templates)
+        assert values["GGUF_FILE"] == KEPT_MODEL
+        assert values["LLAMA_ARG_MMPROJ"] == f"/models/{PROJECTOR}"
+        assert values["MODEL_CHAT_TEMPLATE_OVERRIDE"] == TEMPLATE_ID
+        # An interrupted installer already wrote its bootstrap model: the proven
+        # import comes back, but the settings in this .env are another model's.
+        replace_env(env, "LLM_MODEL=agent-test", "LLM_MODEL=bootstrap-model")
+        replace_env(env, f"GGUF_FILE={KEPT_MODEL}", "GGUF_FILE=Bootstrap-2B.gguf")
+        values = run_helper(env, catalog, imports, models_dir, state=state, chat_templates=templates)
+        assert values["GGUF_FILE"] == KEPT_MODEL
+        assert not any(key in values for key in ACTIVATION_KEYS), values
+
+
+def test_same_model_keeps_its_fixed_chat_template() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root, imported=True, projector=True)
+        add_fixed_template(env)
+        templates = write_chat_templates(root / "release")
+        values = run_helper(env, catalog, imports, models_dir, chat_templates=templates)
+        assert values["MODEL_CHAT_TEMPLATE_OVERRIDE"] == TEMPLATE_ID
+        assert values["LLAMA_ARG_CHAT_TEMPLATE_FILE"] == f"/chat-templates/{TEMPLATE_FILE}"
+        assert values["LLAMA_ARG_MMPROJ"] == f"/models/{PROJECTOR}"
+        # Without this release's template directory nothing proves it still ships.
+        log: list[str] = []
+        values = run_helper(env, catalog, imports, models_dir, log=log)
+        assert values["GGUF_FILE"] == KEPT_MODEL and values["LLAMA_ARG_MMPROJ"] == f"/models/{PROJECTOR}"
+        assert "MODEL_CHAT_TEMPLATE_OVERRIDE" not in values and "LLAMA_ARG_CHAT_TEMPLATE_FILE" not in values
+        assert "Not keeping the fixed chat template" in log[0], log
+
+
+def test_fixed_chat_template_is_dropped_unless_this_release_ships_it() -> None:
+    saved_file = f"LLAMA_ARG_CHAT_TEMPLATE_FILE=/chat-templates/{TEMPLATE_FILE}"
+    saved_id = f"MODEL_CHAT_TEMPLATE_OVERRIDE={TEMPLATE_ID}"
+
+    def env_edit(old: str, new: str) -> Callable[[Path, Path], None]:
+        def change(env: Path, templates: Path) -> None:
+            replace_env(env, old, new)
+        change.__name__ = f"env: {new!r}"
+        return change
+
+    def missing_file(env: Path, templates: Path) -> None:
+        (templates / TEMPLATE_FILE).unlink()
+
+    def changed_file(env: Path, templates: Path) -> None:
+        (templates / TEMPLATE_FILE).write_bytes(TEMPLATE_BODY + b"{{ extra }}\n")
+
+    def entry_retired(env: Path, templates: Path) -> None:
+        (templates / "index.json").write_text(json.dumps({"schemaVersion": 1, "overrides": []}), encoding="utf-8")
+
+    def unreadable_index(env: Path, templates: Path) -> None:
+        (templates / "index.json").write_text("{not json", encoding="utf-8")
+
+    for change in (
+        missing_file, changed_file, entry_retired, unreadable_index,
+        env_edit(saved_id, "MODEL_CHAT_TEMPLATE_OVERRIDE=unknown-fix"),
+        env_edit(saved_id, "MODEL_CHAT_TEMPLATE_OVERRIDE=../fixed-agent-tools"),
+        env_edit(saved_file, "LLAMA_ARG_CHAT_TEMPLATE_FILE=/chat-templates/upstream-b9014/Other.jinja"),
+        env_edit(saved_file, f"LLAMA_ARG_CHAT_TEMPLATE_FILE=/chat-templates/../chat-templates/{TEMPLATE_FILE}"),
+        env_edit(saved_file, f"LLAMA_ARG_CHAT_TEMPLATE_FILE={TEMPLATE_FILE}"),
+        env_edit(saved_file, "LLAMA_ARG_CHAT_TEMPLATE_FILE=/models/Agent-Test.jinja"),
+        # Activation writes both together for the container; one alone is not its record.
+        env_edit(saved_file, ""),
+        env_edit(saved_id, ""),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env, catalog, imports, models_dir = write_model_fixture(root, imported=True, projector=True)
+            add_fixed_template(env)
+            templates = write_chat_templates(root / "release")
+            change(env, templates)
+            values = run_helper(env, catalog, imports, models_dir, chat_templates=templates)
+            assert values["GGUF_FILE"] == KEPT_MODEL, change.__name__
+            assert values["LLAMA_ARG_MMPROJ"] == f"/models/{PROJECTOR}", change.__name__
+            assert "MODEL_CHAT_TEMPLATE_OVERRIDE" not in values, change.__name__
+            assert "LLAMA_ARG_CHAT_TEMPLATE_FILE" not in values, change.__name__
+
+
+def test_a_linked_chat_template_is_not_kept() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root, imported=True)
+        add_fixed_template(env)
+        templates = write_chat_templates(root / "release")
+        copy = root / "same-bytes.jinja"
+        copy.write_bytes(TEMPLATE_BODY)
+        (templates / TEMPLATE_FILE).unlink()
+        (templates / TEMPLATE_FILE).symlink_to(copy)
+        values = run_helper(env, catalog, imports, models_dir, chat_templates=templates)
+        assert values["GGUF_FILE"] == KEPT_MODEL
+        assert "MODEL_CHAT_TEMPLATE_OVERRIDE" not in values and "LLAMA_ARG_CHAT_TEMPLATE_FILE" not in values
+
+
+def test_vision_projector_and_fixed_template_survive_the_actual_installer_phases() -> None:
+    def retained(*, projector: bool) -> Callable[[Path, Path], Path]:
+        def prepare(install: Path, source: Path) -> Path:
+            env, catalog, imports, _ = write_model_fixture(install, imported=True, projector=projector)
+            shutil.copyfile(imports, install / "data" / "model-imports.json")
+            add_fixed_template(env)
+            write_chat_templates(source / "config")
+            with env.open("a", encoding="utf-8") as handle:
+                handle.write("GPU_BACKEND=nvidia\n")
+            return catalog
+        return prepare
+
+    values = installer_rerun(retained(projector=True))
+    assert (values["LLM_MODEL"], values["GGUF_FILE"], values["MAX_CONTEXT"]) == ("agent-test", KEPT_MODEL, "65536")
+    assert values["LLAMA_ARG_MMPROJ"] == f"/models/{PROJECTOR}"
+    assert values["MODEL_CHAT_TEMPLATE_OVERRIDE"] == TEMPLATE_ID
+    assert values["LLAMA_ARG_CHAT_TEMPLATE_FILE"] == f"/chat-templates/{TEMPLATE_FILE}"
+    text_model = installer_rerun(retained(projector=False))
+    assert text_model["GGUF_FILE"] == KEPT_MODEL and "LLAMA_ARG_MMPROJ" not in text_model
+    # --reselect-model runs this release's recommendation: another model. Values
+    # the caller happens to export never reach .env either.
+    stray = {"LLAMA_ARG_MMPROJ": "/models/stray-mmproj.gguf", "MODEL_CHAT_TEMPLATE_OVERRIDE": TEMPLATE_ID,
+             "LLAMA_ARG_CHAT_TEMPLATE_FILE": f"/chat-templates/{TEMPLATE_FILE}"}
+    for caller_env in (None, stray):
+        reselected = installer_rerun(retained(projector=True), reselect=True, caller_env=caller_env)
+        assert reselected["LLM_MODEL"] == "recommended-other"
+        assert not any(key in reselected for key in ACTIVATION_KEYS), reselected
+    text_model = installer_rerun(retained(projector=False), caller_env={"LLAMA_ARG_MMPROJ": "/models/stray-mmproj.gguf"})
+    assert text_model["GGUF_FILE"] == KEPT_MODEL and "LLAMA_ARG_MMPROJ" not in text_model
+
+
 def main() -> int:
     tests = [
+        test_same_backend_image_pin_survives_actual_installer_phases,
+        test_image_pin_does_not_cross_backend_or_reselection_boundaries,
+        test_invalid_saved_image_is_not_emitted_or_executed,
         test_valid_curated_model_is_preserved,
         test_cpu_profile_host_ram_caps_are_preserved,
+        test_container_performance_tuning_survives_actual_installer_rerun,
+        test_helper_omitted_container_tuning_drops_stale_caller_values,
+        test_invalid_container_tuning_does_not_discard_active_model,
+        test_container_tuning_numeric_boundaries,
         test_preserved_context_is_clamped_to_the_declared_native_context,
         test_external_registered_model_store_is_preserved,
         test_commented_model_contract_survives_rerun,
@@ -483,6 +1651,44 @@ def main() -> int:
         test_catalog_revision_pin_of_same_artifact_is_preserved,
         test_dashboard_activation_records_selection_owner,
         test_installer_keeps_recommendation_and_active_model_separate,
+        # External Lemonade (Windows-hosted model). These were not listed here
+        # before, so CI never ran them.
+        test_dashboard_selected_external_lemonade_model_survives_retained_rerun,
+        test_external_lemonade_preservation_rejects_missing_provenance,
+        test_external_lemonade_preserves_catalog_35b_without_linux_artifact,
+        test_invalid_external_dashboard_contract_fails_closed,
+        test_conflicting_external_provider_does_not_silently_reselect,
+        test_external_lemonade_alias_must_match_saved_catalog_artifact,
+        test_external_lemonade_projection_records_the_served_catalog_model,
+        test_external_lemonade_projection_refuses_ids_it_cannot_name,
+        test_projected_external_lemonade_record_passes_the_rerun_check,
+        test_fresh_install_mismatch_is_repaired_from_the_served_model,
+        test_repair_refuses_anything_but_the_installer_written_mismatch,
+        # Round F: the served id is the --alias GGUF filename.
+        test_native_projection_records_the_served_catalog_model,
+        test_native_projection_refuses_ids_it_cannot_name,
+        test_projected_record_passes_the_host_native_rerun_check,
+        test_host_native_selection_survives_a_rerun_without_a_linux_artifact,
+        test_served_model_check_reads_retired_lemonade_ids_of_the_same_file,
+        test_fresh_install_mismatch_is_repaired_from_the_served_gguf,
+        test_native_repair_refuses_anything_but_the_installer_written_mismatch,
+        test_legacy_managed_lemonade_install_is_preserved_on_the_migration_rerun,
+        # F14: the settings model activation owns (vision projector, fixed
+        # chat template) stay with the same model across a rerun.
+        test_same_vision_import_keeps_its_projector,
+        test_projector_is_dropped_unless_it_is_the_models_own_file_on_disk,
+        test_a_linked_projector_is_not_kept,
+        test_malformed_projector_values_are_dropped_without_running_them,
+        test_activation_settings_never_reach_another_model_or_runtime,
+        test_switchboard_recovery_keeps_activation_settings_only_for_the_same_file,
+        test_same_model_keeps_its_fixed_chat_template,
+        test_fixed_chat_template_is_dropped_unless_this_release_ships_it,
+        test_a_linked_chat_template_is_not_kept,
+        test_vision_projector_and_fixed_template_survive_the_actual_installer_phases,
+        test_an_import_the_catalog_now_ships_does_not_drop_the_active_model,
+        test_an_unreadable_import_registry_does_not_drop_a_catalog_model,
+        test_import_permission_error_keeps_catalog_records,
+        test_corrupt_import_registry_does_not_select_an_unrelated_catalog_model,
     ]
     for test in tests:
         test()

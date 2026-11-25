@@ -7,6 +7,8 @@ WORKDIR /srv/model-router
 COPY requirements.lock ./
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY app ./app
+# Normalize image code permissions without changing private host source modes.
+RUN chmod -R a+rX /srv/model-router
 
 USER odsrouter
 EXPOSE 9099

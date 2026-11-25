@@ -7,8 +7,27 @@ function Check([bool]$Condition,[string]$Message) { if(-not $Condition){throw $M
 function Reject([scriptblock]$Operation,[string]$Message) { $threw=$false; try { & $Operation } catch { $threw=$true }; Check $threw $Message }
 $fixture=Join-Path $PSScriptRoot ('.wsl-lifetime-test-'+[guid]::NewGuid().ToString('N'))
 $ownedProcess=$null
+$previousOllamaPort=$env:OLLAMA_PORT
+$env:OLLAMA_PORT=$null
 try {
     Check ($Distro -ceq 'Ubuntu-Scope-Test') 'dot-sourcing preserves the selected distribution'
+    foreach ($case in @(
+        @{name='networking';json='{"error":"networking"}';reason='networking'},
+        @{name='address';json='{"error":"address"}';reason='address'},
+        @{name='hyphenated';json='{"error":"docker-probe"}';reason='docker-probe'},
+        @{name='malformed';json='{broken';reason='unknown'},
+        @{name='missing';json='{"mode":"unmanaged"}';reason='unknown'},
+        @{name='empty';json='';reason='unknown'},
+        @{name='non-object';json='[ {"error":"address"} ]';reason='unknown'},
+        @{name='non-string';json='{"error":42}';reason='unknown'},
+        @{name='uppercase';json='{"error":"Address"}';reason='unknown'},
+        @{name='private-output';json='{"error":"/home/private/sentinel"}';reason='unknown'},
+        @{name='newline';json='{"error":"address\n"}';reason='unknown'},
+        @{name='long-code';json=('{"error":"'+('a'*33)+'"}');reason='unknown'},
+        @{name='oversized';json=(' ' * 2048 + '{"error":"address"}');reason='unknown'}
+    )) {
+        Check ((Get-ODSWslAgentAddressFailureReason $case.json) -ceq $case.reason) "address diagnostics validate $($case.name) without exposing raw helper output"
+    }
     $parseTokens=$null;$parseErrors=$null
     $installerAst=[Management.Automation.Language.Parser]::ParseFile((Resolve-Path (Join-Path $PSScriptRoot '../../installers/windows.ps1')),[ref]$parseTokens,[ref]$parseErrors)
     $previewAssignment=$installerAst.Find({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$lifetimeRequired'},$true)
@@ -49,6 +68,14 @@ try {
     Check ((New-ODSWslInstallerCommand '/mnt/c/source' @('--pixel') '') -ceq ("cd -- '/mnt/c/source' && env " + $expectedStateAssignment + " bash install-core.sh '--pixel'")) 'installer forwards StateRoot even before INSTALL_DIR is resolved'
     $script:ODSWslStateRoot=''
     Check ((New-ODSWslInstallerCommand '/mnt/c/source' @('--pixel') '') -ceq "cd -- '/mnt/c/source' && bash install-core.sh '--pixel'") 'installer without explicit roots adds no environment override'
+    $env:OLLAMA_PORT='11435'
+    Check ((New-ODSWslInstallerCommand '/mnt/c/source' @('--pixel') '') -ceq "cd -- '/mnt/c/source' && env OLLAMA_PORT='11435' bash install-core.sh '--pixel'") 'Windows port override reaches Linux even before root resolution'
+    Check ((New-ODSWslInstallerCommand '/mnt/c/source' @('--pixel') '/home/ods/ods').Contains("INSTALL_DIR='/home/ods/ods' OLLAMA_PORT='11435'")) 'Windows port override survives resolved-root rerun'
+    foreach($invalidPort in @('0','65536','01234','-1','1;id',"11435' injected","11435`n")) {
+        $env:OLLAMA_PORT=$invalidPort
+        Reject { New-ODSWslInstallerCommand '/mnt/c/source' @() '' } 'invalid Windows port override fails before WSL execution'
+    }
+    $env:OLLAMA_PORT=$null
     foreach ($unsafeRoot in @('C:relative', '\relative', 'C:\', '\\server\share', 'C:\state"injected', ("C:\state"+[char]10+'injected'))) {
         $validationError=$null
         try { . (Join-Path $PSScriptRoot '../../installers/wsl-lifecycle.ps1') -StateRoot $unsafeRoot } catch { $validationError=$_.Exception.Message }
@@ -153,6 +180,31 @@ try {
     Stop-ODSOwnedProcess $identity
     $ownedProcess.Refresh();Check $ownedProcess.HasExited 'exact owned process handle is released'
     $ownedProcess.Dispose();$ownedProcess=$null
+
+    # A controller can exit while the slower CIM lookup is in flight. Model
+    # that boundary without replacing the actual identity reader.
+    & {
+        $script:identityRace='live'
+        function Get-Process { param($Id,$ErrorAction)
+            $script:identityProcess=[pscustomobject]@{Handle=1;StartTime=[datetime]'2026-01-01T00:00:00Z';HasExited=$false;Disposed=$false}
+            $script:identityProcess|Add-Member ScriptMethod Dispose { $this.Disposed=$true }
+            if ($script:identityRace -eq 'exited-before-read') { $script:identityProcess.StartTime=$null; $script:identityProcess.HasExited=$true }
+            $script:identityProcess
+        }
+        function Get-CimInstance { param($ClassName,$Filter)
+            if ($script:identityRace -eq 'exited-during-cim') { $script:identityProcess.StartTime=$null; $script:identityProcess.HasExited=$true }
+            [pscustomobject]@{ExecutablePath='fixture.exe';CommandLine='fixture'}
+        }
+        foreach ($scenario in @('exited-before-read','exited-during-cim')) {
+            $script:identityRace=$scenario
+            Check ($null -eq (Get-ODSProcessIdentity 123)) "process exit $scenario yields no identity instead of a shutdown error"
+            Check $script:identityProcess.Disposed 'identity reader releases the process handle after exit'
+        }
+        $script:identityRace='live'
+        $record=Get-ODSProcessIdentity 123
+        Check ($record.pid -eq 123 -and $record.commandLine -ceq 'fixture' -and $record.startTicks -ceq ([datetime]'2026-01-01T00:00:00Z').ToUniversalTime().Ticks.ToString()) 'live process retains its captured start time and command identity'
+        Check $script:identityProcess.Disposed 'identity reader releases the process handle after success'
+    }
 
     $script:running=@('docker-desktop','Unrelated-Ubuntu')
     $script:listCalls=0
@@ -325,6 +377,7 @@ try {
     Check (($script:events -join ',') -eq 'stop,release,hold,start') 'restart enforces drain, release, hold, then start order'
     Write-Host "Passed $count Windows lifecycle checks; scheduler/WSL execution is mocked, ACL/locks/owned-process checks are real."
 } finally {
+    $env:OLLAMA_PORT=$previousOllamaPort
     if($ownedProcess -and -not $ownedProcess.HasExited){$ownedProcess.Kill();$ownedProcess.WaitForExit();$ownedProcess.Dispose()}
     # Only the unique fixture under this checked test directory is removed.
     if(Test-Path -LiteralPath $fixture){
@@ -337,3 +390,4 @@ try {
 
 # The relay has independent caller-lifetime and cancellation contracts.
 & (Join-Path $PSScriptRoot 'test-wsl-relay-lifetime.ps1')
+& (Join-Path $PSScriptRoot 'test-wsl-json-sharing.ps1')

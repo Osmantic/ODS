@@ -129,6 +129,16 @@ describe('Settings', () => {
     expect(await screen.findByText('Could not confirm the latest release. Try checking again.')).toBeVisible()
     expect(screen.queryByText('Current release')).toBeNull()
   })
+
+  it('says why a held release check has no answer instead of asking to try again', async () => {
+    // Workstation06 (2026-10-27): the site's address had used up GitHub's unauthenticated requests.
+    const reason = "GitHub's request limit for this network is used up; try again in 12 min"
+    renderSettings(url => String(url).startsWith('/api/version') ? response({ current:'3.0.0', latest:null, update_available:false, check_status:'unavailable', checked_at:null, check_error:reason }) : null)
+    expect(await screen.findByText('Update check unavailable')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', {name:'Check', exact:true}))
+    expect(await screen.findByText(`${reason}.`)).toBeVisible()
+    expect(screen.queryByText('Could not confirm the latest release. Try checking again.')).toBeNull()
+  })
   it('does not invent uptime or a live state when uptime is missing', async () => {
     renderSettings(url => url === '/api/settings/summary' ? response({...summary,uptime:undefined}) : null)
     const label = await screen.findByText('Uptime')
@@ -153,6 +163,24 @@ describe('Settings', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     globalThis.localStorage.removeItem('ods-theme')
+  })
+
+  it('re-checks the ODS session before a route row opens Hermes', async () => {
+    const tab = { opener: window, closed: false, location: { replace: vi.fn() } }
+    vi.spyOn(window, 'open').mockReturnValue(tab)
+    const { fetchMock } = renderSettings(url => {
+      if (url === '/api/settings/summary') {
+        return response({ ...summary, services: [{ id: 'hermes-proxy', name: 'Hermes Auth Proxy', status: 'healthy', port: 9120, external_port: 9120 }] })
+      }
+      if (url === '/api/auth/verify-session') return response({ detail: 'Invalid or expired session' }, 401)
+      if (url === '/api/auth/admin-session') return response({ ok: true })
+      return null
+    })
+    const row = await screen.findByRole('link', { name: /Hermes Auth Proxy/ })
+    expect(fireEvent.click(row)).toBe(false)
+    expect(window.open).toHaveBeenCalledWith('', '_blank')
+    await waitFor(() => expect(tab.location.replace).toHaveBeenCalledWith('http://localhost:9120/'))
+    expect(fetchMock).toHaveBeenCalledWith('/api/auth/admin-session', expect.objectContaining({ method: 'POST' }))
   })
 
   test('renders storage capacity and an ODS data breakdown from the API contract', async () => {
@@ -309,6 +337,29 @@ describe('Settings', () => {
     expect(screen.getByDisplayValue('192.168.1.10')).toBeInTheDocument()
     expect(fetchMock.mock.calls.filter(([url]) => url === '/api/settings/env')).toHaveLength(3)
   })
+
+  test('preserves unsaved environment changes when retrying a failed refresh', async () => {
+    let offline = false
+    renderSettings((url) => (
+      offline && ['/api/settings/summary', '/api/storage', '/api/settings/env'].includes(url)
+        ? response({ detail: 'dashboard-api restarting' }, 503)
+        : null
+    ))
+    const input = await screen.findByDisplayValue('192.168.1.10')
+    fireEvent.change(input, { target: { value: '192.168.1.25' } })
+
+    offline = true
+    fireEvent.click(screen.getAllByRole('button', { name: 'Refresh' })[0])
+    const retry = await screen.findByRole('button', { name: 'Retry' })
+    expect(screen.getByDisplayValue('192.168.1.25')).toBeInTheDocument()
+
+    offline = false
+    fireEvent.click(retry)
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument())
+    expect(screen.getByDisplayValue('192.168.1.25')).toBeInTheDocument()
+    expect(screen.getByText('System details refreshed. Unsaved environment changes were preserved.')).toBeInTheDocument()
+  })
 })
 
 it.each([true,false])('locks the environment draft until its pending save settles (success=%s)', async success => {
@@ -333,4 +384,174 @@ it.each([true,false])('locks the environment draft until its pending save settle
   fireEvent.change(field,{target:{value:'192.168.1.26'}})
   expect(screen.getByRole('button',{name:'Save .env'})).toBeEnabled()
   expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
+})
+
+it.each([true, false])('protects saved settings while runtime apply is pending and recovers (success=%s)', async success => {
+  const plan = {status:'pending',supported:true,envRevision:'a'.repeat(64),services:['litellm'],summary:'Restart LiteLLM.'}
+  const {fetchMock} = renderSettings(url => url === '/api/settings/env'
+    ? response({...editor,applyPlan:plan}) : null)
+  const field = await screen.findByLabelText('LAN Host IP')
+  let finish
+  const original = fetchMock.getMockImplementation()
+  fetchMock.mockImplementation((url, options) => url === '/api/settings/env/apply'
+    ? new Promise(resolve => {finish = resolve})
+    : options?.method === 'PUT'
+      ? response({...editor,values:JSON.parse(options.body).values,applyPlan:plan})
+      : original(url, options))
+
+  fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+  expect(field).toBeDisabled()
+  const env = screen.getByRole('heading',{name:'Environment Editor'}).closest('section')
+  expect(within(env).getByRole('button',{name:'Reload'})).toBeDisabled()
+  screen.getAllByRole('button',{name:'Refresh',exact:true}).forEach(button => expect(button).toBeDisabled())
+  expect(screen.getByRole('button',{name:'Applying...'})).toBeDisabled()
+  const navigation = new Event('beforeunload',{cancelable:true})
+  window.dispatchEvent(navigation)
+  expect(navigation.defaultPrevented).toBe(true)
+  const envReads = () => fetchMock.mock.calls.filter(([url, options]) => url === '/api/settings/env' && !options?.method)
+  expect(envReads()).toHaveLength(1)
+
+  await act(async () => finish(response(success ? {message:'Runtime applied.'}
+    : {detail:'Host restart failed'}, success ? 200 : 503)))
+  expect(field).toBeEnabled()
+  expect(field).toHaveValue('192.168.1.10')
+  screen.getAllByRole('button',{name:'Refresh',exact:true}).forEach(button => expect(button).toBeEnabled())
+  if (!success) {
+    expect(screen.getByText('Host restart failed')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+    await act(async () => finish(response({message:'Runtime applied.'})))
+  }
+  expect(screen.getByText('Runtime applied.')).toBeInTheDocument()
+  const settledNavigation = new Event('beforeunload',{cancelable:true})
+  window.dispatchEvent(settledNavigation)
+  expect(settledNavigation.defaultPrevented).toBe(false)
+
+  // A later save gets its own pending plan rather than being settled by the
+  // earlier apply response. Mutating buttons are available again.
+  fireEvent.change(field,{target:{value:'192.168.1.25'}})
+  fireEvent.click(screen.getByRole('button',{name:'Save .env'}))
+  await waitFor(() => expect(screen.getByRole('button',{name:'Apply changes'})).toBeEnabled())
+  expect(field).toHaveValue('192.168.1.25')
+  expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
+})
+
+it('keeps saved changes and retries a busy Apply without another Save', async () => {
+  const plan = {status:'pending',supported:true,envRevision:'a'.repeat(64),services:['llama-server'],summary:'Restart llama-server.'}
+  const busy = 'ODS is finishing another operation. Your settings are saved. Wait for it to finish, then choose Apply changes again.'
+  const {fetchMock} = renderSettings()
+  const field = await screen.findByLabelText('LAN Host IP')
+  const original = fetchMock.getMockImplementation()
+  let applyCalls = 0
+  fetchMock.mockImplementation((url, options) => {
+    if (url === '/api/settings/env' && options?.method === 'PUT') {
+      return response({...editor,values:JSON.parse(options.body).values,applyPlan:plan})
+    }
+    if (url === '/api/settings/env/apply') {
+      applyCalls += 1
+      return applyCalls === 1
+        ? response({detail:{code:'model_lifecycle_busy',message:busy}},409)
+        : response({message:'Runtime applied.'})
+    }
+    return original(url, options)
+  })
+
+  fireEvent.change(field,{target:{value:'192.168.1.25'}})
+  fireEvent.click(screen.getByRole('button',{name:'Save .env'}))
+  await waitFor(() => expect(screen.getByRole('button',{name:'Apply changes'})).toBeEnabled())
+  fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+  expect(await screen.findByText(busy)).toBeInTheDocument()
+  expect(field).toHaveValue('192.168.1.25')
+  expect(screen.getByRole('button',{name:'Apply changes'})).toBeEnabled()
+  expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
+
+  fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+  expect(await screen.findByText('Runtime applied.')).toBeInTheDocument()
+  expect(screen.getByRole('button',{name:'Apply changes'})).toBeDisabled()
+  expect(applyCalls).toBe(2)
+  expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
+  const requests = fetchMock.mock.calls.filter(([url]) => url === '/api/settings/env/apply')
+  expect(requests.map(([,options]) => JSON.parse(options.body)))
+    .toEqual([{service_ids:['llama-server'],expected_env_revision:'a'.repeat(64)},{service_ids:['llama-server'],expected_env_revision:'a'.repeat(64)}])
+})
+
+it.each([['Refresh',true],['Refresh',false],['Reload',true],['Reload',false]])('does not start runtime apply before an environment %s settles (success=%s)', async (action, success) => {
+  const plan = {status:'pending',supported:true,envRevision:'a'.repeat(64),services:['litellm'],summary:'Restart LiteLLM.'}
+  const {fetchMock} = renderSettings(url => url === '/api/settings/env'
+    ? response({...editor,applyPlan:plan}) : null)
+  const field = await screen.findByLabelText('LAN Host IP')
+  let finish
+  const original = fetchMock.getMockImplementation()
+  fetchMock.mockImplementation((url, options) => url === '/api/settings/env'
+    ? new Promise(resolve => {finish = resolve}) : original(url, options))
+  const env = screen.getByRole('heading',{name:'Environment Editor'}).closest('section')
+  fireEvent.click(within(env).getByRole('button',{name:action,exact:true}))
+  expect(field).toBeDisabled()
+  expect(screen.getByRole('button',{name:'Apply changes'})).toBeDisabled()
+  fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+  expect(fetchMock.mock.calls.some(([url]) => url === '/api/settings/env/apply')).toBe(false)
+  await act(async () => finish(response(success ? {...editor,applyPlan:plan}
+    : {detail:'Environment read failed'}, success ? 200 : 503)))
+  expect(field).toBeEnabled()
+  expect(field).toHaveValue('192.168.1.10')
+  expect(screen.getByRole('button',{name:'Apply changes'})).toBeEnabled()
+  if (!success && action === 'Reload') expect(screen.getByText('Environment read failed')).toBeInTheDocument()
+})
+
+
+it('requires a saved configuration revision before sending Apply', async () => {
+  const plan = {status:'pending',supported:true,services:['llama-server']}
+  const {fetchMock} = renderSettings(url => url === '/api/settings/env' ? response({...editor,applyPlan:plan}) : null)
+  await screen.findByLabelText('LAN Host IP')
+  fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+  expect(await screen.findByText('Reload the current settings, then review and save your changes before applying.')).toBeVisible()
+  expect(fetchMock.mock.calls.some(([url]) => url === '/api/settings/env/apply')).toBe(false)
+})
+
+it.each([true,false])('rejects a stale saved plan and refreshes current settings (refresh succeeds=%s)', async refreshSucceeds => {
+  const modelEditor = {...editor,
+    fields:{LLAMA_PARALLEL:{key:'LLAMA_PARALLEL',label:'Llama Parallel',type:'integer',secret:false,required:false,readOnly:false}},
+    sections:[{id:'configuration',title:'Configuration',keys:['LLAMA_PARALLEL']}],
+    values:{LLAMA_PARALLEL:'1'}}
+  const plan = {status:'ready',supported:true,services:['llama-server'],envRevision:'a'.repeat(64),summary:'Restart llama-server.'}
+  let envReads = 0
+  let saves = 0
+  let applies = 0
+  const fetchMock = vi.fn(async (url,options) => {
+    if (url === '/api/settings/env') {
+      if (options?.method === 'PUT') {
+        saves += 1
+        return response({...modelEditor,values:JSON.parse(options.body).values,applyPlan:{...plan,envRevision:(saves === 1 ? 'a' : 'b').repeat(64)}})
+      }
+      envReads += 1
+      return envReads > 1 && !refreshSucceeds ? response({detail:'Settings temporarily unavailable'},503) : response(modelEditor)
+    }
+    if (url === '/api/settings/env/apply') {
+      applies += 1
+      return applies === 1 ? response({detail:{code:'env_revision_mismatch',message:'Settings changed'}},409) : response({message:'Runtime applied.'})
+    }
+    return response(payloadByUrl(url))
+  })
+  vi.stubGlobal('fetch',fetchMock)
+  render(<Settings />)
+  let field = await screen.findByLabelText('Llama Parallel')
+  fireEvent.change(field,{target:{value:'2'}})
+  fireEvent.click(screen.getByRole('button',{name:'Save .env'}))
+  await waitFor(() => expect(screen.getByRole('button',{name:'Apply changes'})).toBeEnabled())
+  fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+  await screen.findByText(/Settings changed while you were waiting/)
+  expect(screen.getByRole('button',{name:'Apply changes'})).toBeDisabled()
+  expect(saves).toBe(1)
+  expect(applies).toBe(1)
+  expect(envReads).toBe(2)
+  if (!refreshSucceeds) return
+  field = screen.getByLabelText('Llama Parallel')
+  expect(field).toHaveValue(1)
+  fireEvent.change(field,{target:{value:'2'}})
+  fireEvent.click(screen.getByRole('button',{name:'Save .env'}))
+  await waitFor(() => expect(screen.getByRole('button',{name:'Apply changes'})).toBeEnabled())
+  fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+  expect(await screen.findByText('Runtime applied.')).toBeVisible()
+  expect(saves).toBe(2)
+  const requests=fetchMock.mock.calls.filter(([url]) => url === '/api/settings/env/apply')
+  expect(requests.map(([,options]) => JSON.parse(options.body).expected_env_revision)).toEqual(['a'.repeat(64),'b'.repeat(64)])
 })

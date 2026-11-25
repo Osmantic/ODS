@@ -20,12 +20,8 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="ODS" />
     <link rel="apple-touch-icon" href="/osmantic-os-icon-192.png" />
-    <script>
-      // Prevent flash of wrong theme — runs before React
-      (function() {
-        document.documentElement.setAttribute('data-theme', 'ods');
-      })();
-    </script>
+    <!-- Prevent a flash of the wrong theme; must stay synchronous in <head>. -->
+    <script src="/theme-init.js"></script>
     <style>
       /* Critical CSS for instant load feel */
       body {
@@ -67,20 +63,6 @@
       </div>
     </div>
     <script type="module" src="/src/main.jsx"></script>
-    <script>
-      // Register the PWA service worker after the page loads so it doesn't
-      // delay first paint. Only registers over secure contexts (HTTPS or
-      // localhost) — browsers refuse to register SWs from plain HTTP on a
-      // LAN IP, which is fine because the PWA-install affordance is also
-      // gated on a secure context.
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', function () {
-          navigator.serviceWorker.register('/sw.js').catch(function () {
-            // Silent: SW registration failure just means no PWA install
-            // prompt — the dashboard works the same either way.
-          });
-        });
-      }
-    </script>
+    <script src="/sw-register.js" defer></script>
   </body>
 </html>

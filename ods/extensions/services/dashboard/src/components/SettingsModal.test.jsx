@@ -57,13 +57,21 @@ it('opens the editable profile section without losing another settings draft',()
 
 it('offers integrations and remote GPU inside settings without losing remote drafts', async () => {
   render(<SettingsModal />)
-  fireEvent.click(screen.getByRole('button', {name:'Remote GPU',exact:true}))
+  fireEvent.click(screen.getByRole('button', {name:'Remote model',exact:true}))
   const draft = await screen.findByLabelText('Remote draft')
   fireEvent.change(draft, {target:{value:'Unsaved remote'}})
   fireEvent.click(screen.getByRole('button', {name:'Service map',exact:true}))
   expect(await screen.findByText('Integration details')).toBeVisible()
   expect(draft).not.toBeVisible()
-  fireEvent.click(screen.getByRole('button', {name:'Remote GPU',exact:true}))
+  fireEvent.click(screen.getByRole('button', {name:'Remote model',exact:true}))
   expect(draft).toBeVisible()
   expect(draft).toHaveValue('Unsaved remote')
+})
+
+it('finds the remote model section by what people search for', () => {
+  render(<SettingsModal />)
+  for (const query of ['api', 'API key', 'provider', 'gpu']) {
+    fireEvent.change(screen.getByLabelText('Search settings'), {target:{value:query}})
+    expect(screen.getByRole('button', {name:'Remote model',exact:true})).toBeInTheDocument()
+  }
 })

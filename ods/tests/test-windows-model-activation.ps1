@@ -89,17 +89,6 @@ MAX_CONTEXT=65536
         $openCodeJson.provider.'llama-server'.models.'LocalUpgrade.gguf'.limit.context `
         $largeContext "OpenCode context above Int32"
 
-    $legacyLaunch = Get-ODSLemonadeLaunchContract `
-        -ExecutablePath "C:\fixture\LemonadeServer.exe" `
-        -Port 8080 `
-        -ModelsDir "C:\fixture\models" `
-        -ContextSize $largeContext `
-        -VersionOverride "10.0.0"
-    Assert-Equal $legacyLaunch.ContextSize $largeContext `
-        "Lemonade context above Int32"
-    Assert-Equal $legacyLaunch.ArgumentList[-1] ([string]$largeContext) `
-        "Lemonade large context argument"
-
     $previousModelProfile = $env:MODEL_PROFILE
     try {
         $env:MODEL_PROFILE = "qwen"

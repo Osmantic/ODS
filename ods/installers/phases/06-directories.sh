@@ -4,22 +4,21 @@
 # ============================================================================
 # Part of: installers/phases/
 # Purpose: Create directories, copy source files, generate .env, configure
-#          OpenClaw, SearXNG, and validate .env schema
+#          SearXNG, and validate .env schema
 #
 # Expects: SCRIPT_DIR, INSTALL_DIR, LOG_FILE, DRY_RUN, INTERACTIVE,
 #           TIER, TIER_NAME, VERSION, GPU_BACKEND, SYSTEM_TZ,
 #           LLM_MODEL, MAX_CONTEXT, GGUF_FILE, COMPOSE_FLAGS,
-#           ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_HERMES, ENABLE_OPENCLAW,
-#           OPENCLAW_CONFIG, OPENCLAW_PROVIDER_NAME_DEFAULT,
-#           OPENCLAW_PROVIDER_URL_DEFAULT, GPU_ASSIGNMENT_JSON,
-#           COMFYUI_GPU_UUID, WHISPER_GPU_UUID, EMBEDDINGS_GPU_UUID,
-#           LLAMA_SERVER_GPU_UUIDS, LLAMA_ARG_SPLIT_MODE, LLAMA_ARG_TENSOR_SPLIT,
+#           ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_HERMES,
+#           GPU_ASSIGNMENT_JSON, COMFYUI_GPU_UUID, WHISPER_GPU_UUID,
+#           EMBEDDINGS_GPU_UUID, LLAMA_SERVER_GPU_UUIDS, LLAMA_ARG_SPLIT_MODE,
+#           LLAMA_ARG_TENSOR_SPLIT, GPU_COMPUTE_CAP (optional),
+#           LLM_BACKEND (phase 02; with vllm also VLLM_IMAGE, VLLM_MODEL_DIR,
+#           VLLM_SERVED_MODEL, VLLM_ARGS, VLLM_GPU_UUID),
 #           chapter(), ai(), ai_ok(), ai_warn(), log(), warn(), error()
 # Provides: WEBUI_SECRET, N8N_PASS, LITELLM_KEY, LIVEKIT_SECRET,
 #           DASHBOARD_API_KEY, SHIELD_API_KEY, TOKEN_SPY_API_KEY,
-#           OPENCODE_SERVER_PASSWORD,
-#           OPENCLAW_TOKEN, OPENCLAW_PROVIDER_NAME, OPENCLAW_PROVIDER_URL,
-#           OPENCLAW_MODEL, OPENCLAW_CONTEXT, GPU_ASSIGNMENT_JSON_B64 (in .env)
+#           OPENCODE_SERVER_PASSWORD, GPU_ASSIGNMENT_JSON_B64 (in .env)
 #           PIXEL_SOURCE_URL, PIXEL_SOURCE_REF, PIXEL_SOURCE_DIR when Pixel is enabled
 #
 # Modder notes:
@@ -29,6 +28,13 @@
 
 # shellcheck source=installers/lib/extensions-library-copy.sh
 source "$SCRIPT_DIR/installers/lib/extensions-library-copy.sh"
+# install-core sources these; isolated phase reuse (tests) may not.
+declare -F ods_native_llm_normalize_origin >/dev/null 2>&1 \
+    || source "$SCRIPT_DIR/installers/lib/native-llm.sh"
+declare -F ods_amd_target_is_cdna >/dev/null 2>&1 \
+    || source "$SCRIPT_DIR/installers/lib/amd-runtime.sh"
+declare -F ods_llama_image_for_compute_cap >/dev/null 2>&1 \
+    || source "$SCRIPT_DIR/installers/lib/tier-map.sh"
 
 ods_progress 38 "directories" "Preparing installation directory"
 chapter "SETTING UP INSTALLATION"
@@ -105,7 +111,10 @@ _phase06_pixel_runtime_layout() {
     docker_endpoint="$(timeout 10s "${docker_command[@]}" context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" || return 1
     [[ "$docker_endpoint" == unix:///* ]] || return 1
     docker_os="$(timeout 10s "${docker_command[@]}" info --format '{{.OperatingSystem}}' 2>/dev/null)" || return 1
-    [[ "$docker_os" == "Docker Desktop" ]] || return 0
+    case "$docker_os" in
+        'Docker Desktop'|'Docker Desktop (containerized)') ;;
+        *) return 0 ;;
+    esac
     [[ -d "$wsl_mount" && "$(findmnt -n -o PROPAGATION -T "$wsl_mount")" == shared ]] || return 1
     # Use this distro's path. Docker Desktop's WSL proxy translates bind
     # sources from the calling distro; the daemon's own name for this tmpfs
@@ -121,7 +130,6 @@ if $DRY_RUN; then
     log "[DRY RUN] Would generate .env with secrets (WEBUI_SECRET, N8N_PASS, LITELLM_KEY, etc.)"
     log "[DRY RUN] Would generate SearXNG config with randomized secret key"
     [[ "$ENABLE_HERMES" == "true" ]] && log "[DRY RUN] Would configure Hermes Agent (LLM endpoint: http://llama-server:8080/v1; data dir: $INSTALL_DIR/data/hermes)"
-    [[ "$ENABLE_OPENCLAW" == "true" ]] && log "[DRY RUN] Would configure OpenClaw (model: $LLM_MODEL, config: ${OPENCLAW_CONFIG:-default})"
     log "[DRY RUN] Would validate .env against schema"
 else
     # install-core.sh normally imports these helpers before the phase runs.
@@ -137,11 +145,55 @@ else
     source "$SCRIPT_DIR/installers/lib/llama-memory-budget.sh"
     # shellcheck source=../lib/searxng-locale.sh
     source "$SCRIPT_DIR/installers/lib/searxng-locale.sh"
+    # Validate before any directory repair, including in-place installs.
+    # shellcheck source=../lib/source-copy.sh
+    source "$SCRIPT_DIR/installers/lib/source-copy.sh"
+    ods_validate_searxng_settings_path "$INSTALL_DIR" || return 1
 
     # shellcheck source=../../lib/dotenv-quote.sh
     source "$SCRIPT_DIR/lib/dotenv-quote.sh"
     # shellcheck source=../../lib/safe-env.sh
     source "$SCRIPT_DIR/lib/safe-env.sh"
+
+    # Pixel validates the install root before inspecting its source journal.
+    # Normalize only verified owner-private provider paths before that check;
+    # waiting until source copy makes legacy 0775 roots fail too early.
+    if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
+        ods_prepare_retained_cloud_provider "$INSTALL_DIR" || return 1
+    fi
+
+    # Older Pixel source updates (bin/pixel_source_upgrade.py, run as root) set
+    # only the owner of the files and folders they wrote, so those kept root's
+    # group. The host agent keeps a file's group when it rewrites one, which
+    # the owner cannot do for root's group, so adding Hermes back from the
+    # Extensions Library failed. Return them to the owner's group, as a fresh
+    # install leaves them: the owner's own files and folders in the six source
+    # trees those updates write, as the owner, never through a link. A pending
+    # Pixel source plan records file contents and modes, not groups, so this
+    # cannot disturb one.
+    _phase06_repair_root_group() {
+        local uid gid name count
+        local -a roots=()
+        uid="$(id -u)"
+        gid="$(id -g)"
+        # Files that root owns belong in group root.
+        [[ "$uid" != 0 && "$gid" != 0 ]] || return 0
+        for name in bin lib scripts installers extensions vendor; do
+            [[ -d "$INSTALL_DIR/$name" && ! -L "$INSTALL_DIR/$name" ]] || continue
+            roots+=("$INSTALL_DIR/$name")
+        done
+        (( ${#roots[@]} > 0 )) || return 0
+        count="$(find -P "${roots[@]}" \( -type f -o -type d \) -user "$uid" -group 0 -print0 \
+            | tr -cd '\0' | wc -c)" \
+            || error "Could not check the installed source trees for files in group root."
+        (( count > 0 )) || return 0
+        find -P "${roots[@]}" \( -type f -o -type d \) -user "$uid" -group 0 \
+            -exec chgrp -h "$gid" {} + \
+            || error "Could not return installed source files from group root to group $gid."
+        log "Returned $((count)) installed source files and folders from group root to group $gid"
+    }
+    _phase06_repair_root_group
+    unset -f _phase06_repair_root_group
 
     _env_existing=""
     [[ -f "$INSTALL_DIR/.env" ]] && _env_existing="$INSTALL_DIR/.env"
@@ -154,7 +206,10 @@ else
         local key="$1" default="${2:-}"
         if [[ -n "$_env_existing" ]]; then
             local val
-            val=$(grep -m1 "^${key}=" "$_env_existing" 2>/dev/null | cut -d= -f2- || true)
+            # The last KEY= line, as Compose and the other ODS readers use: an
+            # owner who appended a key (FAQ: "Add OPENAI_API_KEY ... to .env")
+            # below the installer's empty line keeps it across the rerun.
+            val=$(awk -v key="$key" 'index($0, key "=") == 1 { value = substr($0, length(key) + 2) } END { printf "%s", value }' "$_env_existing" 2>/dev/null || true)
             val="$(safe_env_decode_value "$val")"
             if [[ -n "$val" ]]; then
                 printf '%s\n' "$val"
@@ -230,14 +285,130 @@ else
         fi
     fi
 
+    # Retired bundled services. The source copy below never deletes files a
+    # release removed, so an upgraded install still carries their extension
+    # directories, and a stale compose.yaml there would keep the old container
+    # in the stack. Delete only the service code and untouched shipped
+    # templates; each service's data stays for the owner to archive or delete.
+    #
+    # The Pixel source transaction below records the installed extensions tree
+    # as its baseline and checks it again before release. The prune therefore
+    # runs before a new plan is staged, but never while an unfinished plan is
+    # pending: that plan is bound to the tree it recorded, and only the release
+    # that staged it can finish, resume or roll it back.
+    _phase06_retire_openclaw_config() {
+        # Every release copied the OpenClaw templates into config/openclaw,
+        # whether the extension was used or not. A template that is still
+        # byte-identical to a shipped version is not owner data.
+        local config="$INSTALL_DIR/config/openclaw" data="$INSTALL_DIR/data/openclaw"
+        local manifest="$SCRIPT_DIR/installers/lib/retired-openclaw-config.sha256"
+        local digest relative path folders=""
+        if [[ -d "$config" && ! -L "$config" && -f "$manifest" ]]; then
+            while read -r digest relative; do
+                # A source tree copied from a Windows checkout has CRLF lines.
+                relative="${relative%$'\r'}"
+                [[ -n "$digest" && "$digest" != \#* && "$relative" != *..* ]] || continue
+                path="$config/$relative"
+                # Never reach a template through a linked folder.
+                [[ "$relative" != */* || ! -L "$config/${relative%/*}" ]] || continue
+                [[ -f "$path" && ! -L "$path" ]] || continue
+                # An unreadable file has no digest, so it is kept.
+                [[ "$(sha256sum -- "$path" 2>/dev/null | cut -d ' ' -f 1)" == "$digest" ]] || continue
+                rm -f -- "$path" || log "Could not remove the unchanged OpenClaw template $path (non-fatal)"
+            done < "$manifest"
+            for path in "$config/workspace" "$config"; do
+                if [[ -d "$path" && ! -L "$path" && -r "$path" && -x "$path" && -z "$(ls -A -- "$path")" ]]; then
+                    rmdir -- "$path" || log "Could not remove the empty folder $path (non-fatal)"
+                fi
+            done
+        fi
+        if [[ -e "$config" || -L "$config" ]]; then
+            folders="config/openclaw"
+        fi
+        # An unreadable data folder may still hold the agent's state.
+        if [[ -d "$data" ]]; then
+            if [[ ! -r "$data" || ! -x "$data" ]] || [[ -n "$(ls -A -- "$data")" ]]; then
+                folders="${folders:+$folders and }data/openclaw"
+            fi
+        fi
+        if [[ -n "$folders" ]]; then
+            ai "The legacy OpenClaw extension was removed. Its remaining files in $folders were kept; delete them by hand when you no longer need them (docs/MIGRATION-OPENCLAW-TO-HERMES.md explains how)."
+            if [[ -f "$HOME/.config/systemd/user/memory-shepherd-memory.timer" \
+                || -f "$HOME/.config/systemd/user/memory-shepherd-workspace.timer" ]]; then
+                ai "Disable the memory-shepherd-memory and memory-shepherd-workspace user timers before deleting config/openclaw; they still maintain its workspace."
+            fi
+        fi
+    }
+
+    _phase06_retire_lemonade_files() {
+        # ODS stopped shipping these with the Lemonade runtime. The source copy
+        # never deletes a file, so an upgraded install still has them. A file
+        # that is byte-identical to a shipped version is not owner data.
+        local manifest="$SCRIPT_DIR/installers/lib/retired-lemonade-files.sha256"
+        local digest relative path kept=""
+        [[ -f "$manifest" ]] || return 0
+        while read -r digest relative; do
+            relative="${relative%$'\r'}"
+            [[ -n "$digest" && "$digest" != \#* && "$relative" != *..* ]] || continue
+            # The rendered LiteLLM map is checked by the helper below.
+            [[ "$relative" != config/litellm/lemonade.yaml ]] || continue
+            path="$INSTALL_DIR/$relative"
+            [[ -f "$path" && ! -L "$path" ]] || continue
+            # An unreadable file has no digest, so it is kept.
+            [[ "$(sha256sum -- "$path" 2>/dev/null | cut -d ' ' -f 1)" == "$digest" ]] || continue
+            rm -f -- "$path" || log "Could not remove the retired Lemonade file $path (non-fatal)"
+        done < "$manifest"
+        for relative in docker-compose.lemonade-external.yml \
+            extensions/services/llama-server/Dockerfile.amd \
+            extensions/services/llama-server/lemonade-entrypoint.sh \
+            scripts/select-external-lemonade-model.py \
+            config/litellm/strix-halo-config.yaml; do
+            [[ ! -e "$INSTALL_DIR/$relative" ]] || kept="${kept:+$kept, }$relative"
+        done
+        [[ -z "$kept" ]] || ai "Kept edited Lemonade-era files: $kept. Nothing uses them now; delete them when you no longer need them."
+        if [[ -f "$INSTALL_DIR/config/litellm/lemonade.yaml" ]]; then
+            "${ODS_PYTHON_CMD:-python3}" "$SCRIPT_DIR/scripts/migrate-lemonade-install.py" retire-render \
+                --install-dir "$INSTALL_DIR" >> "$LOG_FILE" 2>&1 \
+                || log "Could not check config/litellm/lemonade.yaml for retirement (non-fatal; nothing reads it)"
+        fi
+    }
+
+    _phase06_prune_retired_services() {
+        _phase06_step "prune-retired-services"
+        # ODSForge was retired from the shipped stack after Hermes became the
+        # default agent surface; data/odsforge is preserved.
+        if [[ -d "$INSTALL_DIR/extensions/services/odsforge" ]]; then
+            rm -rf "$INSTALL_DIR/extensions/services/odsforge"
+            log "Removed retired ODSForge service files from extensions/services"
+        fi
+        # The legacy OpenClaw extension (the ods-openclaw container) was
+        # removed; Portal (Pixel) and Hermes are the supported agents. Once it
+        # is out of the stack, phase 11's `up --remove-orphans` removes the old
+        # container.
+        if [[ -d "$INSTALL_DIR/extensions/services/openclaw" ]]; then
+            rm -rf "$INSTALL_DIR/extensions/services/openclaw"
+            log "Removed retired OpenClaw service files from extensions/services"
+        fi
+        _phase06_retire_openclaw_config
+        _phase06_retire_lemonade_files
+    }
+
     # A Pixel-to-Hermes rerun must retire the exact ODS-managed host runtime,
     # not merely remove the Compose edge from the next launch. Do this before
     # copying new source over an existing install so the fail-closed cleanup can
     # still compare root-owned artifacts with the source that installed them.
     _phase06_pixel_marker="$HOME/.config/ods/pixel-managed.json"
     _phase06_pixel_source_transition=0
+    # Cleared below while an unfinished Pixel source plan is pending.
+    _phase06_prune_ready=true
     if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" \
         && ( -e "$_phase06_pixel_marker" || -L "$_phase06_pixel_marker" ) ]]; then
+        # Fail before source restoration, pruning or staging. Rootless fallback
+        # is supported for optional extras, not an existing Pixel deployment.
+        if [[ ${EUID:-$(id -u)} -ne 0 && "${ODS_SUDO_AVAILABLE:-true}" == false ]]; then
+            error "source-upgrade-sudo-required: Updating the existing Pixel installation requires sudo. Preserve the installation and any pending upgrade state."
+            return 1
+        fi
         _phase06_pixel_owner="$(ods_pixel_install_owner)" || {
             error "Could not identify the ODS owner for a Pixel source transition."
             return 1
@@ -246,16 +417,34 @@ else
             error "Could not resolve the ODS owner home for a Pixel source transition."
             return 1
         }
+        # Name the failed step even if the child was interrupted before it
+        # could emit a diagnostic. Do not promise a reason was printed.
+        _phase06_source_failed() {
+            error "The Pixel source update stopped at its '$1' step. Preserve the installation and any pending upgrade state."
+            return 1
+        }
+        if ! _ods_pixel_start_stopped_access_service \
+            "$_phase06_pixel_owner" "$_phase06_pixel_home" "$_phase06_requested_pixel_ref"; then
+            error "The Pixel access coordinator is stopped and did not start. See journalctl -u ods-pixel-access.service; the installation and any pending upgrade state were left intact."
+            return 1
+        fi
         _ods_pixel_source_transition_required \
             "$_phase06_pixel_owner" "$_phase06_pixel_home" "$_phase06_requested_pixel_ref" "$SCRIPT_DIR" \
             || _phase06_pixel_source_transition=$?
         if [[ "$_phase06_pixel_source_transition" == 0 || "$_phase06_pixel_source_transition" == 1 ]] \
             && ods_sudo test -d /var/lib/ods-pixel-access/source-upgrade; then
-            _phase06_source_status="$(_ods_pixel_source_upgrade status "$_phase06_pixel_owner")" || return 1
+            _phase06_source_status="$(_ods_pixel_source_upgrade status "$_phase06_pixel_owner")" \
+                || _phase06_source_failed status || return 1
             if jq -e '.pending == true and .phase == "complete"' <<<"$_phase06_source_status" >/dev/null; then
-                _ods_pixel_source_upgrade finish "$_phase06_pixel_owner" || return 1
+                _ods_pixel_source_upgrade finish "$_phase06_pixel_owner" || _phase06_source_failed finish || return 1
             elif jq -e '.pending == true' <<<"$_phase06_source_status" >/dev/null; then
                 _phase06_pixel_source_transition=0
+                # The pending plan is bound to the tree it recorded. Keep the
+                # retired service files: `stage` below either resumes this
+                # release's own plan, or archives an older untouched unheld
+                # plan after verifying its exact baseline. Held plans retain
+                # their source so that release can finish or roll them back.
+                _phase06_prune_ready=false
             fi
             unset _phase06_source_status
         fi
@@ -268,37 +457,62 @@ else
                     error "Could not verify the prior Pixel checkout for safe upgrade. Restore its local backup before retrying; no private repository was contacted."
                     return 1
                 fi
+                if [[ "$_phase06_prune_ready" == true ]]; then
+                    _phase06_prune_retired_services
+                fi
                 if ! _ods_pixel_source_upgrade stage "$_phase06_pixel_owner" \
                     "$SCRIPT_DIR" "$_phase06_requested_pixel_ref"; then
                     error "Could not stage the exact Pixel source upgrade; the active source and access state were left intact."
                     return 1
                 fi
-                _phase06_pixel_binary="$(_ods_pixel_openclaw_bin "$_phase06_pixel_owner" "$_phase06_pixel_home")" || return 1
+                _phase06_pixel_binary="$(_ods_pixel_openclaw_bin "$_phase06_pixel_owner" "$_phase06_pixel_home")" \
+                    || _phase06_source_failed locate-pixel || return 1
                 # Install the source-release guard in the protected controller
                 # before taking its hold. The helper journals every mirror
                 # replacement first and keeps the actual installation binding.
-                _phase06_source_status="$(_ods_pixel_source_upgrade status "$_phase06_pixel_owner")" || return 1
+                _phase06_source_status="$(_ods_pixel_source_upgrade status "$_phase06_pixel_owner")" \
+                    || _phase06_source_failed status || return 1
                 if jq -e '.transaction == null and .phase == "staged"' <<<"$_phase06_source_status" >/dev/null; then
                     _ods_pixel_install_access_service "$_phase06_pixel_owner" \
-                        "$_phase06_pixel_binary" false true "$SCRIPT_DIR" || return 1
+                        "$_phase06_pixel_binary" false true "$SCRIPT_DIR" || _phase06_source_failed access-service || return 1
+                fi
+                # Past the downstream boundary the update can only go forward,
+                # possibly under this corrected installer, which took over a
+                # failed one at stage. Its coordinator replaces the previous
+                # one once this tree is applied, before anything else runs.
+                _phase06_source_downstream=false
+                if jq -e '.downstream == true' <<<"$_phase06_source_status" >/dev/null; then
+                    _phase06_source_downstream=true
+                    ai "Resuming the interrupted Pixel source upgrade under its existing admission hold..."
                 fi
                 unset _phase06_source_status
-                ODS_PIXEL_SOURCE_TRANSACTION="$(_ods_pixel_source_upgrade hold "$_phase06_pixel_owner")" || return 1
-                [[ "$ODS_PIXEL_SOURCE_TRANSACTION" =~ ^[a-f0-9]{64}$ ]] || return 1
+                ODS_PIXEL_SOURCE_TRANSACTION="$(_ods_pixel_source_upgrade hold "$_phase06_pixel_owner")" \
+                    || _phase06_source_failed hold || return 1
+                if [[ ! "$ODS_PIXEL_SOURCE_TRANSACTION" =~ ^[a-f0-9]{64}$ ]]; then
+                    error "source-hold-response-invalid: The Pixel source hold did not return a valid transaction identifier. Preserve any existing admission hold and upgrade state; no source copy was started."
+                    return 1
+                fi
                 export ODS_PIXEL_SOURCE_TRANSACTION
-                _ods_pixel_source_upgrade copy "$_phase06_pixel_owner" || return 1
+                _ods_pixel_source_upgrade copy "$_phase06_pixel_owner" || _phase06_source_failed copy || return 1
                 # Everything after this boundary can update Compose/env/data
                 # and native services. Recovery must resume this same candidate;
                 # a source-only rollback would no longer restore the installer.
-                _ods_pixel_source_upgrade downstream "$_phase06_pixel_owner" || return 1
-                unset _phase06_pixel_binary
+                _ods_pixel_source_upgrade downstream "$_phase06_pixel_owner" || _phase06_source_failed downstream || return 1
+                if [[ "$_phase06_source_downstream" == true ]]; then
+                    _ods_pixel_install_access_service "$_phase06_pixel_owner" \
+                        "$_phase06_pixel_binary" false true || _phase06_source_failed access-service || return 1
+                fi
+                unset _phase06_pixel_binary _phase06_source_downstream
                 ;;
-            1) ;;
+            1)
+                _phase06_prune_retired_services
+                ;;
             *)
                 error "The existing ODS-managed Pixel state is unsafe for a source transition."
                 return 1
                 ;;
         esac
+        unset -f _phase06_source_failed
         unset _phase06_pixel_owner _phase06_pixel_home
     elif [[ "${ENABLE_PIXEL_RUNTIME:-false}" != "true" \
         && ( -e "$_phase06_pixel_marker" || -L "$_phase06_pixel_marker" ) ]]; then
@@ -311,8 +525,12 @@ else
             error "Could not safely deactivate the ODS-managed Pixel host runtime."
             return 1
         fi
+        _phase06_prune_retired_services
+    else
+        _phase06_prune_retired_services
     fi
-    unset _phase06_pixel_marker _phase06_pixel_source_transition
+    unset _phase06_pixel_marker _phase06_pixel_source_transition _phase06_prune_ready
+    unset -f _phase06_prune_retired_services _phase06_retire_openclaw_config _phase06_retire_lemonade_files
 
     _phase06_rootless=false
     if [[ -f "$SCRIPT_DIR/lib/rootless-ownership.sh" ]]; then
@@ -348,10 +566,21 @@ else
     ods_progress 38 "directories" "Creating directory structure"
     mkdir -p "$INSTALL_DIR"/{config,data,models}
     mkdir -p "$INSTALL_DIR"/data/{open-webui,whisper,tts,n8n,qdrant,models,privacy-shield,ape,token-spy,hermes,persona}
+    # llama-server's CUDA kernel cache (docker-compose.nvidia.yml).
+    mkdir -p "$INSTALL_DIR"/data/llama-server/cuda-cache
+    # The vLLM engine's compile, autotune and CUDA kernel caches
+    # (docker-compose.vllm.yml), made here so Docker does not create it.
+    if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+        mkdir -p "$INSTALL_DIR"/data/vllm/cache
+    fi
+    # The host agent writes extension progress as the install owner. Created
+    # here, the Dashboard API (UID 1000, which may be another user) cannot
+    # make it first and lock the owner's host agent out of it.
+    mkdir -p "$INSTALL_DIR"/data/extension-progress
     mkdir -p "$INSTALL_DIR"/data/hermes-proxy/{caddy-data,caddy-config}
     mkdir -p "$INSTALL_DIR"/data/langfuse/{postgres,clickhouse,redis,minio}
     mkdir -p "$INSTALL_DIR"/data/remote-provider/secrets
-    mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,openclaw,searxng}
+    mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,searxng}
 
     _phase06_repair_host_path() {
         local target="$1" description="$2" target_parent
@@ -435,8 +664,9 @@ else
     if ! $_phase06_rootless; then
         for _data_dir in "$INSTALL_DIR"/data/*/; do
             [[ "${ENABLE_HERMES:-false}" == "true" && "$_data_dir" == "$INSTALL_DIR/data/hermes/" ]] && continue
-            # Private retained chat results belong to Dashboard UID 1000.
+            # Private chat results and image history belong to Dashboard UID 1000.
             [[ "$_data_dir" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
+            [[ "$_data_dir" == "$INSTALL_DIR/data/pixel-images/" ]] && continue
             # Token Spy's persistent directory intentionally belongs to its
             # container UID 1000; phase 06 verifies that identity below.
             [[ "$_data_dir" == "$INSTALL_DIR/data/token-spy/" ]] && continue
@@ -464,6 +694,7 @@ else
             for _d in "$INSTALL_DIR/$_root"/*/; do
                 [[ "${ENABLE_HERMES:-false}" == "true" && "$_d" == "$INSTALL_DIR/data/hermes/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
+                [[ "$_d" == "$INSTALL_DIR/data/pixel-images/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/token-spy/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/ape/" ]] && continue
                 [[ -d "$_d" ]] && ! [[ -w "$_d" ]] && _cant_write="$_cant_write ${_d#"$INSTALL_DIR"/}"
@@ -502,7 +733,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     fi
 
     if declare -F _ods_apply_deferred_feature_state >/dev/null; then
-        _ods_apply_deferred_feature_state || {
+        _ods_apply_deferred_feature_state "$_phase06_requested_pixel_ref" || {
             error "Deferred feature reconciliation failed; resume the same installer candidate."
             return 1
         }
@@ -516,8 +747,10 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         "$INSTALL_DIR/bin" \
         "$INSTALL_DIR/lib" \
         "$INSTALL_DIR/scripts" \
+        "$INSTALL_DIR/installers" \
         "$INSTALL_DIR/config" \
-        "$INSTALL_DIR/extensions"
+        "$INSTALL_DIR/extensions" \
+        "$INSTALL_DIR/vendor"
     do
         [[ -d "$_installed_code_root" && ! -L "$_installed_code_root" ]] \
             || error "Missing or unsafe installed code tree: $_installed_code_root"
@@ -532,6 +765,33 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     [[ -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" ]] || error "Unsafe installed root"
     chmod go-w "$INSTALL_DIR" || error "Could not secure installed root"
     unset _installed_code_root
+
+    # Dashboard runs as a different UID and reads these public bind-mounted
+    # manifests. Keep .env, service-private files and runtime data private.
+    _phase06_step "prepare-extension-manifests"
+    _phase06_manifest_args=()
+    if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+        # Pixel installed candidate file modes from its staged inventory.
+        # Preserve those and retained custom files while preparing traversal.
+        _phase06_manifest_args+=(--preserve-file-modes)
+    fi
+    if ! python3 "$INSTALL_DIR/scripts/prepare-extension-manifests.py" "$INSTALL_DIR" \
+        "${_phase06_manifest_args[@]}" \
+        >> "$LOG_FILE" 2>&1; then
+        error "Could not prepare public service manifests for the Dashboard API. See $LOG_FILE for details."
+        return 1
+    fi
+    unset _phase06_manifest_args
+
+    # Source staging under umask 077 makes the two public policy bind mounts
+    # unreadable to APE and remote-provider-egress, which run as non-root.
+    # Normalize them on fresh and retained installs before Compose starts.
+    _phase06_step "prepare-public-policy-mounts"
+    if ! bash "$INSTALL_DIR/scripts/prepare-public-policy-mounts.sh" "$INSTALL_DIR" \
+        >> "$LOG_FILE" 2>&1; then
+        error "Could not prepare public policy mounts for non-root services. See $LOG_FILE for details."
+        return 1
+    fi
 
     # Windows-mounted WSL checkouts commonly present every copied file as
     # mode 0777 even when Git records a narrower executable bit. Pixel refuses
@@ -550,18 +810,6 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     _phase06_step "reconcile-pixel-compose"
     if ! ods_pixel_reconcile_installed_compose "$SCRIPT_DIR" "$INSTALL_DIR" "${ENABLE_PIXEL_RUNTIME:-false}"; then
         error "Could not reconcile the installed Pixel Compose fragment with the selected Pixel enablement"
-    fi
-
-    # ODSForge was retired from the shipped stack after Hermes became the
-    # default agent surface. Existing installs may still contain the old
-    # bundled extension because the source copy above does not prune removed
-    # files. Delete only the retired service code so stale compose files cannot
-    # be picked up; preserve data/odsforge for users who want to archive it.
-    _retired_odsforge_dir="$INSTALL_DIR/extensions/services/odsforge"
-    _phase06_step "prune-retired-services"
-    if [[ -d "$_retired_odsforge_dir" ]]; then
-        rm -rf "$_retired_odsforge_dir"
-        log "Removed retired ODSForge service files from extensions/services"
     fi
 
     # Copy extensions library to data dir for dashboard portal.
@@ -586,75 +834,6 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         ai_ok "Extensions library copied to data/extensions-library/ (from $_ext_lib_src)"
     else
         ai_warn "Extensions library not found; dashboard Extensions page will return 503 until populated"
-    fi
-
-    # Select tier-appropriate OpenClaw config
-    _phase06_step "configure-legacy-openclaw"
-    if [[ "$ENABLE_OPENCLAW" == "true" && -n "$OPENCLAW_CONFIG" ]]; then
-        OPENCLAW_MODEL="$LLM_MODEL"
-        OPENCLAW_CONTEXT=$MAX_CONTEXT
-
-        # Tiers 1/2/3 set OPENCLAW_CONFIG="openclaw.json", which is also the
-        # destination filename — skip the self-copy in that case so the file
-        # the rsync from SCRIPT_DIR placed there is used as-is.
-        _oc_src="$INSTALL_DIR/config/openclaw/$OPENCLAW_CONFIG"
-        _oc_dst="$INSTALL_DIR/config/openclaw/openclaw.json"
-        if [[ -f "$_oc_src" ]]; then
-            if [[ ! "$_oc_src" -ef "$_oc_dst" ]]; then
-                cp "$_oc_src" "$_oc_dst"
-            fi
-        elif [[ -f "$SCRIPT_DIR/config/openclaw/$OPENCLAW_CONFIG" ]]; then
-            cp "$SCRIPT_DIR/config/openclaw/$OPENCLAW_CONFIG" "$_oc_dst"
-        else
-            error "Missing OpenClaw config $OPENCLAW_CONFIG and no fallback present in repo. This is a packaging bug; please re-clone or report."
-        fi
-        unset _oc_src _oc_dst
-        # Resolve provider name/URL before any sed replacements that depend on them
-        OPENCLAW_PROVIDER_NAME="${OPENCLAW_PROVIDER_NAME_DEFAULT}"
-        OPENCLAW_PROVIDER_URL="${OPENCLAW_PROVIDER_URL_DEFAULT}"
-
-        # Replace model and provider placeholders to match what the inference backend actually serves
-        # Escape sed special chars in variable values to prevent injection
-        _sed_escape() { printf '%s\n' "$1" | sed 's/[&/\|]/\\&/g'; }
-        _oc_model_esc=$(_sed_escape "$OPENCLAW_MODEL")
-        _oc_prov_esc=$(_sed_escape "$OPENCLAW_PROVIDER_NAME")
-        _sed_i "s|__LLM_MODEL__|${_oc_model_esc}|g" "$INSTALL_DIR/config/openclaw/openclaw.json"
-        _sed_i "s|Qwen/Qwen2.5-[^\"]*|${_oc_model_esc}|g" "$INSTALL_DIR/config/openclaw/openclaw.json"
-        _sed_i "s|local-ollama|${_oc_prov_esc}|g" "$INSTALL_DIR/config/openclaw/openclaw.json"
-        _oc_key_esc=$(_sed_escape "${LITELLM_KEY:-none}")
-        _sed_i "s|__LITELLM_KEY__|${_oc_key_esc}|g" "$INSTALL_DIR/config/openclaw/openclaw.json"
-        log "Installed OpenClaw config: $OPENCLAW_CONFIG -> openclaw.json (model: $OPENCLAW_MODEL)"
-        # Generate OPENCLAW_TOKEN (used by compose env and inject-token.js)
-        OPENCLAW_TOKEN=$(_phase06_generate_hex_secret 24)
-        # Note: inject-token.js regenerates /home/node/.openclaw/openclaw.json
-        # on every container start, so that file stays ephemeral. OpenClaw also
-        # writes agent, cron, and canvas state under /home/node/.openclaw; those
-        # paths are bind-mounted under data/openclaw/home. workspace/ is
-        # persisted separately under config/openclaw/workspace.
-        mkdir -p "$INSTALL_DIR/data/openclaw/home"/{agents,canvas,cron}
-        # Create workspace directory (must exist before Docker Compose,
-        # otherwise Docker auto-creates it as root and the container can't write to it)
-        mkdir -p "$INSTALL_DIR/config/openclaw/workspace/memory"
-        # Copy workspace personality files (Todd identity, system knowledge, etc.)
-        # Exclude .git and .openclaw dirs — those are runtime/dev artifacts
-        if [[ -d "$SCRIPT_DIR/config/openclaw/workspace" ]]; then
-            if command -v rsync &>/dev/null; then
-                rsync -a --no-owner --no-group --exclude='.git' --exclude='.openclaw' --exclude='.gitkeep' \
-                    "$SCRIPT_DIR/config/openclaw/workspace/" "$INSTALL_DIR/config/openclaw/workspace/"
-            else
-                cp -r "$SCRIPT_DIR/config/openclaw/workspace"/* "$INSTALL_DIR/config/openclaw/workspace/" 2>/dev/null || true
-                rm -rf "$INSTALL_DIR/config/openclaw/workspace/.git" 2>/dev/null || true
-                rm -rf "$INSTALL_DIR/config/openclaw/workspace/.openclaw" 2>/dev/null || true
-            fi
-            log "Installed OpenClaw workspace files (agent personality)"
-        fi
-        # OpenClaw container runs as node (uid 1000) — fix ownership
-        # Pre-create data/openclaw so chown doesn't fail on a fresh install where
-        # the directory hasn't been touched yet.
-        mkdir -p "$INSTALL_DIR/data/openclaw"
-        if ! $_phase06_rootless; then
-            chown -R 1000:1000 "$INSTALL_DIR/data/openclaw" "$INSTALL_DIR/config/openclaw/workspace" || warn "Failed to chown openclaw paths to 1000:1000 (non-fatal); container may need uid fixup"
-        fi
     fi
 
     _phase06_step "prepare-dashboard-permissions"
@@ -762,7 +941,8 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     _env_get_preserve_empty() {
         local key="$1" default="${2:-}" val
         if [[ -n "$_env_existing" ]] && grep -q -m1 "^${key}=" "$_env_existing" 2>/dev/null; then
-            val=$(grep -m1 "^${key}=" "$_env_existing" 2>/dev/null | cut -d= -f2- || true)
+            # The last assignment, as in _env_get.
+            val=$(awk -v key="$key" 'index($0, key "=") == 1 { value = substr($0, length(key) + 2) } END { printf "%s", value }' "$_env_existing" 2>/dev/null || true)
             safe_env_decode_value "$val"
             printf '\n'
             return
@@ -770,48 +950,34 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         printf '%s\n' "$default"
     }
 
-    _phase06_detect_lemonade_url() {
-        command -v curl >/dev/null 2>&1 || return 1
-        local candidate
-        for candidate in "http://localhost:13305" "http://localhost:8000"; do
-            if curl -fsS --max-time 3 "${candidate}/api/v1/models" >/dev/null 2>&1 || \
-               curl -fsS --max-time 3 "${candidate}/api/v1/health" >/dev/null 2>&1 || \
-               curl -fsS --max-time 3 "${candidate}/health" >/dev/null 2>&1; then
-                printf '%s\n' "$candidate"
-                return 0
-            fi
-        done
-        return 1
-    }
-
-    _phase06_best_model_id_from_json() {
-        local json="$1"
-        local py="${ODS_PYTHON_CMD:-}"
-        if [[ -z "$py" && -f "$SCRIPT_DIR/lib/python-cmd.sh" ]]; then
-            . "$SCRIPT_DIR/lib/python-cmd.sh"
-            py="$(ods_detect_python_cmd 2>/dev/null || true)"
+    # Resolve every fixed service-port assignment before regenerating .env.
+    # Export the resolved values too: later phases use the service registry,
+    # which otherwise retains the defaults it loaded before this rerun.
+    while read -r _port_key _port_default; do
+        _port_value="$(_env_get_explicit_first "$_port_key" "$_port_default")"
+        if [[ ! "$_port_value" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$_port_value > 65535 )); then
+            error "$_port_key must be a port from 1 to 65535"
+            return 1
         fi
-        [[ -n "$py" ]] || py="python3"
-        local selector="$SCRIPT_DIR/scripts/select-external-lemonade-model.py"
-        if command -v "$py" >/dev/null 2>&1 && [[ -f "$selector" ]]; then
-            printf '%s' "$json" | "$py" "$selector" 2>/dev/null && return 0
-        fi
-        # A first-id fallback can silently route Pixel to an embedding, speech,
-        # or tiny catalog entry.  Fail closed and let the explicit override or
-        # phase-12 completion probe provide actionable recovery instead.
-        return 1
-    }
-
-    _phase06_discover_lemonade_model() {
-        local api_base="$1"
-        command -v curl >/dev/null 2>&1 || return 1
-        local models_json model_id
-        models_json="$(curl -fsS --max-time 10 "${api_base%/}/models" 2>/dev/null || true)"
-        [[ -n "$models_json" ]] || return 1
-        model_id="$(_phase06_best_model_id_from_json "$models_json" || true)"
-        [[ -n "$model_id" ]] || return 1
-        printf '%s\n' "$model_id"
-    }
+        printf -v "${_port_key}_VALUE" '%s' "$_port_value"
+        printf -v "$_port_key" '%s' "$_port_value"
+        export "$_port_key"
+    done <<'SERVICE_PORT_DEFAULTS'
+DASHBOARD_PORT 3001
+DASHBOARD_REMOTE_PORT 3011
+WEBUI_PORT 3000
+PERPLEXICA_PORT 3004
+TTS_PORT 8880
+N8N_PORT 5678
+QDRANT_PORT 6333
+QDRANT_GRPC_PORT 6334
+EMBEDDINGS_PORT 8090
+LITELLM_PORT 4000
+HERMES_PROXY_PORT 9120
+SERVICE_PORT_DEFAULTS
+    declare -F sr_resolve_ports >/dev/null 2>&1 && sr_resolve_ports
+    unset _port_key _port_default _port_value
+    N8N_WEBHOOK_URL_VALUE="$(_env_get_explicit_first N8N_WEBHOOK_URL "http://localhost:${N8N_PORT_VALUE}")"
 
     # The local llama-server port may already belong to another owner service
     # (for example a fleet worker). Honor an explicit install override before
@@ -836,76 +1002,41 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     WEBUI_SECRET=$(_phase06_env_hex_secret WEBUI_SECRET 32)
     N8N_PASS=$(_env_get N8N_PASS "$(openssl rand -base64 16 2>/dev/null || head -c 16 /dev/urandom | base64)")
     LITELLM_KEY=$(_phase06_env_hex_secret LITELLM_KEY 16 "sk-ods-")
-    LITELLM_LEMONADE_API_KEY=$(_phase06_env_hex_secret LITELLM_LEMONADE_API_KEY 16 "sk-ods-lemonade-")
-    OPENCLAW_TOKEN=$(_phase06_env_hex_secret OPENCLAW_TOKEN 24)
-    LEMONADE_EXTERNAL_VALUE="${LEMONADE_EXTERNAL:-false}"
-    [[ "${LEMONADE_EXTERNAL_VALUE,,}" == "true" ]] && LEMONADE_EXTERNAL_VALUE="true" || LEMONADE_EXTERNAL_VALUE="false"
-    LEMONADE_HOST_TRANSPORT="$(_env_get_explicit_first LEMONADE_HOST_TRANSPORT direct)"
     ODS_WINDOWS_SYSTEM_DIRECTORY="$(_env_get_explicit_first ODS_WINDOWS_SYSTEM_DIRECTORY '')"
     ODS_WSL_STATE_ROOT="$(_env_get_explicit_first ODS_WSL_STATE_ROOT '')"
-    case "$LEMONADE_HOST_TRANSPORT" in
-        direct|model-router) ;;
-        *) error "LEMONADE_HOST_TRANSPORT must be direct or model-router"; return 1 ;;
-    esac
-    if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" && -n "${LEMONADE_API_KEY:-}" ]]; then
-        LITELLM_LEMONADE_API_KEY="$LEMONADE_API_KEY"
+    ODS_WSL_DISK_DRIVE="$(_env_get_explicit_first ODS_WSL_DISK_DRIVE '')"
+    # Host-native llama-server (Windows Portal): the in-stack llama-server is
+    # off, and LiteLLM and model-router reach the native server with
+    # LLAMA_SERVER_API_KEY. install-core.sh validated the flags.
+    NATIVE_LLM_ACTIVE=false
+    NATIVE_LLM_BASE_URL_VALUE=""
+    NATIVE_LLM_CONTAINER_BASE_URL_VALUE=""
+    NATIVE_LLM_PORT_VALUE=""
+    LLAMA_SERVER_API_KEY_VALUE=""
+    ODS_HOST_LLM_TRANSPORT_VALUE=direct
+    if ods_native_llm_requested; then
+        NATIVE_LLM_ACTIVE=true
+        NATIVE_LLM_BASE_URL_VALUE="$(ods_native_llm_normalize_origin "$NATIVE_LLM_BASE_URL")" || {
+            error "NATIVE_LLM_BASE_URL must be an http://host:port origin."
+            return 1
+        }
+        NATIVE_LLM_CONTAINER_BASE_URL_VALUE="$(ods_native_llm_container_origin "$NATIVE_LLM_BASE_URL_VALUE")"
+        NATIVE_LLM_PORT_VALUE="$(ods_native_llm_origin_port "$NATIVE_LLM_BASE_URL_VALUE")"
+        # Windows setup supplies the key on every run; a rerun without it keeps
+        # the saved key, which the Windows runtime still uses.
+        LLAMA_SERVER_API_KEY_VALUE="${LLAMA_SERVER_API_KEY:-$(_env_get LLAMA_SERVER_API_KEY "")}"
+        ODS_HOST_LLM_TRANSPORT_VALUE="$(_env_get_explicit_first ODS_HOST_LLM_TRANSPORT direct)"
+        case "$ODS_HOST_LLM_TRANSPORT_VALUE" in
+            direct|model-router) ;;
+            *) error "ODS_HOST_LLM_TRANSPORT must be direct or model-router"; return 1 ;;
+        esac
     fi
-    LEMONADE_API_BASE_PATH_VALUE="$(_env_get_explicit_first LEMONADE_API_BASE_PATH "/api/v1")"
-    [[ "$LEMONADE_API_BASE_PATH_VALUE" == /* ]] || LEMONADE_API_BASE_PATH_VALUE="/$LEMONADE_API_BASE_PATH_VALUE"
-    LEMONADE_BASE_URL_VALUE=""
-    LEMONADE_CONTAINER_BASE_URL_VALUE=""
-    LEMONADE_PORT_VALUE=""
-    if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
-        LEMONADE_BASE_URL_VALUE="$(_env_get_explicit_first LEMONADE_BASE_URL "")"
-        if [[ -z "$LEMONADE_BASE_URL_VALUE" ]]; then
-            if LEMONADE_BASE_URL_VALUE="$(_phase06_detect_lemonade_url)"; then
-                ai_ok "Detected existing Lemonade server at ${LEMONADE_BASE_URL_VALUE}"
-            else
-                LEMONADE_BASE_URL_VALUE="http://localhost:13305"
-                warn "Could not auto-detect existing Lemonade; using ${LEMONADE_BASE_URL_VALUE}. Pass --lemonade-url if your server uses another port."
-            fi
-        fi
-        LEMONADE_BASE_URL_VALUE="${LEMONADE_BASE_URL_VALUE%/}"
-        for _lemonade_suffix in "/api/v1" "/v1" "/api"; do
-            if [[ "$LEMONADE_BASE_URL_VALUE" == *"$_lemonade_suffix" ]]; then
-                LEMONADE_BASE_URL_VALUE="${LEMONADE_BASE_URL_VALUE%"$_lemonade_suffix"}"
-            fi
-        done
-        LEMONADE_PORT_VALUE="${AMD_INFERENCE_PORT:-}"
-        if [[ -z "$LEMONADE_PORT_VALUE" ]]; then
-            if [[ "$LEMONADE_BASE_URL_VALUE" =~ ^https?://[^/:]+:([0-9]+)(/|$) ]]; then
-                LEMONADE_PORT_VALUE="${BASH_REMATCH[1]}"
-            else
-                LEMONADE_PORT_VALUE="13305"
-            fi
-        fi
-        LEMONADE_CONTAINER_BASE_URL_VALUE="$(_env_get_explicit_first LEMONADE_CONTAINER_BASE_URL "")"
-        if [[ -z "$LEMONADE_CONTAINER_BASE_URL_VALUE" ]]; then
-            case "$LEMONADE_BASE_URL_VALUE" in
-                http://localhost:*) LEMONADE_CONTAINER_BASE_URL_VALUE="${LEMONADE_BASE_URL_VALUE/http:\/\/localhost:/http:\/\/host.docker.internal:}" ;;
-                http://127.0.0.1:*) LEMONADE_CONTAINER_BASE_URL_VALUE="${LEMONADE_BASE_URL_VALUE/http:\/\/127.0.0.1:/http:\/\/host.docker.internal:}" ;;
-                http://[::1]:*) LEMONADE_CONTAINER_BASE_URL_VALUE="${LEMONADE_BASE_URL_VALUE/http:\/\/[::1]:/http:\/\/host.docker.internal:}" ;;
-                *) LEMONADE_CONTAINER_BASE_URL_VALUE="$LEMONADE_BASE_URL_VALUE" ;;
-            esac
-        fi
-        LEMONADE_CONTAINER_BASE_URL_VALUE="${LEMONADE_CONTAINER_BASE_URL_VALUE%/}"
-    fi
-    LEMONADE_API_BASE_VALUE="${LEMONADE_BASE_URL_VALUE}${LEMONADE_API_BASE_PATH_VALUE}"
-    LEMONADE_CONTAINER_API_BASE_VALUE="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${LEMONADE_CONTAINER_BASE_URL_VALUE}${LEMONADE_API_BASE_PATH_VALUE}"; else echo "http://llama-server:8080/api/v1"; fi)"
-    LEMONADE_MODEL_VALUE=""
-    if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
-        LEMONADE_MODEL_VALUE="$(_env_get_explicit_first LEMONADE_MODEL "")"
-        if [[ -z "$LEMONADE_MODEL_VALUE" ]]; then
-            if LEMONADE_MODEL_VALUE="$(_phase06_discover_lemonade_model "$LEMONADE_API_BASE_VALUE")"; then
-                ai_ok "Detected existing Lemonade model: ${LEMONADE_MODEL_VALUE}"
-            elif [[ -n "${GGUF_FILE:-}" ]]; then
-                LEMONADE_MODEL_VALUE="extra.${GGUF_FILE}"
-                warn "Could not auto-detect a Lemonade model from ${LEMONADE_API_BASE_VALUE}/models; using ${LEMONADE_MODEL_VALUE}. Phase 12 will verify the route before declaring install success."
-            else
-                warn "Could not auto-detect a Lemonade model from ${LEMONADE_API_BASE_VALUE}/models. Set LEMONADE_MODEL to the id returned by that endpoint."
-            fi
-        fi
-        LEMONADE_MODEL="$LEMONADE_MODEL_VALUE"
+    ODS_HOST_LLM_TRANSPORT="$ODS_HOST_LLM_TRANSPORT_VALUE"
+    # AMD llama.cpp image backend chosen in phase 02 (vulkan by default).
+    AMD_INFERENCE_BACKEND_VALUE="${AMD_INFERENCE_BACKEND:-vulkan}"
+    AMD_SUPPORTED_BACKENDS_VALUE="vulkan,rocm"
+    if ods_amd_target_is_cdna "${AMD_GFX_TARGET:-}"; then
+        AMD_SUPPORTED_BACKENDS_VALUE="rocm"
     fi
     LIVEKIT_SECRET=$(_env_get LIVEKIT_API_SECRET "$(openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64)")
     LIVEKIT_API_KEY=$(_phase06_env_hex_secret LIVEKIT_API_KEY 16)
@@ -993,6 +1124,12 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
             *) ai_bad "PIXEL_WEB_SEARCH_PROVIDER must be parallel-free or searxng."; return 1 ;;
         esac
         export PIXEL_WEB_SEARCH_PROVIDER="$PIXEL_WEB_SEARCH_PROVIDER_VALUE"
+        PIXEL_RESPONSE_LANGUAGE_VALUE="$(_env_get_explicit_first PIXEL_RESPONSE_LANGUAGE "")"
+        case "$PIXEL_RESPONSE_LANGUAGE_VALUE" in
+            ""|en) ;;
+            *) ai_bad "PIXEL_RESPONSE_LANGUAGE=$PIXEL_RESPONSE_LANGUAGE_VALUE in .env is not supported. Set it to en, or remove the line to match the owner's language, then rerun the installer."; return 1 ;;
+        esac
+        export PIXEL_RESPONSE_LANGUAGE="$PIXEL_RESPONSE_LANGUAGE_VALUE"
         PIXEL_SOURCE_DIR_VALUE="$_phase06_requested_pixel_dir"
         # Phase 11 installs Pixel in this same installer shell. Preserve the
         # resolved immutable source contract in that shell as well as in .env;
@@ -1070,6 +1207,14 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
                 fi
                 mv -f -- "$_external_key_tmp" "$_external_key_target"
             fi
+        elif [[ -n "${EXTERNAL_LLM_API_KEY_VALUE:-}" ]]; then
+            # A key from --external-llm-key-env (Windows setup) or the
+            # retired --lemonade-api-key flag.
+            _external_key_tmp="$(mktemp "${_external_key_target}.XXXXXX")" || return 1
+            chmod 600 "$_external_key_tmp"
+            printf '%s\n' "$EXTERNAL_LLM_API_KEY_VALUE" >"$_external_key_tmp"
+            mv -f -- "$_external_key_tmp" "$_external_key_target"
+            unset EXTERNAL_LLM_API_KEY_VALUE
         elif [[ "${EXTERNAL_LLM_API_KEY_RESET:-false}" == "true" ]]; then
             (umask 077; : >"$_external_key_target")
         elif [[ ! -e "$_external_key_target" ]]; then
@@ -1080,6 +1225,57 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
             EXTERNAL_LLM_API_KEY_FILE="$_external_key_target"
         fi
         unset _external_key_tmp _external_key_target
+    elif [[ "${EXTERNAL_LLM_RESET:-false}" == "true" ]]; then
+        # --no-external-llm turns API mode off and forgets its key (fleet row
+        # 25). The overlay that mounted the key leaves the stack with it, and
+        # a later API setup stores a key again.
+        _external_key_target="$INSTALL_DIR/config/litellm/external-upstream.key"
+        if [[ -f "$_external_key_target" || -L "$_external_key_target" ]]; then
+            rm -f -- "$_external_key_target"
+            log "Removed the stored external LLM key (API mode is off)"
+        fi
+        unset _external_key_target
+    fi
+    # The AMD overlays pin their own llama.cpp images. A model profile's image
+    # for another backend (the gemma4 profile names the CUDA build) must not
+    # reach .env, where the host agent's container recreate would use it.
+    if [[ "$GPU_BACKEND" == "amd" ]]; then
+        _amd_llama_repo="ghcr.io/ggml-org/llama.cpp"
+        for _amd_image_key in LLAMA_SERVER_IMAGE LLAMA_SERVER_IMAGE_FALLBACK; do
+            case "${!_amd_image_key:-}" in
+                ""|"$_amd_llama_repo":server-vulkan-*|"$_amd_llama_repo":server-rocm-*) ;;
+                *)
+                    log "Not writing $_amd_image_key for AMD: ${!_amd_image_key} is another backend's image"
+                    unset "$_amd_image_key"
+                    ;;
+            esac
+        done
+        unset _amd_image_key _amd_llama_repo
+    fi
+    # A GPU of compute capability 12.1 (DGX Spark GB10, RTX Spark N1X) gets
+    # unusable "????" answers from llama.cpp's CUDA 12 images, the Compose
+    # default included; it runs the CUDA 13 image config/backends/nvidia.json
+    # pins for it. Every step that sets the image (tier default, catalog
+    # selector, preserved model) ran before this, so .env and the phase 08
+    # pull name the same image. A host-native route runs no container.
+    if [[ "$GPU_BACKEND" == "nvidia" && "$NATIVE_LLM_ACTIVE" != "true" && -n "${GPU_COMPUTE_CAP:-}" ]]; then
+        if ! _compute_llama_image="$(ods_nvidia_llama_image_for_compute "$GPU_COMPUTE_CAP" "$SCRIPT_DIR/config/backends/nvidia.json")"; then
+            error "Could not read the llama.cpp image for compute capability $GPU_COMPUTE_CAP from $SCRIPT_DIR/config/backends/nvidia.json, so ODS stopped before writing its settings. The ODS files may be incomplete: download ODS again and rerun the installer. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+            return 1
+        fi
+        if [[ -n "$_compute_llama_image" ]]; then
+            _mapped_llama_image="$(ods_llama_image_for_compute_cap "${LLAMA_SERVER_IMAGE:-}" "$_compute_llama_image")"
+            if [[ "$_mapped_llama_image" != "${LLAMA_SERVER_IMAGE:-}" ]]; then
+                log "Compute capability $GPU_COMPUTE_CAP: llama-server runs $_mapped_llama_image instead of ${LLAMA_SERVER_IMAGE:-the Compose default}, a CUDA 12 build without kernels for this GPU"
+                LLAMA_SERVER_IMAGE="$_mapped_llama_image"
+            fi
+            if [[ -n "${LLAMA_SERVER_IMAGE_FALLBACK:-}" \
+                && "$(ods_llama_image_for_compute_cap "$LLAMA_SERVER_IMAGE_FALLBACK" "$_compute_llama_image")" != "$LLAMA_SERVER_IMAGE_FALLBACK" ]]; then
+                log "Not writing LLAMA_SERVER_IMAGE_FALLBACK: $LLAMA_SERVER_IMAGE_FALLBACK is a CUDA 12 build without kernels for compute capability $GPU_COMPUTE_CAP"
+                unset LLAMA_SERVER_IMAGE_FALLBACK
+            fi
+        fi
+        unset _compute_llama_image _mapped_llama_image
     fi
     LLAMA_SERVER_MEMORY_LIMIT_VALUE=""
     if [[ "$GPU_BACKEND" == "nvidia" && "$EXTERNAL_LLM_ACTIVE" != "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
@@ -1095,7 +1291,13 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         # so docker-compose.cpu.yml's 6G default applies as before.
         LLAMA_SERVER_MEMORY_LIMIT_VALUE="$(_env_get LLAMA_SERVER_MEMORY_LIMIT "${LLAMA_SERVER_MEMORY_LIMIT:-}")"
     fi
-    ODS_MODE_VALUE="$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo "local"; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "lemonade"; else echo "${ODS_MODE:-local}"; fi)"
+    ODS_MODE_VALUE="$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" || "$NATIVE_LLM_ACTIVE" == "true" ]]; then echo "local"; else echo "${ODS_MODE:-local}"; fi)"
+    # The managed AMD container and the host-native route are both local mode.
+    AMD_LOCAL_RUNTIME=false
+    if [[ "$EXTERNAL_LLM_ACTIVE" != "true" && "$NATIVE_LLM_ACTIVE" != "true" \
+        && "$GPU_BACKEND" == "amd" && "$ODS_MODE_VALUE" == "local" ]]; then
+        AMD_LOCAL_RUNTIME=true
+    fi
     ODS_MODEL_SWITCHBOARD_VALUE=$(_env_get ODS_MODEL_SWITCHBOARD "${ODS_MODEL_SWITCHBOARD:-enabled}")
     case "$ODS_MODEL_SWITCHBOARD_VALUE" in
         legacy|observe|enabled) ;;
@@ -1105,13 +1307,23 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         ai_warn "External LLM reuse uses the authenticated LiteLLM gateway directly; setting ODS_MODEL_SWITCHBOARD=observe."
         ODS_MODEL_SWITCHBOARD_VALUE="observe"
     fi
+    # Only model-router knows the vLLM engine's endpoint (vllm-default); the
+    # legacy and observe LiteLLM maps send ods/current to llama-server.
+    if [[ "${LLM_BACKEND:-}" == "vllm" && "$ODS_MODEL_SWITCHBOARD_VALUE" != "enabled" ]]; then
+        ai_warn "The vLLM engine is reached through model-router; setting ODS_MODEL_SWITCHBOARD=enabled."
+        ODS_MODEL_SWITCHBOARD_VALUE="enabled"
+    fi
     # Compose inherits exported installer variables ahead of the generated
     # .env. Keep the live process value aligned with the effective value so an
     # external-model install cannot select switchboard.yaml while its router
     # service is disabled by docker-compose.external-llm.yml.
     ODS_MODEL_SWITCHBOARD="$ODS_MODEL_SWITCHBOARD_VALUE"
     export ODS_MODEL_SWITCHBOARD
-    _default_llm_api_url="$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "http://litellm:4000"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "http://litellm:4000"; elif [[ "${ODS_MODE:-local}" == "local" ]]; then echo "http://llama-server:8080"; else echo "http://litellm:4000"; fi)"
+    # A host-native llama-server is reachable only through LiteLLM, which holds
+    # its key. The vLLM engine has no in-stack llama-server either: LiteLLM
+    # sends every model name to model-router as ods/current. The in-stack
+    # llama-server serves every other local install.
+    _default_llm_api_url="$(if [[ "$NATIVE_LLM_ACTIVE" == "true" || "${LLM_BACKEND:-}" == "vllm" ]]; then echo "http://litellm:4000"; elif [[ "${ODS_MODE:-local}" == "local" ]]; then echo "http://llama-server:8080"; else echo "http://litellm:4000"; fi)"
     if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then
         LLM_API_URL_VALUE="http://litellm:4000"
         OPEN_WEBUI_LLM_BASE_URL_VALUE="http://litellm:4000/v1"
@@ -1122,9 +1334,15 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         OPEN_WEBUI_LLM_API_KEY_VALUE=""
     else
         LLM_API_URL_VALUE=$(_env_get LLM_API_URL "$_default_llm_api_url")
-        # A retained local route cannot serve an external Lemonade install.
-        # Preserve other existing values as operator-selected endpoints.
-        if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
+        # A paused model API (Settings > Remote model) had pointed this at
+        # LiteLLM; restore the URL it replaced (install-core read it).
+        if [[ "${ODS_REMOTE_ROUTE_PAUSED:-false}" == "true" ]]; then
+            LLM_API_URL_VALUE="${ODS_REMOTE_ROUTE_PREVIOUS_API_URL:-$_default_llm_api_url}"
+        fi
+        # The in-stack llama-server is off for a host-native route and for the
+        # vLLM engine. Preserve other existing values as operator-selected
+        # endpoints.
+        if [[ "$NATIVE_LLM_ACTIVE" == "true" || "${LLM_BACKEND:-}" == "vllm" ]]; then
             case "$LLM_API_URL_VALUE" in
                 http://llama-server:8080|http://llama-server:8080/v1)
                     LLM_API_URL_VALUE="$_default_llm_api_url"
@@ -1154,7 +1372,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
         _default_hermes_base_url="http://litellm:4000/v1"
         _default_hermes_api_key="${LITELLM_KEY}"
-    elif [[ "$GPU_BACKEND" == "amd" || "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
+    elif [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then
         _default_hermes_base_url="http://litellm:4000/v1"
         _default_hermes_api_key="${LITELLM_KEY}"
     else
@@ -1185,12 +1403,29 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         HERMES_LLM_BASE_URL_VALUE="http://model-router:9099/v1"
         HERMES_LLM_API_KEY_VALUE="no-key"
     fi
+    # The vLLM engine replaces the in-stack llama-server, as the host-native
+    # route does: Open WebUI reaches the model through LiteLLM and Hermes
+    # through model-router. A retained URL that names llama-server, or an
+    # empty one an API-mode reset left, would reach no server.
+    if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+        case "$OPEN_WEBUI_LLM_BASE_URL_VALUE" in
+            ""|http://llama-server:8080|http://llama-server:8080/v1)
+                OPEN_WEBUI_LLM_BASE_URL_VALUE="http://litellm:4000"
+                OPEN_WEBUI_LLM_API_KEY_VALUE="${LITELLM_KEY}"
+                ;;
+        esac
+        case "$HERMES_LLM_BASE_URL_VALUE" in
+            http://llama-server:8080|http://llama-server:8080/v1)
+                HERMES_LLM_BASE_URL_VALUE="http://model-router:9099/v1"
+                HERMES_LLM_API_KEY_VALUE="no-key"
+                ;;
+        esac
+    fi
+    # Owner-card gating is opt-in; a rerun must not silently turn it back off.
+    HERMES_REQUIRE_OWNER_CARD_VALUE="$(_env_get_explicit_first HERMES_REQUIRE_OWNER_CARD false)"
     LLM_API_URL="$LLM_API_URL_VALUE"
     HERMES_LLM_BASE_URL="$HERMES_LLM_BASE_URL_VALUE"
     HERMES_LLM_API_KEY="$HERMES_LLM_API_KEY_VALUE"
-    if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" && "${LEMONADE_HOST_TRANSPORT:-direct}" != "model-router" && "$LEMONADE_BASE_URL_VALUE" =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:|/|$) && "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]]; then
-        warn "Existing Lemonade URL uses loopback ($LEMONADE_BASE_URL_VALUE). Docker containers will use $LEMONADE_CONTAINER_BASE_URL_VALUE; ensure Lemonade is reachable there (for example: lemonade config set host=0.0.0.0 on a trusted host)."
-    fi
 
     _select_auto_cpu_value() {
         local key="$1" detected="$2"
@@ -1246,17 +1481,14 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         [[ "$LLAMA_THREADS_VALUE" =~ ^[1-9][0-9]*$ ]] || LLAMA_THREADS_VALUE=""
     fi
 
-    _tts_docker_memory_gb="$(ods_docker_memory_gb 2>/dev/null || true)"
-    _tts_effective_memory_gb="$(ods_effective_container_memory_gb "${RAM_GB:-0}" "$_tts_docker_memory_gb")"
-    _tts_workers_default="$(ods_default_tts_workers "$_tts_effective_memory_gb")"
-    TTS_WORKERS_VALUE="$(_env_get TTS_WORKERS "${TTS_WORKERS:-$_tts_workers_default}")"
+    TTS_WORKERS_VALUE="$(_env_get TTS_WORKERS "${TTS_WORKERS:-1}")"
     if [[ ! "$TTS_WORKERS_VALUE" =~ ^[1-9][0-9]*$ ]]; then
-        TTS_WORKERS_VALUE="$_tts_workers_default"
+        TTS_WORKERS_VALUE=1
     fi
-    unset _tts_docker_memory_gb _tts_effective_memory_gb _tts_workers_default
 
     TTS_CPU_LIMIT=$(_select_service_cpu_limit TTS_CPU_LIMIT "8.0" "$_docker_available_cpus")
     TTS_CPU_RESERVATION=$(_select_service_cpu_reservation TTS_CPU_RESERVATION "2.0" "$TTS_CPU_LIMIT")
+    TTS_THREADS_VALUE="$(ods_select_tts_threads "$(_env_get TTS_THREADS "${TTS_THREADS:-}")" "$TTS_CPU_LIMIT" "$TTS_WORKERS_VALUE")"
     WHISPER_CPU_LIMIT=$(_select_service_cpu_limit WHISPER_CPU_LIMIT "4.0" "$_docker_available_cpus")
     WHISPER_CPU_RESERVATION=$(_select_service_cpu_reservation WHISPER_CPU_RESERVATION "1.0" "$WHISPER_CPU_LIMIT")
     HERMES_CPU_LIMIT=$(_select_service_cpu_limit HERMES_CPU_LIMIT "4.0" "$_docker_available_cpus")
@@ -1279,29 +1511,6 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         # On loopback, preserve an operator's explicit opt-in to authentication.
         WEBUI_AUTH=$(_env_get WEBUI_AUTH "false")
     fi
-
-    # Host LAN IP — only meaningful when BIND_ADDRESS=0.0.0.0. Some services
-    # (e.g. openclaw) need to know the host's LAN address so the Control UI
-    # accepts cross-origin requests from LAN clients. Detection prefers
-    # `hostname -I` (GNU coreutils, Linux) then `ip route get` then ifconfig
-    # so WSL2 + odd Linux variants are covered. Empty default keeps the
-    # compose ${HOST_LAN_IP:-} fallback safe when binding to loopback.
-    HOST_LAN_IP=""
-    if [[ "$BIND_ADDRESS" == "0.0.0.0" ]]; then
-        if command -v hostname >/dev/null 2>&1 && hostname -I >/dev/null 2>&1; then
-            HOST_LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-        fi
-        if [[ -z "$HOST_LAN_IP" ]] && command -v ip >/dev/null 2>&1; then
-            HOST_LAN_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}')
-        fi
-        if [[ -z "$HOST_LAN_IP" ]] && command -v ifconfig >/dev/null 2>&1; then
-            HOST_LAN_IP=$(ifconfig 2>/dev/null | awk '/inet / && $2 != "127.0.0.1" {print $2; exit}')
-        fi
-    fi
-    # Preserve operator override across re-runs: if .env already has a value,
-    # use it instead of the freshly-detected one (matches the _env_get pattern
-    # used for every other persistent value in this phase).
-    HOST_LAN_IP=$(_env_get HOST_LAN_IP "$HOST_LAN_IP")
 
     # Device name — used by ods-mdns (publishes <name>.local + per-service
     # subdomains: auth.<name>.local, chat.<name>.local, etc.) and by magic-
@@ -1368,23 +1577,15 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     N_GPU_LAYERS_VALUE="${N_GPU_LAYERS_VALUE:-auto}"
     # Owner opt-out for the overlay default; empty keeps ngram-mod implicit.
     LLAMA_SPEC_TYPE_VALUE=$(_env_get LLAMA_SPEC_TYPE "${LLAMA_SPEC_TYPE:-}")
+    # llama.cpp runtime tuning: explicit process env > saved .env > default.
+    # These are documented owner settings; a rerun must not reset them.
+    LLAMA_PARALLEL_VALUE=$(_env_get_explicit_first LLAMA_PARALLEL "1")
+    LLAMA_ARG_FLASH_ATTN_VALUE=$(_env_get_explicit_first LLAMA_ARG_FLASH_ATTN "auto")
+    LLAMA_ARG_CACHE_TYPE_K_VALUE=$(_env_get_explicit_first LLAMA_ARG_CACHE_TYPE_K "f16")
+    LLAMA_ARG_CACHE_TYPE_V_VALUE=$(_env_get_explicit_first LLAMA_ARG_CACHE_TYPE_V "f16")
 
-    _phase06_lemonade_uses_host_9000() {
-        [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]] && return 0
-        [[ "${AMD_INFERENCE_RUNTIME:-}" =~ ^([Ll][Ee][Mm][Oo][Nn][Aa][Dd][Ee])$ ]] && return 0
-        [[ "${GPU_BACKEND:-}" == "amd" && "${ODS_MODE:-local}" != "cloud" ]] && return 0
-        return 1
-    }
-
+    # A retained port is kept (an AMD install moved to 9100 stays there).
     WHISPER_PORT_VALUE="$(_env_get_explicit_first WHISPER_PORT "9000")"
-    if _phase06_lemonade_uses_host_9000 && [[ "$WHISPER_PORT_VALUE" == "9000" ]]; then
-        # Lemonade's native Linux/Windows router can reserve host port 9000
-        # for websocket traffic. Match the Windows policy: keep Whisper's
-        # container port at 8000, but bind the host side on 9100 unless the
-        # user already selected another non-9000 port.
-        WHISPER_PORT_VALUE="9100"
-        ai_ok "AMD/Lemonade detected; Whisper reassigned to host port ${WHISPER_PORT_VALUE}"
-    fi
     WHISPER_PORT="$WHISPER_PORT_VALUE"
     if declare -p SERVICE_PORTS >/dev/null 2>&1; then
         SERVICE_PORTS[whisper]="$WHISPER_PORT_VALUE"
@@ -1408,6 +1609,46 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     # Keep it aligned with the retained .env port on an upgrade.
     DASHBOARD_API_PORT="$DASHBOARD_API_PORT_VALUE"
 
+    # Resolve GPU runtime overrides before opening .env for writing. Lookups
+    # inside its heredoc would read the already-truncated file on a rerun.
+    HSA_OVERRIDE_GFX_VERSION_VALUE=""
+    ROCBLAS_USE_HIPBLASLT_VALUE=""
+    ONEAPI_DEVICE_SELECTOR_VALUE=""
+    if [[ "$GPU_BACKEND" == "amd" ]]; then
+        HSA_OVERRIDE_GFX_VERSION_VALUE="$(_env_get HSA_OVERRIDE_GFX_VERSION \
+            "$(ods_amd_hsa_override_for_target "$AMD_INFERENCE_BACKEND_VALUE" "${AMD_GFX_TARGET:-}")")"
+        ROCBLAS_USE_HIPBLASLT_VALUE="$(_env_get ROCBLAS_USE_HIPBLASLT "")"
+    elif [[ "$GPU_BACKEND" == "sycl" ]]; then
+        ONEAPI_DEVICE_SELECTOR_VALUE="$(_env_get ONEAPI_DEVICE_SELECTOR level_zero:gpu)"
+    fi
+
+    # The vLLM engine's settings (LLM_BACKEND=vllm), appended after the
+    # template below so every other install writes the same bytes as before.
+    # Resolved here, before the template truncates the .env _env_get reads.
+    # ODS Talk image attachments reach the model through LiteLLM, as the
+    # host-native overlay sets; an owner's own vision server is kept.
+    VLLM_GPU_MEMORY_UTILIZATION_VALUE=""
+    VLLM_TALK_VISION_URL_VALUE=""
+    VLLM_TALK_VISION_KEY_VALUE=""
+    if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+        for _vllm_key in VLLM_IMAGE VLLM_MODEL_DIR VLLM_SERVED_MODEL VLLM_GPU_UUID; do
+            [[ -n "${!_vllm_key:-}" ]] || {
+                error "The vLLM engine needs ${_vllm_key}, which this run's model choice did not set, so .env was not written. Rerun the installer; if it happens again, rerun with --llm-backend llama-server. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+                return 1
+            }
+        done
+        unset _vllm_key
+        VLLM_GPU_MEMORY_UTILIZATION_VALUE="$(_env_get_explicit_first VLLM_GPU_MEMORY_UTILIZATION "")"
+        VLLM_TALK_VISION_URL_VALUE="$(_env_get ODS_TALK_VISION_URL "http://litellm:4000/v1")"
+        VLLM_TALK_VISION_KEY_VALUE="$(_env_get ODS_TALK_VISION_KEY "${LITELLM_KEY}")"
+        case "$VLLM_TALK_VISION_URL_VALUE" in
+            http://llama-server:*|http://ods-llama-server:*)
+                VLLM_TALK_VISION_URL_VALUE="http://litellm:4000/v1"
+                VLLM_TALK_VISION_KEY_VALUE="${LITELLM_KEY}"
+                ;;
+        esac
+    fi
+
     # Generate .env file
     if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]]; then
         _phase06_pixel_runtime_layout || {
@@ -1419,8 +1660,16 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     # (closes a brief window on systems where $HOME is world-readable, e.g.
     # Ubuntu defaults). The umask MUST NOT leak to the rest of phase 06 or
     # subsequent phases — later mkdirs create container-bind-mount dirs that
-    # need world-traverse (e.g. SearXNG runs as uid 977, OpenClaw as 1000).
+    # need world-traverse (e.g. SearXNG runs as uid 977).
     # The chmod 600 below is belt-and-braces.
+    # The template only knows ODS's own keys. Snapshot the previous .env so the
+    # settings bundled and installed extensions own can be carried over after
+    # the rewrite.
+    _phase06_previous_env=""
+    if [[ -f "$INSTALL_DIR/.env" ]]; then
+        _phase06_previous_env="$(mktemp)" || return 1
+        cp "$INSTALL_DIR/.env" "$_phase06_previous_env" || return 1
+    fi
     (
         umask 077
         cat > "$INSTALL_DIR/.env" << ENV_EOF
@@ -1435,9 +1684,8 @@ ODS_VERSION=${VERSION:-3.0.0}
 # 127.0.0.1 = localhost only (secure default)
 # 0.0.0.0   = accessible from LAN (install with --lan or set manually)
 BIND_ADDRESS=$(dotenv_value "${BIND_ADDRESS}")
-# Host LAN IP (populated when BIND_ADDRESS=0.0.0.0; empty otherwise).
-# Containers like openclaw read this to advertise the host's LAN address.
-HOST_LAN_IP=$(dotenv_value "${HOST_LAN_IP}")
+DASHBOARD_PORT=${DASHBOARD_PORT_VALUE}
+DASHBOARD_REMOTE_PORT=${DASHBOARD_REMOTE_PORT_VALUE}
 # Lets the non-root remote-provider services read only lifecycle secrets that
 # the host agent writes mode 0640 under this installation owner's data group.
 REMOTE_PROVIDER_DATA_GID=$(id -g 2>/dev/null || echo 1000)
@@ -1452,28 +1700,27 @@ LLM_API_URL=$(dotenv_value "${LLM_API_URL_VALUE}")
 OPEN_WEBUI_LLM_BASE_URL=$(dotenv_value "${OPEN_WEBUI_LLM_BASE_URL_VALUE}")
 OPEN_WEBUI_LLM_API_KEY=$(dotenv_value "${OPEN_WEBUI_LLM_API_KEY_VALUE}")
 OPEN_WEBUI_TASK_MODEL=$(dotenv_value "${OPEN_WEBUI_TASK_MODEL_VALUE}")
-LLM_BACKEND=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo "external"; elif [[ "$ODS_MODE_VALUE" == "lemonade" ]]; then echo "lemonade"; else echo "llama-server"; fi)
-LLM_API_BASE_PATH=$(if [[ "$ODS_MODE_VALUE" == "lemonade" ]]; then dotenv_value "${LEMONADE_API_BASE_PATH_VALUE}"; else echo "/v1"; fi)
+LLM_BACKEND=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo "external"; elif [[ "${LLM_BACKEND:-}" == "vllm" ]]; then echo "vllm"; else echo "llama-server"; fi)
+LLM_API_BASE_PATH=/v1
 EXTERNAL_LLM_URL=${EXTERNAL_LLM_URL_VALUE}
 EXTERNAL_LLM_CONTAINER_URL=${EXTERNAL_LLM_CONTAINER_URL_VALUE}
 EXTERNAL_LLM_PROVIDER=${EXTERNAL_LLM_PROVIDER_VALUE}
 EXTERNAL_LLM_MODEL=${EXTERNAL_SELECTED_MODEL}
 SKIP_MODEL_DOWNLOAD=${EXTERNAL_LLM_ACTIVE}
-AMD_INFERENCE_RUNTIME=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" || ( "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ) ]]; then echo "lemonade"; else echo ""; fi)
-AMD_INFERENCE_BACKEND=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${AMD_INFERENCE_BACKEND:-auto}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
-AMD_INFERENCE_LOCATION=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "host"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "container"; else echo ""; fi)
-AMD_INFERENCE_PORT=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${LEMONADE_PORT_VALUE}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_API_PORT:-8080}"; else echo ""; fi)
-AMD_INFERENCE_SUPPORTED_BACKENDS=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${AMD_INFERENCE_SUPPORTED_BACKENDS:-auto}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)
-AMD_INFERENCE_RUNTIME_MODE=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "external-lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "linux-container"; else echo ""; fi)
-AMD_INFERENCE_MANAGED=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "false"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "true"; else echo ""; fi)
-LEMONADE_EXTERNAL=${LEMONADE_EXTERNAL_VALUE}
-LEMONADE_HOST_TRANSPORT=$(dotenv_value "${LEMONADE_HOST_TRANSPORT}")
+AMD_INFERENCE_RUNTIME=$(if [[ "$NATIVE_LLM_ACTIVE" == "true" || "$AMD_LOCAL_RUNTIME" == "true" ]]; then echo "llama-server"; fi)
+AMD_INFERENCE_BACKEND=$(if [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then echo "vulkan"; elif [[ "$AMD_LOCAL_RUNTIME" == "true" ]]; then echo "${AMD_INFERENCE_BACKEND_VALUE}"; fi)
+AMD_INFERENCE_LOCATION=$(if [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then echo "host"; elif [[ "$AMD_LOCAL_RUNTIME" == "true" ]]; then echo "container"; fi)
+AMD_INFERENCE_PORT=$(if [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then echo "${NATIVE_LLM_PORT_VALUE}"; elif [[ "$AMD_LOCAL_RUNTIME" == "true" ]]; then echo "8080"; fi)
+AMD_INFERENCE_SUPPORTED_BACKENDS=$(if [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then echo "vulkan"; elif [[ "$AMD_LOCAL_RUNTIME" == "true" ]]; then echo "${AMD_SUPPORTED_BACKENDS_VALUE}"; fi)
+AMD_INFERENCE_RUNTIME_MODE=$(if [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then echo "windows-portal-llama-server"; elif [[ "$AMD_LOCAL_RUNTIME" == "true" ]]; then echo "linux-container"; fi)
+AMD_INFERENCE_MANAGED=$(if [[ "$NATIVE_LLM_ACTIVE" == "true" || "$AMD_LOCAL_RUNTIME" == "true" ]]; then echo "true"; fi)
+ODS_HOST_LLM_TRANSPORT=$(dotenv_value "${ODS_HOST_LLM_TRANSPORT_VALUE}")
+NATIVE_LLM_BASE_URL=$(dotenv_value "${NATIVE_LLM_BASE_URL_VALUE}")
+NATIVE_LLM_CONTAINER_BASE_URL=$(dotenv_value "${NATIVE_LLM_CONTAINER_BASE_URL_VALUE}")
+$(if [[ -n "$LLAMA_SERVER_API_KEY_VALUE" ]]; then printf 'LLAMA_SERVER_API_KEY=%s' "$(dotenv_value "$LLAMA_SERVER_API_KEY_VALUE")"; fi)
 $(if [[ -n "${ODS_WINDOWS_SYSTEM_DIRECTORY}" ]]; then printf 'ODS_WINDOWS_SYSTEM_DIRECTORY=%s' "$(dotenv_value "$ODS_WINDOWS_SYSTEM_DIRECTORY")"; fi)
 $(if [[ -n "${ODS_WSL_STATE_ROOT}" ]]; then printf 'ODS_WSL_STATE_ROOT=%s' "$(dotenv_value "$ODS_WSL_STATE_ROOT")"; fi)
-LEMONADE_BASE_URL=$(dotenv_value "${LEMONADE_BASE_URL_VALUE}")
-LEMONADE_CONTAINER_BASE_URL=$(dotenv_value "${LEMONADE_CONTAINER_BASE_URL_VALUE}")
-LEMONADE_API_BASE_PATH=$(dotenv_value "${LEMONADE_API_BASE_PATH_VALUE}")
-LEMONADE_MODEL=$(if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then dotenv_value "${LEMONADE_MODEL_VALUE:-}"; else echo "${LEMONADE_MODEL:-}"; fi)
+$(if [[ -n "${ODS_WSL_DISK_DRIVE}" ]]; then printf 'ODS_WSL_DISK_DRIVE=%s' "$(dotenv_value "$ODS_WSL_DISK_DRIVE")"; fi)
 
 #=== Cloud API Keys ===
 ANTHROPIC_API_KEY=$(dotenv_value "${ANTHROPIC_API_KEY:-}")
@@ -1485,6 +1732,9 @@ MINIMAX_API_KEY=$(dotenv_value "${MINIMAX_API_KEY:-}")
 TARGET_API_KEY=not-needed
 
 #=== LLM Settings (llama-server) ===
+# Read back by ods-cli (status-json, mode, model current), the host agent and
+# bootstrap-upgrade when they re-resolve the compose stack.
+TIER=$(dotenv_value "${TIER}")
 MODEL_PROFILE=$(dotenv_value "${MODEL_PROFILE_VALUE}")
 # Effective model profile for this hardware: ${MODEL_PROFILE_EFFECTIVE:-qwen}
 LLM_MODEL=${LLM_MODEL}
@@ -1510,23 +1760,27 @@ MODEL_RUNTIME_PROFILE=$(dotenv_quote "${MODEL_RUNTIME_PROFILE:-}")
 MODEL_RUNTIME_PROFILE_LABEL=$(dotenv_quote "${MODEL_RUNTIME_PROFILE_LABEL:-}")
 MODEL_RUNTIME_PROFILE_SOURCE=$(dotenv_quote "${MODEL_RUNTIME_PROFILE_SOURCE:-}")
 GPU_BACKEND=${GPU_BACKEND}
+$(if [[ -n "${GPU_COMPUTE_CAP:-}" ]]; then echo "GPU_COMPUTE_CAP=${GPU_COMPUTE_CAP}"; fi)
 SYSTEM_RAM_GB=${RAM_GB:-0}
 N_GPU_LAYERS=$(dotenv_value "${N_GPU_LAYERS_VALUE}")
 $(if [[ -n "${LLAMA_SERVER_IMAGE:-}" ]]; then echo "LLAMA_SERVER_IMAGE=${LLAMA_SERVER_IMAGE}"; fi)
 $(if [[ -n "${LLAMA_SERVER_IMAGE_FALLBACK:-}" ]]; then echo "LLAMA_SERVER_IMAGE_FALLBACK=${LLAMA_SERVER_IMAGE_FALLBACK}"; fi)
 $(if [[ -n "$LLAMA_SERVER_MEMORY_LIMIT_VALUE" ]]; then echo "LLAMA_SERVER_MEMORY_LIMIT=${LLAMA_SERVER_MEMORY_LIMIT_VALUE}"; fi)
 #=== llama.cpp Runtime Tuning ===
-LLAMA_ARG_FLASH_ATTN=${LLAMA_ARG_FLASH_ATTN:-auto}
-LLAMA_ARG_CACHE_TYPE_K=${LLAMA_ARG_CACHE_TYPE_K:-f16}
-LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
+LLAMA_ARG_FLASH_ATTN=$(dotenv_value "${LLAMA_ARG_FLASH_ATTN_VALUE}")
+LLAMA_ARG_CACHE_TYPE_K=$(dotenv_value "${LLAMA_ARG_CACHE_TYPE_K_VALUE}")
+LLAMA_ARG_CACHE_TYPE_V=$(dotenv_value "${LLAMA_ARG_CACHE_TYPE_V_VALUE}")
 # Optional MoE only. Example for 8-12GB VRAM: LLAMA_ARG_N_CPU_MOE=25
 $(if [[ -n "${LLAMA_ARG_N_CPU_MOE:-}" ]]; then echo "LLAMA_ARG_N_CPU_MOE=${LLAMA_ARG_N_CPU_MOE}"; fi)
 $(if [[ -n "${LLAMA_ARG_NO_CACHE_PROMPT:-}" ]]; then echo "LLAMA_ARG_NO_CACHE_PROMPT=${LLAMA_ARG_NO_CACHE_PROMPT}"; fi)
 $(if [[ -n "${LLAMA_ARG_CHECKPOINT_EVERY_NT:-}" ]]; then echo "LLAMA_ARG_CHECKPOINT_EVERY_NT=${LLAMA_ARG_CHECKPOINT_EVERY_NT}"; fi)
 $(if [[ -n "${LLAMA_ARG_CTX_CHECKPOINTS:-}" ]]; then echo "LLAMA_ARG_CTX_CHECKPOINTS=${LLAMA_ARG_CTX_CHECKPOINTS}"; fi)
 $(if [[ -n "${LLAMA_ARG_CACHE_RAM:-}" ]]; then echo "LLAMA_ARG_CACHE_RAM=${LLAMA_ARG_CACHE_RAM}"; fi)
+# Optional operator-level container tuning; emitted only when present.
+$(if [[ "${LLAMA_ARG_UBATCH:-}" =~ ^[1-9][0-9]{0,2}$ ]] && (( LLAMA_ARG_UBATCH <= 512 )); then echo "LLAMA_ARG_UBATCH=${LLAMA_ARG_UBATCH}"; fi)
+$(if [[ "${LLAMA_ARG_FIT_TARGET:-}" =~ ^[1-9][0-9]{0,4}$ ]] && (( LLAMA_ARG_FIT_TARGET >= 512 && LLAMA_ARG_FIT_TARGET <= 65536 )); then echo "LLAMA_ARG_FIT_TARGET=${LLAMA_ARG_FIT_TARGET}"; fi)
 $(if [[ -n "${LLAMA_THREADS_VALUE:-}" ]]; then echo "LLAMA_THREADS=${LLAMA_THREADS_VALUE}"; fi)
-LLAMA_PARALLEL=${LLAMA_PARALLEL:-1}
+LLAMA_PARALLEL=$(dotenv_value "${LLAMA_PARALLEL_VALUE}")
 # NVIDIA/CPU llama.cpp images default to lossless n-gram speculation (ngram-mod).
 # LLAMA_SPEC_TYPE=none turns it off; unset keeps the default.
 $(if [[ -n "$LLAMA_SPEC_TYPE_VALUE" ]]; then echo "LLAMA_SPEC_TYPE=$(dotenv_value "$LLAMA_SPEC_TYPE_VALUE")"; fi)
@@ -1537,6 +1791,12 @@ $(if [[ -n "${LLAMA_ARG_SPEC_TYPE:-}" ]]; then echo "LLAMA_ARG_SPEC_TYPE=${LLAMA
 $(if [[ -n "${LLAMA_ARG_SPEC_DRAFT_N_MAX:-}" ]]; then echo "LLAMA_ARG_SPEC_DRAFT_N_MAX=${LLAMA_ARG_SPEC_DRAFT_N_MAX}"; fi)
 $(if [[ -n "${LLAMA_ARG_SPEC_DRAFT_TYPE_K:-}" ]]; then echo "LLAMA_ARG_SPEC_DRAFT_TYPE_K=${LLAMA_ARG_SPEC_DRAFT_TYPE_K}"; fi)
 $(if [[ -n "${LLAMA_ARG_SPEC_DRAFT_TYPE_V:-}" ]]; then echo "LLAMA_ARG_SPEC_DRAFT_TYPE_V=${LLAMA_ARG_SPEC_DRAFT_TYPE_V}"; fi)
+# Model activation sets these for the active model only: an imported model's
+# vision projector and a fixed chat template. A rerun keeps them only for the
+# same model (scripts/preserve-active-model.py).
+$(if [[ -n "${LLAMA_ARG_MMPROJ:-}" ]]; then echo "LLAMA_ARG_MMPROJ=$(dotenv_value "$LLAMA_ARG_MMPROJ")"; fi)
+$(if [[ -n "${MODEL_CHAT_TEMPLATE_OVERRIDE:-}" ]]; then echo "MODEL_CHAT_TEMPLATE_OVERRIDE=$(dotenv_value "$MODEL_CHAT_TEMPLATE_OVERRIDE")"; fi)
+$(if [[ -n "${LLAMA_ARG_CHAT_TEMPLATE_FILE:-}" ]]; then echo "LLAMA_ARG_CHAT_TEMPLATE_FILE=$(dotenv_value "$LLAMA_ARG_CHAT_TEMPLATE_FILE")"; fi)
 LLAMA_CPU_LIMIT=${LLAMA_CPU_LIMIT}
 LLAMA_CPU_RESERVATION=${LLAMA_CPU_RESERVATION}
 
@@ -1545,6 +1805,7 @@ LLAMA_CPU_RESERVATION=${LLAMA_CPU_RESERVATION}
 TTS_WORKERS=$(dotenv_value "${TTS_WORKERS_VALUE}")
 TTS_CPU_LIMIT=${TTS_CPU_LIMIT}
 TTS_CPU_RESERVATION=${TTS_CPU_RESERVATION}
+TTS_THREADS=$(dotenv_value "${TTS_THREADS_VALUE}")
 WHISPER_CPU_LIMIT=${WHISPER_CPU_LIMIT}
 WHISPER_CPU_RESERVATION=${WHISPER_CPU_RESERVATION}
 HERMES_CPU_LIMIT=${HERMES_CPU_LIMIT}
@@ -1558,53 +1819,16 @@ ODS_UID=${_phase06_compose_uid}
 ODS_GID=${_phase06_compose_gid}
 
 $(if [[ "$GPU_BACKEND" == "amd" ]]; then
-    # Read gfx target from topology detection. Falls back to gfx1151 (Strix Halo)
-    # if the topology probe failed — preserves prior behavior for the OG target.
-    _amd_gfx_detected=$(echo "${GPU_TOPOLOGY_JSON:-{\}}" | jq -r '[.gpus[]?.gfx_version] | unique | .[0] // "gfx1151"' 2>/dev/null || echo "gfx1151")
-    [[ -z "$_amd_gfx_detected" || "$_amd_gfx_detected" == "null" || "$_amd_gfx_detected" == "unknown" ]] && _amd_gfx_detected="gfx1151"
-
-    # HSA_OVERRIDE_GFX_VERSION is a Strix Halo (gfx1151) workaround — that target
-    # is not in ROCm 7.x's official support list, so we coerce HSA to load
-    # gfx1151 kernels by reporting "11.5.1". For natively-supported parts
-    # (gfx942 / MI300X, gfx90a / MI250, gfx1100 / RX 7900, etc.) we MUST NOT set
-    # this — doing so reports the wrong ISA and triggers
-    # HSA_STATUS_ERROR_INVALID_ISA at model-load.
-    case "$_amd_gfx_detected" in
-        gfx1151) _amd_hsa_override="HSA_OVERRIDE_GFX_VERSION=11.5.1" ;;
-        *)       _amd_hsa_override="# HSA_OVERRIDE_GFX_VERSION unset — $_amd_gfx_detected is natively supported" ;;
-    esac
-
-    # The custom llama-server binary at /opt/llama-custom is built with Strix
-    # Halo-specific patches (MMQ tile size reduced from 64 to 48 for gfx1151's
-    # register file). Pointing Lemonade at it from any other architecture either
-    # ISA-faults (kernels compiled for gfx1151) or runs a perf-regressed binary.
-    # Only opt-in when the host is actually Strix Halo; otherwise leave unset so
-    # docker-compose.amd.yml's empty default lets Lemonade use its bundled
-    # ROCm-aware binary.
-    if [[ "$_amd_gfx_detected" == "gfx1151" ]]; then
-        _amd_custom_bin="LEMONADE_LLAMACPP_ROCM_BIN=/opt/llama-custom/llama-server"
-    else
-        _amd_custom_bin="# LEMONADE_LLAMACPP_ROCM_BIN unset — custom binary is gfx1151-only; Lemonade uses bundled binary on $_amd_gfx_detected"
-    fi
-
+    # HSA_OVERRIDE_GFX_VERSION is read only by the ROCm image, and only a GPU
+    # the image was not built for needs it (a wrong value fails model load or
+    # hangs the GPU). Vulkan never reads it. An owner-set value is kept.
     cat << AMD_ENV
 #=== GPU Group IDs (for container device access) ===
 VIDEO_GID=$(getent group video 2>/dev/null | cut -d: -f3 || echo 44)
 RENDER_GID=$(getent group render 2>/dev/null | cut -d: -f3 || echo 992)
-
-#=== AMD ROCm Settings (gfx target detected from topology) ===
-LEMONADE_SERVER_IMAGE=${LEMONADE_SERVER_IMAGE:-${BACKEND_LEMONADE_CONTAINER_IMAGE:-ghcr.io/lemonade-sdk/lemonade-server:v10.2.0@sha256:08edbf1128a7fd82b39f1de72c2f70c013f2ecfefac6a99c52bcf58eba532a3a}}
-${_amd_hsa_override}
-HSA_XNACK=1
-ROCBLAS_USE_HIPBLASLT=1
-AMDGPU_TARGET=${_amd_gfx_detected}
-LLAMA_CPP_REF=b8763
-${_amd_custom_bin}
-
-#=== LiteLLM → Lemonade outbound key (AMD only) ===
-LITELLM_LEMONADE_API_KEY=$(dotenv_value "${LITELLM_LEMONADE_API_KEY}")
+$(if [[ -n "$HSA_OVERRIDE_GFX_VERSION_VALUE" ]]; then printf '\n#=== ROCm gfx override (%s) ===\nHSA_OVERRIDE_GFX_VERSION=%s' "${AMD_GFX_TARGET:-unknown target}" "$(dotenv_value "$HSA_OVERRIDE_GFX_VERSION_VALUE")"; fi)
+$(if [[ -n "$ROCBLAS_USE_HIPBLASLT_VALUE" ]]; then printf 'ROCBLAS_USE_HIPBLASLT=%s' "$(dotenv_value "$ROCBLAS_USE_HIPBLASLT_VALUE")"; fi)
 AMD_ENV
-    unset _amd_gfx_detected _amd_hsa_override _amd_custom_bin
 fi)
 $(if [[ "$GPU_BACKEND" == "sycl" ]]; then cat << INTEL_ENV
 #=== GPU Group IDs (for container device access) ===
@@ -1613,40 +1837,35 @@ RENDER_GID=$(getent group render 2>/dev/null | cut -d: -f3 || echo 992)
 
 #=== Intel Arc / oneAPI SYCL Settings ===
 # Set level_zero:0 on hosts with more than one Intel GPU.
-ONEAPI_DEVICE_SELECTOR=$(dotenv_value "$(_env_get ONEAPI_DEVICE_SELECTOR level_zero:gpu)")
+ONEAPI_DEVICE_SELECTOR=$(dotenv_value "$ONEAPI_DEVICE_SELECTOR_VALUE")
 ZES_ENABLE_SYSMAN=1
 INTEL_ENV
 fi)
 
 #=== Ports ===
 OLLAMA_PORT=$(dotenv_value "${OLLAMA_PORT_VALUE}")
-WEBUI_PORT=3000
+WEBUI_PORT=$(dotenv_value "${WEBUI_PORT_VALUE}")
 DASHBOARD_API_PORT=$(dotenv_value "${DASHBOARD_API_PORT_VALUE}")
 SEARXNG_PORT=$(dotenv_value "${SEARXNG_PORT_VALUE}")
-PERPLEXICA_PORT=3004
+PERPLEXICA_PORT=$(dotenv_value "${PERPLEXICA_PORT_VALUE}")
 WHISPER_PORT=$(dotenv_value "${WHISPER_PORT_VALUE}")
-TTS_PORT=8880
-N8N_PORT=5678
-QDRANT_PORT=6333
-QDRANT_GRPC_PORT=6334
-EMBEDDINGS_PORT=8090
-LITELLM_PORT=4000
-OPENCLAW_PORT=7860
+TTS_PORT=$(dotenv_value "${TTS_PORT_VALUE}")
+N8N_PORT=$(dotenv_value "${N8N_PORT_VALUE}")
+QDRANT_PORT=$(dotenv_value "${QDRANT_PORT_VALUE}")
+QDRANT_GRPC_PORT=$(dotenv_value "${QDRANT_GRPC_PORT_VALUE}")
+EMBEDDINGS_PORT=$(dotenv_value "${EMBEDDINGS_PORT_VALUE}")
+LITELLM_PORT=$(dotenv_value "${LITELLM_PORT_VALUE}")
 LANGFUSE_PORT=$(dotenv_value "${LANGFUSE_PORT}")
 
 #=== Hermes Agent ===
-# On AMD/Lemonade hosts, route Hermes through litellm. Lemonade is strict
-# about model names (returns 404 if model field doesn't exactly match the
-# loaded gguf) and drops concurrent connections during multi-step agent
-# loops (web_search → reason → tool result → reason …) with
-# APIConnectionError. litellm wraps with "*" wildcard normalization +
-# retry logic, hiding both bumps. On non-AMD installs, talk direct to
-# llama-server (native llama.cpp tolerates any model field).
+# Hermes streams through model-router (switchboard) or talks to llama-server
+# directly; llama.cpp serves one model and accepts any model field. A
+# host-native llama-server is reached through LiteLLM, which holds its key.
 HERMES_LLM_BASE_URL=$(dotenv_value "${HERMES_LLM_BASE_URL_VALUE}")
 HERMES_LLM_API_KEY=$(dotenv_value "${HERMES_LLM_API_KEY_VALUE}")
 HERMES_LANGUAGE=${HERMES_LANGUAGE:-en}
-HERMES_REQUIRE_OWNER_CARD=${HERMES_REQUIRE_OWNER_CARD:-false}
-HERMES_PROXY_PORT=${HERMES_PROXY_PORT:-9120}
+HERMES_REQUIRE_OWNER_CARD=$(dotenv_value "${HERMES_REQUIRE_OWNER_CARD_VALUE}")
+HERMES_PROXY_PORT=$(dotenv_value "${HERMES_PROXY_PORT_VALUE}")
 HERMES_PROXY_UPSTREAM=${HERMES_PROXY_UPSTREAM:-ods-hermes:9119}
 ODS_AUTH_UPSTREAM=${ODS_AUTH_UPSTREAM:-ods-dashboard-api:3002}
 
@@ -1667,6 +1886,7 @@ PIXEL_SOURCE_URL=$(dotenv_quote "$PIXEL_SOURCE_URL_VALUE")
 PIXEL_SOURCE_REF=$(dotenv_value "${PIXEL_SOURCE_REF_VALUE}")
 PIXEL_SOURCE_DIR=$(dotenv_quote "$PIXEL_SOURCE_DIR_VALUE")
 $(if [[ -n "$PIXEL_WEB_SEARCH_PROVIDER_VALUE" ]]; then printf 'PIXEL_WEB_SEARCH_PROVIDER=%s\n' "$PIXEL_WEB_SEARCH_PROVIDER_VALUE"; fi)
+$(if [[ -n "${PIXEL_RESPONSE_LANGUAGE_VALUE:-}" ]]; then printf 'PIXEL_RESPONSE_LANGUAGE=%s\n' "$PIXEL_RESPONSE_LANGUAGE_VALUE"; fi)
 PIXEL_OPENWEBUI_KEY=$(dotenv_value "${PIXEL_OPENWEBUI_KEY_VALUE}")
 PIXEL_MODEL_RELAY_KEY=$(dotenv_value "${PIXEL_MODEL_RELAY_KEY_VALUE}")
 PIXEL_MODEL_RELAY_PORT=$(dotenv_value "${PIXEL_MODEL_RELAY_PORT_VALUE}")
@@ -1684,7 +1904,6 @@ N8N_PASS=$(dotenv_value "${N8N_PASS}")
 LITELLM_KEY=$(dotenv_value "${LITELLM_KEY}")
 LIVEKIT_API_KEY=$(dotenv_value "${LIVEKIT_API_KEY}")
 LIVEKIT_API_SECRET=$(dotenv_value "${LIVEKIT_SECRET}")
-OPENCLAW_TOKEN=$(dotenv_value "${OPENCLAW_TOKEN}")
 QDRANT_API_KEY=$(dotenv_value "${QDRANT_API_KEY}")
 TOKEN_SPY_API_KEY=$(dotenv_value "${TOKEN_SPY_API_KEY}")
 OPENCODE_SERVER_PASSWORD=$(dotenv_value "${OPENCODE_SERVER_PASSWORD}")
@@ -1701,7 +1920,7 @@ AUDIO_STT_MODEL=$(dotenv_value "${AUDIO_STT_MODEL}")
 TTS_VOICE=en_US-lessac-medium
 
 #=== Embeddings / RAG ===
-# Open WebUI uses this canonical model at first boot unless an explicit
+# Open WebUI uses this canonical model at every start unless an explicit
 # external-provider override is configured.
 EMBEDDING_MODEL=$(dotenv_value "${EMBEDDING_MODEL_VALUE}")
 RAG_EMBEDDING_MODEL=$(dotenv_value "${RAG_EMBEDDING_MODEL_VALUE}")
@@ -1726,7 +1945,7 @@ WEB_SEARCH_ENGINE=searxng
 
 #=== n8n Settings ===
 N8N_HOST=localhost
-N8N_WEBHOOK_URL=http://localhost:5678
+N8N_WEBHOOK_URL=$(dotenv_value "${N8N_WEBHOOK_URL_VALUE}")
 TIMEZONE=${SYSTEM_TZ:-UTC}
 
 #=== Langfuse (LLM Observability) ===
@@ -1769,8 +1988,38 @@ fi)
 
 ENV_EOF
     )
+    if [[ "${LLM_BACKEND:-}" == "vllm" ]]; then
+        {
+            printf '\n#=== vLLM engine (LLM_BACKEND=vllm, docker-compose.vllm.yml) ===\n'
+            printf '# The vLLM catalog model the installer chose for one GPU, with that\n'
+            printf "# entry's vLLM arguments. Installer reruns rewrite these lines.\n"
+            printf 'VLLM_IMAGE=%s\n' "$(dotenv_value "$VLLM_IMAGE")"
+            printf 'VLLM_MODEL_DIR=%s\n' "$(dotenv_value "$VLLM_MODEL_DIR")"
+            printf 'VLLM_SERVED_MODEL=%s\n' "$(dotenv_value "$VLLM_SERVED_MODEL")"
+            printf 'VLLM_ARGS=%s\n' "$(dotenv_value "${VLLM_ARGS:-}")"
+            printf 'VLLM_GPU_UUID=%s\n' "$(dotenv_value "$VLLM_GPU_UUID")"
+            if [[ -n "$VLLM_GPU_MEMORY_UTILIZATION_VALUE" ]]; then
+                printf 'VLLM_GPU_MEMORY_UTILIZATION=%s\n' "$(dotenv_value "$VLLM_GPU_MEMORY_UTILIZATION_VALUE")"
+            fi
+            printf 'ODS_TALK_VISION_URL=%s\n' "$(dotenv_value "$VLLM_TALK_VISION_URL_VALUE")"
+            printf 'ODS_TALK_VISION_KEY=%s\n' "$(dotenv_value "$VLLM_TALK_VISION_KEY_VALUE")"
+        } >> "$INSTALL_DIR/.env"
+    fi
+    # Compose reads an LLM_BACKEND phase 02 exported ahead of .env; keep the
+    # two equal (an API route writes external).
+    [[ "$EXTERNAL_LLM_ACTIVE" != "true" ]] || LLM_BACKEND=external
 
     chmod 600 "$INSTALL_DIR/.env"  # Secure secrets file
+    if [[ -n "$_phase06_previous_env" ]]; then
+        # shellcheck source=../lib/extension-env-carry.sh
+        . "$SCRIPT_DIR/installers/lib/extension-env-carry.sh"
+        ods_carry_extension_env_keys "$_phase06_previous_env" "$INSTALL_DIR/.env" \
+            "$SCRIPT_DIR/extensions/services" "$INSTALL_DIR/data/user-extensions"
+        ods_carry_public_url_env_keys "$_phase06_previous_env" "$INSTALL_DIR/.env"
+        ods_carry_named_env_keys "$_phase06_previous_env" "$INSTALL_DIR/.env" "${ODS_OWNER_ENV_KEYS[@]}"
+        rm -f "$_phase06_previous_env"
+    fi
+    unset _phase06_previous_env
     # Docker Desktop's daemon is outside the installing WSL namespace.
     # Prepare its authenticated control address before phase 07 starts the
     # host agent and before Compose inherits dashboard-api's environment.
@@ -1792,12 +2041,9 @@ ENV_EOF
         unset ODS_ROOTLESS_COMPOSE_FLAGS
     fi
 
-    # Generate LiteLLM config for Lemonade.
-    # Lemonade exposes models as "extra.<GGUF_FILENAME>" — the wildcard
-    # passthrough (openai/*) does NOT work because it forwards the friendly
-    # model name verbatim and lemonade returns 404.  Instead, map all
-    # requests to the concrete model ID that lemonade actually serves.
-    # bootstrap-upgrade.sh regenerates this config when the model swaps.
+    # Generate the LiteLLM route for an external or host-native model server.
+    # The managed container (NVIDIA, AMD, CPU) uses the checked-in local.yaml
+    # or the switchboard map rendered below.
     if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then
         # Fail installation if the external route cannot be materialized. Pixel
         # must never bind its authenticated gateway to a stale local template.
@@ -1812,65 +2058,23 @@ ENV_EOF
             return 1
         fi
         unset _external_render_auth
-    elif [[ "$GPU_BACKEND" == "amd" || "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
-        _phase06_step "render-amd-litellm-config"
+    elif [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then
+        _phase06_step "render-native-litellm-config"
         mkdir -p "$INSTALL_DIR/config/litellm"
-        # Source bootstrap-model.sh for BOOTSTRAP_GGUF_FILE and bootstrap_needed().
-        # Pure library (zero side effects), all deps available by phase 06.
-        # Phase 11 re-sources it harmlessly (idempotent).
-        [[ -f "$SCRIPT_DIR/installers/lib/bootstrap-model.sh" ]] && . "$SCRIPT_DIR/installers/lib/bootstrap-model.sh"
-        if type bootstrap_needed &>/dev/null && bootstrap_needed; then
-            _active_gguf="$BOOTSTRAP_GGUF_FILE"
-        else
-            _active_gguf="$GGUF_FILE"
-        fi
-        _lemonade_model_id=""
-        if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
-            _lemonade_model_id="${LEMONADE_MODEL_VALUE:-}"
-        fi
-        # Pass chat_template_kwargs.enable_thinking=false to Lemonade so Qwen3
-        # thinking-mode is OFF by default for every client. Perplexica and any
-        # other consumer that doesn't manually `/no_think` its prompts would
-        # otherwise hang for many minutes per request — the model emits a
-        # <think>...</think> block that, on a long synthesis prompt, can run
-        # past the client timeout before any visible token reaches the UI.
-        # This kwarg is a Qwen3-specific switch and is safely ignored by
-        # non-Qwen3 chat templates, so it's safe to bake into the default
-        # lemonade config regardless of which model the install resolves to.
-        # bootstrap-upgrade.sh mirrors this when it regenerates the file
-        # after a hot-swap.
-        _renderer_py="${ODS_PYTHON_CMD:-}"
-        if [[ -z "$_renderer_py" && -f "$SCRIPT_DIR/lib/python-cmd.sh" ]]; then
-            . "$SCRIPT_DIR/lib/python-cmd.sh"
-            _renderer_py="$(ods_detect_python_cmd 2>/dev/null || true)"
-        fi
-        if [[ -z "$_renderer_py" ]]; then
-            _renderer_py="python3"
-        fi
-        if [[ ! -f "$SCRIPT_DIR/scripts/render-runtime-configs.py" ]] \
-            || ! command -v "$_renderer_py" >/dev/null 2>&1; then
-            error "Runtime config renderer is unavailable for Lemonade"
-            return 1
-        fi
-        if ! ODS_RENDER_LITELLM_KEY="$LITELLM_LEMONADE_API_KEY" \
-            "$_renderer_py" "$SCRIPT_DIR/scripts/render-runtime-configs.py" \
-            --surface litellm-lemonade \
-            --ods-mode lemonade \
-            --gpu-backend amd \
-            --gguf-file "$_active_gguf" \
-            --lemonade-model-id "$_lemonade_model_id" \
-            --lemonade-api-base "$LEMONADE_CONTAINER_API_BASE_VALUE" \
+        # LiteLLM serves ods/current from the native llama-server and sends
+        # LLAMA_SERVER_API_KEY (compose passes it to the LiteLLM container);
+        # the rendered config names the variable, never the key.
+        if ! "${ODS_PYTHON_CMD:-python3}" "$SCRIPT_DIR/scripts/render-runtime-configs.py" \
+            --surface litellm-local-native \
+            --gguf-file "$GGUF_FILE" \
+            --llm-base-url "${NATIVE_LLM_CONTAINER_BASE_URL_VALUE}/v1" \
+            --llm-api-key-env LLAMA_SERVER_API_KEY \
             --output-root "$INSTALL_DIR" \
             --write >> "$LOG_FILE" 2>&1; then
-            error "Runtime config renderer failed for Lemonade"
+            error "Runtime config renderer failed for the host-native llama-server"
             return 1
         fi
-        if [[ -n "$_lemonade_model_id" ]]; then
-            ai_ok "Generated LiteLLM config for external Lemonade (model: ${_lemonade_model_id})"
-        else
-            ai_ok "Generated LiteLLM config for Lemonade (model: extra.${_active_gguf})"
-        fi
-        unset _renderer_py
+        ai_ok "Generated LiteLLM config for the host-native llama-server (model: ${GGUF_FILE})"
     elif [[ "${EXTERNAL_LLM_RESET:-false}" == "true" && "$ODS_MODE_VALUE" == "local" ]]; then
         # A same-directory rerun does not copy the checked-in local map over
         # the old external map. Reset the actual gateway route, not just .env.
@@ -1894,17 +2098,33 @@ ENV_EOF
         return 1
     fi
     _router_ods_mode="${ODS_MODE_VALUE:-${ODS_MODE:-local}}"
+    # model-router's llama-server-default endpoint is the server origin: the
+    # in-stack llama-server, or the host-native server through host-gateway.
+    _router_llm_base_url="${LLM_API_URL:-http://llama-server:8080/v1}"
+    if [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then
+        _router_llm_base_url="$NATIVE_LLM_CONTAINER_BASE_URL_VALUE"
+    fi
+    # The vLLM engine's endpoint is vllm-default (http://vllm-server:8000);
+    # every other route keeps the llama-server endpoint.
+    _router_llm_backend=llama-server
+    [[ "${LLM_BACKEND:-}" != "vllm" ]] || _router_llm_backend=vllm
     _router_common_args=(
         --switchboard-mode "${ODS_MODEL_SWITCHBOARD_VALUE:-enabled}"
         --ods-mode "$_router_ods_mode"
         --gpu-backend "${GPU_BACKEND:-nvidia}"
         --gguf-file "${GGUF_FILE:-}"
-        --lemonade-model-id "${LEMONADE_MODEL_VALUE:-}"
-        --lemonade-api-base "${LEMONADE_CONTAINER_API_BASE_VALUE:-http://llama-server:8080/api/v1}"
-        --llm-base-url "${LLM_API_URL:-http://llama-server:8080/v1}"
+        --llm-base-url "$_router_llm_base_url"
+        --llm-backend "$_router_llm_backend"
         --output-root "$INSTALL_DIR"
         --write
     )
+    # The host-native llama-server requires its key: model-router's endpoint
+    # and the switchboard map name LLAMA_SERVER_API_KEY, as the host agent's
+    # activation render does.
+    [[ "$NATIVE_LLM_ACTIVE" != "true" ]] || _router_common_args+=(--llm-api-key-env LLAMA_SERVER_API_KEY)
+    # The vllm-default endpoint carries the served model's thinking map, which
+    # the renderer reads from the vLLM catalog entry --model names (LLM_MODEL).
+    [[ "$_router_llm_backend" != "vllm" ]] || _router_common_args+=(--model "$LLM_MODEL")
     _router_surfaces=(model-router-endpoints)
     if [[ "$_router_ods_mode" != "cloud" ]]; then
         _router_surfaces+=(litellm-switchboard)
@@ -1919,7 +2139,7 @@ ENV_EOF
         fi
     done
     unset _router_renderer_py _router_surface _router_common_args
-    unset _router_ods_mode _router_surfaces
+    unset _router_ods_mode _router_surfaces _router_llm_base_url _router_llm_backend
 
     # Validate generated .env against schema (fails fast on missing/unknown keys).
     _phase06_step "validate-env"
@@ -1937,12 +2157,32 @@ ENV_EOF
     # Generate SearXNG config with randomized secret key
     # Fix ownership from previous container runs (SearXNG writes as uid 977)
     _phase06_step "generate-searxng-config"
+    ods_validate_searxng_settings_path "$INSTALL_DIR" || return 1
     mkdir -p "$INSTALL_DIR/config/searxng"
     if [[ -f "$INSTALL_DIR/config/searxng/settings.yml" ]] && ! [[ -w "$INSTALL_DIR/config/searxng/settings.yml" ]]; then
         _phase06_repair_host_path "$INSTALL_DIR/config/searxng/settings.yml" "SearXNG configuration" || return 1
     fi
     _searxng_lang="$(ods_searxng_default_lang)"
-    cat > "$INSTALL_DIR/config/searxng/settings.yml" << SEARXNG_EOF
+    _searxng_settings="$INSTALL_DIR/config/searxng/settings.yml"
+    _searxng_rewrite=1
+    if [[ "${FORCE:-false}" != true && -f "$_searxng_settings" ]]; then
+        if [[ ! -s "$_searxng_settings" ]]; then
+            error "Existing SearXNG settings are empty; restore the file or use --force to regenerate."
+            return 1
+        fi
+        # Read the whole file: grep -q could hide a later read error after a
+        # match. Only the stock secret scalar triggers default regeneration.
+        _searxng_grep=0
+        grep -E '^[[:space:]]*secret_key:[[:space:]]*("CHANGEME-run-the-installer-to-generate-a-secure-key"|'"'"'CHANGEME-run-the-installer-to-generate-a-secure-key'"'"'|CHANGEME-run-the-installer-to-generate-a-secure-key)[[:space:]]*(#.*)?$' "$_searxng_settings" >/dev/null || _searxng_grep=$?
+        case "$_searxng_grep" in
+            0) ;;
+            1) _searxng_rewrite=0 ;;
+            *) error "Failed to read existing SearXNG settings; configuration was not regenerated."
+               return 1 ;;
+        esac
+    fi
+    if [[ $_searxng_rewrite -eq 1 ]]; then
+        cat > "$INSTALL_DIR/config/searxng/settings.yml" << SEARXNG_EOF
 use_default_settings: true
 server:
   secret_key: "${SEARXNG_SECRET}"
@@ -1977,8 +2217,11 @@ engines:
   - name: stackoverflow
     disabled: false
 SEARXNG_EOF
-    ai_ok "Generated SearXNG config with randomized secret key (search language ${_searxng_lang})"
-    unset _searxng_lang
+        ai_ok "Generated SearXNG config with randomized secret key (search language ${_searxng_lang})"
+    else
+        ai_ok "Preserved existing SearXNG config (use --force to regenerate)"
+    fi
+    unset _searxng_lang _searxng_settings _searxng_rewrite _searxng_grep
 fi
 
 # Documentation, CLI tools, and compose variants already copied by rsync/cp block above

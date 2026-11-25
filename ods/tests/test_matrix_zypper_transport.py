@@ -29,8 +29,17 @@ class ZypperTransportTests(unittest.TestCase):
             return repo.read_text()
 
     def test_official_urls_preserve_path_and_signature_settings(self):
-        source = "[repo-oss]\nbaseurl=http://download.opensuse.org/tumbleweed/repo/oss/\n gpgkey = http://download.opensuse.org/tumbleweed/repo/oss/repodata/repomd.xml.key\ngpgcheck=1\nrepo_gpgcheck=1\n"
-        expected = source.replace("http://download.opensuse.org/", "https://download.opensuse.org/")
+        # Both redirecting hosts move to the origin, which serves the same
+        # signed files without sending a new snapshot's metadata to a mirror
+        # that has not synced it yet.
+        source = ("[repo-oss]\nbaseurl=http://download.opensuse.org/tumbleweed/repo/oss/\n"
+                  " gpgkey = http://download.opensuse.org/tumbleweed/repo/oss/repodata/repomd.xml.key\n"
+                  "gpgcheck=1\nrepo_gpgcheck=1\n"
+                  "[repo-non-oss]\nbaseurl=https://cdn.opensuse.org/tumbleweed/repo/non-oss/\n"
+                  "baseurl=https://download.opensuse.org/already-secure/\n")
+        expected = (source.replace("http://download.opensuse.org/", "https://downloadcontent.opensuse.org/")
+                    .replace("https://download.opensuse.org/", "https://downloadcontent.opensuse.org/")
+                    .replace("https://cdn.opensuse.org/", "https://downloadcontent.opensuse.org/"))
         self.assertEqual(self.rewrite(source), expected)
         self.assertEqual(self.rewrite(expected), expected)
 
@@ -40,10 +49,11 @@ class ZypperTransportTests(unittest.TestCase):
             "baseurl=http://download.opensuse.org.evil.example/repo/",
             "baseurl=http://user@download.opensuse.org/repo/",
             "baseurl=http://download.opensuse.org:8080/repo/",
+            "baseurl=https://cdn.opensuse.org.evil.example/repo/",
+            "baseurl=https://downloadcontent.opensuse.org/already-origin/",
             "gpgkey=http://codecs.opensuse.org/openh264/key",
             "# baseurl=http://download.opensuse.org/comment/",
             "name=http://download.opensuse.org/description",
-            "baseurl=https://download.opensuse.org/already-secure/",
             "baseurl=http://custom.example/path/http://download.opensuse.org/",
         ]) + "\n"
         self.assertEqual(self.rewrite(source), source)

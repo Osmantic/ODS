@@ -23,6 +23,28 @@ DRAFT_TTL_SECONDS = 7 * 24 * 60 * 60
 _OWNER = re.compile(r"[a-f0-9]{64}")
 _CHAT = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _IDENTITY = re.compile(r"img-[a-f0-9]{32}")
+_FILE_ROLES = {"": "database", "-journal": "journal", "-wal": "wal", "-shm": "shm"}
+_CUSTODY_REASONS = frozenset({
+    "directory_path", "directory_owner", "directory_mode",
+    *(f"{role}_{check}" for role in _FILE_ROLES.values()
+      for check in ("type", "links", "owner", "mode")),
+})
+
+
+class ImageStoreCustodyError(ValueError):
+    """A refused storage identity; exception text is never safe to publish."""
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
+
+
+def custody_failure_reason(error: BaseException) -> str | None:
+    """Only fixed reason codes may enter diagnostics, never exception values."""
+    if not isinstance(error, ImageStoreCustodyError):
+        return None
+    reason = error.reason
+    return reason if type(reason) is str and reason in _CUSTODY_REASONS else "unknown"
 
 
 class ImageStoreCapacity(ValueError):
@@ -46,17 +68,27 @@ class ImageStore:
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         info = directory.lstat()
         if directory.resolve() != directory or not stat.S_ISDIR(info.st_mode):
-            raise ValueError("Invalid image store directory")
-        if os.name == "posix" and (info.st_uid != os.geteuid() or info.st_mode & 0o077):
-            raise ValueError("Image store directory must be private")
+            raise ImageStoreCustodyError("directory_path", "Invalid image store directory")
+        if os.name == "posix" and info.st_uid != os.geteuid():
+            raise ImageStoreCustodyError("directory_owner", "Image store directory must be private")
+        if os.name == "posix" and info.st_mode & 0o077:
+            raise ImageStoreCustodyError("directory_mode", "Image store directory must be private")
         path = directory / "images.sqlite3"
-        for suffix in ("", "-journal", "-wal", "-shm"):
+        for suffix, role in _FILE_ROLES.items():
             candidate = Path(str(path) + suffix)
             if candidate.exists() or candidate.is_symlink():
                 info = candidate.lstat()
-                if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                        or os.name == "posix" and (info.st_uid != os.geteuid() or info.st_mode & 0o077)):
-                    raise ValueError("Image store files must be private regular files")
+                reason = None
+                if not stat.S_ISREG(info.st_mode):
+                    reason = "type"
+                elif info.st_nlink != 1:
+                    reason = "links"
+                elif os.name == "posix" and info.st_uid != os.geteuid():
+                    reason = "owner"
+                elif os.name == "posix" and info.st_mode & 0o077:
+                    reason = "mode"
+                if reason is not None:
+                    raise ImageStoreCustodyError(f"{role}_{reason}", "Image store files must be private regular files")
         if not path.exists():
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
             os.close(fd)

@@ -107,6 +107,7 @@ test('pure extension work retains the original whole-run failure behavior',()=>{
 test('lane containment preserves owner cancellation and does not abort at the local threshold',async()=>{
   const aborted=[],signalled=[];
   const {guard,after}=fixture(false,{abortRun:(...args)=>{aborted.push(args);return true;},
+    abortRunAndDrain:async (...args)=>{aborted.push(args);return {aborted:true,drained:true};},
     execControl:{signal:id=>{signalled.push(id);return true;}}});
   for(let i=0;i<4;i++) after('pixel_ods_extension_request_prepare',{}, {isError:true},`prepare-${i}`);
   guard.observeModelEnd({},context);

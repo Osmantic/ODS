@@ -199,6 +199,51 @@ print('OK')
 
 # ── bg_task_summary ─────────────────────────────────────────────────────────
 
+@test "background status: successful OpenClaw cleanup is not a failed download" {
+    true &
+    local finished_pid=$!
+    wait "$finished_pid"
+    local task_log="$BATS_TEST_TMPDIR/zero-failures.log"
+    printf 'Done: 1 removed, 0 failed\nBootstrap upgrade complete.\n' > "$task_log"
+    bg_task_start "model-download" "$finished_pid" "Model download" "$task_log"
+
+    run bg_task_status "model-download"
+    [[ "$status" -eq 1 ]]
+    run bg_task_summary
+    assert_success
+    assert_output --partial "Model download: completed"
+}
+
+@test "background status: nonzero cleanup failures still fail the download" {
+    true &
+    local finished_pid=$!
+    wait "$finished_pid"
+    local task_log="$BATS_TEST_TMPDIR/nonzero-failures.log"
+    printf 'Done: 1 removed, 1 failed\n' > "$task_log"
+    bg_task_start "model-download" "$finished_pid" "Model download" "$task_log"
+
+    run bg_task_status "model-download"
+    [[ "$status" -eq 2 ]]
+    run bg_task_summary
+    assert_success
+    assert_output --partial "Model download: failed"
+}
+
+@test "background status: zero cleanup failures never hide another real error" {
+    true &
+    local finished_pid=$!
+    wait "$finished_pid"
+    local task_log="$BATS_TEST_TMPDIR/mixed-failures.log"
+    printf 'ERROR: model activation failed\nDone: 1 removed, 0 failed\n' > "$task_log"
+    bg_task_start "model-download" "$finished_pid" "Model download" "$task_log"
+
+    run bg_task_status "model-download"
+    [[ "$status" -eq 2 ]]
+    run bg_task_summary
+    assert_success
+    assert_output --partial "Model download: failed"
+}
+
 @test "bg_task_summary: reports no tasks when registry missing" {
     rm -f "$BG_TASK_REGISTRY"
     run bg_task_summary

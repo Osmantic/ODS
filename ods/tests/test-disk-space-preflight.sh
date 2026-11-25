@@ -14,7 +14,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 pass() { echo -e "${GREEN}✓${NC} $1"; }
-fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
+fail() { echo -e "${RED}✗${NC} $1"; [[ -z "${out:-}" ]] || printf '%s\n' "$out" >&2; exit 1; }
 info() { echo -e "${BLUE}ℹ${NC} $1"; }
 
 [[ -x "$ODS_BACKUP" ]] || fail "ods-backup.sh not found or not executable"
@@ -40,6 +40,10 @@ mkdir -p "$FAKE_ODS/data/open-webui"
 mkdir -p "$FAKE_ODS/.backups"
 echo test > "$FAKE_ODS/.version"
 echo hello > "$FAKE_ODS/data/open-webui/file.txt"
+
+# ods-backup.sh and ods-restore.sh source their libraries relative to ODS_DIR
+mkdir -p "$FAKE_ODS/lib"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$SCRIPT_DIR/../lib/backup-paths.sh" "$FAKE_ODS/lib/"
 
 info "Backup should fail preflight when disk is low"
 set +e

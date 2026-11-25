@@ -154,7 +154,7 @@ def _load_provider_registry() -> dict:
         return {"schema_version": "ods.oauth-providers.v1", "providers": []}
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("oauth provider registry unavailable at %s: %s", path, exc)
-        return {"schema_version": "ods.oauth-providers.v1", "providers": [], "error": str(exc)}
+        return {"schema_version": "ods.oauth-providers.v1", "providers": [], "error": "provider registry unreadable"}
     if not isinstance(payload, dict):
         return {"schema_version": "ods.oauth-providers.v1", "providers": [], "error": "registry root must be an object"}
     providers = payload.get("providers")
@@ -527,7 +527,8 @@ async def oauth_pending(api_key: str = Depends(verify_api_key)):
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return {"pending": False, "error": f"could not read callback file: {exc}"}
+        logger.warning("could not read OAuth callback file: %s", exc)
+        return {"pending": False, "error": "could not read callback file"}
     age = max(0, int(time.time()) - int(payload.get("captured_at", 0)))
     return {
         "pending": True,

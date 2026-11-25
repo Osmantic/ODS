@@ -16,11 +16,13 @@ make_install() {
     mkdir -p \
         "$install_dir/lib" \
         "$install_dir/scripts" \
+        "$install_dir/data" \
         "$install_dir/extensions/services/ods-proxy"
 
     cp "$ROOT_DIR/ods-cli" "$install_dir/ods-cli"
     cp "$ROOT_DIR/lib/service-registry.sh" "$install_dir/lib/"
     cp "$ROOT_DIR/lib/python-cmd.sh" "$install_dir/lib/"
+    cp "$ROOT_DIR/scripts/extension-selection.py" "$install_dir/scripts/"
     cat > "$install_dir/scripts/resolve-compose-stack.sh" <<'RESOLVER'
 #!/usr/bin/env bash
 set -euo pipefail

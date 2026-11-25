@@ -12,47 +12,28 @@ Quick answers to common questions.
 
 ### What hardware do I need?
 
-**Lightweight (runs on anything):**
-- GPU: Any (or CPU-only)
-- RAM: 4GB+
-- Storage: 15GB free
-- Model: Qwen3.5 2B (auto-selected)
+ODS picks a model for the memory it detects; the
+[hardware table in the README](../../README.md#hardware-auto-detection) shows
+the current picks. Roughly:
 
-**Minimum (comfortable):**
-- GPU: RTX 3060 12GB or RTX 4060 8GB
-- RAM: 32GB
-- Storage: 500GB NVMe SSD
-- CPU: Any modern quad-core
+- CPU only: 8-12 GB of RAM runs Qwen3.5 2B, 16-20 GB runs Qwen3.5 4B, 24 GB or
+  more runs Qwen3.5 9B.
+- NVIDIA 8-16 GB of VRAM runs Qwen3.5 9B (64K context); 24-32 GB runs Qwen3.5
+  27B (64K).
+- NVIDIA 40 GB or more, AMD Strix Halo with 64-128 GB, or Apple Silicon with
+  48 GB or more runs Qwen3.6 35B-A3B (128K); NVIDIA 90 GB or more on x86_64 runs
+  Qwen3 Coder Next (128K).
 
-**Recommended (comfortable daily use):**
-- GPU: RTX 4070 Ti Super 16GB or RTX 4090 24GB
-- RAM: 64GB
-- Storage: 1TB NVMe SSD
+The installer needs 30 GB (most machines) to 150 GB (40 GB GPUs) of free disk
+plus room for the model, and NVIDIA needs driver 570 or newer. See
+[Hardware Sizing](HARDWARE-GUIDE.md) for the per-tier disk and RAM checks.
 
-**Why these specs?**
-- 12GB VRAM = 7B-14B models, basic tasks
-- 16GB VRAM = 32B models with reduced context
-- 24GB VRAM = 32B models with full context, voice pipeline
-- 48GB+ VRAM (2x 4090) = Multiple models, concurrent users
+### How fast is it, and how many users can it serve?
 
-### How much does a build cost?
-
-| Tier | GPU | Total Build | What You Get |
-|------|-----|-------------|--------------|
-| Entry | RTX 3060 12GB | $800-1,200 | Basic chat, slow but works |
-| Prosumer | RTX 4070 Ti 16GB | $2,000-3,000 | Comfortable single-user |
-| Pro | RTX 4090 24GB | $4,000-6,000 | Fast, voice agents, 5-10 users |
-| Enterprise | 2x RTX 4090 | $12,000-18,000 | 20-40 concurrent users |
-
-See [HARDWARE-GUIDE.md](HARDWARE-GUIDE.md) for full breakdown.
-
-### What about electricity costs?
-
-- Idle: 50-100W (~$5-15/month)
-- Active inference: 300-450W per GPU
-- 24/7 heavy use: $30-80/month depending on rates
-
-Still cheaper than cloud API bills at moderate usage.
+ODS publishes no measured price, throughput or capacity figures. A default
+install serves one request at a time; see
+[Multi-User Setup](MULTI-USER-SETUP.md) and run `ods benchmark` on your own
+hardware.
 
 ---
 
@@ -61,79 +42,25 @@ Still cheaper than cloud API bills at moderate usage.
 ### What can ODS do?
 
 **Out of the box:**
-- 💬 Dashboard/Portal agent chat on fresh qualified Linux hosts; Open WebUI remains the chat fallback on other hosts
+- 💬 Dashboard/Portal agent chat on qualified Linux hosts and Apple Silicon Macs; Open WebUI remains the chat fallback on other hosts
 - 🔗 API integration (OpenAI-compatible endpoints)
 
 Whisper, Kokoro, RAG, n8n, and Open WebUI on qualified Linux hosts can be added when needed. Existing installations retain their selected services. Use `--with-webui` during a Linux install or add it later from the Extensions Library.
 
 **With voice profile:**
-- 🎙️ Full voice agents (speak in, speak out)
-- Real-time conversations at <2s latency
+- 🎙️ Voice conversations (speak in, speak out) with ODS Talk
 
 **With optional components:**
 - 🔒 Privacy Shield (PII redaction proxy)
 - 🖼️ Image generation (SDXL Lightning via ComfyUI)
 - 🔍 Local web search (SearXNG)
 
-### How fast is it?
+### Is it as good as a frontier cloud model?
 
-**Real benchmarks from our dual-4090 cluster:**
-
-| Scenario | Latency | Concurrent Users |
-|----------|---------|------------------|
-| Single chat request | ~1.4s | 1 |
-| 10 simultaneous chats | ~1.5s | 10 |
-| 20 simultaneous chats | ~1.6s | 20 |
-| Voice agent (full round-trip) | <2s | 15-20 per GPU |
-
-Your results depend on hardware tier. Single 4090 ≈ half the concurrent capacity.
-
-### Is it as good as GPT-4 / Claude?
-
-**Honest answer:** For most tasks, 32B local models are 80-90% as capable.
-
-**Where local wins:**
-- Speed (no network latency)
-- Privacy (data never leaves your network)
-- Cost (no per-token fees)
-- Control (choose your model, tune prompts, no content filters)
-
-**Where cloud wins:**
-- Cutting-edge reasoning (GPT-4, Claude 3.5)
-- Multimodal (vision, though Qwen-VL is catching up)
-- Zero maintenance
-
-**Our recommendation:** Use local for daily work, cloud for edge cases.
-
----
-
-## Cost & ROI
-
-### How does cost compare to cloud APIs?
-
-**Example: 100,000 tokens/day usage**
-
-| Option | Monthly Cost | Notes |
-|--------|--------------|-------|
-| OpenAI GPT-4 | ~$300-600 | Per-token billing |
-| Claude API | ~$200-400 | Per-token billing |
-| ODS | $30-80 | Electricity only (after hardware) |
-
-**Break-even timeline:**
-- Light use (~$50/mo API): 2-3 years
-- Medium use (~$200/mo API): 6-12 months
-- Heavy use (~$500+/mo API): 3-6 months
-
-Plus: No usage caps, no rate limits, no surprise bills.
-
-### What about maintenance costs?
-
-**Time investment:**
-- Initial setup: 1-2 hours with install wizard
-- Ongoing maintenance: ~30 min/month (updates, monitoring)
-- Model updates: Optional, 1-click when you want them
-
-**No paid support required** for most users. Community Discord available.
+Local models are smaller than the largest cloud models, so expect weaker
+results on the hardest reasoning tasks. In exchange, inference stays on your
+hardware, there are no per-token fees, and you choose the model. You can route
+specific requests to a cloud provider when you want one (`ods mode hybrid`).
 
 ---
 
@@ -141,12 +68,18 @@ Plus: No usage caps, no rate limits, no surprise bills.
 
 ### Is it really private?
 
-**Yes, 100%.** Your prompts never leave your local network.
+Inference and chat history stay on your machine, and ODS collects no
+telemetry. Unless you configure a cloud or remote provider, prompts are not
+sent to model providers. By default ODS reaches the internet only to download
+models and images, to check GitHub for ODS releases, and to run web searches
+the Portal agent makes for you through its search provider. See
+[Is my data private?](../FAQ.md#is-my-data-private) for how to turn each off.
 
-- No data sent to cloud providers
-- No logging by third parties
+- No data sent to cloud model providers unless you configure one
+- No usage telemetry from ODS or its bundled services
 - No training data contribution
-- Full GDPR/HIPAA compliance capability
+- Running locally can support GDPR/HIPAA programs; compliance depends on how you
+  deploy and operate it
 
 ### Can I use it with sensitive data?
 
@@ -161,10 +94,12 @@ Yes. Common use cases:
 
 ### What about model security?
 
-- Models run in Docker containers (isolated)
-- No outbound network required after initial download
-- You control which models to run
-- Can air-gap the server if needed
+- The model server runs in a Docker container on Linux; on macOS llama-server
+  runs natively, and on Windows AMD hosts `llama-server.exe` runs natively on
+  Windows.
+- Inference needs no outbound network after the initial download.
+- You control which models to run.
+- The server can be air-gapped if needed.
 
 ---
 
@@ -172,7 +107,8 @@ Yes. Common use cases:
 
 ### How hard is it to set up?
 
-**With install wizard:** Under 1 hour for someone comfortable with terminal.
+One command on a supported system; the installer detects your hardware,
+downloads a model and starts the services.
 
 Linux/macOS:
 
@@ -182,21 +118,25 @@ curl -fsSL https://install.osmantic.com/ods.sh | bash
 
 The hosted endpoint proxies the current bootstrap from repository `main`.
 Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
-[Installer Trust](INSTALLER_TRUST.md) to inspect the script or install a stable
-release or audited commit manually.
+[Installer Trust](INSTALLER_TRUST.md) to inspect the script or install an
+audited commit manually.
 
 Windows:
 
 ```powershell
-$ProgressPreference = "SilentlyContinue"
-$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
-$odsZip = Join-Path $odsSrc "ods-main.zip"
-New-Item -ItemType Directory -Path $odsSrc | Out-Null
-Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
-Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
-cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1
+& {
+    $ErrorActionPreference = 'Stop'
+    $ProgressPreference = 'SilentlyContinue'
+    $odsSrc = Join-Path $env:TEMP ('ods-install-' + [guid]::NewGuid().ToString('N'))
+    $odsZip = Join-Path $odsSrc 'ods-main.zip'
+    New-Item -ItemType Directory -Path $odsSrc | Out-Null
+    Invoke-WebRequest -UseBasicParsing 'https://github.com/Osmantic/ODS/archive/refs/heads/main.zip' -OutFile $odsZip
+    Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc
+    $odsEntry = Join-Path $odsSrc 'ODS-main\install.ps1'
+    if (-not (Test-Path -LiteralPath $odsEntry -PathType Leaf)) { throw 'The downloaded archive does not contain the ODS installer.' }
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+    & $odsEntry
+}
 ```
 
 Do not run the `curl ... | bash` installer from Windows PowerShell. The Windows entry point guides Ubuntu/WSL2 preparation and requires Pixel with Hermes disabled. It installs missing WSL, Docker Desktop and Ubuntu after asking, continues by itself after the one restart, and opens Portal when done; see [Windows Quickstart](WINDOWS-QUICKSTART.md).
@@ -208,38 +148,21 @@ The wizard:
 4. Starts services
 5. Runs health checks
 
-### What if I'm not technical?
-
-Options:
-1. **Pre-configured hardware:** We can ship ready-to-plug-in units
-2. **Remote setup service:** $200-500 depending on complexity
-3. **Detailed guides:** Step-by-step docs for common scenarios
-
 ### How do I get updates?
 
-```bash
-ods update
-```
-
-Updates are optional — you control when to apply them.
-
-**Preview changes without applying:**
-```bash
-ods update --dry-run
-```
-
-**Skip version-compatibility confirmation:**
-```bash
-ods update --force
-```
-
-`ods update` automatically creates a pre-update snapshot before pulling new images, then verifies all services are healthy afterward. If something goes wrong, run:
+`ods update` refreshes the container images pinned by your installed version
+and recreates the containers:
 
 ```bash
-ods rollback
+ods update            # apply
+ods update --dry-run  # preview
 ```
 
-This restores configuration from the pre-update snapshot and restarts services.
+It first tries to take a snapshot (a failure is reported, not fatal) and
+afterwards checks that the services are running; `ods rollback` restores the
+snapshot. It does not change ODS code. Code changes, including security fixes,
+arrive only by re-running a newer installer; see
+[Updating an existing installation](../SECURITY.md#updating-an-existing-installation).
 
 ---
 
@@ -280,7 +203,10 @@ ods restore <backup_id>
 ods rollback
 ```
 
-`ods update` always creates a pre-update snapshot, so `ods rollback` is available immediately after any update attempt.
+`ods update` normally creates a pre-update snapshot first, so `ods rollback` is
+usually available right after an update. On Portal (Pixel) installs, ordinary
+backups refuse to run because they can't capture Portal's state;
+`ods backup -t config` still works.
 
 ---
 
@@ -340,55 +266,41 @@ To return an existing installation to ODS-managed llama-server:
 ./install.sh --no-external-llm
 ```
 
+For another OpenAI-compatible server, such as a Lemonade Server you run
+yourself, use `--external-llm-provider openai-compatible` with the server's URL
+and exact model id.
+
 This integration routes text/chat inference; it does not import or synchronize
 Ollama/LM Studio model files, VLMs, embedding models, or rerankers. The
-installer flags in this release are Linux-only. Windows Lemonade and macOS
-native llama-server keep their existing platform lifecycle.
+installer flags in this release are Linux-only. The Windows AMD
+`llama-server.exe` and macOS native llama-server keep their existing platform
+lifecycle.
 
 ---
 
 ### Can I chat while models are downloading?
 
-Yes. During install, a small bootstrap model (~1.5GB, Qwen 3.5 2B) downloads first so you can start chatting within a couple of minutes. The bootstrap context is 64K so Hermes can work during the first session. The full tier-appropriate model downloads in the background.
-
-When the full model finishes, the system swaps it in automatically — you don't need to do anything. `ods status` shows the current bootstrap state if a swap is still in progress.
+Yes. The installer first downloads a small bootstrap model (Qwen3.5 2B, about
+1.3 GB) and starts it with a 64K context, then downloads your full model in the
+background. When the download is verified, ODS restarts the model server on the
+full model; requests in flight during that restart need a retry. `ods status`
+shows the bootstrap state while a switch is pending.
 
 ---
 
 ### Where do I get help?
 
-1. This documentation
-2. `TROUBLESHOOTING.md` for common issues
-3. GitHub Issues: https://github.com/Osmantic/ODS/issues
-4. Discord community (link in README)
+1. This documentation and [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+2. Questions: [GitHub Discussions](https://github.com/Osmantic/ODS/discussions)
+3. Bugs: [GitHub Issues](https://github.com/Osmantic/ODS/issues)
+4. Security problems: report them privately through
+   [Security → Report a vulnerability](https://github.com/Osmantic/ODS/security/advisories/new)
 
 ---
 
 ## Comparisons
 
-### ODS vs Ollama?
-
-| Feature | ODS | Ollama |
-|---------|--------------|--------|
-| Web UI | ✅ Dashboard/Portal on qualified Linux hosts; Open WebUI available in the Library | ❌ Separate install |
-| Voice | ✅ Full pipeline | ❌ Not included |
-| RAG | ✅ Built-in | ❌ Not included |
-| n8n workflows | ✅ Included | ❌ Not included |
-| One-command setup | ✅ Yes | ⚠️ Partial |
-| Performance | ✅ llama-server (faster) | ⚠️ Ollama |
-
-**Ollama is great for quick experiments.** ODS is a complete production stack.
-
-### ODS vs LocalAI?
-
-LocalAI is developer-focused. ODS is user-focused.
-
-- LocalAI: More flexibility, more configuration needed
-- ODS: Opinionated defaults, works out of box
-
-### ODS vs cloud APIs?
-
-See "Cost & ROI" section above. TL;DR: Local is cheaper at scale, more private, but requires hardware investment.
+See [How It Compares](../../README.md#how-it-compares) in the README.
 
 ---
 

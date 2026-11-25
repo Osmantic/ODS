@@ -176,8 +176,8 @@ fi
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     CV="$(docker compose version 2>/dev/null | head -1 || true)"
     append_check "COMPOSE_CLI" "pass" "Compose: $CV" ""
-elif command -v docker-compose >/dev/null 2>&1; then
-    CV="$(docker-compose version --short 2>/dev/null || docker-compose version 2>/dev/null | head -1)"
+elif command -v docker-compose >/dev/null 2>&1 && (docker-compose version --short >/dev/null 2>&1 || docker-compose version >/dev/null 2>&1); then
+    CV="$(docker-compose version --short 2>/dev/null || docker-compose version 2>/dev/null | head -1 || true)"
     append_check "COMPOSE_CLI" "pass" "docker-compose (legacy): $CV" ""
 else
     append_check "COMPOSE_CLI" "fail" \

@@ -34,11 +34,18 @@ def _files(flags):
             index += 1
 
 
-def validate_flags(install_dir, flags):
+def validate_flags(install_dir, flags, *, recovery_disable_service=None):
+    """Validate every cached recipe, allowing only one base recipe to be deselected.
+
+    The recovery exception does not skip path, manifest, other-recipe, or
+    cross-recipe checks. The selector must still verify and stop owned
+    containers before moving the target's marker.
+    """
     root = pathlib.Path(install_dir).resolve()
     user_root = root / 'data/user-extensions'
     canonical_user_root = user_root.resolve()
     fragments = []
+    rejected_recovery_bases = set()
     for name in _files(flags):
         path = pathlib.Path(name)
         path = pathlib.Path(os.path.abspath(path if path.is_absolute() else root / path))
@@ -106,9 +113,12 @@ def validate_flags(install_dir, flags):
         ok, problems = namespace['_scan_user_compose_content'](
             path, trusted, accelerator, extension_id=directory.name)
         if not ok:
-            raise ValueError(f'Cached extension {directory.name} requires review: ' + '; '.join(problems)
-                             + f". To recover, run 'ods disable {directory.name}' (it stops the extension safely"
-                             + ' and keeps its data), then reinstall it from the dashboard Extensions page.')
+            if directory.name == recovery_disable_service and path.name == 'compose.yaml':
+                rejected_recovery_bases.add(str(path.resolve()))
+            else:
+                raise ValueError(f'Cached extension {directory.name} requires review: ' + '; '.join(problems)
+                                 + f". To recover, run 'ods disable {directory.name}' (it stops the extension safely"
+                                 + ' and keeps its data), then reinstall it from the dashboard Extensions page.')
         scanned.add(str(path.resolve()))
         documents.append((path, namespace['_compose_policy_load'](path.read_text(encoding='utf-8'))))
 
@@ -119,6 +129,11 @@ def validate_flags(install_dir, flags):
     for projection in projections:
         original = projection.parent / projection.name.removeprefix('.ods-build-context-').removesuffix('.json')
         key = str(original.resolve())
+        if key in rejected_recovery_bases:
+            # The selector only reads service names; it never runs this build
+            # projection. A failed source scan cannot supply an expected
+            # projection, but the owner still needs to deselect the recipe.
+            continue
         expected = namespace['_extension_build_contexts'].get(key)
         if key not in scanned or not expected:
             raise ValueError('Cached extension build projection has no validated source recipe')

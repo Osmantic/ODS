@@ -89,7 +89,7 @@
       ],
       "invariants": [
         {
-          "id": "linux-lemonade-uses-litellm-key",
+          "id": "linux-opencode-uses-litellm-key",
           "type": "file_contains",
           "path": "installers/phases/07-devtools.sh",
           "needle": "LITELLM_KEY"
@@ -140,20 +140,12 @@
           "path": "scripts/render-runtime-configs.py"
         },
         {
-          "platform": "windows-installer",
-          "path": "installers/windows/install-windows.ps1"
-        },
-        {
           "platform": "windows-env-generator",
           "path": "installers/windows/lib/env-generator.ps1"
         },
         {
           "platform": "windows-upgrade",
           "path": "scripts/bootstrap-upgrade.sh"
-        },
-        {
-          "platform": "windows-runtime",
-          "path": "bin/ods-host-agent.py"
         }
       ],
       "invariants": [
@@ -212,56 +204,6 @@
           "type": "yaml_text_contains",
           "path": "config/litellm/hybrid.yaml",
           "needle": "fallbacks:"
-        }
-      ]
-    },
-    {
-      "id": "litellm-lemonade",
-      "label": "LiteLLM Lemonade model routing",
-      "target_paths": [
-        "config/litellm/lemonade.yaml"
-      ],
-      "writer_marker": "ODS-CONTRACT-WRITER: litellm-lemonade",
-      "writers": [
-        {
-          "platform": "canonical-renderer",
-          "path": "scripts/render-runtime-configs.py"
-        },
-        {
-          "platform": "checked-in-template",
-          "path": "config/litellm/lemonade.yaml"
-        }
-      ],
-      "invariants": [
-        {
-          "id": "template-disables-thinking",
-          "type": "yaml_text_contains",
-          "path": "config/litellm/lemonade.yaml",
-          "needle": "enable_thinking: false"
-        },
-        {
-          "id": "host-agent-preserves-rotated-key",
-          "type": "file_contains",
-          "path": "bin/ods-host-agent.py",
-          "needle": "LITELLM_LEMONADE_API_KEY"
-        },
-        {
-          "id": "bootstrap-supplies-extra-model-alias",
-          "type": "file_contains",
-          "path": "scripts/bootstrap-upgrade.sh",
-          "needle": "extra."
-        },
-        {
-          "id": "windows-lemonade-delegates-to-canonical-renderer",
-          "type": "file_contains",
-          "path": "installers/windows/lib/env-generator.ps1",
-          "needle": "render-runtime-configs.py"
-        },
-        {
-          "id": "windows-lemonade-can-bootstrap-renderer-python",
-          "type": "file_contains",
-          "path": "installers/windows/lib/env-generator.ps1",
-          "needle": "Install-WindowsODSRuntimeConfigPython"
         }
       ]
     },

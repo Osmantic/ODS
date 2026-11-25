@@ -7,6 +7,8 @@ services:
       - no-new-privileges:true
     environment:
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-}
+      # Qdrant sends anonymous usage telemetry by default.
+      - QDRANT__TELEMETRY_DISABLED=true
     volumes:
       - ./data/qdrant:/qdrant/storage:z
     ports:

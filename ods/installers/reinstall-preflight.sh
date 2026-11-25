@@ -75,9 +75,9 @@ if (( reclaimable_kb < 0 )); then
 fi
 
 if [[ "$keep_models" == true ]]; then
-    echo "[INFO] Removing $install_dir returns about $(( reclaimable_kb / 1048576 )) GB to its filesystem; retained models stay in use."
+    echo "[INFO] Preflight estimate: replacing $install_dir would return about $(( reclaimable_kb / 1048576 )) GB to its filesystem; retained models stay in use."
 else
-    echo "[INFO] Removing $install_dir returns about $(( reclaimable_kb / 1048576 )) GB to its filesystem."
+    echo "[INFO] Preflight estimate: replacing $install_dir would return about $(( reclaimable_kb / 1048576 )) GB to its filesystem."
 fi
 
 # Point the installer at the tree being replaced. Installers honor the credit

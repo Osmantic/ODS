@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import {citationClaims, citationPageReadsAllowed, createHostCitationVerifier, HOST_CITATION_LIMITS,
   pageSupportsClaims} from '../plugin/citation-verification.mjs';
 import {createPublicPageReader, createPublicWebExtractTool} from '../plugin/web-extract.mjs';
-import {createCompletionAssurance, UNREAD_SOURCE_MARKER, UNREAD_SOURCE_MARKER_PT, UNREAD_SOURCE_NOTE,
-  UNREAD_SOURCE_NOTE_PT, UNREAD_SOURCES_REVISION_INSTRUCTION} from '../plugin/completion-assurance.mjs';
+import {createCompletionAssurance, UNREAD_SOURCE_MARKER, UNREAD_SOURCE_NOTE,
+  UNREAD_SOURCES_REVISION_INSTRUCTION} from '../plugin/completion-assurance.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {PROGRESS_FINALIZATION_INSTRUCTION, PROGRESS_FINALIZATION_NOTE} from '../plugin/progress-finalization.mjs';
 import {TOWER1_R060_FINAL_ANSWER, TOWER1_R060_FIRST_ANSWER, TOWER3_FIRST_ANSWER,
@@ -466,7 +466,7 @@ test('no host read when web access is disabled, the allowance is short, or there
     {agentId: 'pixel', runId: 'plain', sessionId: 'plain'}), undefined);
 });
 
-test('Portuguese request: verified pages keep the answer; unverified ones get the Portuguese marker', async () => {
+test('Portuguese request: day-first dates verify; an unverified page gets the English marker and note', async () => {
   const prompt = 'Pesquise na internet eventos em Lisboa nos próximos 30 dias e abra as fontes antes de citar.';
   const agenda = 'https://www.visitlisboa.com/pt-pt/eventos';
   const festa = 'https://www.visitlisboa.com/pt-pt/eventos/festa-de-outono';
@@ -496,7 +496,7 @@ test('Portuguese request: verified pages keep the answer; unverified ones get th
     assert.equal(guard.beforeAgentFinalize(event, context)?.action, 'finalize');
     const delivery = guard.deliveryVerificationForRun(context.runId);
     assert.equal(delivery.status, 'failed');
-    assert.equal(delivery.text, answer.replace(`[Coliseu](${coliseu})`, `Coliseu ${UNREAD_SOURCE_MARKER_PT}`) + `\n\n${UNREAD_SOURCE_NOTE_PT}`,
+    assert.equal(delivery.text, answer.replace(`[Coliseu](${coliseu})`, `Coliseu ${UNREAD_SOURCE_MARKER}`) + `\n\n${UNREAD_SOURCE_NOTE}`,
       'the host-verified Festa page stays cited');
   }
 });

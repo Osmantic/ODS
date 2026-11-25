@@ -79,11 +79,27 @@ def test_builtin_extension_still_passes_the_enable_scan(relative, monkeypatch):
         skip_root_user_check=True, builtin=True)
 
 
-def test_interpolated_volume_source_is_a_builtin_only_allowance():
+def test_interpolated_volume_source_is_a_builtin_only_allowance(tmp_path):
     """litellm picks its config file from the owner's ODS_MODE. The same shape
     in a user or library extension chooses a host path at render time."""
-    litellm = ODS / "extensions/services/litellm/compose.yaml"
+    # litellm's other built-in-only allowance is joining the core
+    # remote-provider network; drop it so this rule is the one judged.
+    joins = "    networks:\n      - default\n      - remote-provider\n"
+    text = (ODS / "extensions/services/litellm/compose.yaml").read_text(encoding="utf-8")
+    assert joins in text
+    litellm = tmp_path / "compose.yaml"
+    litellm.write_text(text.replace(joins, ""), encoding="utf-8")
     with pytest.raises(HTTPException) as rejected:
         extensions._scan_compose_content(litellm, skip_name_collision=True,
                                          skip_gpu_passthrough_check=True, skip_root_user_check=True)
     assert "interpolation" in rejected.value.detail
+
+
+def test_core_network_is_a_builtin_only_allowance():
+    """litellm reaches the remote-provider egress over a network that
+    docker-compose.base.yml declares; an extension may not join it (GHSA-4rpc)."""
+    litellm = ODS / "extensions/services/litellm/compose.yaml"
+    with pytest.raises(HTTPException) as rejected:
+        extensions._scan_compose_content(litellm, skip_name_collision=True,
+                                         skip_gpu_passthrough_check=True, skip_root_user_check=True)
+    assert "joins ODS core network 'remote-provider'" in rejected.value.detail

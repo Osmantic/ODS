@@ -62,8 +62,12 @@ test('restores the library-first request receipt before checking interrupted wor
   await screen.findByText('Working in this chat')
   expect(screen.getByRole('textbox')).toBeDisabled()
   resolveHealth({ok: true, json: async () => ({available: true})})
-  expect(await screen.findByPlaceholderText(/^Message .+\.\.\.$/)).toBeDisabled()
-  expect(JSON.parse(localStorage.getItem(CHAT_KEY))).toMatchObject({requestId: 'latest-request', interrupted: true})
+  // The draft is editable while the earlier work runs; sending waits for it.
+  expect(await screen.findByPlaceholderText(/^Message .+\.\.\.$/)).toBeEnabled()
+  expect(screen.queryByTitle('Send')).toBeNull()
+  // Moving the legacy authority into the current pointer must keep its live
+  // flags intact; interrupted is the observer's view, not a persisted edit.
+  expect(JSON.parse(localStorage.getItem(CHAT_KEY))).toMatchObject({requestId: 'latest-request', inFlight: true, interrupted: false})
   expect(fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
 })
 

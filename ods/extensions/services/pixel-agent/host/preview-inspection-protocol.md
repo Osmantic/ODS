@@ -8,11 +8,19 @@ socket or browser authority.
 ## Request
 
 The plugin sends one JSON object with `schemaVersion: 1`, `action: "inspect"`,
-`siteId`, the full snapshot `sha256`, `viewport: {width, height}`, and `steps`.
+`siteId`, the full snapshot `sha256`, `viewport: {width, height}`, and `steps`,
+plus an optional `page` that names the page of the same snapshot to start on
+instead of its entry page (see "Page" below).
 Each step has `action` (`assert-visible`, `assert-hidden`, `assert-text`,
-`select-option`, or `click`) and
-`locator`. A locator is either `{selector: "CSS"}` or
-`{role: "button", name: "Show items", exact: true}`. Semantic roles are
+`click`, `select-option`, `fill`, `download`, `press`, or `assert-painted`)
+and `locator`. `assert-text` adds `expectedText`; `select-option` and `fill`
+add `value`; `download` adds `path`, `expectedBytes` and `expectedSha256`;
+`press` adds `key` and an optional `holdMs`; `assert-painted` adds nothing
+(see the sections below). A locator is either
+`{selector: "CSS"}` or `{role: "button", name: "Show items", exact: true}`.
+The tool also accepts a role/name locator without `exact` and a selector with
+`exact: true`, which match the same element, and always sends these two forms
+(`workspace-preview-inspect.mjs`); `exact: false` stays invalid. Semantic roles are
 allowlisted. There are no URLs, executable expressions, shell commands, image
 names, host paths, or Docker arguments in this protocol.
 
@@ -24,8 +32,9 @@ Every locator must match exactly one element, including hidden assertions.
 ## Locator matching
 
 A CSS locator matches through the isolated world's `querySelectorAll`, hidden
-elements included. An exact role/name locator for `assert-visible` or `click`
-matches only rendered elements: Chromium's accessibility tree, united by
+elements included. An exact role/name locator for `assert-visible`,
+`assert-painted`, `click` or `press` matches only rendered elements:
+Chromium's accessibility tree, united by
 element identity with Playwright's default
 `getByRole(role, {name, exact: true})` role and name rules in the isolated
 world. Chromium's names apply CSS `text-transform` (an uppercase-styled
@@ -61,8 +70,9 @@ same snapshot, not change the site to satisfy a locator.
 
 The receipt binds the exact site, full snapshot hash, viewport, and canonical
 UTF-8 JSON request hash (`planSha256`). Each executed step records its index,
-locator, CSS visibility measurement, stable sampling, status, and (for clicks)
-after measurement. Remaining steps are not executed after a failed assertion.
+locator, CSS visibility measurement, stable sampling, status, (for clicks
+and key presses) after measurement, and (for `assert-painted`) paint
+statistics. Remaining steps are not executed after a failed assertion.
 A click dispatch alone proves no resulting behavior. Verify the requested
 initial state, click, and resulting condition with separate assertions.
 
@@ -76,7 +86,9 @@ are never translated or relaxed. Other browser failures remain unavailable.
 
 Visibility means CSS layout visibility, including opacity and ancestor CSS
 visibility. It does not prove pixel paint, clipping, occlusion, or a full
-accessibility audit. Exact role/name locators do check that accessible match.
+accessibility audit; only an explicit `assert-painted` step samples paint, as
+aggregate color statistics (see "Element paint" below). Exact role/name
+locators do check that accessible match.
 Measurements run in an isolated Chromium world so page script cannot replace
 the measurement APIs. Visible elements bearing `hidden` produce a diagnostic;
 they fail only an explicit hidden assertion. Intentional CSS overrides are not
@@ -138,14 +150,14 @@ visible. Publication is byte-only and renders nothing, so the capsule reports
 the painted palette with every receipt it builds.
 
 After the step context is closed and its receipt is final, the capsule loads
-the same snapshot once more in a separate context of the same browser: a fixed
-1280x720 desktop viewport, default (light) color scheme, device scale 0.25.
-It uses the same loopback server, request guard, navigation limit, and popup,
-download and websocket blocking, and registers no page-error listener. It
-waits 100 ms after `load`, takes a 320x180 PNG screenshot of the viewport (one
-device pixel per 4x4 CSS pixels) and decodes it with the standard library. The
-page as first loaded is captured, never the state left by the inspected
-clicks, and never hover or focus styles.
+the same page of the snapshot once more in a separate context of the same
+browser: a fixed 1280x720 desktop viewport, default (light) color scheme,
+device scale 0.25. It uses the same loopback server, request guard, navigation
+limit, and popup, download and websocket blocking, and registers no page-error
+listener. It waits 100 ms after `load`, takes a 320x180 PNG screenshot of the
+viewport (one device pixel per 4x4 CSS pixels) and decodes it with the
+standard library. The page as first loaded is captured, never the state left
+by the inspected clicks, and never hover or focus styles.
 
 Each pixel's exact color goes to one fixed bucket. A color with chroma under
 26/255 is neutral and named by HSL lightness: `black` (<0.13), `dark gray`
@@ -226,7 +238,8 @@ quoted evidence copy; when an exact role/name locator matched nothing and a
 control of that role shows the locator's name as its text (or differs only in
 letter case), the locator feedback states the actual name and what supplied it.
 The plugin checks owner-requested control names against them (see
-`COMPLETION-RELIABILITY.md`). A host keeps producing receipts without
+`COMPLETION-RELIABILITY.md`), from entry-page receipts only: a `page` receipt
+lists another page's controls. A host keeps producing receipts without
 `controls` until the installer rebuilds the inspection image.
 
 ## Host custody and isolation
@@ -250,6 +263,9 @@ socket, never ambient Docker context/environment.
 CLI: `serve` accepts authenticated local requests; `request` runs the fixed
 native helper request; `health` verifies the installed image identity without
 executing a site; `export` reads only `/previews` in the publisher container.
+`request`, `health` and `export` print one JSON result and exit 0, also on
+failure. `serve` prints its failure receipt and exits non-zero when it cannot
+start or stops with an error, so the unit's `Restart=on-failure` retries it.
 Native export uses fixed `docker exec` argv and actual container UID ownership.
 Export grants the publisher no Docker authority. Snapshots are reopened with
 the publisher's stable no-symlink file checks and rehashed, then rehashed again
@@ -262,10 +278,16 @@ read-only root, UID/GID 65534, all capabilities dropped, no-new-privileges,
 256 MiB temporary filesystem. No host mounts, sockets, credentials, or host
 URLs enter it. The only stdin is the validated plan and base64 immutable file
 map. The loopback server reproduces production iframe sandbox, CSP, MIME/UTF-8,
-and CORS/security headers. Foreign requests, extra navigation, popups, and
-downloads are blocked; service workers are disabled.
+and CORS/security headers. The request guard admits at most two navigations,
+the fixed wrapper document and the one page it frames: the site entry
+(`/<siteId>/`) or the requested `page`. Only an explicit download step adds
+one, to its own snapshot file. Foreign requests, any other navigation (a link
+to another page of the same snapshot included), popups, and downloads are
+blocked; service workers are disabled.
 
-The runner permits at most 45 seconds and 32 KiB output. Cancellation and
+The runner permits at most 45 seconds and 32 KiB of receipt output, plus one
+bounded JPEG when the request directs a viewport screenshot (see "Viewport
+screenshot"). Cancellation and
 termination unwind through exact randomly named container removal. `docker run`
 termination alone is not treated as container cleanup. Missing engine, image,
 browser, invalid snapshot, or invalid receipt is explicit failed/unverified.
@@ -376,3 +398,518 @@ together. No network, navigation, file or download permissions are added.
 `test_preview_inspection_fill.py` exercises real Chromium form handlers,
 selection after filling, typed refusals, old-image rejection and blocked
 network effects; `inspection_fill.test.mjs` rejects forged fill receipts.
+
+## Keyboard press
+
+`press` takes exactly `action`, `locator`, `key`, and an optional `holdMs`.
+`key` is one of `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`, `Space`,
+`Enter`, `Escape`, `Tab`, a lowercase letter `a`–`z` or a digit `0`–`9`: one
+unmodified key, never a modifier, chord, function key or free text. The plugin
+schema states this list as an enum rather than a pattern, so local-model
+grammar conversion compiles it. `holdMs` is an integer 0–1000 and defaults to
+100 when absent: games often set a flag on keydown, clear it on keyup and read
+it once per animation frame, so a zero-length press may move nothing.
+
+The locator must match one rendered, visible element, as for `click`: a game
+canvas, its container, the page body or a non-text control. The capsule then:
+
+1. refuses the step as `text_field_press_unsupported`, before focusing
+   anything, when the target is a `textarea`, a `select`, an `input` other than
+   `button`, `checkbox`, `image`, `radio`, `range`, `reset` or `submit`,
+   contenteditable content, any element while the document is in design mode,
+   or a nested `iframe`, `frame`, `object` or `embed` (whose own focused
+   element the capsule cannot observe); otherwise, as a pointer press on the
+   target would, it blurs any other element that holds focus (for example a
+   button an earlier step clicked), so `Space` on a canvas never activates
+   that button;
+2. focuses the wrapper's preview iframe, then the target inside it;
+3. reads in the isolated world whether the target is the focused element and
+   whether the preview document has focus, and records them as
+   `focus: {element, document}`. `document.activeElement` stops at a shadow
+   host, such as a web component whose inner field takes focus through
+   `delegatesFocus`, so the focused element is found by following open shadow
+   roots' `activeElement`, here and when blurring in step 1. A canvas without
+   `tabindex` cannot take focus, so `element` may be false; the keys then reach
+   the document body, and window and document listeners still run. The step
+   fails as `focus_failed` when the document has no focus, and as
+   `text_field_press_unsupported` when focus landed on an element step 1 would
+   refuse or on the host of a closed shadow root, whose focused element the
+   isolated world cannot see (CDP `DOM.describeNode` with `pierce` reports
+   closed roots), in each case without sending a key;
+4. sends Playwright `page.keyboard.press(key, delay=holdMs)`: trusted keydown
+   and keyup events, with the key's ordinary default action, to the focused
+   frame;
+5. observes the target again as `after`, as for a click.
+
+A navigation, popup, websocket or foreign request caused by the key is blocked
+and recorded in `blockedRequests`; when it is seen within the step, the step
+fails as `press_failed`, exactly as a click fails as `click_failed`. A download
+started by a key is `unexpected_download`. A press alone proves no result.
+Presses may run in a row (for example `Space` to start, then `ArrowRight`), but
+the last one needs an assertion of its visible result before the plan counts
+as behavior evidence. A click before a press needs its own assertion first
+(click Start, assert the started game, then press); a passing plan without one
+says that it does not count. A press plan is never a read-only inspection.
+
+Press and paint plans run only on a capsule labelled for them, so their scope
+need not match older capsules. Its base is `Only the listed steps were tested,
+each only as stated here. CSS layout visibility, normalized visible-text
+assertions and click dispatches do not test pixel paint; no step tests
+occlusion, clipping, a full accessibility audit, or overall functionality.`,
+which does not deny the presses and paint checks named after it, and next to
+presses the fill sentence ends `Fill sends no key events and does not submit
+forms.` Other plans keep the exact scope older capsules return. Press plans add
+the suffix `Trusted key presses were sent to the focused preview frame only for
+explicit press steps; behavior beyond the listed assertions, such as gameplay,
+is not verified.` A receipt with the legacy scope never satisfies a press plan.
+
+Security notes:
+
+- Press is not a text path. Fill, with its sensitive-field denylist, remains
+  the only way to enter text. Press refuses editable targets and editable
+  focused elements, including a field inside an open shadow root and any focus
+  hidden in a closed one, and every key comes from the fixed allowlist, never
+  from user data. A page's own key handler can still move focus elsewhere
+  while the key is down; that page then receives one allowlisted key, inside a
+  capsule with no autofill profile, host files or network.
+- A trusted key press grants user activation, which can unlock popups,
+  downloads, fullscreen, pointer lock and clipboard writes. Popups are closed,
+  downloads cancelled and extra navigations blocked; each is recorded in
+  `blockedRequests` and fails the receipt. Clipboard and fullscreen stay inside
+  the no-network capsule and end with it. CSP `form-action 'none'` blocks a
+  submit started by Enter.
+- The wrapper document contains no script, and keys go only to the preview
+  frame focused in step 2.
+
+The immutable capsule must advertise
+`org.osmantic.ods.inspection.press=trusted-key-press-v1`. The broker checks it
+before reading the snapshot, and the installer requires it, as for fill and
+select. An older image returns a bound `unsupported_capability` failure without
+executing the plan; deploy plugin, broker and rebuilt capsule together. Focus
+delivery into the sandboxed opaque-origin frame without a prior click is proven
+only by the opt-in real-browser cases, which also need a run on the arm64 image
+that Windows on Arm hosts build.
+
+`test_preview_inspection_press.py` covers the protocol bounds, the broker's
+label check before any snapshot read, the scripted focus and key order and
+each refusal, including focus a closed shadow root hides, and (with the opt-in
+Chromium or image settings above) a focusable canvas pressed without a prior
+click, a window listener behind an unfocusable canvas, `Space` on a canvas
+after a button click, a held key read per animation frame, refused text fields,
+redirected focus and fields inside open and closed shadow roots that take focus
+through `delegatesFocus` or a focus handler, Enter on a link, a key-started
+download, and a page error raised in the frame after a key.
+`preview_capsule_scripts.test.mjs` runs the refusal and the shadow-root walk
+against a minimal DOM. `inspection_press.test.mjs` checks the schema, the
+Python/JavaScript key list, scope and plan hash, forged press receipts,
+feedback and the evidence policy.
+
+## Element paint
+
+`assert-painted` takes exactly `action` and `locator`. It detects a blank or
+single-color render, such as a game canvas that stays black after its start
+button or first key press. It is a blank detector, not image recognition.
+
+The locator must match one rendered element, as for `assert-visible`; its
+visibility is awaited within the same observation window, and a hidden element
+fails as `visibility_mismatch`. Then, sampling every 100 ms within a further
+1.5-second window, the capsule:
+
+1. reads in the isolated world the element's content box (border and padding
+   removed), its largest corner radii and the frame viewport. The capture
+   region is that box inset by 0.3 times the radii, which keeps it inside
+   rounded corners, intersected with the viewport, rounded inward to whole CSS
+   pixels and inset by one captured pixel, so blended edges of the surrounding
+   page never count as a second color. The wrapper iframe fills the
+   never-scrolled page from (0, 0), so frame coordinates are page coordinates.
+   The sample is empty when less than 8x8 CSS pixels remain, when the region
+   is too thin for its length to keep a pixel inside the one-pixel inset once
+   its longer side is downscaled to 256 (a fully visible 1000x8 bar, for
+   example), or when the element is no longer one rendered match; the
+   inspector never scrolls;
+2. captures that region with CDP `Page.captureScreenshot` (PNG,
+   `captureBeyondViewport: false`), downscaled so neither side exceeds 256
+   pixels. Playwright's element screenshot is not used: it scrolls the element
+   into view and injects caret-hiding style. The capture is the composited page
+   of the step context, so it shows the state after earlier clicks and key
+   presses, including anything that covers the element, such as an overlay;
+3. decodes the PNG with the standard-library decoder of the rendered palette.
+
+The step passes on the first sample with at least two exact colors. Canvases
+often draw on a later animation frame or once their images load, so a
+single-color or empty sample is retried until the window ends. A timeout never
+passes: the last sample fails the step as `uniform_paint` or, when it was empty,
+`not_in_viewport`, whose feedback names all three causes of an empty sample.
+
+A measured step carries `paint: {width, height, distinctColors, dominant:
+{hex, percent}, colors, fingerprint}`: the captured size (1–256 pixels per
+side), the number of exact colors (saturating at 4096), the most frequent exact
+color and its share rounded half up, at most four buckets named as in
+`renderedColors`, and the first 16 hex digits of the SHA-256 of the captured PNG
+bytes. A `uniform_paint` step carries it with `distinctColors: 1`;
+`not_in_viewport` and other failures carry none. A request blocked during
+sampling ends the run as `request_blocked`, and a failed capture as
+`unavailable`, never as a paint verdict. Callers validate these exact bounds and
+reject any other shape.
+
+A pass shows only that the box held two or more colors at one sample. A
+gradient background without its sprite, or an invisible hero on a colored
+background, still passes; an element's own `clip-path`, mask or rotation shows
+the page around it inside its box. Pair it with `assert-text` where the page
+shows state as text. When two passed `assert-painted` steps of one locator
+around a press or click have the same fingerprint, the tool adds an
+informational note that nothing visible changed there at those samples. It
+never fails the step: animation makes a changed fingerprint weak evidence of a
+working control, and an effect may lie elsewhere or come later.
+
+For the evidence policy `assert-painted` is a postcondition, so a press
+followed by `assert-painted` counts as an interaction with its result. It only
+observes, so a plan of assertions and `assert-painted` steps stays read-only.
+Paint plans use the press and paint scope base (see "Keyboard press") and add
+the suffix `Pixel paint was checked only for explicit assert-painted steps, as
+aggregate color statistics of each element's on-screen box; this detects a
+blank or single-color render, not image recognition or whether the intended
+content was drawn.` A receipt with the legacy scope never satisfies a paint
+plan.
+
+Security notes:
+
+- No image bytes, base64 data or page text of a paint sample leave the
+  capsule: only bounded integers, colors and a truncated hash, which the
+  plugin validates exactly. Feedback quotes only the capsule-computed dominant
+  color. The only image that ever leaves is the separately directed viewport
+  screenshot below.
+- The capture reads pixels the no-network capsule already renders and adds no
+  network, file or navigation permission. It changes no page style, scroll
+  position or animation state. Chromium applies the downscale as capture-time
+  emulation; that the page observes no resize, scroll or DOM change during it
+  is proven only by the opt-in real-browser case.
+- Pure-Python decoding is bounded to 256x256 pixels per sample, so polling fits
+  the 1-CPU capsule and its 45-second deadline.
+
+The immutable capsule must advertise
+`org.osmantic.ods.inspection.paint=element-paint-v1`. The broker checks it
+before reading the snapshot, and the installer requires it, as for press. An
+older image returns a bound `unsupported_capability` failure without executing
+the plan; deploy plugin, broker and rebuilt capsule together. Whether the
+capsule's GPU-less headless Chromium renders WebGL is checked only by the
+opt-in real-browser case; where it does not, a WebGL canvas reads as its page
+background (`uniform_paint`), so the `uniform_paint` feedback asks to keep a
+WebGL page unchanged and report its rendering unverified. Capture geometry and
+WebGL also need a run on the arm64 image that Windows on Arm hosts build.
+
+`test_preview_inspection_paint.py` covers the protocol bounds, the broker's
+label check before any snapshot read, the capture clip (viewport, rounding,
+rounded corners, downscaling, minimum size), the bounded summary, polling, and
+through a scripted browser the exact CDP call, the uniform and late-drawing
+cases, a long thin bar and an element hidden or removed while sampling (both
+`not_in_viewport`), the state after a click, a blocked request during sampling
+and the receipt bound. With the opt-in Chromium or image settings above it also checks
+a black canvas that never draws, a drawn and a late-drawn 2D canvas, an
+overlay, a rounded black canvas, an element below the viewport, a large
+canvas, a key press that moves a sprite, unchanged style, scroll and viewport
+during a downscaled capture, and WebGL. `inspection_paint.test.mjs` checks the
+schema, the Python/JavaScript scope, bounds and plan hash, capsule summaries as
+receipts, forged paint evidence, feedback, the unchanged-fingerprint note and
+the evidence policy.
+
+## Page
+
+An inspection loads one page: without `page`, the snapshot's entry page,
+exactly as before. A multi-page site ("a three-page bakery site: home, menu and
+contact") needs its other pages checked too, so a request may name one. `page`
+is the path of a published `.html` file relative to the site root, such as
+`menu.html` or `about/team.html`, or a folder ending in `/` for that folder's
+`index.html` (`blog/` is `blog/index.html`), the rule by which the capsule's
+loopback server resolves URL paths (`snapshot_file`).
+
+`page`, with a trailing `/` read as `/index.html`, must be a name the snapshot's
+file map can hold (`snapshot_name`, shared with `validate_bundle`): at most 512
+characters and 12 segments of at most 128 ASCII letters, digits, `.`, `_`, `-`,
+`[` and `]`, ending in `.html`. That excludes a leading `/`, `\`, NUL and other
+control characters, `.` and `..` segments, empty segments, a scheme, query or
+fragment, percent-encoding, hidden names (a leading `.`, which the publisher
+skips) and the reserved `__ods_` and `__pycache__` names. The plugin applies
+the same rules (`workspace-preview-inspect.mjs`), but only the immutable file
+map shows whether that file exists. The broker binds `page` to it after reading
+the snapshot and before any browser runs; a page that names no file of it
+returns a bound `page_not_found` failure. The capsule checks it again in
+`validate_bundle`. The publisher-side export never sees `page`, since it reads
+the whole snapshot either way, so an older export helper keeps working.
+
+`page` changes only where the inspection starts. The wrapper document frames
+`/<siteId>/` plus the URL-quoted page instead of `/<siteId>/`, and the request
+guard admits that page as the one entry navigation in place of the site entry,
+which is then refused like any other navigation. Links between pages are not
+followed: a click or key that navigates to another page is blocked, recorded in
+`blockedRequests` and fails the receipt, exactly as before. Asset requests,
+popups, downloads, the CSP, the iframe sandbox and every capsule isolation
+property above are unchanged. A download step's `path` stays relative to the
+site root, and the rendered palette is captured from the same page.
+
+`page` is part of the plan, so `planSha256` binds it; a request without it
+validates and hashes exactly as before, and `schemaVersion` stays 1. Every
+receipt of a page plan, passed or failed, carries the same `page`, and its
+scope ends `Only the requested page of this snapshot was loaded; links between
+pages were not followed.` Receipts of plans without `page` carry neither. The
+broker and the plugin reject a receipt whose `page` differs from the
+request's, and the tool names the page in its result (`Preview inspection of
+page "menu.html" passed.`). A passing page plan counts as browser evidence for
+its snapshot like any other inspection, while owner-requested control names are
+checked against entry-page receipts only (see "Load-time control names"). An
+untested show/hide change gets corrective steps on the same page, without the
+entry page's outline.
+
+The immutable capsule must advertise
+`org.osmantic.ods.inspection.page=snapshot-page-v1`. The broker checks it
+before reading the snapshot, and the installer requires it, as for paint. An
+older image returns a bound `unsupported_capability` failure without executing
+the plan, and the tool asks to inspect the entry page without `page` until the
+inspector is updated; deploy plugin, broker and rebuilt capsule together.
+
+`test_preview_inspection_page.py` covers the page rules, unchanged legacy
+hashes and scope, the file-map binding, the broker's label check, its
+`page_not_found` refusal before any capsule runs, the export without `page` on
+both transports and the receipt binding; through a scripted browser it loads
+the wrapper from the capsule's loopback server and checks its `src`, the
+guard's one entry navigation, a blocked click-through to a sibling page, the
+receipt and the palette. With the opt-in Chromium or image settings above it
+also checks every page of a small multi-page site and a link that is not
+followed. `inspection_page.test.mjs` checks the plugin rules, hash, scope and
+failure receipt against Python's, the schema and description, receipt binding,
+the not-found, unsupported, passing and blocked results, the evidence policy
+and the corrective steps.
+
+## Viewport screenshot
+
+A model that ODS declares able to read images can look at its own published
+preview: one JPEG of the whole inspection viewport, taken after the steps that
+ran, beside the receipt. A text-only receipt can say "the arena is about 95%
+one colour"; it cannot show what the canvas draws.
+
+**Who gets it.** The plugin
+(`plugin/preview-screenshot.mjs` `previewScreenshotCapability`) reads the same
+declaration Portal's owner-image path and the runtime contract readback use
+(`plugin/context-compaction.mjs` `modelFor`, `plugin/model-runtime-readback.mjs`):
+the plugin's `modelImageInput` and the selected model row's `input` list, which
+must match (`["text","image"]` unless `unsupported`). Only `supported` opens the
+gate, and only for a run whose tool context names the configured model
+(`activeModel.modelRef`). `unknown`, `unsupported`, an undeclared or
+inconsistent contract, a run on a model other than the configured one, or a
+run that names no model stays text-only, exactly as before, and the result
+says which. Unlike the owner-image path, `unknown` never becomes
+an image test here: no owner consented to one for this purpose. OpenClaw's own
+transport would also drop a tool image for a row without `image` input.
+
+**Where `supported` comes from.** Installs start at `unknown`
+(`installers/lib/pixel-onboarding.py`). A Models-page switch to a model that
+ODS's own llama-server runs with a vision projector (`mmproj`) declares
+`supported`: the switch's final readiness proof (`bin/ods-host-agent.py`
+`_wait_for_model_readiness`) carries the `modalities.vision` of the same
+`/props` answer that proved the served file and context, and
+`_pixel_image_input_readback` turns `true` into `supported` for the Pixel
+target, which reaches Pixel through `_reconcile_ods_managed_pixel_model` or the
+native model transaction before Portal admits the next request. This covers
+the Linux and WSL containers, the Windows-owned runtime a WSL agent reaches
+through the model router, the Windows native `llama-server.exe` and native
+macOS: every route whose model server is ODS's own llama-server. A `false`, missing or unreadable report keeps the value the
+switch computed before (the curated record's `vision` boolean, else
+`unknown`), and `ODS_MODEL_PROFILES=enabled` with a measured vision probe
+still decides last. The value is computed for each switch's model alone, so
+the next switch to a model without a projector gets its own value back.
+A remote model API route (`ods remote-provider`) never reads a local report;
+it gets one vision probe of its own at each proof of the route (configure,
+enable, and the egress proof behind the Dashboard's connection check and
+`ods remote-provider test`), once LiteLLM serves that route as `ods/current`
+(`bin/ods-host-agent.py` `_remote_provider_vision_probe`,
+`bin/model_profile/probes.py` `probe_remote_vision`). The probe sends one
+image of two squares in two colours drawn for that proof from six (red,
+green, blue, yellow, black, white) through `ods/current`, so it crosses
+LiteLLM and the egress as Portal's images do, and asks for both colours, left
+first. It sends no thinking switch, allows at most 1,024 answer tokens (the
+route's output limit when that is lower) and has one 30-second budget, which
+the single second request to a busy route (after a 502 or 503) shares. The
+answer counts from the end of any reasoning (the last `</think>` or
+`[/THINK]`, also one whose opening tag the provider dropped). Only an answer
+with no hedge or refusal word, at most three words besides framing ones
+(left, right, square, and, the, is, colour and the like), that names both
+colours as whole words in that order records `supported`; a guess matches 1
+time in 30. `unsupported` is recorded only for an unambiguous miss: an answer
+naming two palette colours, one of them not in the image (a third may be a
+background, and one alone may describe a single square); one that names no
+colour and says the model cannot see images; or a refused request (4xx
+other than 408 and 429) whose error names image input apart from the
+model's own id, when the same request without the image is then answered.
+Anything else (a swapped order, one or three colours, a longer or hedged
+answer, a cut-off one, an error, a timeout) is inconclusive. The receipt is kept in the route state
+(`data/remote-provider/routing-state.json`, `status.vision`) with the route
+fingerprint (transport, base URL, model, context, output limit, reasoning),
+and the route's Pixel contract (`_remote_provider_runtime_contract`)
+declares only what a receipt for the same fingerprint says: a new route, or
+one whose probes were all inconclusive, is `unknown`. Only a conclusive
+verdict replaces a receipt; an inconclusive probe keeps it, also through
+`ods remote-provider enable` (the Dashboard's **Reconcile route**), which
+carries the receipt of the same route into the state it rewrites. When a
+check of the route already in use measures a verdict that changes the
+contract, Pixel alone takes it through a model transaction, without
+recreating LiteLLM or the relay; without a managed Pixel only the activation
+record changes. If that transaction fails, an uncertain `model-apply`
+included, the rebind does what a local switch's rollback does: it proves
+that the controller still holds the transaction, on the previous contract or
+on the target it may already have taken, and rolls back to the previous
+contract after proving only the route's identity, since nothing on the
+inference side changed. When the controller cannot prove its hold, the
+transaction stays held for recovery, and the journal keeps the target so
+that recovery can still complete it. When the controller refuses to begin
+because Portal is busy (`runtime-busy`, `model-inspection-changed`,
+`transition-busy`, `active-run` or the `native-transition-busy` family), the
+receipt stays as it was, the check says that its result applies at the next
+check once Portal is idle (`imageCheck`), and the next check applies it; any
+other refusal fails the check with its reason.
+`ods remote-provider status` and `test` print the verdict as image input
+"seen the test image", "text only" or "not measured"; the Dashboard does not
+show it yet.
+An installation that already runs a vision model gets the readback on its
+next model switch. Every installer run, including an update, writes
+`unknown` over a `supported` declaration (`installers/lib/pixel-onboarding.py`):
+the installer keeps the active model and keeps `LLAMA_ARG_MMPROJ` only while
+that model's projector file still checks out (`scripts/preserve-active-model.py`),
+so the model may now run without its projector, and the renderer cannot see
+which happened. `unsupported` and `unknown` carry over for the same route; the
+next switch reads the projector back. The renderer writes a remote route as
+`unknown` too: it cannot tell which route LiteLLM serves after the rerun (a
+local install's update pauses the remote route). The route's next proof
+(`ods remote-provider enable`, or the Dashboard's **Reconcile route**)
+measures it again and binds Pixel to the route's receipt, which an
+inconclusive probe there keeps.
+
+**The directive.** When the gate is open and the run guard grants one of the
+run's at most three screenshots (`tool-loop-guard.mjs`
+`reservePreviewScreenshot`, reserved before the inspector runs, so parallel
+calls cannot exceed it), the plugin adds `screenshot: {maxSide, maxPixels,
+maxBytes}` beside the plan: at most 1200 pixels per side (larger tool images
+are re-encoded by OpenClaw, `DEFAULT_IMAGE_MAX_DIMENSION_PX`), 1,048,576 pixels
+(1024x1024, a common vision-encoder resize target) and 128 KiB (so a Tool Search
+result, which repeats the receipt beside the image, stays within the run
+guard's 256 KiB envelope bound), lowered by
+`agents.defaults.imageMaxDimensionPx` and the model row's
+`mediaInput.image.{maxSidePx,maxPixels,maxBytes}` when those are smaller. The
+lower bounds are 64 pixels per side, 4096 pixels and 16 KiB; below them the
+gate stays closed (`model-limit`). The directive is not part of the plan:
+`plan_hash`, the scope and every receipt field are those of the plan alone,
+so receipts bind exactly as before. The request line may exceed the plan's 8
+KiB by at most 128 bytes for it.
+
+**The broker** checks the immutable image for
+`org.osmantic.ods.inspection.screenshot=viewport-screenshot-v1` after the step
+labels. The snapshot and the publisher-side export helper only ever see the
+plan. Without the label the plan still runs and only the screenshot is
+omitted (`capability_missing`); with it the capsule bundle carries the
+directive and the output bound becomes the 32 KiB receipt plus one base64
+JPEG. A full receipt must answer a directive with exactly one `screenshot`
+member and an undirected run or a failure receipt with none; anything else,
+or a member that fails `validate_screenshot`, is an invalid capsule receipt.
+
+**The capsule** captures after the last step that ran, failed step included,
+before the step context closes, with CDP `Page.captureScreenshot` (JPEG,
+quality 80, then 50 once if the first is over `maxBytes`,
+`captureBeyondViewport: false`) of the viewport clip at the largest scale that
+keeps both sides and the pixel count in bounds even when Chromium rounds each
+scaled side up. That page shows only the fixed wrapper and its sandboxed
+preview frame of this snapshot, served by the capsule's loopback server with
+no network, so the capture cannot show anything else. The member is either
+`{status: "captured", mimeType: "image/jpeg", width, height, bytes, sha256,
+data}`, whose frame header, length and hash the broker and the plugin both
+check, or `{status: "omitted", reason}` with `time_budget` (the steps used 32
+of the 45 seconds), `page_unavailable` (the page closed, as after a blocked
+download), `capture_failed` or `too_large`. A capture never changes a step or
+the status.
+
+**The result.** The tool returns the text receipt with one sentence after the
+summary, then the image block (`{type: "image", mimeType: "image/jpeg",
+data}`), also for a failed check such as `uniform_paint`, where seeing the
+blank arena matters most. The sentence asks the model to look and treats text
+inside the image as page content, not instructions. Without a screenshot the
+sentence says why and that the result is text only. `details` stays the
+validated receipt, so no image bytes reach evidence, finalization or the
+persisted details. A tool built without the gate (older callers, recorded
+replays) returns exactly the earlier text.
+
+**Persistence and context.** Portal's owner-visible history holds owner and
+assistant text and owner image references only; a tool image never enters it.
+The session transcript keeps the image in the tool result: ODS's runtime sends
+the persisted copy of a result to the next model request of the attempt
+(`openclaw-compaction-budget.json`), so removing it there would hide it from
+the model. A screenshot is evidence for the run that took it, and the gate
+only vouches for that run's model. The same recipe therefore extends the
+pinned runtime's history image pruning (`pruneProcessedHistoryImages`, run
+before every model request): a preview screenshot before the latest user
+message, as a direct result or inside a Tool Search `tool_call` result, is
+replaced by "[image data removed - already processed by model]". The next
+owner turn never resends it, whatever model the Portal alias serves by then;
+an `unknown` route switched in later (its row also declares image input)
+receives none, and a route whose vision fails at runtime can stall only the
+run that took the screenshot. One request carries at most one run's three
+screenshots. A host retry prompt inside a run is a user message too: the retry
+keeps the screenshot sentence and may inspect again within the run's bound.
+Owner images keep the runtime's own rule (pruned once their turn is older than
+the last three completed turns). A compaction summary request carries
+tool-result text only, so it keeps the screenshot sentence and never the
+bytes. The text sentence follows the summary, so the summary's 2,000-character
+tool-result excerpt keeps it unless the summary itself is long. A Tool Search
+`tool_call` result also keeps the child's whole result in its `details`
+(`openclaw-image-envelope.json`), so the transcript holds that screenshot's
+base64 twice; the model never receives the `details` copy.
+
+`test_preview_inspection_screenshot.py` covers the directive bounds and its
+place beside the plan, the request frame, the JPEG frame reader against real
+files, the member validation, the capture scale, the broker's label check,
+export and output rules, and through a scripted browser the capture after a
+key press, a failed step, downscaling, a smaller limit, the quality retry,
+failed, oversized, closed-page and time-budget captures, and the receipt
+limit. With the opt-in Chromium or image settings it also checks a blank
+canvas and a drawn one after key presses (the drawn sprite's JPEG changes with
+the key that moves it; the blank canvas's does not), a wide viewport and an
+undirected run. `preview_screenshot.test.mjs` checks the Python/JavaScript
+mirror, the capability gate, smaller limits, the registered tool's image block
+for a vision configuration and its absence (with the reason) for text-only,
+unknown and undeclared ones and for a run on another or no model, the
+incomplete-transition result, the run bound and its session binding, forged
+broker answers, the unix transport's response bound and persistence.
+`runtime_preview_screenshot_context.integration.mjs` runs the reviewed
+history pruning, the Tool Search envelope, the openai-completions request and
+the compaction serializer on real tool results: earlier runs' screenshots
+(direct and through Tool Search) leave the next request after a model switch,
+the current run keeps its own, and owner images keep the three-turn rule.
+`vision_readback.test.mjs` renders Pixel's config with the coordinator's
+`pixel_model_contract.plan` from the install default through a readback
+`supported` target to a text-only one and checks the gate and the owner-image
+route check on each, and renders a remote route's probed `supported` target,
+whose inspection result carries the image block, beside another route and an
+unanswered probe that stay text-only. The host agent's
+`test_host_agent_image_input.py` and `test_model_activate.py`
+(`TestPixelVisionReadback`) cover the `/props` report on every local route,
+the readback rule, switches with a reported, false, missing and unreadable
+vision state, a vision-to-text switch on both reconcile paths, and a remote
+activation that never reads it and binds Pixel to its own probe's answer;
+they also cover the remote receipt (its route fingerprint, a changed route
+and malformed receipts read `unknown`), the probe's request and answer rules
+(words that only contain a colour, such as "shared", never pass; framing
+words and reasoning without its opening tag do not hide a reading; a refusal
+counts only when the same request without the image is answered), the drawn
+colours, an inconclusive probe that keeps the receipt, and a changed verdict
+without a managed Pixel. `test_model_profile_probes.py` covers the image, the
+answer judge, the refusal confirmation and the shared budget, and
+`test_model_transaction.py` a refused `model-apply` that stays uncertain with
+its target recorded, so that a rollback or recovery still resolves it after
+the gateway took the target. `test_remote_model_transaction.py`
+checks one probe per proof, after LiteLLM serves the route and before Pixel
+is bound, a rebind of Pixel alone only when the answer changed, a busy
+Portal (each busy code above) that keeps the receipt until the next check
+while any other refusal fails the check, a failed rebind (a refused or lost
+`model-apply`, a failed receipt write) that rolls back to the previous
+receipt without a live completion, an enable that
+keeps the route's receipt through an inconclusive probe, the status a proof
+reports, and an enable of the active route that stays a no-op.
+`tests/test_pixel_onboarding.py` checks that an installer rerun after a
+`supported` switch renders `unknown` and keeps the rest of the route.

@@ -48,6 +48,8 @@ def run(installation, **kwargs):
                                          repair_module.COMPACTION_IDLE_MODULE, repair_module.COMPACTION_BUDGET_MODULE,
                                          repair_module.TOOL_RESULT_PROJECTION_MODULE,
                                          repair_module.DIAGNOSTIC_STREAM_MODULE,
+                                         repair_module.UTF8_OUTPUT_MODULE,
+                                         repair_module.NO_TOOLS_INGRESS_MODULE,
                                          *repair_module.SANDBOX_MKDIR_MODULES.values()])
 def test_additional_module_has_separate_exact_byte_custody(installation, module_name):
     runtime, state, manifest, module, original, patched = installation
@@ -504,9 +506,12 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
 @pytest.mark.parametrize('environment,manifest_name,module_name', [
     ('OPENCLAW_TOOL_SEARCH_MODULE', 'openclaw-image-envelope.json', repair_module.IMAGE_MODULE),
     ('OPENCLAW_SELECTION_MODULE', 'openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE),
+    ('OPENCLAW_SUBAGENT_ADMISSION_MODULE', 'openclaw-subagent-admission.json', repair_module.SUBAGENT_ADMISSION_MODULE),
+    ('OPENCLAW_AGENT_GATEWAY_MODULE', 'openclaw-subagent-session.json', repair_module.SUBAGENT_SESSION_MODULE),
     ('OPENCLAW_HOOK_CONTEXT_MODULE', 'openclaw-hook-provenance.json', repair_module.HOOK_PROVENANCE_MODULE),
     ('OPENCLAW_REDACT_MODULE', 'openclaw-run-id-redaction.json', repair_module.RUN_ID_REDACTION_MODULE),
     ('OPENCLAW_ATTEMPT_EXECUTION_MODULE', 'openclaw-context-usage.json', repair_module.CONTEXT_USAGE_MODULE),
+    ('OPENCLAW_OPENAI_HTTP_MODULE', 'openclaw-no-tools-ingress.json', repair_module.NO_TOOLS_INGRESS_MODULE),
     ('OPENCLAW_EMBEDDED_AGENT_MODULE', 'openclaw-yield-usage.json', repair_module.YIELD_USAGE_MODULE),
     ('OPENCLAW_CORE_PROXY_MODULE', 'openclaw-compaction-empty.json', repair_module.COMPACTION_EMPTY_MODULE),
     ('OPENCLAW_COMPACT_MODULE', 'openclaw-compaction-no-work.json', repair_module.COMPACTION_NO_WORK_MODULE),
@@ -515,6 +520,7 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
     ('OPENCLAW_COMPACTION_RESUME_MODULE', 'openclaw-compaction-resume.json', repair_module.COMPACTION_RESUME_MODULE),
     ('OPENCLAW_DIAGNOSTIC_EVENTS_MODULE', 'openclaw-diagnostic-stream-writes.json', repair_module.DIAGNOSTIC_STREAM_MODULE),
     ('OPENCLAW_PAYLOADS_MODULE', 'openclaw-command-attempt-warning.json', repair_module.COMMAND_ATTEMPT_MODULE),
+    ('OPENCLAW_WINDOWS_COMMAND_MODULE', 'openclaw-utf8-output.json', repair_module.UTF8_OUTPUT_MODULE),
 ])
 def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_name, module_name):
     candidate_path = os.environ.get(environment)
@@ -562,6 +568,21 @@ def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_
         assert repair_module.repair(runtime, runtime / "state", **options)["status"] == "unchanged"
         repair_module.repair(runtime, runtime / "state", restore=True, **options)
         assert module.read_bytes() == original.encode()
+
+
+def test_utf8_output_cli_refuses_unreviewed_decoder_bytes(installation):
+    runtime = installation[0]
+    module = runtime / "dist" / repair_module.UTF8_OUTPUT_MODULE
+    changed = b"function createWindowsOutputDecoder() {}\n"
+    module.write_bytes(changed)
+    (runtime / "openclaw.mjs").write_text("")
+    state = runtime.parent / "utf8-output"
+    completed = subprocess.run([sys.executable, str(ROOT / "host/openclaw_tool_recovery.py"),
+                               "--openclaw-bin", str(runtime / "openclaw.mjs"), "--utf8-output",
+                               "--state-dir", str(state)], capture_output=True, text=True)
+    assert completed.returncode != 0 and "differs from reviewed bytes" in completed.stderr
+    assert module.read_bytes() == changed
+    assert not (state / "receipt.json").exists()
 
 
 def test_diagnostic_stream_writes_cli_binds_only_the_pinned_observer_module(installation):

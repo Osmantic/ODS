@@ -1,7 +1,9 @@
 import importlib.util
+import io
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,6 +80,41 @@ class TestPlatform(Base):
         result = self.run_helper(runner=_runner_factory(mode='mirrored'))
         self.assertEqual(result['mode'], 'unmanaged')
         self.assertEqual(self.read_bytes(), before)
+
+    def _unreachable_docker(self, error):
+        """A runner whose `docker info` fails the way WSL commonly fails it."""
+        def runner(cmd, **kw):
+            if cmd[:2] == ['docker', 'info']:
+                raise error
+            raise AssertionError('unexpected cmd after a failed platform probe: %r' % (cmd,))
+        return runner
+
+    def test_unreachable_docker_is_unmanaged_without_mutation(self):
+        # A stopped engine, an unreadable socket, or a missing CLI is an
+        # ordinary WSL state. Reporting {'error': 'internal'} made the caller
+        # print "Check WSL networking and private .env ownership", a misleading
+        # diagnosis for a host that simply had no reachable engine.
+        self.write_env('FOO=bar\n')
+        before = self.read_bytes()
+        cases = {
+            'daemon down': subprocess.CalledProcessError(1, ['docker', 'info']),
+            'cli missing': FileNotFoundError(2, 'No such file or directory', 'docker'),
+            'socket not permitted': PermissionError(13, 'Permission denied'),
+            'probe timed out': subprocess.TimeoutExpired(['docker', 'info'], 20),
+            'subprocess error': subprocess.SubprocessError('boom'),
+        }
+        for label, error in cases.items():
+            with self.subTest(case=label):
+                result = self.run_helper(runner=self._unreachable_docker(error))
+                self.assertEqual(result['mode'], 'unmanaged')
+                self.assertFalse(result['changed'])
+                self.assertIsNone(result['address'])
+                self.assertEqual(self.read_bytes(), before)
+
+    def test_platform_probe_does_not_swallow_other_failures(self):
+        self.write_env('FOO=bar\n')
+        with self.assertRaises(RuntimeError):
+            self.run_helper(runner=self._unreachable_docker(RuntimeError('unexpected bug')))
 
 
 class TestFirstWrite(Base):
@@ -256,6 +293,45 @@ class TestAddress(Base):
         with self.assertRaises(mod.HelperError):
             self.run_helper(runner=runner)
 
+    def _runner_with_address_probe(self, probe_result):
+        def runner(cmd, **kw):
+            if cmd[:2] == ['docker', 'info']:
+                return 'Docker Desktop'
+            if cmd[:2] == ['wslinfo', '--networking-mode']:
+                return 'nat'
+            if cmd[:2] == ['ip', '-j']:
+                if isinstance(probe_result, Exception):
+                    raise probe_result
+                return probe_result
+            raise AssertionError('unexpected cmd after a failed probe: %r' % (cmd,))
+        return runner
+
+    def _assert_address_error(self, probe_result):
+        self.write_env('FOO=bar\n')
+        before = self.read_bytes()
+        with self.assertRaises(mod.HelperError) as caught:
+            self.run_helper(runner=self._runner_with_address_probe(probe_result))
+        self.assertEqual(str(caught.exception), 'address')
+        self.assertEqual(self.read_bytes(), before)
+
+    def test_absent_ip_command_is_address_not_internal(self):
+        # A host without iproute2 is an environment condition, not a bug.
+        self._assert_address_error(FileNotFoundError(2, 'No such file or directory', 'ip'))
+
+    def test_failed_ip_probe_is_address(self):
+        self._assert_address_error(subprocess.CalledProcessError(1, ['ip']))
+
+    def test_ip_probe_timeout_is_address(self):
+        self._assert_address_error(subprocess.TimeoutExpired(['ip'], 10))
+
+    def test_unparseable_ip_output_is_address(self):
+        self._assert_address_error('not json at all')
+
+    def test_address_probe_does_not_swallow_other_failures(self):
+        self.write_env('FOO=bar\n')
+        with self.assertRaises(RuntimeError):
+            self.run_helper(runner=self._runner_with_address_probe(RuntimeError('unexpected bug')))
+
 
 class TestConcurrency(Base):
     def test_concurrent_env_change_no_replacement(self):
@@ -298,6 +374,113 @@ class TestConcurrency(Base):
             self.run_helper(detect=detect)
         leftovers = [p for p in self.root.iterdir() if p.name.startswith('.env-agent-')]
         self.assertEqual(leftovers, [])
+
+
+class TestNetworkingProbe(Base):
+    """The wslinfo probe decides whether the managed NAT bridge applies."""
+
+    def _runner_with_probe(self, error):
+        def runner(cmd, **kw):
+            if cmd[:2] == ['docker', 'info']:
+                return 'Docker Desktop'
+            if cmd[:2] == ['wslinfo', '--networking-mode']:
+                raise error
+            raise AssertionError('unexpected cmd after a failed probe: %r' % (cmd,))
+        return runner
+
+    def _assert_networking(self, error):
+        self.write_env('FOO=bar\n')
+        before = self.read_bytes()
+        with self.assertRaises(mod.HelperError) as caught:
+            self.run_helper(runner=self._runner_with_probe(error))
+        self.assertEqual(str(caught.exception), 'networking')
+        self.assertEqual(self.read_bytes(), before)
+
+    def test_absent_probe_is_networking_not_internal(self):
+        # Reporting 'internal' told every caller that an unexpected bug had
+        # occurred, when the real condition is that no usable WSL networking
+        # mode could be established.
+        self._assert_networking(FileNotFoundError(2, 'No such file or directory', 'wslinfo'))
+
+    def test_unsupported_probe_flag_is_networking(self):
+        # WSL builds that predate --networking-mode reject the flag; that is a
+        # networking condition, not an internal fault.
+        self._assert_networking(subprocess.CalledProcessError(1, ['wslinfo']))
+
+    def test_probe_timeout_is_networking(self):
+        self._assert_networking(subprocess.TimeoutExpired(['wslinfo'], 10))
+
+    def test_unlisted_mode_still_raises_networking(self):
+        self.write_env('FOO=bar\n')
+        with self.assertRaises(mod.HelperError) as caught:
+            self.run_helper(runner=_runner_factory(mode='bridged'))
+        self.assertEqual(str(caught.exception), 'networking')
+
+    def test_probe_does_not_swallow_other_failures(self):
+        self.write_env('FOO=bar\n')
+        with self.assertRaises(RuntimeError):
+            self.run_helper(runner=self._runner_with_probe(RuntimeError('unexpected bug')))
+
+
+class TestMainContract(Base):
+    """ods_prepare_wsl_agent_address depends on this exit code and payload."""
+
+    WSL = '5.15.90.1-microsoft-standard-WSL2'
+
+    def test_unreachable_docker_exits_zero_unmanaged(self):
+        # The shell caller treats a non-zero exit as "Could not prepare the WSL
+        # host-agent address. Check WSL networking and private .env ownership."
+        # An unreachable engine must not take that path.
+        self.write_env('FOO=bar\n')
+        before = self.read_bytes()
+
+        def boom(cmd, **kw):
+            raise subprocess.CalledProcessError(1, cmd)
+
+        out = io.StringIO()
+        with mock.patch('platform.release', return_value=self.WSL), \
+                mock.patch('subprocess.check_output', boom), \
+                mock.patch('sys.stdout', out):
+            code = mod.main([str(self.root)])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue()),
+                         {'changed': False, 'mode': 'unmanaged', 'address': None})
+        self.assertEqual(self.read_bytes(), before)
+
+    def test_unexpected_failure_still_reports_internal(self):
+        self.write_env('FOO=bar\n')
+
+        def boom(cmd, **kw):
+            raise RuntimeError('unexpected bug')
+
+        out = io.StringIO()
+        with mock.patch('platform.release', return_value=self.WSL), \
+                mock.patch('subprocess.check_output', boom), \
+                mock.patch('sys.stdout', out):
+            code = mod.main([str(self.root)])
+
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(out.getvalue()), {'error': 'internal'})
+
+    def test_probe_failure_reports_networking_reason(self):
+        # This is what the shell caller prints as "reason: networking" instead
+        # of sending the user to inspect .env ownership for a networking cause.
+        self.write_env('FOO=bar\n')
+
+        def probe_unavailable(cmd, **kw):
+            if cmd[:2] == ['wslinfo', '--networking-mode']:
+                raise FileNotFoundError(2, 'No such file or directory', 'wslinfo')
+            return 'Docker Desktop'
+
+        out = io.StringIO()
+        with mock.patch('platform.release', return_value=self.WSL), \
+                mock.patch('subprocess.check_output', probe_unavailable), \
+                mock.patch('sys.stdout', out):
+            code = mod.main([str(self.root)])
+
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(out.getvalue()), {'error': 'networking'})
 
 
 if __name__ == '__main__':

@@ -6,29 +6,46 @@
    once pinned a tag that was never published (server-cuda-b8648). A digest
    also stops a re-pushed tag from changing what an install runs. Each tag
    must resolve to one digest everywhere, and every copy of the NVIDIA and CPU
-   defaults (installer pulls, tier maps, host agent fallback, catalog entries)
-   must match the Compose default exactly.
+   defaults (installer pulls, tier maps, host agent fallback, dependency lock)
+   must match the Compose default exactly. Explicit per-model catalog runtime
+   overrides have separate release boundaries and retain their own pins.
 
-2. The Intel and Apple Docker images and native Windows pin the same
-   llama.cpp build as NVIDIA/CPU, and the Intel Arc local build's source
-   defaults name it (that image is not built by the installer). The Arc build
-   checks the tag's commit, and the Windows installer checks the release
-   archive's SHA-256 for every tag it can download, before downloading.
-   Neither Intel overlay sets SYCL_CACHE_PERSISTENT, which crashes the oneAPI
-   2025.3 runtime in the b9014 image.
+2. Each backend pins its explicitly selected build in BACKEND_BUILDS.
+   NVIDIA CUDA advances independently for the Qwen3.5 NextN loader; CPU,
+   AMD, Intel, Apple, Arc and native Windows keep their existing builds.
+   The image config/backends/nvidia.json maps compute capability 12.1 to
+   (DGX Spark GB10, RTX Spark N1X) is the CUDA 13 build of the NVIDIA release.
+   This table is a release policy, not a runtime or fleet qualification claim.
+   The AMD images are official ggml-org images whose every copy
+   (Compose, installer pulls, config/backends/amd.json, the lock file)
+   agrees; amd.json's Windows archive pin matches the lock and the Windows
+   installer's SHA-256 table. The Arc build checks the tag's commit, and the
+   Windows installer checks the release archive's SHA-256 for every tag it
+   can download, before downloading. Neither Intel overlay sets
+   SYCL_CACHE_PERSISTENT, which crashes the oneAPI 2025.3 runtime in the
+   b9014 image.
 
-3. NVIDIA never gets `--split-mode row`. llama.cpp removed CUDA row split in
+3. No GPU gets `--split-mode row`. llama.cpp removed CUDA row split in
    b9890 (ggml-org/llama.cpp#24216): the flag still parses, but model load
-   fails with "does not support split buffers". ODS maps tensor and hybrid
-   assignments to layer split on NVIDIA. AMD (Lemonade) is unchanged.
+   fails with "does not support split buffers"; Vulkan has no row split, and
+   the HIP backend shares CUDA's split code. ODS maps tensor and hybrid
+   assignments to layer split on NVIDIA and AMD.
+
+4. config/llama-cpp-architectures.json, which the Models page uses to refuse
+   a Hugging Face model the host's llama.cpp cannot load, names the same
+   build for every backend as BACKEND_BUILDS and the macOS native pin, and
+   lists architectures for exactly those builds (regenerate it with
+   scripts/generate-llama-architectures.py --write after a pin change).
 
 Run from ods/:  python3 tests/contracts/test-llama-cpp-compat.py
 """
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -36,6 +53,19 @@ IMAGE_RE = re.compile(r"ghcr\.io/ggml-org/llama\.cpp:(?P<tag>[A-Za-z0-9._-]+)(?P
 DEFAULT_RE = re.compile(r"image:\s*\$\{LLAMA_SERVER_IMAGE:-(?P<ref>[^}]+)\}")
 SCANNED_SUFFIXES = {".py", ".sh", ".ps1", ".psm1", ".yml", ".yaml", ".json", ".example", ""}
 SKIPPED_PREFIXES = ("tests/", "vendor/", "node_modules/", "data/", "docs/")
+
+# Deliberate backend release boundaries. Never derive another backend's
+# expected build from NVIDIA: advancing CUDA does not qualify that backend.
+BACKEND_BUILDS = {
+    "nvidia": "b11429",
+    "cpu": "b9014",
+    "amd-vulkan": "b9014",
+    "amd-rocm": "b9014",
+    "intel": "b9014",
+    "apple": "b9014",
+    "arc": "b9014",
+    "windows-native": "b9014",
+}
 
 # Every place that repeats a default image outside Compose.
 NVIDIA_COPIES = (
@@ -50,6 +80,17 @@ CPU_COPIES = (
     "installers/phases/08-images.sh",
     "installers/phases/11-services.sh",
     "config/dependency-lock.json",
+)
+# The AMD overlays pin their image directly (they must not read
+# LLAMA_SERVER_IMAGE), so their Compose line is a copy like the others.
+AMD_COPIES = (
+    "installers/phases/08-images.sh",
+    "config/backends/amd.json",
+    "config/dependency-lock.json",
+)
+AMD_IMAGES = (
+    ("docker-compose.amd.yml", "server-vulkan-", "linux_image"),
+    ("docker-compose.amd-rocm.yml", "server-rocm-", "linux_rocm_image"),
 )
 
 
@@ -68,6 +109,12 @@ def shipped_files() -> list[Path]:
 def compose_default(name: str) -> str:
     match = DEFAULT_RE.search((ROOT_DIR / name).read_text(encoding="utf-8"))
     return match.group("ref") if match else ""
+
+
+def compose_image(name: str) -> str:
+    """The llama-server image of an overlay that pins it without a variable."""
+    match = re.search(r"^    image:\s*(\S+)", (ROOT_DIR / name).read_text(encoding="utf-8"), re.M)
+    return match.group(1) if match else ""
 
 
 def check_pins(errors: list[str]) -> None:
@@ -98,6 +145,22 @@ def check_pins(errors: list[str]) -> None:
             if ref and ref not in (ROOT_DIR / relative).read_text(encoding="utf-8"):
                 errors.append(f"{relative}: does not repeat the {label} Compose default {ref}")
 
+    contract = json.loads((ROOT_DIR / "config/backends/amd.json").read_text(encoding="utf-8"))
+    runtime = contract.get("runtime", {}).get("llama_server", {})
+    for name, tag_prefix, key in AMD_IMAGES:
+        ref = compose_image(name)
+        match = IMAGE_RE.fullmatch(ref)
+        # A literal reference: a variable such as LLAMA_SERVER_IMAGE could name
+        # another backend's image.
+        if not match or not match.group("digest") or not match.group("tag").startswith(tag_prefix):
+            errors.append(f"{name}: llama-server image must be a literal official ggml-org {tag_prefix}* tag@digest, got {ref!r}")
+            continue
+        if runtime.get(key) != ref:
+            errors.append(f"config/backends/amd.json: runtime.llama_server.{key} must be {ref}")
+        for relative in AMD_COPIES:
+            if ref not in (ROOT_DIR / relative).read_text(encoding="utf-8"):
+                errors.append(f"{relative}: does not repeat the AMD image {ref}")
+
 
 def build_of(ref: str) -> str:
     match = re.search(r"-(b\d+)(?:@|$)", ref)
@@ -105,14 +168,36 @@ def build_of(ref: str) -> str:
 
 
 def check_other_backends(errors: list[str]) -> None:
-    """Intel/Apple images, Arc source defaults and native Windows pin the default build."""
-    default_build = build_of(compose_default("docker-compose.nvidia.yml"))
+    """Keep every backend on its own explicit release, including native pins."""
     intel = compose_default("docker-compose.intel.yml")
     apple_match = re.search(r"^\s*image:\s*(\S+)", (ROOT_DIR / "docker-compose.apple.yml").read_text(encoding="utf-8"), re.M)
     apple = apple_match.group(1) if apple_match else ""
-    for name, ref in (("docker-compose.intel.yml", intel), ("docker-compose.apple.yml", apple)):
-        if build_of(ref) != default_build:
-            errors.append(f"{name}: llama.cpp {build_of(ref) or ref!r} differs from the NVIDIA/CPU default {default_build}")
+    refs = (
+        ("nvidia", "docker-compose.nvidia.yml", compose_default("docker-compose.nvidia.yml")),
+        ("cpu", "docker-compose.cpu.yml", compose_default("docker-compose.cpu.yml")),
+        ("intel", "docker-compose.intel.yml", intel),
+        ("apple", "docker-compose.apple.yml", apple),
+        ("amd-vulkan", "docker-compose.amd.yml", compose_image("docker-compose.amd.yml")),
+        ("amd-rocm", "docker-compose.amd-rocm.yml", compose_image("docker-compose.amd-rocm.yml")),
+    )
+    for backend, name, ref in refs:
+        expected_build = BACKEND_BUILDS[backend]
+        if build_of(ref) != expected_build:
+            errors.append(f"{name}: llama.cpp {build_of(ref) or ref!r} differs from the {backend} release policy {expected_build}")
+    # A compute capability the CUDA 12 default cannot serve (12.1: DGX Spark
+    # GB10, RTX Spark N1X) runs the CUDA 13 build of the same NVIDIA release,
+    # so the Models page's architecture list and the interop captures hold.
+    nvidia_runtime = json.loads((ROOT_DIR / "config/backends/nvidia.json").read_text(encoding="utf-8")) \
+        .get("runtime", {}).get("llama_server", {})
+    compute_images = nvidia_runtime.get("container_images_by_compute", {})
+    if "12.1" not in compute_images:
+        errors.append("config/backends/nvidia.json: container_images_by_compute must map 12.1 to the CUDA 13 build")
+    for compute_cap, ref in sorted(compute_images.items()):
+        match = IMAGE_RE.fullmatch(str(ref))
+        if not match or not match.group("digest") or not match.group("tag").startswith("server-cuda13-"):
+            errors.append(f"config/backends/nvidia.json: the compute {compute_cap} image must be an official server-cuda13-* tag@digest, got {ref!r}")
+        elif build_of(ref) != BACKEND_BUILDS["nvidia"]:
+            errors.append(f"config/backends/nvidia.json: the compute {compute_cap} image {ref} must be the NVIDIA release {BACKEND_BUILDS['nvidia']}")
 
     arc = (ROOT_DIR / "docker-compose.arc.yml").read_text(encoding="utf-8")
     dockerfile = (ROOT_DIR / "images/llama-sycl/Dockerfile").read_text(encoding="utf-8")
@@ -120,8 +205,9 @@ def check_other_backends(errors: list[str]) -> None:
     arc_commit = re.search(r"LLAMA_COMMIT: \$\{LLAMA_COMMIT-([^}]*)\}", arc)
     file_tag = re.search(r"^ARG LLAMA_TAG=(\S+)$", dockerfile, re.M)
     file_commit = re.search(r"^ARG LLAMA_COMMIT=(\S+)$", dockerfile, re.M)
-    if not (arc_tag and file_tag and arc_tag.group(1) == file_tag.group(1) == default_build):
-        errors.append(f"Arc build: compose/Dockerfile LLAMA_TAG must both be {default_build}")
+    arc_build = BACKEND_BUILDS["arc"]
+    if not (arc_tag and file_tag and arc_tag.group(1) == file_tag.group(1) == arc_build):
+        errors.append(f"Arc build: compose/Dockerfile LLAMA_TAG must both be {arc_build}")
     if not (arc_commit and file_commit and arc_commit.group(1) == file_commit.group(1)
             and re.fullmatch(r"[0-9a-f]{40}", file_commit.group(1))):
         errors.append("Arc build: compose/Dockerfile LLAMA_COMMIT must be the same full commit SHA")
@@ -130,23 +216,46 @@ def check_other_backends(errors: list[str]) -> None:
 
     constants = (ROOT_DIR / "installers/windows/lib/constants.ps1").read_text(encoding="utf-8")
     tier_map = (ROOT_DIR / "installers/windows/lib/tier-map.ps1").read_text(encoding="utf-8")
-    installer = (ROOT_DIR / "installers/windows/install-windows.ps1").read_text(encoding="utf-8")
+    runtime = (ROOT_DIR / "installers/windows/lib/native-llama-runtime.ps1").read_text(encoding="utf-8")
     release = re.search(r'^\$script:LLAMA_CPP_RELEASE_TAG = "(b\d+)"', constants, re.M)
     table = re.search(r"\$script:LLAMA_CPP_VULKAN_SHA256 = @\{(.*?)\}", constants, re.S)
     sums = dict(re.findall(r'"(b\d+)"\s*=\s*"([0-9a-f]{64})"', table.group(1))) if table else {}
     windows_tags = {release.group(1)} if release else set()
     windows_tags.update(re.findall(r'\$runtimeTag = "(b\d+)"', tier_map))
-    if not release or release.group(1) != default_build:
-        errors.append(f"constants.ps1: native Windows llama.cpp must be {default_build}")
+    windows_build = BACKEND_BUILDS["windows-native"]
+    if not release or release.group(1) != windows_build:
+        errors.append(f"constants.ps1: native Windows llama.cpp must be {windows_build}")
     for tag in sorted(windows_tags):
+        if tag != windows_build:
+            errors.append(f"Windows native runtime tag {tag} differs from its release policy {windows_build}")
         if tag not in sums:
             errors.append(f"constants.ps1: no SHA-256 for the Windows Vulkan archive of {tag}")
-    verify = installer.find("LLAMA_CPP_VULKAN_SHA256[$script:LLAMA_CPP_RELEASE_TAG]")
-    download = installer.find("Invoke-DownloadWithRetry -Url $script:LLAMA_CPP_VULKAN_URL")
-    hashing = installer.find("Get-FileHash -LiteralPath $llamaZip -Algorithm SHA256", max(download, 0))
-    extract = installer.find("Invoke-ExtractionWithRetry -ZipPath $llamaZip")
-    if not (0 <= verify < download < hashing < extract):
-        errors.append("install-windows.ps1: the pinned SHA-256 must be looked up before the download and checked before extraction")
+    # Both Windows installers acquire llama-server.exe through
+    # Install-ODSNativeLlamaRuntime, whose pin carries the size and SHA-256.
+    install = runtime.partition("function Install-ODSNativeLlamaRuntime")[2]
+    download = install.find("Invoke-ODSNativeLlamaDownload $Pin.Url $zip")
+    size = install.find("-ne $Pin.Size", max(download, 0))
+    hashing = install.find("-cne $Pin.Sha256", max(download, 0))
+    extract = install.find("Expand-ODSNativeLlamaArchive $zip", max(download, 0))
+    if not (0 <= download < size < hashing < extract):
+        errors.append("native-llama-runtime.ps1: the download's pinned size and SHA-256 must be checked before extraction")
+
+    windows_pin = json.loads((ROOT_DIR / "config/backends/amd.json").read_text(encoding="utf-8")) \
+        .get("runtime", {}).get("llama_server", {}).get("windows", {})
+    lock = json.loads((ROOT_DIR / "config/dependency-lock.json").read_text(encoding="utf-8"))
+    lock_archive = {entry.get("id"): entry.get("value") for entry in lock.get("entries", [])}
+    pin_tag = windows_pin.get("release_tag")
+    if pin_tag != windows_build:
+        errors.append(f"amd.json: runtime.llama_server.windows.release_tag must be {windows_build}")
+    if windows_pin.get("asset") != f"llama-{pin_tag}-bin-win-vulkan-x64.zip":
+        errors.append("amd.json: runtime.llama_server.windows.asset must be the release's win-vulkan-x64 zip")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(windows_pin.get("sha256", ""))) \
+            or windows_pin.get("sha256") != lock_archive.get("amd.llama-server-windows-vulkan"):
+        errors.append("amd.json: runtime.llama_server.windows.sha256 must match the dependency-lock archive entry")
+    if sums.get(pin_tag) and windows_pin.get("sha256") != sums[pin_tag]:
+        errors.append(f"amd.json and constants.ps1 disagree on the {pin_tag} Windows archive SHA-256")
+    if not isinstance(windows_pin.get("size"), int) or windows_pin["size"] <= 0:
+        errors.append("amd.json: runtime.llama_server.windows.size must be the archive size in bytes")
 
     for name in ("docker-compose.intel.yml", "docker-compose.arc.yml"):
         text = (ROOT_DIR / name).read_text(encoding="utf-8")
@@ -156,6 +265,134 @@ def check_other_backends(errors: list[str]) -> None:
             errors.append(f"{name}: ONEAPI_DEVICE_SELECTOR must come from .env (level_zero:0 on multi-GPU hosts)")
     if re.search(r"^SYCL_CACHE_PERSISTENT=", (ROOT_DIR / "installers/phases/06-directories.sh").read_text(encoding="utf-8"), re.M):
         errors.append("06-directories.sh: must not write SYCL_CACHE_PERSISTENT")
+
+
+# Key in config/llama-cpp-architectures.json -> BACKEND_BUILDS keys it must equal.
+ARCHITECTURE_POLICY_SOURCES = {
+    "nvidia": ("nvidia",),
+    "cpu": ("cpu",),
+    "amd": ("amd-vulkan", "amd-rocm"),
+    "intel": ("intel",),
+    "sycl": ("arc",),
+    "windows-native": ("windows-native",),
+}
+
+
+def check_architecture_lists(errors: list[str]) -> None:
+    """The pre-download architecture gate reads the builds the pins ship."""
+    path = ROOT_DIR / "config/llama-cpp-architectures.json"
+    policy = json.loads(path.read_text(encoding="utf-8"))
+    backend_builds = policy.get("backendBuilds", {})
+    builds = policy.get("builds", {})
+    for key, sources in ARCHITECTURE_POLICY_SOURCES.items():
+        for source in sources:
+            if backend_builds.get(key) != BACKEND_BUILDS[source]:
+                errors.append(
+                    f"llama-cpp-architectures.json: backendBuilds.{key} must be {BACKEND_BUILDS[source]} "
+                    f"(the {source} release policy), got {backend_builds.get(key)!r}"
+                )
+    macos = re.search(
+        r'^LLAMA_CPP_RELEASE_TAG="(b\d+)"',
+        (ROOT_DIR / "installers/macos/lib/constants.sh").read_text(encoding="utf-8"),
+        re.M,
+    )
+    if not macos or backend_builds.get("apple") != macos.group(1):
+        errors.append("llama-cpp-architectures.json: backendBuilds.apple must be the macOS native pin in constants.sh")
+    unknown_keys = set(backend_builds) - set(ARCHITECTURE_POLICY_SOURCES) - {"apple"}
+    if unknown_keys:
+        errors.append(f"llama-cpp-architectures.json: backendBuilds has keys without a pin: {sorted(unknown_keys)}")
+    if set(builds) != set(backend_builds.values()):
+        errors.append(
+            "llama-cpp-architectures.json: builds must list exactly the builds backendBuilds names; "
+            "run scripts/generate-llama-architectures.py --write"
+        )
+    for tag, entry in sorted(builds.items()):
+        names = entry.get("architectures") if isinstance(entry, dict) else None
+        if not isinstance(names, list) or not names or names != sorted(set(names)):
+            errors.append(f"llama-cpp-architectures.json: {tag} needs a sorted, unique, non-empty architecture list")
+        if not re.fullmatch(r"[0-9a-f]{40}", str((entry or {}).get("commit", ""))):
+            errors.append(f"llama-cpp-architectures.json: {tag} needs its full release commit")
+        types = (entry or {}).get("tensorTypes")
+        if not isinstance(types, dict) or types.get("F32") != 0 or types.get("Q4_K") != 12:
+            errors.append(f"llama-cpp-architectures.json: {tag} needs its ggml tensor types; "
+                          "run scripts/generate-llama-architectures.py --write")
+
+
+# 5. Every name ODS sends to or reads from llama.cpp exists at every pinned build
+#    (any-model PLAN §4, WP0.2). Flags and environment names come from that
+#    build's captured `llama-server --help`; /props fields from a captured key
+#    inventory. A pin bump needs both captures for the new build.
+HELP_FIXTURES = ROOT_DIR / "tests/fixtures/llama-server-help"
+PROPS_FIXTURES = ROOT_DIR / "tests/fixtures/llama-server-props"
+INTEROP_HELP_NAMES = (
+    "--mmproj", "LLAMA_ARG_MMPROJ",                           # vision projector (WP2)
+    "--chat-template-file", "LLAMA_ARG_CHAT_TEMPLATE_FILE",   # template overrides (WP5)
+    "--reasoning", "LLAMA_ARG_REASONING",                     # server-wide thinking default
+    "--jinja",                                                # chat templates and tool calls
+)
+INTEROP_PROPS_NAMES = {
+    "keys": ("build_info", "chat_template", "chat_template_caps", "modalities", "default_generation_settings"),
+    "chat_template_caps": ("supports_tools", "supports_tool_calls"),
+    "modalities": ("vision",),
+    "default_generation_settings": ("n_ctx",),
+}
+
+
+def pinned_builds() -> set[str]:
+    builds = set(BACKEND_BUILDS.values())
+    macos = re.search(
+        r'^LLAMA_CPP_RELEASE_TAG="(b\d+)"',
+        (ROOT_DIR / "installers/macos/lib/constants.sh").read_text(encoding="utf-8"),
+        re.M,
+    )
+    if macos:
+        builds.add(macos.group(1))
+    return builds
+
+
+def interop_name_errors(help_dir: Path, props_dir: Path, builds: set[str]) -> list[str]:
+    errors: list[str] = []
+    for build in sorted(builds):
+        help_path = help_dir / f"{build}.txt"
+        if not help_path.exists():
+            errors.append(f"{build}: add tests/fixtures/llama-server-help/{build}.txt (llama-server --help at this pin)")
+        else:
+            text = help_path.read_text(encoding="utf-8")
+            for name in INTEROP_HELP_NAMES:
+                if not re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", text):
+                    errors.append(f"{build}: llama-server --help lacks {name}")
+        props_path = props_dir / f"{build}.json"
+        if not props_path.exists():
+            errors.append(f"{build}: add tests/fixtures/llama-server-props/{build}.json (the /props key inventory)")
+            continue
+        inventory = json.loads(props_path.read_text(encoding="utf-8"))
+        for section, names in INTEROP_PROPS_NAMES.items():
+            present = inventory.get(section) or []
+            for name in names:
+                if name not in present:
+                    errors.append(f"{build}: /props {section} lacks {name}")
+    return errors
+
+
+def check_interop_names(errors: list[str]) -> None:
+    builds = pinned_builds()
+    errors.extend(interop_name_errors(HELP_FIXTURES, PROPS_FIXTURES, builds))
+    # Negative self-test: a capture missing one name must fail, naming build and name.
+    build = sorted(builds)[0]
+    with tempfile.TemporaryDirectory() as temp:
+        help_dir, props_dir = Path(temp) / "help", Path(temp) / "props"
+        help_dir.mkdir()
+        props_dir.mkdir()
+        for name in builds:
+            for source, target in ((HELP_FIXTURES / f"{name}.txt", help_dir), (PROPS_FIXTURES / f"{name}.json", props_dir)):
+                if source.exists():
+                    (target / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        stripped = help_dir / f"{build}.txt"
+        if stripped.exists():
+            stripped.write_text(stripped.read_text(encoding="utf-8").replace("LLAMA_ARG_MMPROJ", "LLAMA_ARG_REMOVED"),
+                                encoding="utf-8")
+            if f"{build}: llama-server --help lacks LLAMA_ARG_MMPROJ" not in interop_name_errors(help_dir, props_dir, builds):
+                errors.append("interop-name self-test: removing LLAMA_ARG_MMPROJ from a capture did not fail")
 
 
 def bash_case(text: str, anchor: str, variables: dict[str, str], result: str) -> str:
@@ -179,7 +416,7 @@ def check_split_mode(errors: list[str]) -> None:
     )
     for label, text, anchor, mode_var, vendor_var, result in cases:
         for mode in ("tensor", "hybrid", "pipeline"):
-            for vendor, expected in (("nvidia", "layer"), ("amd", "row" if mode != "pipeline" else "layer")):
+            for vendor, expected in (("nvidia", "layer"), ("amd", "layer")):
                 inputs = {mode_var: mode, vendor_var: vendor, "llama_gpu_count": "2"}
                 actual = bash_case(text, anchor, inputs, result)
                 if actual != expected:
@@ -191,12 +428,14 @@ def main() -> int:
     check_pins(errors)
     check_other_backends(errors)
     check_split_mode(errors)
+    check_architecture_lists(errors)
+    check_interop_names(errors)
     if errors:
         print("[FAIL] llama.cpp image pin / split-mode contract")
         for error in errors:
             print(f"  - {error}")
         return 1
-    print("[PASS] llama.cpp images are tag@digest pinned and agree; Intel/Apple/Windows pin the default build; NVIDIA never uses row split")
+    print("[PASS] llama.cpp images are tag@digest pinned and copies agree; each backend matches its explicit release policy; no GPU uses row split; the architecture gate lists every pinned build; every interop name exists at every pinned build")
     return 0
 
 

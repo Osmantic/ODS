@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom' // eslint-disable-line no-unused
 import { ThemeProvider } from './contexts/ThemeContext' // eslint-disable-line no-unused-vars
 import App from './App' // eslint-disable-line no-unused-vars
 import { useFirstRun } from './hooks/useFirstRun'
+import { useSystemStatus } from './hooks/useSystemStatus'
 import { useVersion } from './hooks/useVersion'
 import { getInternalRoutes } from './plugins/registry'
 
@@ -103,6 +104,11 @@ describe('App', () => {
     expect(input).toHaveValue('Keep this message')
   })
   beforeEach(() => {
+    useSystemStatus.mockReturnValue({
+      status: { gpu: null, services: [], model: null, bootstrap: null, uptime: 0, version: '1.0.0' },
+      loading: false,
+      error: null,
+    })
     useVersion.mockReturnValue({ version:{current:'2.6.0',update_available:false}, showUpdate:false, dismissUpdate:vi.fn() })
     getInternalRoutes.mockReturnValue([])
     vi.stubGlobal('fetch', vi.fn(() =>
@@ -119,6 +125,98 @@ describe('App', () => {
   test('renders without crashing', () => {
     render(<App />)
     expect(document.querySelector('aside')).toBeInTheDocument()
+  })
+
+  test.each([
+    ['starting', 'Preparing Full Model', 'Preparing the full model download…'],
+    ['verifying', 'Verifying Full Model', 'Checking the downloaded model before activation…'],
+    ['swapping', 'Activating Full Model', 'Switching chat to the full model…'],
+  ])('shows the %s model phase instead of a download ETA', (phase, title, detail) => {
+    useSystemStatus.mockReturnValue({
+      status: {
+        gpu: null, services: [], model: null, uptime: 0, version: '1.0.0',
+        bootstrap: {
+          active: true, phase, model: 'Qwen 3.5 9B', percent: 100,
+          bytesDownloaded: 5.68e9, bytesTotal: 5.68e9, speedMbps: 25, eta: null,
+        },
+      },
+      loading: false,
+      error: null,
+    })
+    render(<App />)
+    expect(screen.getByText(title)).toBeInTheDocument()
+    expect(screen.getByText(detail)).toBeInTheDocument()
+    if (phase === 'swapping') {
+      expect(screen.queryByText(/Chat now with lightweight model/)).toBeNull()
+      expect(screen.getByText(/Chat pauses during activation/)).toBeVisible()
+    } else expect(screen.getByText(/Chat now with lightweight model/)).toBeVisible()
+    expect(screen.queryByText(/ETA:/)).toBeNull()
+    expect(screen.queryByText('25.0 MB/s')).toBeNull()
+    if (phase !== 'starting') expect(screen.getByText('Download 100%')).toBeInTheDocument()
+  })
+
+  test('keeps download progress for older clients without a phase', () => {
+    useSystemStatus.mockReturnValue({
+      status: {
+        gpu: null, services: [], model: null, uptime: 0, version: '1.0.0',
+        bootstrap: {
+          active: true, model: 'Qwen 3.5 9B', percent: 50,
+          bytesDownloaded: 3e9, bytesTotal: 6e9, speedMbps: 25, eta: 120,
+        },
+      },
+      loading: false,
+      error: null,
+    })
+    render(<App />)
+    expect(screen.getByText('Downloading Full Model')).toBeInTheDocument()
+    expect(screen.getByText('50.0%')).toBeInTheDocument()
+    expect(screen.getByText(/ETA: 2m 0s/)).toBeInTheDocument()
+    expect(screen.getByText('25.0 MB/s')).toBeInTheDocument()
+  })
+
+  // bootstrap-upgrade.sh writes bytesTotal 0 when the HEAD request returns no
+  // Content-Length, and /api/status sends that unknown percent as 0.
+  test.each([
+    [3.1e9, '3.1 GB downloaded · Total size unavailable'],
+    [0, 'Progress unavailable'],
+  ])('shows an unknown download total as indeterminate (%s bytes downloaded)', (bytesDownloaded, detail) => {
+    useSystemStatus.mockReturnValue({
+      status: {
+        gpu: null, services: [], model: null, uptime: 0, version: '1.0.0',
+        bootstrap: {
+          active: true, phase: 'downloading', model: 'Qwen 3.5 9B', percent: 0,
+          bytesDownloaded, bytesTotal: 0, speedMbps: 25, eta: null,
+        },
+      },
+      loading: false,
+      error: null,
+    })
+    render(<App />)
+    expect(screen.getByText('Downloading Full Model')).toBeInTheDocument()
+    expect(screen.queryByText('0.0%')).toBeNull()
+    expect(screen.queryByText(/\/ 0 GB/)).toBeNull()
+    expect(screen.queryByText(/ETA:/)).toBeNull()
+    expect(screen.getByText(detail)).toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: 'Full model download progress' })).not.toHaveAttribute('aria-valuenow')
+    expect(screen.getByText('25.0 MB/s')).toBeInTheDocument()
+  })
+
+  test('keeps the percentage and bar for a known total at 0%', () => {
+    useSystemStatus.mockReturnValue({
+      status: {
+        gpu: null, services: [], model: null, uptime: 0, version: '1.0.0',
+        bootstrap: {
+          active: true, phase: 'downloading', model: 'Qwen 3.5 9B', percent: 0,
+          bytesDownloaded: 0, bytesTotal: 6e9, speedMbps: null, eta: null,
+        },
+      },
+      loading: false,
+      error: null,
+    })
+    render(<App />)
+    expect(screen.getByText('0.0%')).toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: 'Full model download progress' })).toHaveAttribute('aria-valuenow', '0')
+    expect(screen.getByText(/ETA: calculating\.\.\. • 0 \/ 6\.0 GB/)).toBeInTheDocument()
   })
 
   test('opens update details from the confirmed-release notice without replacing the conversation', async () => {

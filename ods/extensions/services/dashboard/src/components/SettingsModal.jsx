@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Search, Settings as Gear, Palette, Activity, Network, HardDrive, RefreshCw, Terminal, Cloud, ShieldCheck, Share2, UserRound } from 'lucide-react'
+import { Search, Settings as Gear, Palette, Activity, Network, HardDrive, RefreshCw, Terminal, Cloud, ShieldCheck, Share2, UserRound, Server } from 'lucide-react'
 import Settings from '../pages/Settings'
 import MetalMetricIcon from './MetalMetricIcon'
 import ProfileSettings from './settings/ProfileSettings'
@@ -17,12 +17,17 @@ const sections = [
   ['portal-mascot', 'Portal mascot', Cloud],
   ['usage', 'Usage', Activity], ['owner', 'Owner access', UserRound],
   ['connections', 'Portal connections', Cloud], ['access', 'Portal access', ShieldCheck],
-  ['sharing', 'Model sharing', Share2], ['services', 'Services', Network],
+  ['sharing', 'Model sharing', Share2],
+  // Using a model API (an API key) or another computer's GPU lives here.
+  ['remote', 'Remote model', Server, 'api key provider openai endpoint url cloud gpu server'],
+  ['services', 'Services', Network],
   ['pixel-diagnostics', 'Portal diagnostics', Activity],
   ['storage', 'Storage', HardDrive], ['updates', 'Updates', RefreshCw],
   ['advanced', 'Advanced', Terminal],
-  ['integrations', 'Service map', Network], ['remote', 'Remote GPU', Share2],
+  ['integrations', 'Service map', Network],
 ]
+
+const matches = (query) => ([, label, , keywords = '']) => `${label} ${keywords}`.toLowerCase().includes(query.toLowerCase())
 
 export default function SettingsModal() {
   const content = useRef(null)
@@ -41,8 +46,8 @@ export default function SettingsModal() {
     <aside className="ods-settings-nav">
       <label className="ods-settings-search"><MetalMetricIcon icon={Search} size={15} /><input aria-label="Search settings" placeholder="Search settings…" value={query} onChange={event => setQuery(event.target.value)} /></label>
       <nav ref={navigation} aria-label="Settings sections">
-        {sections.filter(([,label]) => label.toLowerCase().includes(query.toLowerCase())).map(([id,label,Icon]) => <button key={id} aria-current={section === id ? 'page' : undefined} onClick={() => setSection(id)}><MetalMetricIcon icon={Icon}/><span>{label}</span></button>)}
-        {!sections.some(([,label]) => label.toLowerCase().includes(query.toLowerCase())) && <p>No settings found.</p>}
+        {sections.filter(matches(query)).map(([id,label,Icon]) => <button key={id} aria-current={section === id ? 'page' : undefined} onClick={() => setSection(id)}><MetalMetricIcon icon={Icon}/><span>{label}</span></button>)}
+        {!sections.some(matches(query)) && <p>No settings found.</p>}
       </nav>
     </aside>
     <div ref={content} className="ods-settings-content" aria-label={sections.find(([id]) => id === section)[1]}><div hidden={['profile','portal-mascot','pixel-diagnostics','integrations','remote'].includes(section)}><Settings activeSection={section} /></div>

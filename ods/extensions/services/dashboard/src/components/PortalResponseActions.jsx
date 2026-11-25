@@ -2,8 +2,10 @@ import {useEffect, useRef, useState} from 'react'
 import {Check, Copy} from 'lucide-react'
 import './portal-response-actions.css'
 
-// The caller supplies the same substantive Markdown shown in the response.
-// Publication receipts, tool events and other message metadata are not inputs.
+// The caller supplies the substantive Markdown of the response. Publication
+// receipts, tool events and other message metadata are not inputs, and neither
+// are the notes Portal shows for embeds it can't display: the reply's own text
+// is copied, so nothing is lost.
 export default function PortalResponseActions({content}) {
   const text = typeof content === 'string' ? content : ''
   const [state, setState] = useState('idle')

@@ -2,7 +2,9 @@
 
 This ODS overlay does not modify the pinned Pixel source or release identity.
 Run as the workspace owner, after configure and before plan for generated files,
-and before the gateway restart for an existing owner workspace.
+and before the gateway restart for an existing owner workspace. Before replacing
+a file in an existing owner workspace, the original bytes are kept in a private
+directory beside the workspace, where the agent does not read them.
 """
 import argparse
 import hashlib
@@ -12,8 +14,10 @@ from pathlib import Path
 import secrets
 import stat
 import sys
+import time
 
 MAX_BYTES = 2 * 1024 * 1024
+BACKUP_DIRECTORY = '.ods-workspace-guidance-backups'
 LEGACY_HEADING = b'## Dream Fleet Local-First Operating Contract (canonical)\n'
 LEGACY_SECTION_SHA256 = 'f4ae5ee982981b26ec0b4130772d4ed6e7519eec0ae77650a777325bfa79b818'
 LEGACY_MEMORY_SHA256 = '1f1c2722d83c4cd9a91a63c87a6bca94cea1f0d112c8aed36233d72ddaa89ec1'
@@ -148,10 +152,47 @@ def _revalidate(directory, path, name, body, info):
         os.close(check)
 
 
+def _backup_directory(directory, workspace_name):
+    """Create a private per-run backup directory beside, not inside, the workspace."""
+    # Resolve the parent from the verified workspace descriptor. Its mode is not
+    # checked; the backup directory itself must be owner-only and not a link.
+    parent = os.open('..', os.O_RDONLY | os.O_DIRECTORY, dir_fd=directory)
+    try:
+        if os.fstat(parent).st_uid != os.getuid():
+            raise ValueError('owner-controlled workspace parent required for guidance backup')
+        try:
+            os.mkdir(BACKUP_DIRECTORY, 0o700, dir_fd=parent)
+        except FileExistsError:
+            pass
+        root = os.open(BACKUP_DIRECTORY, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    finally:
+        os.close(parent)
+    try:
+        info = os.fstat(root)
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError('private guidance backup directory required')
+        run = '{}-{}-{}'.format(workspace_name, time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()), secrets.token_hex(4))
+        os.mkdir(run, 0o700, dir_fd=root)
+        os.fsync(root)
+        return os.open(run, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+    finally:
+        os.close(root)
+
+
+def _write_backup(directory, name, body):
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+    with os.fdopen(fd, 'wb') as stream:
+        stream.write(body)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.fsync(directory)
+
+
 def migrate_workspace(path, *, generated=False):
     if os.geteuid() == 0:
         raise ValueError('run workspace guidance migration as its non-root owner')
     directory = _directory(path, generated=generated)
+    backups = None
     try:
         pending, statuses = [], {}
         # Validate both files before any mutation, including unchanged owner text.
@@ -164,6 +205,12 @@ def migrate_workspace(path, *, generated=False):
             replacement, statuses[name] = transform(name, body)
             if replacement != body:
                 pending.append((name, body, replacement, info))
+        if pending and not generated:
+            # A generated workspace is a fresh template copy. An owner
+            # workspace keeps every replaced file before the first replacement.
+            backups = _backup_directory(directory, Path(path).name)
+            for name, body, _replacement, _info in pending:
+                _write_backup(backups, name, body)
         for name, body, replacement, info in pending:
             temporary = '.ods-guidance-' + secrets.token_hex(16)
             fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -184,6 +231,8 @@ def migrate_workspace(path, *, generated=False):
                     pass
         return statuses
     finally:
+        if backups is not None:
+            os.close(backups)
         os.close(directory)
 
 
@@ -194,6 +243,9 @@ def main():
     args = parser.parse_args()
     result = migrate_workspace(args.workspace, generated=args.generated)
     print(json.dumps(result, sort_keys=True))
+    if not args.generated and 'migrated' in result.values():
+        print('ODS kept the replaced workspace guidance in '
+              + str(Path(args.workspace).parent / BACKUP_DIRECTORY) + '.', file=sys.stderr)
     if 'manual-review-required' in result.values():
         print('ODS preserved customized fleet guidance; review it against the selected model route.', file=sys.stderr)
 

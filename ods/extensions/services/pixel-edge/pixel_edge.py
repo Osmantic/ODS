@@ -249,6 +249,9 @@ _EMPTY_REPLY = (
     "I couldn't produce a useful response to that request. Please try again or "
     "tell me what you'd like me to do differently."
 )
+# A final reply that only repeats the owner's message is compared, and held
+# while streaming, only when both texts are at most this many characters.
+_MAX_ECHO_CHARS = 8192
 _INTERACTIVE_DELIVERY_CONTRACT = (
     "\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. "
     "If it asks for exact text, copy that full exact text. Do not answer with a "
@@ -485,15 +488,17 @@ def _workspace_mutation_positions(text: str) -> set[int]:
             return " " + value[1:-1] + " "
         return "".join("\n" if char == "\n" else " " for char in value)
 
+    # A backslash escapes any character, a line break included, and an open
+    # quote may end in one. Every quote can then match to the end of the
+    # text, which keeps the scan linear (a failed match per quote made it
+    # quadratic in the length of the owner text).
     instructions = re.sub(
         r"```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|(?m:^\s*>[^\n]*)|"
-        r"`[^`\n]*`|\"(?:\\.|[^\"\\])*(?:\"|$)|"
-        r"(?<!\w)'(?:\\.|[^'\\])*(?:'|$)|"
+        r"`[^`\n]*`|\"(?:\\[\s\S]|[^\"\\])*(?:\"|\\?\Z)|"
+        r"(?<!\w)'(?:\\[\s\S]|[^'\\])*(?:'|\\?\Z)|"
         r"\u201c[^\u201d]*(?:\u201d|$)|(?<!\w)\u2018[^\u2019]*(?:\u2019|$)",
         mask_content, text,
     )
-    if not _WORKSPACE_MUTATION_SCOPE.search(instructions):
-        return set()
     negated = re.compile(
         r"^\s*(?:please\s+)?(?:do\s+not|don['\u2019]t|never|must\s+not|"
         r"should\s+not|avoid|skip|omit|exclude|no)\b", re.IGNORECASE,
@@ -511,7 +516,9 @@ def _workspace_mutation_positions(text: str) -> set[int]:
         instructions, re.IGNORECASE,
     ):
         value = clause.group("clause")
-        if not negated.search(value):
+        # A file mentioned in an earlier read-only clause does not turn a
+        # later "write the answer" directive into a workspace mutation.
+        if _WORKSPACE_MUTATION_SCOPE.search(value) and not negated.search(value):
             positions.update(clause.start("clause") + match.start("verb")
                              for match in directive.finditer(value))
     return positions
@@ -671,15 +678,53 @@ def _with_interactive_delivery_contract(data: dict) -> dict:
     return data
 
 
-def _reserved_reply(value) -> bool:
-    return isinstance(value, str) and (
-        not value.strip() or value.strip() in _RESERVED_ASSISTANT_REPLIES
+def _echo_form(text: str) -> str | None:
+    """Text as compared with the owner's message, or None when it is too long.
+
+    Line breaks and spacing collapse; letter case is kept. A model that copies
+    the request copies it verbatim, while a reply that differs only in case
+    can be a requested transformation. The length bound keeps this check and
+    the streaming hold small; a copied request is short.
+    """
+    text = text.strip()
+    return " ".join(text.split()) if len(text) <= _MAX_ECHO_CHARS else None
+
+
+def _replaceable_reply(value, owner_echo: str = "") -> bool:
+    """A reserved/empty final reply, or one that only copies the owner's message.
+
+    ``owner_echo`` is the owner's latest message in ``_echo_form``, taken
+    before the delivery contract and routes are appended ("" disables the
+    copy check). A reply that quotes part of the message, such as "X" for
+    "Reply with exactly: X", is a different text and is never replaced.
+    """
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip()
+    return (not normalized or normalized in _RESERVED_ASSISTANT_REPLIES
+            or (bool(owner_echo) and _echo_form(value) == owner_echo))
+
+
+def _reserved_prefix(text: str) -> bool:
+    """Streamed text that can still become an empty or reserved reply."""
+    normalized = text.strip()
+    return not normalized or any(
+        reserved.startswith(normalized) for reserved in _RESERVED_ASSISTANT_REPLIES
     )
 
 
+def _replaceable_prefix(text: str, owner_echo: str = "") -> bool:
+    """Streamed text that can still become a replaceable final reply."""
+    if _reserved_prefix(text):
+        return True
+    form = _echo_form(text) if owner_echo else None
+    return form is not None and owner_echo.startswith(form)
+
+
 def _rewrite_json_response(raw: bytes, fallback: str,
-                           response_model: str = _LEGACY_MODEL) -> bytes:
-    """Rewrite model identity and replace only an exact reserved/empty final reply."""
+                           response_model: str = _LEGACY_MODEL,
+                           owner_echo: str = "") -> bytes:
+    """Rewrite model identity and replace only an exact reserved/empty or copied final reply."""
     try:
         parsed = json.loads(_rewrite_json_model(raw, response_model))
     except (json.JSONDecodeError, ValueError):
@@ -690,7 +735,7 @@ def _rewrite_json_response(raw: bytes, fallback: str,
             if not isinstance(choice, dict):
                 continue
             message = choice.get("message")
-            if isinstance(message, dict) and _reserved_reply(message.get("content")):
+            if isinstance(message, dict) and _replaceable_reply(message.get("content"), owner_echo):
                 message["content"] = fallback
     return json.dumps(parsed).encode("utf-8")
 
@@ -827,6 +872,247 @@ async def handle_runtime_identity(request: web.Request):
     return web.json_response(result, headers={"Cache-Control": "no-store"})
 
 
+_EXAMPLE_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_EXAMPLE_PREVIEW_KEYS = frozenset(("bytes", "entrySha256", "files", "kind", "port", "relativeDirectory",
+                                   "schemaVersion", "sha256", "siteId", "url"))
+_SHA256 = re.compile(r"[a-f0-9]{64}")
+_EXAMPLE_REFUSALS = {404: "example-project-unavailable", 409: "example-project-not-previewable",
+                     422: "example-project-not-playable"}
+
+
+def _example_projects(value) -> dict:
+    """The shipped example projects present in the owner's workspace."""
+    projects = value.get("projects") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "projects"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or not isinstance(projects, list) or len(projects) > 8
+            or any(not isinstance(name, str) or not _EXAMPLE_PROJECT_NAME.fullmatch(name) for name in projects)
+            or len(set(projects)) != len(projects)):
+        raise ValueError("invalid example projects")
+    return {"schemaVersion": 1, "projects": list(projects)}
+
+
+def _example_preview(value, name: str) -> dict:
+    """One verified receipt for Playground/<name>, exactly as a model run delivers it."""
+    preview = value.get("preview") if isinstance(value, dict) else None
+
+    def integer(key, low, high):
+        return type(preview.get(key)) is int and low <= preview[key] <= high
+
+    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "preview"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or not isinstance(preview, dict) or set(preview) != _EXAMPLE_PREVIEW_KEYS
+            or type(preview["schemaVersion"]) is not int or preview["schemaVersion"] != 1
+            or preview["kind"] != "ods-pixel-workspace-preview"
+            or preview["relativeDirectory"] != f"Playground/{name}"
+            or not isinstance(preview["sha256"], str) or not _SHA256.fullmatch(preview["sha256"])
+            or not isinstance(preview["entrySha256"], str) or not _SHA256.fullmatch(preview["entrySha256"])
+            or preview["siteId"] != f"site-{preview['sha256'][:24]}"
+            or not integer("port", 1, 65535) or not integer("files", 1, 128) or not integer("bytes", 1, 16 * 1024 * 1024)
+            or preview["url"] != f"http://{preview['siteId']}.localhost:{preview['port']}/{preview['siteId']}/"):
+        raise ValueError("invalid example preview")
+    return {"schemaVersion": 1, "preview": {key: preview[key] for key in sorted(_EXAMPLE_PREVIEW_KEYS)}}
+
+
+async def handle_example_projects(request: web.Request):
+    """List the shipped example projects, or open one with no model run.
+
+    Portal's sidebar shows Playground/elf-of-doom like any other project while
+    its folder exists. Opening it asks the host to publish that existing
+    folder through the create-only preview service; nothing is written to the
+    workspace and no model runs.
+    """
+    fail = _check_auth(request)
+    if fail is not None:
+        return fail
+    if request.query_string:
+        return web.json_response({"error": "invalid request"}, status=400)
+    opening = request.method == "POST"
+    name = None
+    if opening:
+        if request.content_type != "application/json":
+            return web.json_response({"error": "Content-Type must be application/json"}, status=415)
+        try:
+            data = strict_json(await _read_bounded(request.content, _MAX_CANCEL_BODY))
+            if (not isinstance(data, dict) or set(data) != {"name"} or not isinstance(data["name"], str)
+                    or not _EXAMPLE_PROJECT_NAME.fullmatch(data["name"])):
+                raise ValueError("invalid example project request")
+            name = data["name"]
+        except (ValueError, TypeError, UnicodeError, RecursionError):
+            return web.json_response({"error": "invalid example project request"}, status=400)
+    try:
+        timeout = ClientTimeout(total=38 if opening else 4, sock_connect=2)
+        async with ClientSession(connector=UnixConnector(path=_SOCKET_PATH), timeout=timeout) as session:
+            upstream_request = (session.post("http://pixel-upstream/v1/example-projects", json={"name": name},
+                                             headers={"Accept": "application/json"}, allow_redirects=False)
+                                if opening else
+                                session.get("http://pixel-upstream/v1/example-projects",
+                                            headers={"Accept": "application/json"}, allow_redirects=False))
+            async with upstream_request as upstream:
+                # 404: the folder is gone. 409: the host refused files in it.
+                # 422: a folder of that name is there but cannot open as the example.
+                if opening and upstream.status in _EXAMPLE_REFUSALS:
+                    return web.json_response({"error": _EXAMPLE_REFUSALS[upstream.status]}, status=upstream.status,
+                                             headers={"Cache-Control": "no-store"})
+                if upstream.status != 200 or upstream.content_type != "application/json":
+                    raise ValueError("unavailable")
+                value = strict_json(await _read_bounded(upstream.content, 8192))
+        result = _example_preview(value, name) if opening else _example_projects(value)
+    except (ValueError, TypeError, UnicodeError, RecursionError, OSError, asyncio.TimeoutError, ClientError):
+        error = "example-project-preview-unavailable" if opening else "example-projects-unavailable"
+        return web.json_response({"error": error}, status=503, headers={"Cache-Control": "no-store"})
+    return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+
+_RESTORE_PROJECT = re.compile(r"Playground/[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_RESTORE_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_RESTORE_RUN = re.compile(rf"chatcmpl_{_RESTORE_UUID}", re.IGNORECASE)
+_RESTORE_SNAPSHOT = re.compile(rf"(?:chatcmpl|restore)_{_RESTORE_UUID}", re.IGNORECASE)
+_RESTORE_UNDO = re.compile(rf"restore_{_RESTORE_UUID}")
+_RESTORE_TOKEN = re.compile(r"[a-f0-9]{64}")
+# Control characters (C0, DEL and C1) in a file name, as dashboard-api refuses them.
+_RESTORE_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# The refusals this relay passes on, by status. Any other answer, an
+# unexpected code too, is an unknown outcome.
+_RESTORE_REFUSALS = {
+    404: ("project-snapshot-unavailable", "project-snapshot-pruned"),
+    409: ("project-restore-busy",),
+    422: ("project-snapshot-damaged", "project-folder-unusable"),
+    503: ("project-restore-unavailable", "project-copies-unusable", "project-restore-unsupported"),
+}
+_RESTORE_KEYS = ("schemaVersion", "status", "project", "snapshot", "written", "removed", "left", "leftCount", "failed",
+                 "failedCount", "failure", "late", "undo", "confirm")
+_RESTORE_CONFIRM_KEYS = ("token", "overwrite", "overwriteCount", "remove", "removeCount")
+_RESTORE_FAILURES = ("permission", "in-use", "changed", "other")
+
+
+def _restore_count(item) -> bool:
+    return type(item) is int and 0 <= item <= 65536
+
+
+def _restore_listed(items, total) -> bool:
+    return (isinstance(items, list) and len(items) <= 8 and len(items) <= total
+            and all(isinstance(item, str) and 1 <= len(item) <= 512 and not _RESTORE_CONTROL.search(item) for item in items))
+
+
+def _restore_confirm(value) -> bool:
+    return (isinstance(value, dict) and set(value) == set(_RESTORE_CONFIRM_KEYS)
+            and isinstance(value["token"], str) and _RESTORE_TOKEN.fullmatch(value["token"]) is not None
+            and _restore_count(value["overwriteCount"]) and _restore_count(value["removeCount"])
+            and _restore_listed(value["overwrite"], value["overwriteCount"])
+            and _restore_listed(value["remove"], value["removeCount"]))
+
+
+def _project_restore_receipt(value, request: dict) -> dict:
+    """The gateway's restore receipt for exactly this request, or ValueError."""
+    if (not isinstance(value, dict) or set(value) != set(_RESTORE_KEYS)
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 2
+            or value["status"] not in ("restored", "unchanged", "confirm")
+            or value["project"] != request["project"] or value["snapshot"] != request["snapshot"]
+            or not all(_restore_count(value[key]) for key in ("written", "removed", "leftCount", "failedCount"))
+            or not _restore_listed(value["left"], value["leftCount"])
+            or not _restore_listed(value["failed"], value["failedCount"])
+            or not (value["failure"] is None or value["failure"] in _RESTORE_FAILURES)
+            or type(value["late"]) is not bool
+            or not (isinstance(value["undo"], str) and _RESTORE_UNDO.fullmatch(value["undo"]) is not None
+                    if value["status"] == "restored" else value["undo"] is None)
+            or not (_restore_confirm(value["confirm"]) if value["status"] == "confirm" else value["confirm"] is None)):
+        raise ValueError("invalid project restore receipt")
+    return {key: value[key] for key in _RESTORE_KEYS}
+
+
+def _project_restore_options(value, runs: list) -> dict:
+    """The gateway's options for exactly these runs, or ValueError."""
+    entries = value.get("projects") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "projects"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or not isinstance(entries, list) or len(entries) > 32
+            or not all(isinstance(entry, dict) and set(entry) == {"project", "snapshot", "late", "restore"}
+                       and isinstance(entry["project"], str) and _RESTORE_PROJECT.fullmatch(entry["project"])
+                       and entry["snapshot"] in runs and type(entry["late"]) is bool
+                       and (entry["restore"] is None
+                            or isinstance(entry["restore"], dict) and set(entry["restore"]) == {"undo", "side"}
+                            and isinstance(entry["restore"]["undo"], str)
+                            and _RESTORE_UNDO.fullmatch(entry["restore"]["undo"]) is not None
+                            and entry["restore"]["side"] in ("before", "after"))
+                       for entry in entries)):
+        raise ValueError("invalid project restore options")
+    return {"schemaVersion": 1, "projects": [{key: entry[key] for key in ("project", "snapshot", "late", "restore")}
+                                             for entry in entries]}
+
+
+async def _restore_relay(request: web.Request, limit: int, valid, route: str, project):
+    """One exact JSON request to the ingress, and only project(answer) or a fixed refusal back."""
+    fail = _check_auth(request)
+    if fail is not None:
+        return fail
+    if request.query_string:
+        return web.json_response({"error": "invalid project restore request"}, status=400)
+    if request.content_type != "application/json":
+        return web.json_response({"error": "Content-Type must be application/json"}, status=415)
+    try:
+        data = strict_json(await _read_bounded(request.content, limit))
+        if not isinstance(data, dict) or not valid(data):
+            raise ValueError("invalid project restore request")
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        return web.json_response({"error": "invalid project restore request"}, status=400)
+    if isinstance(data.get("user"), str) and request.app[_CANCEL_EVENTS_KEY].get(data["user"]):
+        return web.json_response({"error": "project-restore-busy"}, status=409, headers={"Cache-Control": "no-store"})
+    try:
+        timeout = ClientTimeout(total=38, sock_connect=2)
+        async with ClientSession(connector=UnixConnector(path=_SOCKET_PATH), timeout=timeout) as session:
+            async with session.post(f"http://pixel-upstream{route}", json=data,
+                                    headers={"Accept": "application/json"}, allow_redirects=False) as upstream:
+                codes = _RESTORE_REFUSALS.get(upstream.status) if route == "/v1/project-restore" else None
+                if codes is not None:
+                    try:
+                        code = strict_json(await _read_bounded(upstream.content, 1024)).get("error")
+                    except (ValueError, TypeError, UnicodeError, RecursionError, AttributeError):
+                        code = None
+                    if code not in codes:
+                        raise ValueError("unknown project restore refusal")
+                    return web.json_response({"error": code}, status=upstream.status, headers={"Cache-Control": "no-store"})
+                if upstream.status != 200 or upstream.content_type != "application/json":
+                    raise ValueError("unavailable")
+                value = strict_json(await _read_bounded(upstream.content, 16384))
+        result = project(value, data)
+    except (ValueError, TypeError, UnicodeError, RecursionError, OSError, asyncio.TimeoutError, ClientError):
+        return web.json_response({"error": "project-restore-unavailable"}, status=503, headers={"Cache-Control": "no-store"})
+    return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+
+def _valid_restore_request(data: dict) -> bool:
+    keys = set(data)
+    return ((keys == {"user", "project", "snapshot"} or keys == {"user", "project", "snapshot", "confirm"}
+             and isinstance(data["confirm"], str) and _RESTORE_TOKEN.fullmatch(data["confirm"]) is not None)
+            and all(isinstance(item, str) for item in data.values())
+            and _SAFE_CHAT_ID.fullmatch(data["user"]) is not None and _RESTORE_PROJECT.fullmatch(data["project"]) is not None
+            and _RESTORE_SNAPSHOT.fullmatch(data["snapshot"]) is not None)
+
+
+async def handle_project_restore(request: web.Request):
+    """Put one Playground project back to the copy kept before a Portal turn touched it.
+
+    Portal's "Put back files". The ingress holds the chat's history lock and
+    the gateway refuses while any Portal run, tool or background command is
+    alive; a stream of this chat still passing through this edge is refused
+    here first. When files changed after the turn, the gateway first answers
+    with what the restore would overwrite or remove, and the owner's yes comes
+    back as confirm. Only the validated receipt or a fixed refusal code is
+    returned.
+    """
+    return await _restore_relay(request, 512, _valid_restore_request, "/v1/project-restore", _project_restore_receipt)
+
+
+async def handle_project_restore_options(request: web.Request):
+    """Which of these Portal turns offer "Put back files", and an undo still in reach for each project."""
+    return await _restore_relay(
+        request, 4096,
+        lambda data: (set(data) == {"runs"} and isinstance(data["runs"], list) and len(data["runs"]) <= 64
+                      and all(isinstance(run, str) and _RESTORE_RUN.fullmatch(run) for run in data["runs"])),
+        "/v1/project-restore-options", lambda value, data: _project_restore_options(value, data["runs"]))
+
+
 async def handle_activity(request: web.Request):
     """Return only the number of in-flight turns for safe model coordination."""
     fail = _check_auth(request)
@@ -858,6 +1144,58 @@ async def handle_chat_activity(request: web.Request):
     chat_id = data["user"]
     state = "active" if request.app[_CANCEL_EVENTS_KEY].get(chat_id) else request.app[_CHAT_ACTIVITY_KEY].get(chat_id, "unknown")
     return web.json_response({"state": state}, headers={"Cache-Control": "no-store"})
+
+
+async def handle_chat_settle(request: web.Request):
+    """Ask the ingress to settle a chat it proves idle; never stop a run.
+
+    A restart can leave a turn's outcome unknown while nothing runs any more.
+    The ingress proves that under its history lock and records the turn as
+    interrupted. A stream still passing through this edge, a held lock or a
+    busy native session answers "active" and nothing changes.
+    """
+    fail = _check_auth(request)
+    if fail is not None:
+        return fail
+    if request.content_type != "application/json":
+        return web.json_response({"error": "Content-Type must be application/json"}, status=415)
+    if request.query_string or (request.content_length and request.content_length > _MAX_CANCEL_BODY):
+        return web.json_response({"error": "invalid settle request"}, status=400)
+    try:
+        raw = await request.read()
+        if len(raw) > _MAX_CANCEL_BODY:
+            raise ValueError("request too large")
+        data = strict_json(raw)
+        if (not isinstance(data, dict) or set(data) != {"user"}
+                or not isinstance(data["user"], str) or not _SAFE_CHAT_ID.fullmatch(data["user"])):
+            raise ValueError("invalid settle request")
+    except (ValueError, UnicodeDecodeError, TypeError):
+        return web.json_response({"error": "invalid settle request"}, status=400)
+    chat_id = data["user"]
+    if request.app[_CANCEL_EVENTS_KEY].get(chat_id):
+        return web.json_response({"state": "active"}, headers={"Cache-Control": "no-store"})
+    try:
+        connector = UnixConnector(path=_SOCKET_PATH)
+        # The ingress bounds its own native read at 5 s under the history lock.
+        timeout = ClientTimeout(total=8, sock_connect=2, sock_read=7)
+        async with ClientSession(connector=connector, timeout=timeout) as session:
+            async with session.post(
+                "http://pixel-upstream/v1/chat/settle",
+                json={"user": chat_id},
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+            ) as resp:
+                if resp.status != 200 or "application/json" not in resp.headers.get("Content-Type", "").lower():
+                    raise ValueError("settle unconfirmed")
+                result = strict_json(await _read_bounded(resp.content, _MAX_CANCEL_RESPONSE_BYTES))
+        if (not isinstance(result, dict) or set(result) != {"state"}
+                or result["state"] not in ("settled", "active")):
+            raise ValueError("invalid settle receipt")
+    except (ConnectionError, OSError, asyncio.TimeoutError, ClientError, ValueError, TypeError,
+            UnicodeError, RecursionError):
+        return web.json_response({"error": "Portal settle unconfirmed"}, status=502)
+    if result["state"] == "settled" and not request.app[_CANCEL_EVENTS_KEY].get(chat_id):
+        _remember_chat_activity(request.app, chat_id, "terminal")
+    return web.json_response({"state": result["state"]}, headers={"Cache-Control": "no-store"})
 
 
 async def _context_upstream(data, *, compact=False):
@@ -1068,6 +1406,23 @@ async def handle_access_mode(request: web.Request):
         return web.json_response({'error':'access-service-unavailable'}, status=503)
 
 
+_CONTROLLER_REASON = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
+
+
+def _controller_reason(raw: bytes) -> str | None:
+    """The controller's own refusal code, when it is a plain token.
+
+    A code such as model-runtime-mismatch tells the owner what to fix; free
+    text (which could carry a path or credential) is never relayed.
+    """
+    try:
+        value = strict_json(raw)
+    except (ValueError, RecursionError):
+        return None
+    code = value.get('error') if isinstance(value, dict) else None
+    return code if isinstance(code, str) and _CONTROLLER_REASON.fullmatch(code) else None
+
+
 async def handle_model_control(request: web.Request):
     """Private model lifecycle control; ordinary chat callers cannot mutate it."""
     fail = _check_preview_auth(request)
@@ -1094,7 +1449,8 @@ async def handle_model_control(request: web.Request):
                 raw = await _read_bounded(response.content, 65536)
                 if response.status != 200:
                     status = response.status if response.status in (400, 403, 409, 503) else 503
-                    return web.json_response({'error': 'model-change-unconfirmed'}, status=status)
+                    return web.json_response({'error': _controller_reason(raw) or 'model-change-unconfirmed'},
+                                             status=status)
                 value = public_model_control(strict_json(raw))
         return web.json_response(value, headers={'Cache-Control': 'no-store'})
     except Exception:
@@ -1320,6 +1676,9 @@ async def _handle_admitted_chat(request, image_turn, reservation, limit):
     if req_model not in _ALLOWED_MODELS:
         return web.json_response({"error": "model not allowed"}, status=400)
     empty_reply_fallback = _empty_reply_fallback(data)
+    # The owner's own words, before the delivery contract is appended. A final
+    # reply that only repeats them answers nothing and gets the fallback too.
+    owner_echo = _echo_form(_latest_user_text(data)) or ""
     upstream_data = _with_interactive_delivery_contract(data)
     # Let the selected model's runtime/profile supply omitted sampling values.
     # A universal greedy override can defeat the model's recommended settings
@@ -1373,7 +1732,7 @@ async def _handle_admitted_chat(request, image_turn, reservation, limit):
                 if "text/event-stream" in ctype:
                     return await _stream_upstream(
                         request, resp, empty_reply_fallback, cancel_event, activity,
-                        response_model=req_model
+                        response_model=req_model, owner_echo=owner_echo
                     )
 
                 if "application/json" not in ctype:
@@ -1387,7 +1746,8 @@ async def _handle_admitted_chat(request, image_turn, reservation, limit):
                         return web.json_response({"error": "upstream response too large"},
                                                  status=502)
 
-                rewritten = _rewrite_json_response(bytes(resp_body), empty_reply_fallback, req_model)
+                rewritten = _rewrite_json_response(bytes(resp_body), empty_reply_fallback, req_model,
+                                                   owner_echo)
                 activity["terminal"] = True
                 return web.Response(status=resp.status, body=rewritten,
                                     content_type="application/json")
@@ -1475,8 +1835,14 @@ async def _stream_upstream(
     cancel_event: asyncio.Event | None = None,
     activity: dict | None = None,
     response_model: str = _LEGACY_MODEL,
+    owner_echo: str = "",
 ):
-    """Stream bounded SSE while replacing only a reserved/empty final reply."""
+    """Stream bounded SSE while replacing only a reserved/empty or copied final reply.
+
+    Answer text is withheld only while it can still become such a reply: empty,
+    a prefix of a reserved reply, or a prefix of the owner's own message
+    (``owner_echo``). It is flushed as soon as it diverges.
+    """
     response = web.StreamResponse(
         status=resp.status,
         headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"},
@@ -1488,13 +1854,21 @@ async def _stream_upstream(
     pending_text = ""
     passthrough = False
 
-    def queue_pending(line, event, content, finish_reason):
-        nonlocal pending_bytes
+    async def queue_pending(line, event, content, finish_reason):
+        nonlocal pending_bytes, passthrough
         # The line cap alone does not bound many small reasoning/empty frames.
         size = len(line) + 1
         if (pending_bytes + size > _MAX_SSE_PENDING_BYTES
                 or len(pending) >= _MAX_SSE_PENDING_LINES):
-            raise ValueError("SSE prelude exceeded limit")
+            if _reserved_prefix(pending_text):
+                raise ValueError("SSE prelude exceeded limit")
+            # Only a possible copy of the owner's message is withheld. That
+            # check is best effort: release the text unchanged at the existing
+            # bound instead of failing the answer.
+            await flush_pending()
+            await response.write(line + b"\n")
+            passthrough = True
+            return
         pending.append((line, event, content, finish_reason))
         pending_bytes += size
 
@@ -1548,8 +1922,7 @@ async def _stream_upstream(
                     continue
 
                 if line == b"data: [DONE]":
-                    normalized = pending_text.strip()
-                    if not normalized or normalized in _RESERVED_ASSISTANT_REPLIES:
+                    if _replaceable_reply(pending_text, owner_echo):
                         template = next(
                             (item[1] for item in reversed(pending) if isinstance(item[1], dict)),
                             {"model": response_model},
@@ -1572,8 +1945,7 @@ async def _stream_upstream(
                     passthrough = True
                     continue
                 if finish_reason is not None:
-                    normalized = pending_text.strip()
-                    if not normalized or normalized in _RESERVED_ASSISTANT_REPLIES:
+                    if _replaceable_reply(pending_text, owner_echo):
                         template = event if isinstance(event, dict) else next(
                             (item[1] for item in reversed(pending) if isinstance(item[1], dict)),
                             {"model": response_model},
@@ -1585,14 +1957,10 @@ async def _stream_upstream(
                     passthrough = True
                     continue
 
-                queue_pending(line, event, content, finish_reason)
-                if content is not None:
+                await queue_pending(line, event, content, finish_reason)
+                if content is not None and not passthrough:
                     pending_text += content
-                    normalized = pending_text.strip()
-                    if normalized and not any(
-                        reserved.startswith(normalized)
-                        for reserved in _RESERVED_ASSISTANT_REPLIES
-                    ):
+                    if not _replaceable_prefix(pending_text, owner_echo):
                         await flush_pending()
                         passthrough = True
         if cancel_event is not None and cancel_event.is_set():
@@ -1611,12 +1979,11 @@ async def _stream_upstream(
                 await response.write(line)
             else:
                 event, content, finish_reason = _sse_event(line)
-                queue_pending(line, event, content, finish_reason)
-                if content is not None:
+                await queue_pending(line, event, content, finish_reason)
+                if content is not None and not passthrough:
                     pending_text += content
         if not passthrough and pending:
-            normalized = pending_text.strip()
-            if not normalized or normalized in _RESERVED_ASSISTANT_REPLIES:
+            if _replaceable_reply(pending_text, owner_echo):
                 template = next(
                     (item[1] for item in reversed(pending) if isinstance(item[1], dict)),
                     {"model": response_model},
@@ -1793,6 +2160,10 @@ def create_app() -> web.Application:
     app.router.add_get("/preview/{site_id}/{tail:.*}", handle_preview)
     app.router.add_get("/v1/models", handle_models)
     app.router.add_get("/v1/runtime-identity", handle_runtime_identity, allow_head=False)
+    app.router.add_get("/v1/example-projects", handle_example_projects, allow_head=False)
+    app.router.add_post("/v1/example-projects", handle_example_projects)
+    app.router.add_post("/v1/project-restore", handle_project_restore)
+    app.router.add_post("/v1/project-restore-options", handle_project_restore_options)
     app.router.add_get("/v1/activity", handle_activity)
     app.router.add_get('/v1/access-mode', handle_access_mode, allow_head=False)
     app.router.add_post('/v1/access-mode', handle_access_mode)
@@ -1802,6 +2173,7 @@ def create_app() -> web.Application:
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_post("/v1/chat/cancel", handle_chat_cancel)
     app.router.add_post("/v1/chat/activity", handle_chat_activity)
+    app.router.add_post("/v1/chat/settle", handle_chat_settle)
     app.router.add_post("/v1/chat/context", handle_chat_context)
     app.router.add_post("/v1/chat/images-delete", handle_chat_images_delete)
     app.router.add_post("/v1/chat/compact", handle_chat_context)

@@ -3,6 +3,51 @@
   "schemaVersion": 1,
   "combinations": [
     {
+      "pixel": "4.3.33",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "candidate",
+      "qualifiedAt": "2026-10-20",
+      "evidence": {
+        "sourceCommit": "fdac76a831a163860e864a9d34f395a604bed7a3",
+        "liveAudit": "ODS-QUALIFICATION-4.3.33.md"
+      }
+    },
+    {
+      "pixel": "4.3.32",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "candidate",
+      "qualifiedAt": "2026-10-17",
+      "evidence": {
+        "sourceCommit": "5454dcb094df2c56caa79d8c500529187c5dfb4f",
+        "liveAudit": "ODS-QUALIFICATION-4.3.32.md"
+      }
+    },
+    {
+      "pixel": "4.3.29",
+      "openclaw": "2026.6.33",
+      "plugins": {
+        "@openclaw/discord": "2026.6.33",
+        "@openclaw/searxng-plugin": "2026.6.33",
+        "@openclaw/llama-cpp-provider": "2026.6.33"
+      },
+      "status": "candidate",
+      "qualifiedAt": "2026-10-04",
+      "evidence": {
+        "sourceCommit": "50762d145adf245b4c32bdf0b40f5eee8359a510",
+        "liveAudit": "ODS-QUALIFICATION-4.3.29.md"
+      }
+    },
+    {
       "pixel": "4.3.28",
       "openclaw": "2026.6.33",
       "plugins": {

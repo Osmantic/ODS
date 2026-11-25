@@ -75,7 +75,7 @@ grep -qF '_active_colima start --network-address --network-preferred-route' "$in
     || fail "macOS installer must prefer private vmnet routing on the active Colima profile"
 grep -qF '_configure_macos_llm_bridge' "$installer" \
     || fail "macOS installer must launch the Colima LLM bridge before native llama"
-grep -qF '_configure_macos_host_agent_bridge' "$installer" \
+grep -qF '_configure_macos_host_agent_bridge' "$ROOT_DIR/installers/macos/lib/host-agent-install.sh" \
     || fail "macOS installer must bridge dashboard actions to the loopback host agent"
 grep -qF 'source "${LIB_DIR}/bridge-manager.sh"' "$installer" \
     || fail "macOS installer must source the shared bridge manager"

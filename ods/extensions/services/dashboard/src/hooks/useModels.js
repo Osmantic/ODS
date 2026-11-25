@@ -1,3 +1,4 @@
+import {modelActivationStatus} from '../lib/modelActivationStatus'
 import { useState, useEffect, useCallback, useRef } from 'react'
 
 // Mock data for development/demo - gated behind VITE_USE_MOCK_DATA env var
@@ -85,8 +86,8 @@ const MODEL_RUNTIME_TIMEOUT_MS = 1225000
 // Activation allows 2700s plus 120s of download-busy retry grace.
 // Keep the UI lock until that budget and a small response margin have elapsed.
 const MODEL_ACTIVATION_TIMEOUT_MS = 2825000
-const ODS_MODES = new Set(['local', 'cloud', 'hybrid', 'lemonade'])
-const LOCAL_MODEL_MODES = new Set(['local', 'hybrid', 'lemonade'])
+const ODS_MODES = new Set(['local', 'cloud', 'hybrid'])
+const LOCAL_MODEL_MODES = new Set(['local', 'hybrid'])
 
 // Named exports for dev-only mocking (explicit opt-in via VITE_USE_MOCK_DATA)
 export { getMockModels, MOCK_MODES }
@@ -111,8 +112,14 @@ function errorMessageFromPayload(data, fallback) {
   return fallback
 }
 
-async function errorMessageFromResponse(response, fallback) {
-  return errorMessageFromPayload(await responseJson(response), fallback)
+class ModelActionError extends Error {
+  constructor(message, deletionDetail = null) {
+    super(message)
+    // Only a typed, committed deletion outcome authorizes immediate readback.
+    const committedOutcome = deletionDetail?.code === 'model_delete_cleanup_pending' ||
+      deletionDetail?.code === 'model_delete_status_update_failed'
+    this.deletionCommitted = committedOutcome && deletionDetail.deletionCommitted === true
+  }
 }
 
 async function modelActionRequest(url, options, budget, timeoutMessage, failureMessage, expectedStatus = null) {
@@ -128,7 +135,13 @@ async function modelActionRequest(url, options, budget, timeoutMessage, failureM
     await Promise.race([
       (async () => {
         const response = await fetch(url, { ...options, signal: controller.signal })
-        if (!response.ok) throw new Error(await errorMessageFromResponse(response, failureMessage))
+        if (!response.ok) {
+          const data = await responseJson(response)
+          throw new ModelActionError(
+            errorMessageFromPayload(data, failureMessage),
+            options.method === 'DELETE' ? data?.detail : null,
+          )
+        }
         if (expectedStatus && (await responseJson(response)).status !== expectedStatus) {
           throw new Error('The runtime operation was not confirmed. Refresh its status before retrying.')
         }
@@ -176,25 +189,53 @@ function normalizeOdsMode(value) {
   return ODS_MODES.has(mode) ? mode : 'unknown'
 }
 
+const START_REFUSALS = new Set(['memory_refused', 'gpu_busy'])
+
+function normalizeActiveRuntime(value) {
+  // Models needs only display identity and context; route custody and provider
+  // capabilities remain validated by the server, outside this display state.
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const { source, model, contextLength } = value
+  if (!['local-switchboard', 'external-host', 'remote-provider'].includes(source)
+    || typeof model !== 'string' || !model.trim() || model.length > 256) return null
+  if (contextLength != null && (!Number.isInteger(contextLength) || contextLength < 1 || contextLength > 10000000)) return null
+  if (source === 'remote-provider' && (!Number.isInteger(contextLength) || contextLength < 4096
+    || !Number.isInteger(value.maxTokens) || value.maxTokens < 1 || value.maxTokens > contextLength
+    || typeof value.reasoning !== 'boolean')) return null
+  return { source, model, contextLength: contextLength ?? null }
+}
+
 function normalizeModelManagement(value) {
   const managed = typeof value?.managed === 'boolean' ? value.managed : null
+  const running = managed === true && value.running === true
+  // Why a managed Windows model is not running, in the launcher's words; a
+  // memory refusal makes Resume start the model anyway.
+  const runtimeError = managed === true && !running && typeof value.runtimeError === 'string' ? value.runtimeError : ''
   return {
     managed,
     canActivate: managed === true && value.canActivate === true,
     canUnload: managed === true && value.canUnload === true,
-    running: managed === true && value.running === true,
+    running,
     reason: typeof value?.reason === 'string' ? value.reason : '',
+    runtimeError,
+    startRefusal: runtimeError && START_REFUSALS.has(value.startRefusal) ? value.startRefusal : '',
   }
 }
 
-function modelActivationModeError(effectiveMode, configuredMode, llmBackend, externalLemonade, management) {
+function modelActivationModeError(effectiveMode, configuredMode, llmBackend, hostRuntime, management, externalApi = null, activeRuntime = null) {
   if (llmBackend === 'external') {
-    return 'This install routes to a model service outside ODS. Downloading a model here does not switch the active model; reconnect ODS to its supported runtime integration to manage model changes.'
+    const via = externalApi?.host ? ` at ${externalApi.host}` : ''
+    return `ODS uses a model API${via}. Models downloaded here stay on this computer but are not used while API mode is on; to run them, rerun the ODS installer and leave API mode.`
   }
-  if (externalLemonade && !(management?.managed && management.canActivate)) {
+  // A model on the Windows host changes only through the host agent, and
+  // only when it proved the server is the one ODS runs for this install.
+  if (hostRuntime && !(management?.managed && management.canActivate)) {
     return management?.managed === false
-      ? 'Change the loaded model in Lemonade, then use Adopt loaded model here to update ODS and Portal.'
+      ? 'The model server on this computer is not managed by this ODS installation. Change the model in that server, or rerun the ODS installer to manage it here.'
       : management?.reason || 'Model management is temporarily unavailable. Refresh the runtime status.'
+  }
+  if (activeRuntime?.source === 'remote-provider') {
+    return 'Switch back to a local model in Model connections to use local model activation controls.'
   }
   if (effectiveMode === 'unknown' || configuredMode === 'unknown') {
     return 'ODS could not verify the active runtime mode. Repair or restart ODS before running a local model.'
@@ -203,7 +244,7 @@ function modelActivationModeError(effectiveMode, configuredMode, llmBackend, ext
     return `ODS is running in ${effectiveMode} mode but configured for ${configuredMode} mode. Restart or repair ODS before running a local model.`
   }
   if (!LOCAL_MODEL_MODES.has(effectiveMode)) {
-    return 'ODS is running in cloud mode. A local-mode installation is required to run downloaded models.'
+    return 'ODS is in cloud mode, so chat uses a model API. Downloaded models run only in local mode; if you connected that API in Settings > Remote model, switch back to the local model there.'
   }
   return null
 }
@@ -224,24 +265,72 @@ function waitForActivationPoll(delay, signal, wake = null) {
   })
 }
 
-export function useModels({observe=true} = {}) {
-  const [models, setModels] = useState(USE_MOCK_DATA ? getMockModels() : [])
-  const [gpu, setGpu] = useState(USE_MOCK_DATA ? MOCK_GPU : null)
-  const [currentModel, setCurrentModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
-  const [loadedModel, setLoadedModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
-  const [activationReadyModel, setActivationReadyModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
-  const [configuredModel, setConfiguredModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
-  const [modelLifecycle, setModelLifecycle] = useState(null)
-  const [odsMode, setOdsMode] = useState(USE_MOCK_DATA ? MOCK_MODES.odsMode : 'unknown')
-  const [configuredMode, setConfiguredMode] = useState(USE_MOCK_DATA ? MOCK_MODES.configuredMode : 'unknown')
-  const [llmBackend, setLlmBackend] = useState(USE_MOCK_DATA ? 'llama-server' : 'unknown')
-  const [externalLemonade, setExternalLemonade] = useState(false)
-  const [modelManagement, setModelManagement] = useState(() => normalizeModelManagement(null))
+// One /api/models answer as the hook's state.
+function catalogState(data) {
+  return {
+    models: data.models,
+    gpu: data.gpu,
+    currentModel: data.currentModel,
+    loadedModel: data.loadedModel ?? null,
+    activationReadyModel: data.activationReadyModel ?? null,
+    configuredModel: data.configuredModel ?? null,
+    modelLifecycle: normalizeModelLifecycle(data.modelLifecycle),
+    modelActivation: modelActivationStatus(data.modelActivation),
+    modelRecoveryPending: data.modelRecoveryPending === true,
+    odsMode: normalizeOdsMode(data.odsMode),
+    configuredMode: normalizeOdsMode(data.configuredMode ?? data.odsMode),
+    llmBackend: typeof data.llmBackend === 'string' ? data.llmBackend.trim().toLowerCase() : 'unknown',
+    // API mode: the model and host serving chat (never the key).
+    externalApi: String(data.llmBackend || '').trim().toLowerCase() === 'external'
+      ? {
+          model: typeof data.externalModel === 'string' && data.externalModel ? data.externalModel : null,
+          host: typeof data.externalHost === 'string' && data.externalHost ? data.externalHost : null,
+        }
+      : null,
+    hostRuntime: data.hostRuntime === true,
+    activeRuntime: normalizeActiveRuntime(data.activeRuntime),
+    modelManagement: normalizeModelManagement(data.modelManagement),
+    recommendationAlternatives: data.recommendationAlternatives ?? [],
+    hermesMinimumContext: Number(data.hermesMinimumContext || DEFAULT_HERMES_MIN_CONTEXT),
+    pixelMinimumContext: Number(data.pixelMinimumContext || DEFAULT_PIXEL_MIN_CONTEXT),
+  }
+}
+
+// The last catalog this page load read. The catalog can take seconds to
+// answer, so a Models page opened again starts from it instead of an empty
+// skeleton, holding its actions until its own first read lands.
+let lastCatalog = null
+
+export function forgetLastCatalog() {
+  lastCatalog = null
+}
+
+export function useModels({observe=true, reuseLastCatalog=false} = {}) {
+  // Never activation readback: confirmation waits for this mount's own reads.
+  const [seed] = useState(() => (reuseLastCatalog && observe && !USE_MOCK_DATA && lastCatalog
+    ? catalogState(lastCatalog) : null))
+  const [models, setModels] = useState(seed ? seed.models : USE_MOCK_DATA ? getMockModels() : [])
+  const [gpu, setGpu] = useState(seed ? seed.gpu : USE_MOCK_DATA ? MOCK_GPU : null)
+  const [currentModel, setCurrentModel] = useState(seed ? seed.currentModel : USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
+  const [loadedModel, setLoadedModel] = useState(seed ? seed.loadedModel : USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
+  const [activationReadyModel, setActivationReadyModel] = useState(seed ? seed.activationReadyModel : USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
+  const [configuredModel, setConfiguredModel] = useState(seed ? seed.configuredModel : USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
+  const [modelLifecycle, setModelLifecycle] = useState(seed ? seed.modelLifecycle : null)
+  const [modelActivation, setModelActivation] = useState(seed ? seed.modelActivation : null)
+  const [modelRecoveryPending, setModelRecoveryPending] = useState(seed ? seed.modelRecoveryPending : false)
+  const [odsMode, setOdsMode] = useState(seed ? seed.odsMode : USE_MOCK_DATA ? MOCK_MODES.odsMode : 'unknown')
+  const [configuredMode, setConfiguredMode] = useState(seed ? seed.configuredMode : USE_MOCK_DATA ? MOCK_MODES.configuredMode : 'unknown')
+  const [llmBackend, setLlmBackend] = useState(seed ? seed.llmBackend : USE_MOCK_DATA ? 'llama-server' : 'unknown')
+  const [hostRuntime, setHostRuntime] = useState(seed ? seed.hostRuntime : false)
+  const [externalApi, setExternalApi] = useState(seed ? seed.externalApi : null)
+  const [activeRuntime, setActiveRuntime] = useState(seed ? seed.activeRuntime : null)
+  const [modelManagement, setModelManagement] = useState(() => (seed ? seed.modelManagement : normalizeModelManagement(null)))
   const [runtimeActionLoading, setRuntimeActionLoading] = useState(null)
-  const [recommendationAlternatives, setRecommendationAlternatives] = useState([])
-  const [hermesMinimumContext, setHermesMinimumContext] = useState(DEFAULT_HERMES_MIN_CONTEXT)
-  const [pixelMinimumContext, setPixelMinimumContext] = useState(DEFAULT_PIXEL_MIN_CONTEXT)
-  const [loading, setLoading] = useState(USE_MOCK_DATA ? false : true)
+  const [recommendationAlternatives, setRecommendationAlternatives] = useState(seed ? seed.recommendationAlternatives : [])
+  const [hermesMinimumContext, setHermesMinimumContext] = useState(seed ? seed.hermesMinimumContext : DEFAULT_HERMES_MIN_CONTEXT)
+  const [pixelMinimumContext, setPixelMinimumContext] = useState(seed ? seed.pixelMinimumContext : DEFAULT_PIXEL_MIN_CONTEXT)
+  const [loading, setLoading] = useState(USE_MOCK_DATA ? false : !seed)
+  const [catalogConfirmed, setCatalogConfirmed] = useState(!seed)
   const [fetchError, setFetchError] = useState(null)
   const [mutationError, setMutationError] = useState(null)
   const clearMutationError = useCallback(() => setMutationError(null), [])
@@ -310,7 +399,11 @@ export function useModels({observe=true} = {}) {
     const controller = new AbortController()
     const cancel = () => controller.abort()
     signal?.addEventListener('abort', cancel, { once: true })
-    const timeout = setTimeout(() => controller.abort(), MODELS_FETCH_TIMEOUT_MS)
+    let timedOut = false
+    const timeout = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, MODELS_FETCH_TIMEOUT_MS)
     try {
       const response = await fetch('/api/models', { signal: controller.signal })
       if (!response.ok) throw new Error('Failed to fetch models')
@@ -322,31 +415,41 @@ export function useModels({observe=true} = {}) {
       if (requestId < latestSettledModelsRequestRef.current) return data
       latestSettledModelsRequestRef.current = requestId
       latestModelsSnapshotRef.current = data
+      lastCatalog = data
 
-      setModels(data.models)
-      setGpu(data.gpu)
-      setCurrentModel(data.currentModel)
-      setLoadedModel(data.loadedModel ?? null)
-      setActivationReadyModel(data.activationReadyModel ?? null)
-      setConfiguredModel(data.configuredModel ?? null)
-      setModelLifecycle(normalizeModelLifecycle(data.modelLifecycle))
-      const effectiveMode = normalizeOdsMode(data.odsMode)
-      setOdsMode(effectiveMode)
-      setConfiguredMode(normalizeOdsMode(data.configuredMode ?? data.odsMode))
-      setLlmBackend(typeof data.llmBackend === 'string' ? data.llmBackend.trim().toLowerCase() : 'unknown')
-      setExternalLemonade(data.externalLemonade === true)
-      setModelManagement(normalizeModelManagement(data.modelManagement))
-      setRecommendationAlternatives(data.recommendationAlternatives ?? [])
-      setHermesMinimumContext(Number(data.hermesMinimumContext || DEFAULT_HERMES_MIN_CONTEXT))
-      setPixelMinimumContext(Number(data.pixelMinimumContext || DEFAULT_PIXEL_MIN_CONTEXT))
+      const next = catalogState(data)
+      setModels(next.models)
+      setGpu(next.gpu)
+      setCurrentModel(next.currentModel)
+      setLoadedModel(next.loadedModel)
+      setActivationReadyModel(next.activationReadyModel)
+      setConfiguredModel(next.configuredModel)
+      setModelLifecycle(next.modelLifecycle)
+      setModelActivation(next.modelActivation)
+      setModelRecoveryPending(next.modelRecoveryPending)
+      setOdsMode(next.odsMode)
+      setConfiguredMode(next.configuredMode)
+      setLlmBackend(next.llmBackend)
+      setExternalApi(next.externalApi)
+      setHostRuntime(next.hostRuntime)
+      setActiveRuntime(next.activeRuntime)
+      setModelManagement(next.modelManagement)
+      setRecommendationAlternatives(next.recommendationAlternatives)
+      setHermesMinimumContext(next.hermesMinimumContext)
+      setPixelMinimumContext(next.pixelMinimumContext)
       setFetchError(null)
+      setCatalogConfirmed(true)
       reconcilePendingActions(data.models)
       return data
     } catch (err) {
       if (signal?.aborted) return null
       if (requestId >= latestSettledModelsRequestRef.current) {
         latestSettledModelsRequestRef.current = requestId
-        setFetchError(err.message)
+        setFetchError(timedOut
+          ? 'Could not refresh model status within 30 seconds. ODS may still be working; wait for status confirmation before retrying a model change.'
+          : err.message)
+        setModelActivation(null)
+        setActiveRuntime(null)
         setModelManagement(normalizeModelManagement(null))
       }
       // No silent fallback - let error propagate to UI
@@ -414,7 +517,7 @@ export function useModels({observe=true} = {}) {
   }
 
   const loadModel = async (modelId, options = {}) => {
-    const modeError = modelActivationModeError(odsMode, configuredMode, llmBackend, externalLemonade, modelManagement)
+    const modeError = modelActivationModeError(odsMode, configuredMode, llmBackend, hostRuntime, modelManagement, externalApi, activeRuntime)
     if (modeError) {
       setMutationError(modeError)
       return
@@ -472,6 +575,12 @@ export function useModels({observe=true} = {}) {
     // committed. Confirm right away instead of waiting out the poll interval;
     // a joined in-flight activation or a dropped connection keeps polling.
     let activationAnswered = false
+    // Set when no answer to this page's request will come: a 409 joined the
+    // activation another request is running, or the connection dropped.
+    // Status reads decide then, and a failed activation ends its lifecycle
+    // without the model.
+    let statusOnly = false
+    let idleReads = 0
     let wakeActivationPoll = () => {}
     let activationWake = new Promise(resolve => { wakeActivationPoll = resolve })
     const activationRequest = fetch(`/api/models/${encodeURIComponent(modelId)}/load`, activationRequestOptions)
@@ -483,6 +592,10 @@ export function useModels({observe=true} = {}) {
 
         const body = await responseJson(response)
         if (response.status === 409) {
+          if (body?.detail?.code === 'runtime_architecture_unsupported') {
+            activationError = errorMessageFromPayload(body, 'This runtime does not support the model architecture.')
+            return
+          }
           if (body?.detail?.code === 'pixel_chat_active') {
             activationError = errorMessageFromPayload(
               body,
@@ -491,7 +604,10 @@ export function useModels({observe=true} = {}) {
             return
           }
           const activeModelId = conflictActiveModelId(body)
-          if (activeModelId === modelId && !requestedContextLength) return
+          if (activeModelId === modelId && !requestedContextLength) {
+            statusOnly = true
+            return
+          }
 
           const detail = errorMessageFromPayload(body, 'Another model activation is in progress')
           activationError = activeModelId
@@ -503,8 +619,9 @@ export function useModels({observe=true} = {}) {
         activationError = errorMessageFromPayload(body, 'Failed to load model')
       })
       // A dropped request does not prove activation failed. Continue polling
-      // until the requested model appears or the explicit UI deadline expires.
-      .catch(() => {})
+      // until the requested model appears, the activation visibly ends, or
+      // the explicit UI deadline expires.
+      .catch(() => { statusOnly = true })
       .then(() => {
         if (activationAnswered || activationError) {
           activationAnswered = true
@@ -526,6 +643,18 @@ export function useModels({observe=true} = {}) {
         if (activationMatches(data)) {
           targetLoaded = true
           break
+        }
+        // Two reads in a row with no model operation running and the model
+        // not running mean the activation ended without it. Waiting out the
+        // deadline cannot change that.
+        if (statusOnly && data && !normalizeModelLifecycle(data.modelLifecycle) && data.currentModel !== modelId) {
+          idleReads += 1
+          if (idleReads >= 2) {
+            activationError = `The activation of ${modelId} ended without loading it. Refresh the model list, then try again.`
+            break
+          }
+        } else {
+          idleReads = 0
         }
       }
 
@@ -597,6 +726,7 @@ export function useModels({observe=true} = {}) {
       await fetchModels() // Refresh
     } catch (err) {
       setMutationError(err.message)
+      if (err instanceof ModelActionError && err.deletionCommitted) await fetchModels()
     } finally {
       finishAction(action.token)
     }
@@ -635,7 +765,7 @@ export function useModels({observe=true} = {}) {
     ].filter(Boolean)),
   ]
   const error = mutationError || fetchError
-  const activationModeError = modelActivationModeError(odsMode, configuredMode, llmBackend, externalLemonade, modelManagement)
+  const activationModeError = modelActivationModeError(odsMode, configuredMode, llmBackend, hostRuntime, modelManagement, externalApi, activeRuntime)
 
   return {
     models,
@@ -645,10 +775,14 @@ export function useModels({observe=true} = {}) {
     activationReadyModel,
     configuredModel,
     modelLifecycle,
+    modelActivation,
+    modelRecoveryPending,
     odsMode,
     configuredMode,
     llmBackend,
-    externalLemonade,
+    hostRuntime,
+    externalApi,
+    activeRuntime,
     modelManagement,
     runtimeActionLoading,
     stopRuntime: () => changeRuntime('stop'),
@@ -660,6 +794,7 @@ export function useModels({observe=true} = {}) {
     hermesMinimumContext,
     pixelMinimumContext,
     loading,
+    catalogConfirmed,
     error,
     actionLoading,
     actionLoadingModels,

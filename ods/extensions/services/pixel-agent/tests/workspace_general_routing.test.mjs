@@ -106,7 +106,9 @@ for (const history of [false,true]) for (const wrapped of [false,true]) for (con
     }}),context);
     const result=guard.deliveryVerificationForRun(context.runId);
     assert.equal(result.status,'failed');
-    assert.match(result.text,/directory failed the preview path or permission checks/);
+    assert.match(result.text,/the directory, a folder on its path, or a folder in it is a symlink, is unreadable, is not owned by the workspace owner, or is writable by group or others, or a folder in it has a name the preview refuses/);
+    // The short reason must not claim a partial list of accepted names.
+    assert.doesNotMatch(result.text,/only letters|does not accept/);
     assert.doesNotMatch(result.text,/https?:|created by|create.*index\.html/i);
     assert.doesNotMatch(guard.beforeAgentFinalize({lastAssistantMessage:result.text},context)?.retry?.instruction ?? '',/index\.html|pixel_ods_workspace_preview|write|exec/);
   });

@@ -8,13 +8,14 @@
 #
 # Expects: SCRIPT_DIR, LOG_FILE, CAPABILITY_PROFILE_FILE, color codes,
 #           INTERACTIVE, TIER, OFFLINE_MODE, ENABLE_VOICE, ENABLE_WORKFLOWS,
-#           ENABLE_RAG, ENABLE_OPENCLAW (all used by fix_nvidia_secure_boot),
+#           ENABLE_RAG, ENABLE_HERMES (all used by fix_nvidia_secure_boot),
 #           log/warn/ai/ai_ok/ai_warn/ai_bad helpers
 # Provides: detect_gpu(), load_capability_profile(), ods_is_wsl_host(),
-#           ods_windows_host_port_in_use(),
+#           ods_windows_host_port_in_use(), ods_gpu_memory_in_use_report(),
 #           normalize_profile_tier(), tier_rank(), load_backend_contract(),
 #           fix_nvidia_secure_boot(), MIN_DRIVER_VERSION
 #           Side-effect var on Jetson: JETSON_L4T_RELEASE (e.g. "R36.4.0")
+#           Side-effect var on NVIDIA: GPU_COMPUTE_CAP (e.g. "12.1")
 #
 # Modder notes:
 #   Add new GPU vendors or APU detection logic here.
@@ -23,6 +24,22 @@
 
 # Safe env loading (no eval) for script output KEY="value" lines
 [[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "${SCRIPT_DIR}/lib/safe-env.sh"
+
+# ods_gpu_memory_in_use_report
+# Reads `nvidia-smi --query-gpu=index,memory.total,memory.used
+# --format=csv,noheader,nounits` rows on stdin and prints one line per GPU
+# where programs already hold more than max(4 GiB, 10% of the card), such as
+# another model server: "GPU <index>: <used> of <total> GiB in use". A desktop
+# session stays under that floor; rows without numbers ([N/A] on
+# unified-memory GPUs) are skipped.
+ods_gpu_memory_in_use_report() {
+    awk -F', *' '
+        $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $2 > 0 {
+            floor = $2 * 0.10
+            if (floor < 4096) floor = 4096
+            if ($3 + 0 > floor) printf "GPU %s: %.0f of %.0f GiB in use\n", $1, $3 / 1024, $2 / 1024
+        }'
+}
 
 # WSL2 forwards Docker-published ports through the Windows host. A port can
 # therefore look free to lsof/ss inside Linux while Docker Desktop still
@@ -229,16 +246,20 @@ ods_container_label() {
     fi
 }
 
+# The Vulkan llama.cpp image needs only a render node; the ROCm image
+# (AMD_INFERENCE_BACKEND=rocm) also needs the ROCm compute device /dev/kfd.
 amd_gpu_missing_runtime_devices() {
     local root="${ODS_AMD_DEVICE_ROOT:-/dev}"
     local kfd="$root/kfd"
     local dri="$root/dri"
     local missing=()
 
-    if [[ -n "${ODS_AMD_DEVICE_ROOT:-}" ]]; then
-        [[ -e "$kfd" ]] || missing+=("$kfd")
-    else
-        [[ -c "$kfd" ]] || missing+=("$kfd")
+    if [[ "${AMD_INFERENCE_BACKEND:-vulkan}" == "rocm" ]]; then
+        if [[ -n "${ODS_AMD_DEVICE_ROOT:-}" ]]; then
+            [[ -e "$kfd" ]] || missing+=("$kfd")
+        else
+            [[ -c "$kfd" ]] || missing+=("$kfd")
+        fi
     fi
 
     if [[ ! -d "$dri" ]]; then
@@ -289,7 +310,9 @@ apply_cpu_gpu_fallback() {
     GPU_MEMORY_TYPE="none"
     GPU_DEVICE_ID=""
     HAS_NPU=false
-    [[ "${ODS_MODE:-local}" == "lemonade" ]] && ODS_MODE="local"
+    # A missing GPU device in WSL changes the container backend, not a
+    # Windows-hosted (host-native) llama-server route, which keeps
+    # ODS_MODE=local and NATIVE_LLM_BASE_URL.
     BACKEND_ID="cpu"
     CAP_LLM_BACKEND="cpu"
     CAP_GPU_VENDOR="cpu"
@@ -322,6 +345,7 @@ detect_gpu() {
     GPU_BACKEND="cpu"  # default to CPU-only fallback
     GPU_MEMORY_TYPE="none"
     GPU_DEVICE_ID=""
+    GPU_COMPUTE_CAP=""
 
     # Try NVIDIA Jetson (Tegra SoC) first — Tegra iGPUs do not appear as PCIe
     # devices under /sys/class/drm with vendor 0x10de, and nvidia-smi (only in
@@ -386,14 +410,38 @@ detect_gpu() {
     for _v in "$_drm_sys"/card*/device/vendor; do
         [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] && _nvidia_hw=true && break
     done
+    # Headless servers without nvidia-drm.ko have no DRM card for the GPU, but
+    # the PCI device still exists. Accept vendor 0x10de with a display class
+    # (0x03xxxx: VGA 0x0300, 3D controller 0x0302 for datacenter GPUs).
+    # ODS_PCI_SYS can be overridden in tests to point at a mock sysfs tree.
+    local _pci_sys="${ODS_PCI_SYS:-/sys/bus/pci/devices}"
+    if ! $_nvidia_hw; then
+        for _v in "$_pci_sys"/*/vendor; do
+            [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] || continue
+            [[ "$(cat "${_v%/vendor}/class" 2>/dev/null)" == 0x03* ]] && _nvidia_hw=true && break
+        done
+    fi
     # WSL2: /sys/class/drm/ only contains a 'version' file — no card* entries exist.
     # Fall back to nvidia-smi as the sole hardware witness on WSL2.
-    if ! $_nvidia_hw && grep -qiE "microsoft|wsl" /proc/sys/kernel/osrelease 2>/dev/null; then
+    # ODS_OSRELEASE_FILE can be overridden in tests to simulate native Linux.
+    if ! $_nvidia_hw && grep -qiE "microsoft|wsl" "${ODS_OSRELEASE_FILE:-/proc/sys/kernel/osrelease}" 2>/dev/null; then
         command -v nvidia-smi &>/dev/null && _nvidia_hw=true
+    fi
+    if ! $_nvidia_hw && command -v nvidia-smi &>/dev/null         && nvidia-smi -L 2>/dev/null | grep -q '^GPU '; then
+        warn "nvidia-smi lists GPUs but no NVIDIA PCI/DRM device was found in sysfs; ignoring nvidia-smi"
     fi
     if $_nvidia_hw && command -v nvidia-smi &> /dev/null; then
         local raw
         if raw=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null) && [[ -n "$raw" ]]; then
+            # A row whose memory is [N/A] beside a GPU with a memory size is
+            # not a GPU for the model (Windows on Arm lists an NVIDIA NPU that
+            # way). A lone [N/A] row stays: that is the unified-memory case
+            # below (GB10, GB200).
+            local _first_gpu_row=1
+            if awk -F',' '$2 ~ /[0-9]/ { found = 1 } END { exit !found }' <<< "$raw"; then
+                _first_gpu_row=$(awk -F',' '{ m = $2; gsub(/^[ \t]+|[ \t]+$/, "", m) } m != "[N/A]" && m != "N/A" { print NR; exit }' <<< "$raw")
+                raw=$(awk -F',' '{ m = $2; gsub(/^[ \t]+|[ \t]+$/, "", m) } m != "[N/A]" && m != "N/A"' <<< "$raw")
+            fi
             GPU_BACKEND="nvidia"
             GPU_MEMORY_TYPE="discrete"
             GPU_INFO="$raw"
@@ -419,10 +467,19 @@ detect_gpu() {
                     fi
                 fi
             fi
-            # Extract PCI device ID from first GPU
+            # Extract PCI device ID from first GPU (nvidia-smi lists devices
+            # in the same order for every query)
             local pci_id
-            pci_id=$(nvidia-smi --query-gpu=pci.device_id --format=csv,noheader 2>/dev/null | head -1 | xargs)
+            pci_id=$(nvidia-smi --query-gpu=pci.device_id --format=csv,noheader 2>/dev/null | sed -n "${_first_gpu_row}p" | xargs)
             [[ -n "$pci_id" ]] && GPU_DEVICE_ID="${pci_id:0:6}"
+            # Compute capability of the same GPU (12.1 on a DGX Spark GB10 or
+            # an RTX Spark N1X). Phase 06 picks the llama.cpp image built for
+            # it. A driver whose nvidia-smi lacks the compute_cap field (before
+            # 510) fails this query; the value then stays empty and the
+            # default image applies, as before.
+            local compute_cap
+            compute_cap=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sed -n "${_first_gpu_row}p" | xargs) || compute_cap=""
+            [[ "$compute_cap" =~ ^[0-9]+\.[0-9]+$ ]] && GPU_COMPUTE_CAP="$compute_cap"
             if [[ $GPU_COUNT -gt 1 ]]; then
                 # Build a display name for multi-GPU (e.g. "RTX 3090 + RTX 4090" or "RTX 4090 × 2")
                 local first_name second_name
@@ -472,14 +529,24 @@ detect_gpu() {
         done
     fi
 
-    # Try AMD GPUs (discrete RDNA + APU) via sysfs
-    local amd_card_dirs=()
+    # Try AMD GPUs (discrete RDNA + APU) via sysfs. An integrated GPU next to
+    # a discrete AMD GPU (a desktop Ryzen's 2-CU Radeon) is not an inference
+    # GPU: llama.cpp runs on the discrete one (installers/lib/amd-topo.sh).
+    declare -F amd_inference_card_dirs >/dev/null 2>&1 \
+        || . "$(dirname "${BASH_SOURCE[0]}")/amd-topo.sh"
+    local amd_card_dirs=() _amd_all_cards=0 _amd_idx _amd_dir
     for card_dir in "$_drm_sys"/card*/device; do
         [[ -d "$card_dir" ]] || continue
         local vendor
         vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
-        [[ "$vendor" == "0x1002" ]] && amd_card_dirs+=("$card_dir")
+        [[ "$vendor" == "0x1002" ]] && _amd_all_cards=$((_amd_all_cards + 1))
     done
+    while IFS=$'\t' read -r _amd_idx _amd_dir; do
+        [[ -n "$_amd_dir" ]] && amd_card_dirs+=("$_amd_dir")
+    done < <(ODS_DRM_SYS="$_drm_sys" amd_inference_card_dirs)
+    if (( _amd_all_cards > ${#amd_card_dirs[@]} )); then
+        log "GPU: leaving out $(( _amd_all_cards - ${#amd_card_dirs[@]} )) integrated AMD GPU(s) next to the discrete AMD GPU; llama.cpp runs on the discrete GPU"
+    fi
 
     if [[ ${#amd_card_dirs[@]} -gt 0 ]]; then
         GPU_BACKEND="amd"
@@ -489,26 +556,23 @@ detect_gpu() {
         local has_apu=false has_discrete=false
 
         for card_dir in "${amd_card_dirs[@]}"; do
-            local vram_bytes gtt_bytes device_id
+            local vram_bytes device_id
             vram_bytes=$(cat "$card_dir/mem_info_vram_total" 2>/dev/null) || vram_bytes=0
-            gtt_bytes=$(cat "$card_dir/mem_info_gtt_total" 2>/dev/null) || gtt_bytes=0
             device_id=$(cat "$card_dir/device" 2>/dev/null) || device_id="unknown"
 
             local vram_mb=$(( vram_bytes / 1048576 ))
-            local gtt_gb=$(( gtt_bytes / 1073741824 ))
-            local vram_gb=$(( vram_bytes / 1073741824 ))
             total_vram_mb=$(( total_vram_mb + vram_mb ))
 
-            # Classify: APU has small VRAM + large GTT, or very large unified pool.
-            # GTT is the reliable signal — it represents system RAM available to
-            # the GPU and is large on APUs (Strix Halo). VRAM alone is not a
-            # safe gate: a future discrete 32 GB+ AMD card would be misidentified
-            # as unified memory if vram_gb >= 32 were kept as an OR branch.
-            if [[ $gtt_gb -ge 16 && $vram_gb -le 4 ]] || [[ $gtt_gb -ge 32 ]]; then
-                has_apu=true
-            else
-                has_discrete=true
-            fi
+            # Classify: gpu_metrics tells an APU from a discrete GPU when the
+            # kernel publishes it (amd_card_memory_type). Without it, an APU
+            # has small VRAM + large GTT, or a very large unified pool: GTT
+            # represents system RAM available to the GPU and is large on APUs
+            # (Strix Halo). VRAM alone is not a safe gate: a discrete 32 GB+
+            # AMD card would be misidentified as unified memory.
+            case "$(amd_card_memory_type "$card_dir")" in
+                unified) has_apu=true ;;
+                *) has_discrete=true ;;
+            esac
 
             # Get marketing name
             local name
@@ -546,7 +610,7 @@ detect_gpu() {
             fi
         fi
 
-        # Check for NPU (Ryzen AI) for Lemonade hybrid mode
+        # Report a Ryzen AI NPU. Nothing in ODS runs on it; llama.cpp uses the GPU.
         HAS_NPU=false
         if [[ -d /sys/class/misc/amdnpu ]] || lspci 2>/dev/null | grep -qi 'AMD.*NPU\|AMD.*IPU'; then
             HAS_NPU=true
@@ -567,10 +631,10 @@ detect_gpu() {
     GPU_COUNT=0
     GPU_BACKEND="cpu"
     GPU_MEMORY_TYPE="none"
-    if [[ "${LEMONADE_EXTERNAL:-false}" == "true" && -n "${LEMONADE_GPU_NAME:-}" ]]; then
-        # Windows under WSL: the GPU is used by Lemonade on the host, not here.
-        ai "No GPU inside this Linux environment; the model runs on ${LEMONADE_GPU_NAME} through Lemonade."
-        log "Model inference uses the external Lemonade GPU: ${LEMONADE_GPU_NAME}."
+    if [[ -n "${NATIVE_LLM_BASE_URL:-}" && -n "${NATIVE_LLM_GPU_NAME:-}" ]]; then
+        # Windows under WSL: the GPU is used by llama-server on the host, not here.
+        ai "No GPU inside this Linux environment; the model runs on ${NATIVE_LLM_GPU_NAME} through llama-server on Windows."
+        log "Model inference uses the host-native llama-server GPU: ${NATIVE_LLM_GPU_NAME}."
     else
         warn "No GPU detected. Falling back to CPU-only mode (inference will be slow)."
         log "CPU-only mode: llama.cpp will use CPU inference. Consider adding a GPU for better performance."
@@ -598,8 +662,18 @@ ods_wsl_nvidia_driver_too_old() {
 ods_whisper_cuda_supported() {
     local backend="${1:-${GPU_BACKEND:-cpu}}"
     local driver_major="${2:-${DRIVER_VERSION:-0}}"
+    # The pinned Speaches CUDA image has CUDA on amd64 only: its arm64 variant
+    # ships a CTranslate2 "not compiled with CUDA support". A GB300 then ran
+    # large-v3-turbo on 4 CPU cores, 17 s per 4 s clip; the CPU image's base
+    # model took 1.2 s (Workstation06, 2026-10-27).
+    ods_host_is_arm64 && return 1
     [[ "$backend" == "nvidia" && "$driver_major" =~ ^[0-9]+$ \
         && "$driver_major" -ge "$MIN_WHISPER_CUDA_DRIVER_VERSION" ]]
+}
+
+# HOST_ARCH is detect_host_arch's value (amd64/arm64) once Phase 02 has run.
+ods_host_is_arm64() {
+    [[ "${HOST_ARCH:-$(uname -m 2>/dev/null || echo unknown)}" =~ ^(arm64|aarch64)$ ]]
 }
 
 _ods_csv_add_unique() {
@@ -707,6 +781,9 @@ nvidia_kernel_module_flavor() {
 }
 
 validate_nvidia_blackwell_open_modules() {
+    # WSL uses the Windows display driver through /dev/dxg. Linux module
+    # metadata does not apply there, and installing a Linux driver breaks it.
+    ods_is_wsl_host && return 0
     nvidia_blackwell_hardware_detected || return 0
 
     local flavor
@@ -733,6 +810,11 @@ validate_nvidia_blackwell_open_modules() {
 }
 
 fix_nvidia_secure_boot() {
+    if ods_is_wsl_host; then
+        ai_warn "NVIDIA GPU access is unavailable in WSL. Check the NVIDIA Windows driver and Docker Desktop GPU integration."
+        ai "Do not install NVIDIA drivers or change Secure Boot inside WSL."
+        return 1
+    fi
     # Step 1: Is there even NVIDIA hardware on this machine?
     if ! lspci 2>/dev/null | grep -qi 'nvidia'; then
         return 1  # No hardware — nothing to fix
@@ -762,10 +844,10 @@ fix_nvidia_secure_boot() {
     if [[ -z "$installed_driver" ]]; then
         ai "No NVIDIA driver package found. Installing recommended driver..."
         if command -v ubuntu-drivers &>/dev/null; then
-            ods_sudo ubuntu-drivers install 2>>"$LOG_FILE" || \
-            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
+            ods_sudo ubuntu-drivers install </dev/null 2>>"$LOG_FILE" || \
+            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" </dev/null 2>>"$LOG_FILE" || true
         else
-            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
+            ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" </dev/null 2>>"$LOG_FILE" || true
         fi
         installed_driver=$(dpkg-query -W -f='${Package}\n' 'nvidia-driver-*' 2>/dev/null \
                            | sed -n 's/.*nvidia-driver-\([0-9][0-9]*\).*/\1/p' | sort -n | tail -1 || true)
@@ -810,7 +892,7 @@ fix_nvidia_secure_boot() {
     # Ensure linux-headers are present (needed for sign-file)
     if [[ ! -d "/usr/src/linux-headers-${kver}" ]]; then
         ai "Installing kernel headers for ${kver}..."
-        ods_sudo apt-get install -y "linux-headers-${kver}" 2>>"$LOG_FILE" || true
+        ods_sudo apt-get install -y "linux-headers-${kver}" </dev/null 2>>"$LOG_FILE" || true
     fi
 
     # Generate MOK keypair if not already present
@@ -889,46 +971,22 @@ fix_nvidia_secure_boot() {
     mok_pass=$(openssl rand -hex 4)
     printf '%s\n%s\n' "$mok_pass" "$mok_pass" | ods_sudo mokutil --import "$mok_dir/MOK.der" 2>>"$LOG_FILE"
 
-    # --- Auto-resume: create a systemd oneshot so the install continues
-    #     automatically after reboot (user doesn't have to re-run manually)
-    local svc_name="ods-install-resume"
-    local resume_args="--force --non-interactive"
+    # The install cannot finish until the key is enrolled at the next boot.
+    # Earlier versions installed a root systemd unit to re-run this
+    # user-writable installer after the reboot; the installer refuses root,
+    # so that unit failed at every boot and never removed itself. The owner
+    # re-runs the installer instead (01-preflight removes any old unit).
+    local resume_args=""
     $ENABLE_VOICE && resume_args="$resume_args --voice"
     $ENABLE_WORKFLOWS && resume_args="$resume_args --workflows"
     $ENABLE_RAG && resume_args="$resume_args --rag"
     $ENABLE_HERMES && resume_args="$resume_args --hermes"
-    $ENABLE_OPENCLAW && resume_args="$resume_args --openclaw"
     [[ -n "$TIER" ]] && resume_args="$resume_args --tier $TIER"
     [[ "$OFFLINE_MODE" == "true" ]] && resume_args="$resume_args --offline"
     [[ "${ODS_RESELECT_MODEL:-false}" == "true" ]] && resume_args="$resume_args --reselect-model"
-
-    ods_sudo tee /etc/systemd/system/${svc_name}.service > /dev/null << SVCEOF
-[Unit]
-Description=ODS Install (auto-resume after Secure Boot enrollment)
-After=network-online.target docker.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/bin/bash ${SCRIPT_DIR}/install.sh ${resume_args}
-ExecStartPost=/bin/rm -f /etc/systemd/system/${svc_name}.service
-ExecStartPost=/bin/systemctl daemon-reload
-WorkingDirectory=${SCRIPT_DIR}
-Environment="HOME=${HOME}"
-Environment="USER=${USER}"
-StandardOutput=journal+console
-StandardError=journal+console
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-    if ! ods_sudo systemctl daemon-reload; then
-        error "Could not reload systemd after installing the auto-resume unit."
-    fi
-    if ! ods_sudo systemctl enable "${svc_name}.service" 2>>"$LOG_FILE"; then
-        error "Could not enable ${svc_name}.service; installation cannot safely resume after reboot."
-    fi
-    log "Auto-resume service installed: ${svc_name}.service"
+    [[ -n "${LLM_BACKEND_REQUESTED:-}" ]] && resume_args="$resume_args --llm-backend $LLM_BACKEND_REQUESTED"
+    local resume_command="cd \"${SCRIPT_DIR}\" && ./install.sh${resume_args}"
+    log "Secure Boot key enrollment pending; resume with: $resume_command"
 
     # --- Show a clean, friendly reboot screen ---
     echo ""
@@ -949,9 +1007,13 @@ SVCEOF
     echo -e "${GRN}|${NC}     ${BGRN}3.${NC} Type password:  ${BGRN}${mok_pass}${NC}                            ${GRN}|${NC}"
     echo -e "${GRN}|${NC}     ${BGRN}4.${NC} Select \"Reboot\"                                     ${GRN}|${NC}"
     echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
-    echo -e "${GRN}|${NC}   Installation will ${BGRN}continue automatically${NC} after reboot.    ${GRN}|${NC}"
+    echo -e "${GRN}|${NC}   Then ${BGRN}re-run the installer${NC} to finish (command below).    ${GRN}|${NC}"
     echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
     echo -e "${GRN}+--------------------------------------------------------------+${NC}"
+    echo ""
+    echo "  After the reboot, finish installing with:"
+    echo ""
+    echo "    $resume_command"
     echo ""
 
     if $INTERACTIVE; then
@@ -960,6 +1022,6 @@ SVCEOF
     fi
 
     # Non-interactive mode: exit cleanly (not an error — reboot is a normal install phase)
-    ai "Reboot this machine to continue installation."
+    ai "Reboot this machine, enroll the key, then run: $resume_command"
     exit 0
 }

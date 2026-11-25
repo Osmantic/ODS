@@ -256,7 +256,69 @@ _ods_pixel_finish_release_transition fixture /home/fixture /pixel "$token"
     assert lines == proofs + releases
 
 
-@pytest.mark.parametrize("scenario", ["initial", "ready", "active", "foreign", "extra"])
+@pytest.mark.parametrize('scenario', ['source-sandboxed', 'source-full-access', 'release-update', 'first-install'])
+def test_sandboxed_source_apply_defers_the_access_proof(tmp_path, scenario):
+    # Pixel's raw candidate lacks the ODS runtime overlay, including the
+    # exec-control bind the access proof runs through. A held Sandbox source
+    # upgrade must apply it under Pixel's own strict verifier and prove the
+    # transaction only after the overlay; every other path keeps its proof.
+    source = (ROOT / 'installers/lib/pixel-host-install.sh').read_text()
+    block = source[source.index("            local release_transaction='' prove_after_apply=true"):
+                   source.index('            if [[ -n "$release_transaction" ]] && ! _ods_pixel_finish_release_transition')]
+    events = tmp_path / 'events'
+    script = r'''
+set -eu
+source "$1/installers/lib/pixel-host-install.sh"
+scenario=$2
+events=$3
+owner=fixture home=/home/fixture pixel_root=/pixel pixel_log=/dev/null INSTALL_DIR=/install
+transaction=$(printf 'a%.0s' {1..64})
+[[ "$scenario" != source-* ]] || ODS_PIXEL_SOURCE_TRANSACTION=$transaction
+_ods_pixel_begin_release_transition() { [[ "$scenario" == first-install ]] || echo "$transaction"; }
+_ods_pixel_source_upgrade() {
+    [[ "$*" == "status fixture" ]] || return 9
+    if [[ "$scenario" == source-sandboxed ]]; then echo '{"mode":"sandboxed"}'
+    else echo '{"mode":"full-access"}'; fi
+}
+ods_pixel_run_as_owner() {
+    shift 2
+    case "$1" in
+        mktemp) echo "$events.attempt" ;;
+        env) shift 2; echo "apply ${*:4}" >> "$events" ;;
+        chmod|cat|rm) ;;
+        *) echo "unexpected $*" >> "$events"; return 9 ;;
+    esac
+}
+_ods_pixel_verify_current_runtime() { echo "verify $3 ${4:-}" >> "$events"; }
+apply_block() {
+''' + block + r'''
+}
+apply_block
+'''
+    result = subprocess.run(['bash', '-c', script, 'fixture', str(ROOT), scenario, str(events)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    lines = events.read_text().splitlines()
+    transaction = 'a' * 64
+    if scenario == 'source-sandboxed':
+        assert lines == ['apply ']
+    elif scenario == 'first-install':
+        assert lines == ['apply ', 'verify /pixel ']
+    else:
+        assert lines == ['apply --ods-release-transaction ' + transaction, 'verify /pixel ' + transaction]
+
+
+def test_source_upgrade_proves_access_only_after_the_ods_overlay():
+    source = (ROOT / 'installers/lib/pixel-host-install.sh').read_text()
+    install = source[source.index('ods_pixel_install_default_agent() {'):]
+    apply = install.index('"$pixel_root/pixel" apply --confirm')
+    overlay = install.index('runtime_budget_status="$(_ods_pixel_apply_runtime_budget')
+    proof = install.index('if ! _ods_pixel_restart_gateway_and_verify "$owner" "$home" "$pixel_root"')
+    finish = install.index('_ods_pixel_source_upgrade finish "$owner"')
+    assert apply < overlay < proof < finish
+
+
+@pytest.mark.parametrize("scenario", ["initial", "generated", "ready", "active", "foreign", "extra", "wrong-source"])
 def test_access_reproof_distinguishes_empty_bootstrap(tmp_path, scenario):
     import json
     source = (ROOT / "installers/lib/pixel-host-install.sh").read_text()
@@ -272,21 +334,145 @@ def test_access_reproof_distinguishes_empty_bootstrap(tmp_path, scenario):
         value["install_dir"] = "/another-install"
     if scenario == "extra":
         value["configuration_sha256"] = "b" * 64
+    if scenario == "wrong-source":
+        value["pixel_source_ref"] = "f" * 40
     if scenario == "active":
         current = tmp_path / ".local/share/pixel/current"
         current.parent.mkdir(parents=True)
         current.symlink_to(current.parent / "missing-release")
+    if scenario == "generated":
+        config = tmp_path / ".openclaw/openclaw.json"
+        config.parent.mkdir()
+        config.write_text('{}')
     marker.write_text(json.dumps(value))
     script = r'''
 set -eu
 INSTALL_DIR=$1
 ods_pixel_run_as_owner() { shift 2; "$@"; }
 _ods_pixel_install_access_service() { echo unexpected-root-action; return 9; }
-''' + helper + '\n_ods_pixel_reprove_access_marker_if_needed owner "$1" /unused\n'
+''' + helper + '\n_ods_pixel_reprove_access_marker_if_needed owner "$1" ""\n'
     result = subprocess.run(["bash", "-c", script, "test", str(tmp_path)],
                             capture_output=True, text=True)
-    assert (result.returncode == 0) == (scenario == "initial"), result.stderr
-    assert "unexpected-root-action" not in result.stdout
+    # The retained-path helper validates source shape; the new early gate also
+    # pins the exact selected source before it may skip post-resume reproof.
+    assert (result.returncode == 0) == (scenario in ("initial", "wrong-source")), result.stderr
+    assert ("unexpected-root-action" in result.stdout) == (scenario == "generated")
+
+    early_start = source.index("_ods_pixel_initial_unconfigured_marker() {")
+    early = source[early_start:source.index("\n_ods_pixel_reprove_access_marker_if_needed() {", early_start)]
+    early_script = r'''
+set -eu
+INSTALL_DIR=$1
+PIXEL_SOURCE_REF=$(printf 'a%.0s' {1..40})
+ods_pixel_run_as_owner() { shift 2; "$@"; }
+''' + early + '\n_ods_pixel_initial_unconfigured_marker owner "$1"\n'
+    early_result = subprocess.run(["bash", "-c", early_script, "test", str(tmp_path)],
+                                  capture_output=True, text=True)
+    assert (early_result.returncode == 0) == (scenario == "initial"), early_result.stderr
+
+
+def test_access_reproof_precedes_config_generating_bootstrap():
+    source = (ROOT / "installers/lib/pixel-host-install.sh").read_text()
+    install = source[source.index("ods_pixel_install_default_agent() {"):]
+    reproof = "_ods_pixel_reprove_access_marker_if_needed \"$owner\" \"$home\""
+    bootstrap = '"$pixel_root/pixel" bootstrap --apply'
+    resume = '_ods_pixel_resume_completed_release "$owner" "$home"'
+    assert install.count(reproof) == 1
+    proof = install.index(reproof)
+    initial = install.index('_ods_pixel_initial_unconfigured_marker "$owner" "$home" "$pixel_root"')
+    assert '[[ -z "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]' in install[:initial]
+    assert initial < install.index(bootstrap) < install.index(resume) < proof
+    assert 'if [[ "$initial_access_reproved" != true ]]; then' in install[install.index(resume):proof]
+
+
+@pytest.mark.parametrize('fault', [None, 'one-plugin', 'gateway', 'agent', 'plugin',
+    'disabled', 'integer-enabled', 'version', 'meta', 'writable', 'symlink',
+    'hardlink', 'active', 'ready', 'foreign', 'wrong-source'])
+def test_interrupted_first_bootstrap_accepts_only_inert_pinned_plugin_config(tmp_path, fault):
+    import json
+    import os
+    source = (ROOT / 'installers/lib/pixel-host-install.sh').read_text()
+    start = source.index('_ods_pixel_initial_unconfigured_marker() {')
+    helper = source[start:source.index('\n_ods_pixel_reprove_access_marker_if_needed() {', start)]
+    marker = tmp_path / '.config/ods/pixel-managed.json'
+    marker.parent.mkdir(parents=True)
+    value = dict(schema_version=2, manager='ods', state='installing',
+                 initial_active_state='absent', install_dir=str(tmp_path), pixel_source_ref='a' * 40)
+    if fault == 'ready': value['state'] = 'ready'
+    if fault == 'foreign': value['install_dir'] = '/another-install'
+    if fault == 'wrong-source': value['pixel_source_ref'] = 'b' * 40
+    marker.write_text(json.dumps(value))
+    config = tmp_path / '.openclaw/openclaw.json'
+    config.parent.mkdir()
+    document = dict(plugins={'entries': {key: {'enabled': True} for key in ('discord', 'searxng', 'llama-cpp')}},
+                    meta={'lastTouchedVersion': '2026.6.33', 'lastTouchedAt': '2026-10-05T17:40:13.020Z'})
+    if fault == 'one-plugin': document['plugins']['entries'] = {'discord': {'enabled': True}}
+    if fault == 'gateway': document['gateway'] = {'bind': 'lan'}
+    if fault == 'agent': document['agents'] = {'defaults': {'sandbox': {'mode': 'off'}}}
+    if fault == 'plugin': document['plugins']['entries']['ambient'] = {'enabled': True}
+    if fault == 'disabled': document['plugins']['entries']['discord']['enabled'] = False
+    if fault == 'integer-enabled': document['plugins']['entries']['discord']['enabled'] = 1
+    if fault == 'version': document['meta']['lastTouchedVersion'] = 'unreviewed'
+    if fault == 'meta': document['meta']['extra'] = True
+    config.write_text(json.dumps(document))
+    config.chmod(0o600 if fault != 'writable' else 0o666)
+    if fault == 'symlink':
+        target = config.with_name('target.json')
+        config.rename(target)
+        config.symlink_to(target)
+    if fault == 'hardlink': os.link(config, config.with_name('linked.json'))
+    if fault == 'active':
+        current = tmp_path / '.local/share/pixel/current'
+        current.parent.mkdir(parents=True)
+        current.symlink_to(current.parent / 'missing-release')
+    manifest = tmp_path / 'RELEASE-MANIFEST.json'
+    manifest.write_text(json.dumps({'openclaw': '2026.6.33'}))
+    before = config.read_bytes()
+    script = r'''
+set -eu
+INSTALL_DIR=$1
+PIXEL_SOURCE_REF=$(printf 'a%.0s' {1..40})
+ods_pixel_run_as_owner() { shift 2; "$@"; }
+''' + helper + '\n_ods_pixel_initial_unconfigured_marker owner "$1" "$1"\n'
+    result = subprocess.run(['bash', '-c', script, 'test', str(tmp_path)], capture_output=True, text=True)
+    assert (result.returncode == 0) == (fault in (None, 'one-plugin')), result.stderr
+    assert config.read_bytes() == before
+
+
+def test_partial_release_reproof_waits_for_verified_resume(tmp_path):
+    import hashlib
+    import json
+
+    source = (ROOT / "installers/lib/pixel-host-install.sh").read_text()
+    start = source.index("_ods_pixel_reprove_access_marker_if_needed() {")
+    helper = source[start:source.index("\n_ods_pixel_install_access_service() {", start)]
+    marker = tmp_path / ".config/ods/pixel-managed.json"
+    marker.parent.mkdir(parents=True)
+    config = tmp_path / ".openclaw/openclaw.json"
+    config.parent.mkdir()
+    config.write_text('{}')
+    value = dict(schema_version=2, manager="ods", state="installing",
+                 initial_active_state="absent", install_dir=str(tmp_path),
+                 pixel_source_ref="a" * 40, configuration_sha256="b" * 64)
+    marker.write_text(json.dumps(value))
+    script = r'''
+set -eu
+INSTALL_DIR=$1
+ods_pixel_run_as_owner() { shift 2; "$@"; }
+_ods_pixel_install_access_service() { echo installer-access-recovery-required >&2; return 9; }
+''' + helper + '\n_ods_pixel_reprove_access_marker_if_needed owner "$1" /unused\n'
+
+    before = subprocess.run(["bash", "-c", script, "test", str(tmp_path)],
+                            capture_output=True, text=True)
+    assert before.returncode != 0
+    assert "installer-access-recovery-required" in before.stderr
+
+    # The durable completion replay verifies and rebinds the new config hash.
+    value["configuration_sha256"] = hashlib.sha256(b"ods-pixel-openclaw-v1\0{}").hexdigest()
+    marker.write_text(json.dumps(value))
+    after = subprocess.run(["bash", "-c", script, "test", str(tmp_path)],
+                           capture_output=True, text=True)
+    assert after.returncode == 0, after.stderr
 
 
 @pytest.mark.parametrize("scenario", ["configured-new", "active-link", "attestation", "loaded"])

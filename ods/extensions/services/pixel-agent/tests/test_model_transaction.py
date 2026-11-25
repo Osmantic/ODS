@@ -109,5 +109,97 @@ def test_output_budget_overrides_all_inherited_aliases_and_preserves_sampling():
     c["agents"]["list"][0]["params"]=params
     updated=plan(c,NEW)
     assert projection(updated)["limits"]["maxOutputTokens"]==NEW["maxTokens"]
-    assert updated["agents"]["list"][0]["params"] == {"maxTokens":NEW["maxTokens"],"temperature":0.6,"chat_template_kwargs":{"enable_thinking":True}}
+    assert updated["agents"]["list"][0]["params"] == {"maxTokens":NEW["maxTokens"],"temperature":0.6,"chat_template_kwargs":{"enable_thinking":False}}
     assert c["agents"]["list"][0]["params"]==params
+
+
+@pytest.mark.parametrize("control,model,reasoning,switched", [
+    ("enable_thinking", "renamed-model", True, True),
+    ("enable_thinking", "renamed-model", False, True),
+    ("always", "Qwen-reasoner", True, False),
+    ("none", "Qwen-no-reasoning", False, False),
+    (None, "Llama-3.2-1B", False, False),
+    (None, "Qwen-9B", False, True),
+])
+def test_model_switch_replaces_owned_thinking_settings(control, model, reasoning, switched):
+    original = config()
+    row = original["models"]["providers"]["ods-gateway"]["models"][0]
+    agent = original["agents"]["list"][0]
+    row.update(reasoning=True, compat={"thinkingFormat": "qwen-chat-template", "supportsStore": False})
+    agent.update(thinkingDefault="low", params={"temperature": 0.6,
+        "chat_template_kwargs": {"enable_thinking": True, "custom_template_option": 7}})
+    before = json.dumps(original, sort_keys=True)
+    target = dict(NEW, model=model, reasoning=reasoning)
+    if control is not None:
+        target["thinkingControl"] = control
+    changed = plan(original, target)
+    a = changed["agents"]["list"][0]
+    r = changed["models"]["providers"]["ods-gateway"]["models"][0]
+    assert projection(changed)["contract"] == target
+    assert r["compat"].get("thinkingFormat") == ("qwen-chat-template" if switched and reasoning else None)
+    assert a.get("thinkingDefault") == ("low" if switched and reasoning else None)
+    kwargs = a["params"]["chat_template_kwargs"]
+    assert kwargs["custom_template_option"] == 7
+    assert (kwargs.get("enable_thinking") is reasoning) if switched else ("enable_thinking" not in kwargs)
+    assert r["compat"]["supportsStore"] is False and a["params"]["temperature"] == 0.6
+    assert json.dumps(original, sort_keys=True) == before
+
+
+def test_measured_thinking_readback_rejects_stale_runtime():
+    target = dict(NEW, reasoning=False, thinkingControl="enable_thinking")
+    changed = plan(config(), target)
+    changed["agents"]["list"][0]["params"]["chat_template_kwargs"]["enable_thinking"] = True
+    with pytest.raises(ModelError, match="thinking-control-mismatch"):
+        projection(changed)
+    for invalid in (None, True, "", "auto", {}):
+        with pytest.raises(ModelError):
+            plan(config(), dict(target, thinkingControl=invalid))
+
+
+def test_measured_thinking_transaction_rollback_restores_exact_config(owner):
+    path, state = owner
+    original = config()
+    original["agents"]["list"][0].update(thinkingDefault="low", params={"chat_template_kwargs":{"enable_thinking": True}})
+    original["models"]["providers"]["ods-gateway"]["models"][0].update(reasoning=True, compat={"thinkingFormat":"qwen-chat-template"})
+    path.write_text(json.dumps(original, indent=3) + "\n\n")
+    before = path.read_bytes()
+    call(owner, "model-begin")
+    target = dict(NEW, model="Llama-3.2-1B", thinkingControl="none")
+    call(owner, "model-apply", proposed=target)
+    assert projection(json.loads(path.read_bytes()))["contract"] == target
+    call(owner, "model-rollback")
+    assert path.read_bytes() == before
+    call(owner, "model-finish", outcome="rollback")
+    assert not call(owner, "model-status")["pending"]
+
+
+def test_switch_clears_inherited_thinking_without_touching_other_defaults():
+    original = config()
+    defaults = original["agents"]["defaults"]
+    defaults.update(thinkingDefault="low", params={"temperature": 0.4, "chat_template_kwargs": {"enable_thinking": True}},
+        models={"ods-gateway/ods/current": {"params": {"chat_template_kwargs": {"enable_thinking": True, "custom": 1}}}})
+    changed = plan(original, dict(NEW, model="Llama", thinkingControl="none"))
+    assert projection(changed)["contract"]["thinkingControl"] == "none"
+    d = changed["agents"]["defaults"]
+    assert "thinkingDefault" not in d and d["params"] == {"temperature": 0.4}
+    assert d["models"]["ods-gateway/ods/current"]["params"]["chat_template_kwargs"] == {"custom": 1}
+    assert original["agents"]["defaults"]["thinkingDefault"] == "low"
+    assert changed["agents"]["list"][0]["params"]["chat_template_kwargs"] == {"custom": 1}
+    changed["agents"]["defaults"]["params"]["chat_template_kwargs"] = {"enable_thinking": True}
+    # Remove narrower layers so the global stale switch becomes effective.
+    changed["agents"]["defaults"].pop("models")
+    changed["agents"]["list"][0]["params"].pop("chat_template_kwargs")
+    with pytest.raises(ModelError, match="thinking-control-mismatch"):
+        projection(changed)
+
+
+def test_invalid_thinking_apply_keeps_snapshot_and_can_rollback(owner):
+    path, state = owner
+    before = path.read_bytes()
+    call(owner, "model-begin")
+    with pytest.raises(ModelError):
+        call(owner, "model-apply", proposed=dict(NEW, thinkingControl="auto"))
+    assert path.read_bytes() == before and call(owner, "model-status")["pending"]
+    call(owner, "model-rollback")
+    call(owner, "model-finish", outcome="rollback")
+    assert path.read_bytes() == before

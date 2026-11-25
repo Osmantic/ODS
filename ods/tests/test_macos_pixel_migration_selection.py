@@ -283,3 +283,95 @@ def test_migration_ingress_requires_exact_managed_identity_and_runs_as_owner(mon
     else:
         assert module._qualify_migration_ingress(plan) == identity
     if fault in ('missing', 'gateway'): assert not calls
+
+
+def _agent_sandbox(root, cid, *, name='/pixel-sbx-agent-pixel-12345678', uid='501'):
+    base = str(root / 'data/pixel-native/home/.openclaw')
+    return {'Id': cid, 'Name': name, 'Image': 'sha256:' + 'b' * 64, 'State': {'Running': True},
+        'Config': {'Labels': {'openclaw.sandbox': '1', 'openclaw.sessionKey': 'agent:pixel',
+            'org.osmantic.pixel.sandbox-uid': uid}},
+        'Mounts': [{'Type': 'bind', 'Source': base + '/workspace-pixel', 'Destination': '/workspace', 'RW': True},
+            {'Type': 'bind', 'Source': base + '/.ods-exec-control', 'Destination': '/run/pixel-ods-control',
+             'RW': False}]}
+
+
+@pytest.mark.parametrize('fault', [None, 'none', 'foreign-root', 'foreign-owner', 'ps-error',
+    'inspect-error', 'inspect-garbage', 'rm-error', 'survivor', 'bad-id'])
+def test_native_update_retires_only_this_installations_agent_sandboxes_as_owner(monkeypatch, fault):
+    # macOS native update: OpenClaw keeps a recently used sandbox whose image
+    # changed, so the gateway would stay on the previous image (no node).
+    root = Path('/Users/owner/ods')
+    owner = SimpleNamespace(pw_name='owner', pw_uid=501, pw_gid=20)
+    plan = {'owner': owner, 'access_settings': {'install_dir': '/Users/owner/ods'},
+        'migration_qualification': {'transport': {'docker': '/usr/local/bin/docker', 'project': 'ods',
+            'image': 'sha256:' + 'a' * 64, 'user': '501:20'}}}
+    context = {'cwd': '/', 'env': {'DOCKER_HOST': 'unix:///Users/owner/.docker/run/docker.sock'},
+        'user': 501, 'group': 20, 'extra_groups': []}
+    monkeypatch.setattr(module, '_migration_edge_context', lambda value: context)
+    first, second = 'c' * 64, 'd' * 64
+    live = {first: _agent_sandbox(root, first), second: _agent_sandbox(root, second, name='/pixel-sbx-agent-pixel-9abc')}
+    if fault == 'none': live.clear()
+    if fault == 'foreign-root':
+        live[second] = _agent_sandbox(Path('/Users/other/ods'), second, name='/pixel-sbx-agent-pixel-9abc')
+    if fault == 'foreign-owner': live[second] = _agent_sandbox(root, second, uid='502')
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(argv[1:])
+        assert argv[0] == str(Path('/usr/local/bin/docker'))
+        # Docker and its owner configuration never run as root.
+        assert all(kwargs[key] == value for key, value in context.items())
+        assert kwargs['capture_output'] is True and kwargs['timeout'] == 60
+        if argv[1] == 'ps':
+            assert argv[2:] == ['-aq', '--no-trunc', '--filter', 'name=^/pixel-sbx-agent-pixel-']
+            ids = list(live) + (['not-an-id'] if fault == 'bad-id' else [])
+            return SimpleNamespace(returncode=1 if fault == 'ps-error' else 0, stdout=''.join(i + '\n' for i in ids))
+        if argv[1] == 'inspect':
+            return SimpleNamespace(returncode=1 if fault == 'inspect-error' else 0,
+                stdout='not json' if fault == 'inspect-garbage' else json.dumps([live[argv[2]]]))
+        assert argv[1:3] == ['rm', '-f'] and len(argv) == 4
+        if fault == 'rm-error': return SimpleNamespace(returncode=1, stdout='')
+        if fault != 'survivor': live.pop(argv[3])
+        return SimpleNamespace(returncode=0, stdout=argv[3] + '\n')
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    expected = {'foreign-root': 'native-update-sandbox-custody-mismatch',
+        'foreign-owner': 'native-update-sandbox-custody-mismatch'}.get(fault, 'native-update-sandbox-retirement-failed')
+    if fault in (None, 'none'):
+        module._retire_agent_sandboxes(plan)
+        assert live == {}
+        removed = [call[2] for call in calls if call[0] == 'rm']
+        assert removed == ([] if fault == 'none' else [first, second])
+        # The final listing proves nothing named for the agent sandbox remains.
+        assert calls[-1][0] == 'ps'
+    else:
+        with pytest.raises(module.InstallError) as raised:
+            module._retire_agent_sandboxes(plan)
+        assert raised.value.code == expected
+        assert expected in module.SANDBOX_RETIREMENT_GUIDANCE
+        if fault in ('foreign-root', 'foreign-owner', 'ps-error', 'inspect-error', 'inspect-garbage', 'bad-id'):
+            # Nothing is removed unless every listed container is this installation's.
+            assert not [call for call in calls if call[0] == 'rm']
+
+
+@pytest.mark.parametrize('wrapped', [False, True])
+def test_joint_cli_prints_sandbox_retirement_guidance(monkeypatch, capsys, wrapped):
+    monkeypatch.setattr(module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(module.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(module, 'make_migration_plan', lambda **kw: {})
+    def activate(value, source):
+        cause = module.InstallError('native-update-sandbox-retirement-failed')
+        if not wrapped:
+            raise cause
+        raise module._upgrade.UpgradeError('runtime-upgrade-recovery-required') from cause
+    monkeypatch.setattr(module, 'migrate_install', activate)
+    argv = ['migrate-native']
+    args = {'source': '/source', 'install-dir': '/ods', 'owner': 'owner', 'candidate': '/candidate',
+        'runtime-bundle': '/runtime', 'bundle-digest': 'a' * 64, 'current-bundle-digest': 'b' * 64,
+        'services-bundle': '/services', 'services-digest': 'c' * 64, 'pixel-source-ref': 'd' * 40,
+        'docker': '/docker', 'compose-project': 'ods', 'ingress-image': 'sha256:' + 'e' * 64,
+        'ingress-user': '501:20'}
+    for name, value in args.items(): argv.extend(['--' + name, value])
+    argv.append('--activate')
+    assert module.main(argv) == 1
+    err = capsys.readouterr().err
+    assert module.SANDBOX_RETIREMENT_GUIDANCE['native-update-sandbox-retirement-failed'] in err
+    assert 'https://discord.gg/4ntNp9MAwC' in err

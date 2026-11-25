@@ -33,6 +33,29 @@ reject_regex() {
     fi
 }
 
+# Like require_literal, within one top-level PowerShell function: its
+# "function <Name>" line through the closing brace in column 0.
+require_function_literal() {
+    local path="$1"
+    local function="$2"
+    local needle="$3"
+    local label="$4"
+    local body
+    if [[ ! -f "$ROOT/$path" ]]; then
+        echo "FAIL: ${path} is missing; update this contract if the Windows launch moved" >&2
+        exit 1
+    fi
+    body="$(awk -v name="$function" '
+        $0 ~ ("^function " name "[ ({]") { inside = 1 }
+        inside { print }
+        inside && /^}/ { exit }
+    ' "$ROOT/$path")"
+    if ! grep -Fq -- "$needle" <<<"$body"; then
+        echo "FAIL: missing ${label} in ${path} ${function}: ${needle}" >&2
+        exit 1
+    fi
+}
+
 python3 - "$ROOT/.env.schema.json" <<'PY'
 import json
 import sys
@@ -73,6 +96,8 @@ for path in \
     "installers/windows/ods.ps1" \
     "installers/windows/install-windows.ps1" \
     "installers/windows/lib/env-generator.ps1" \
+    "installers/windows/lib/native-llama-legacy.ps1" \
+    "installers/windows/lib/native-llama-runtime.ps1" \
     "scripts/bootstrap-upgrade.sh" \
     "extensions/services/llama-server/README.md"; do
     reject_literal "$path" "LLAMA_ARG_SPEC_DRAFT_P_MIN" "draft p-min exposure"
@@ -89,8 +114,18 @@ reject_regex ".env.example" "^LLAMA_ARG_SPEC_DRAFT_N_MAX=" "active MTP draft cap
 require_literal "bin/ods-host-agent.py" '"LLAMA_ARG_SPEC_TYPE": "--spec-type"' "host-agent spec type mapping"
 require_literal "bin/ods-host-agent.py" '"LLAMA_ARG_SPEC_DRAFT_N_MAX": "--spec-draft-n-max"' "host-agent spec n max mapping"
 
-require_literal "installers/windows/install-windows.ps1" '--spec-type", $_llamaEnv["LLAMA_ARG_SPEC_TYPE"]' "Windows install native spec type"
-require_literal "installers/windows/ods.ps1" '--spec-type", $envVars["LLAMA_ARG_SPEC_TYPE"]' "Windows CLI native spec type"
+# Native Windows: a legacy installation's launch (the installer's logon task
+# and "ods.ps1 native-llm-start/-restart") maps the .env keys to flags in
+# Get-ODSNativeLlamaLegacyTuning, and New-ODSNativeLlamaLaunchArguments only
+# passes on what Assert-ODSNativeLlamaOptions allows.
+require_function_literal "installers/windows/lib/native-llama-legacy.ps1" Get-ODSNativeLlamaLegacyTuning \
+    "@('LLAMA_ARG_SPEC_TYPE', '--spec-type')" "Windows native spec type"
+require_function_literal "installers/windows/lib/native-llama-legacy.ps1" Get-ODSNativeLlamaLegacyTuning \
+    "@('LLAMA_ARG_SPEC_DRAFT_N_MAX', '--spec-draft-n-max')" "Windows native spec n max"
+require_function_literal "installers/windows/lib/native-llama-runtime.ps1" Assert-ODSNativeLlamaOptions \
+    "'--spec-type'" "Windows launch allow-list spec type"
+require_function_literal "installers/windows/lib/native-llama-runtime.ps1" Assert-ODSNativeLlamaOptions \
+    "'--spec-draft-n-max'" "Windows launch allow-list spec n max"
 require_literal "installers/macos/ods-macos.sh" '--spec-type "$ENV_LLAMA_ARG_SPEC_TYPE"' "macOS CLI native spec type"
 require_literal "installers/macos/install-macos.sh" '--spec-type "$_spec_type"' "macOS installer native spec type"
 require_literal "scripts/bootstrap-upgrade.sh" '--spec-type "$_spec_type"' "bootstrap native spec type"

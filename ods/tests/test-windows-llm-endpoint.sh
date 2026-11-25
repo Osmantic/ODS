@@ -22,8 +22,7 @@ $repo = $env:ODS_TEST_ROOT
 . (Join-Path $repo "installers\windows\lib\llm-endpoint.ps1")
 . (Join-Path $repo "installers\windows\lib\env-generator.ps1")
 
-$script:LEMONADE_PORT = "8080"
-$script:LEMONADE_HEALTH_URL = "http://127.0.0.1:8080/api/v1/health"
+$script:NATIVE_LLM_PORT = 8080
 
 function Assert-EndpointValue {
     param(
@@ -45,7 +44,6 @@ function Assert-ResolvedEndpoint {
         [hashtable]$EnvMap,
         [string]$GpuBackend = "",
         [string]$NativeBackend = "",
-        [switch]$UseLemonade,
         [switch]$CloudMode,
         [string]$ExpectedBackend,
         [string]$ExpectedHealthUrl,
@@ -54,7 +52,7 @@ function Assert-ResolvedEndpoint {
 
     $endpoint = Get-WindowsLocalLlmEndpoint -EnvMap $EnvMap `
         -GpuBackend $GpuBackend -NativeBackend $NativeBackend `
-        -UseLemonade:$UseLemonade -CloudMode:$CloudMode
+        -CloudMode:$CloudMode
     Assert-EndpointValue -Endpoint $endpoint -Key "Backend" -Expected $ExpectedBackend -Label $Label
     Assert-EndpointValue -Endpoint $endpoint -Key "HealthUrl" -Expected $ExpectedHealthUrl -Label $Label
     Assert-EndpointValue -Endpoint $endpoint -Key "ChatCompletionsUrl" -Expected $ExpectedChatUrl -Label $Label
@@ -119,27 +117,47 @@ Assert-ResolvedEndpoint -Label "legacy AMD native inference metadata" `
     -ExpectedHealthUrl "http://localhost:8080/health" `
     -ExpectedChatUrl "http://localhost:8080/v1/chat/completions"
 
-$amdLemonade = @{
+$amdNative = @{
+    "ODS_MODE" = "local"
+    "LLM_BACKEND" = "llama-server"
+    "LLM_API_BASE_PATH" = "/v1"
+    "GPU_BACKEND" = "amd"
+    "AMD_INFERENCE_RUNTIME" = "llama-server"
+    "AMD_INFERENCE_LOCATION" = "host"
+    "AMD_INFERENCE_RUNTIME_MODE" = "windows-native-llama-server"
+    "AMD_INFERENCE_PORT" = "19080"
+    "LLAMA_SERVER_API_KEY" = ("ab" * 32)
+}
+Assert-ResolvedEndpoint -Label "AMD native llama-server (Round F)" `
+    -EnvMap $amdNative -GpuBackend "amd" -NativeBackend "llama-server" `
+    -ExpectedBackend "native-llama-server" `
+    -ExpectedHealthUrl "http://localhost:19080/health" `
+    -ExpectedChatUrl "http://localhost:19080/v1/chat/completions"
+$nativeEndpoint = Get-WindowsLocalLlmEndpoint -EnvMap $amdNative -GpuBackend "amd" -NativeBackend "llama-server"
+if ($nativeEndpoint.ApiKey -ne ("ab" * 32)) { throw "The native endpoint must carry LLAMA_SERVER_API_KEY" }
+
+# An install not yet rerun still has Lemonade-era keys; it resolves to the
+# native llama-server endpoint (/v1, /health), never to Lemonade's /api/v1.
+$staleLemonade = @{
     "ODS_MODE" = "lemonade"
     "LLM_BACKEND" = "lemonade"
     "GPU_BACKEND" = "amd"
     "AMD_INFERENCE_RUNTIME" = "lemonade"
     "AMD_INFERENCE_LOCATION" = "host"
-    "AMD_INFERENCE_RUNTIME_MODE" = "external-lemonade"
     "AMD_INFERENCE_PORT" = "19080"
 }
-Assert-ResolvedEndpoint -Label "AMD Lemonade endpoint" `
-    -EnvMap $amdLemonade -GpuBackend "amd" -NativeBackend "lemonade" -UseLemonade `
-    -ExpectedBackend "lemonade" `
-    -ExpectedHealthUrl "http://127.0.0.1:19080/api/v1/health" `
-    -ExpectedChatUrl "http://localhost:19080/api/v1/chat/completions"
+Assert-ResolvedEndpoint -Label "Lemonade-era AMD .env" `
+    -EnvMap $staleLemonade -GpuBackend "amd" -NativeBackend "llama-server" `
+    -ExpectedBackend "native-llama-server" `
+    -ExpectedHealthUrl "http://localhost:19080/health" `
+    -ExpectedChatUrl "http://localhost:19080/v1/chat/completions"
 
 function Write-AIWarn { param([string]$Message) }
 function Get-LlamaCpuBudget {
     return @{ Limit = "4.0"; Reservation = "1.0"; Available = "4.0" }
 }
 
-$modelTestDir = Join-Path ([IO.Path]::GetTempPath()) "ods-windows-lemonade-model-$([Guid]::NewGuid().ToString('N'))"
+$modelTestDir = Join-Path ([IO.Path]::GetTempPath()) "ods-windows-native-model-$([Guid]::NewGuid().ToString('N'))"
 try {
     New-Item -ItemType Directory -Path $modelTestDir -Force | Out-Null
     $tier = @{
@@ -149,72 +167,47 @@ try {
         MaxContext = 4096
     }
     $envResult = New-ODSEnv -InstallDir $modelTestDir -TierConfig $tier -Tier "SH" `
-        -GpuBackend "amd" -AmdInferenceRuntime "lemonade" `
-        -AmdInferenceLocation "host" -AmdInferencePort "8080"
-    if ($envResult.LemonadeModel -ne "extra.Modern-Model.gguf") {
-        throw "Legacy Lemonade fallback changed: $($envResult.LemonadeModel)"
+        -GpuBackend "amd" -AmdInferenceRuntime "llama-server" -AmdInferenceBackend "vulkan" `
+        -AmdInferenceLocation "host" -AmdInferencePort "8080" `
+        -AmdInferenceRuntimeMode "windows-native-llama-server" -AmdInferenceManaged "true"
+    if ($envResult.ContainsKey("LemonadeModel")) {
+        throw "Windows AMD env generation still resolves a Lemonade model id"
     }
-
-    $null = Set-WindowsODSLemonadeModelConfiguration `
-        -InstallDir $modelTestDir -ModelId "Modern-Model" -Port "8080"
-    $envText = Get-Content -LiteralPath (Join-Path $modelTestDir ".env") -Raw
-    if ($envText -notmatch '(?m)^LEMONADE_MODEL=Modern-Model\r?$') {
-        throw "Resolved Lemonade model ID was not persisted to .env"
-    }
-    $litellmPath = Join-Path (Join-Path (Join-Path $modelTestDir "config") "litellm") "lemonade.yaml"
-    $litellmText = Get-Content -LiteralPath $litellmPath -Raw
-    if ($litellmText -notmatch '(?m)^      model: openai/Modern-Model\r?$') {
-        throw "Resolved Lemonade model ID was not written to lemonade.yaml"
-    }
-
-    $reinstallResult = New-ODSEnv -InstallDir $modelTestDir -TierConfig $tier -Tier "SH" `
-        -GpuBackend "amd" -AmdInferenceRuntime "lemonade" `
-        -AmdInferenceLocation "host" -AmdInferencePort "8080"
-    if ($reinstallResult.LemonadeModel -ne "Modern-Model") {
-        throw "Reinstall discarded the resolved Lemonade model ID: $($reinstallResult.LemonadeModel)"
+    $envMap = Get-WindowsODSEnvMap -InstallDir $modelTestDir
+    if ($envMap["GGUF_FILE"] -ne "Modern-Model.gguf" -or $envMap["LLAMA_SERVER_API_KEY"] -notmatch '^[0-9a-f]{64}$') {
+        throw "Windows AMD env must name the GGUF alias and a 64-hex LLAMA_SERVER_API_KEY"
     }
 
     $modelsDir = Join-Path (Join-Path $modelTestDir "data") "models"
     New-Item -ItemType Directory -Path $modelsDir -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $modelsDir $tier.GgufFile) -Value "test"
 
-    $script:resolvedModelPort = 0
-    $script:resolvedModelFile = ""
     $script:completionBody = ""
-    function Resolve-ODSLemonadeModelId {
-        param([int]$Port, [string]$GgufFile)
-        $script:resolvedModelPort = $Port
-        $script:resolvedModelFile = $GgufFile
-        return "Modern-Model"
-    }
+    $script:completionHeaders = $null
     function Invoke-WebRequest {
-        param($Method, $Uri, $ContentType, $Body, $TimeoutSec, [switch]$UseBasicParsing, $ErrorAction)
+        param($Method, $Uri, $Headers, $ContentType, $Body, $TimeoutSec, [switch]$UseBasicParsing, $ErrorAction)
         $script:completionBody = [string]$Body
-        return [pscustomobject]@{ StatusCode = 200 }
+        $script:completionHeaders = $Headers
+        return [pscustomobject]@{ StatusCode = 200; Content = '{"choices":[{"message":{"content":"OK"}}]}' }
     }
 
-    $readinessEndpoint = @{
-        Backend = "lemonade"
-        Port = "8080"
-        ApiBasePath = "/api/v1"
-        ChatCompletionsUrl = "http://localhost:8080/api/v1/chat/completions"
-    }
+    $readinessEndpoint = Get-WindowsLocalLlmEndpoint -EnvMap $envMap -GpuBackend "amd" -NativeBackend "llama-server"
     $readiness = Test-WindowsLlmModelReadiness `
         -Endpoint $readinessEndpoint -InstallDir $modelTestDir `
         -GgufFile $tier.GgufFile -TimeoutSec 5
     $request = $script:completionBody | ConvertFrom-Json
-    if (-not $readiness.Ok -or $readiness.ModelId -ne "Modern-Model" -or
-        $request.model -ne "Modern-Model") {
-        throw "Readiness did not use the live Lemonade model ID"
+    if (-not $readiness.Ok -or $readiness.ModelId -ne "Modern-Model.gguf" -or
+        $request.model -ne "Modern-Model.gguf") {
+        throw "Readiness did not request the GGUF alias"
     }
-    if ($script:resolvedModelPort -ne 8080 -or $script:resolvedModelFile -ne $tier.GgufFile) {
-        throw "Readiness passed the wrong endpoint/model to Resolve-ODSLemonadeModelId"
+    if ($script:completionHeaders.Authorization -ne ("Bearer " + $envMap["LLAMA_SERVER_API_KEY"])) {
+        throw "Readiness did not authenticate with LLAMA_SERVER_API_KEY"
     }
 } finally {
     Remove-Item -LiteralPath $modelTestDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Write-Host "[PASS] Windows local LLM endpoint and Lemonade model resolver"
+Write-Host "[PASS] Windows local LLM endpoint and native llama-server readiness"
 # --- Get-WindowsODSEnvMap quote handling ---
 # The parser must strip exactly one MATCHING pair of surrounding quotes.
 # Stripping each quote type independently corrupts values that contain or

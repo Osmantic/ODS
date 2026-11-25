@@ -45,6 +45,14 @@ def write(*, source, ref, ods_source, install_dir, home, runtime, node, destinat
     allowed = ('GGUF_FILE', 'LLM_MODEL', 'EXTERNAL_LLM_URL', 'EXTERNAL_LLM_MODEL',
         'ODS_MODEL_SWITCHBOARD', 'LLAMA_REASONING', 'PIXEL_MODEL_RELAY_PORT', 'PIXEL_MODEL_RELAY_KEY', 'SEARXNG_PORT')
     env = {key: values[key] for key in allowed if key in values}
+    # The shared renderer turns reasoning on for the Qwen3.5-2B bootstrap route
+    # because Linux reconciles Pixel when the full model arrives
+    # (bootstrap-upgrade.sh). Nothing reconciles native macOS Pixel, so that
+    # setting stayed on the full model. On llama.cpp b9014 a thinking Qwen3.5 9B
+    # often ends a tool turn with its whole answer in the reasoning, and Portal
+    # shows no answer (#7606). Pass ODS's no-think default; an owner's
+    # LLAMA_REASONING still wins.
+    env.setdefault('LLAMA_REASONING', 'off')
     context = values.get('CTX_SIZE', '')
     if not re.fullmatch('[0-9]{4,8}', context) or not 4096 <= int(context) <= 10000000:
         raise ValueError('installed-ods-context-required')

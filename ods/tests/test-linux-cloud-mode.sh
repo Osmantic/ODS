@@ -86,18 +86,19 @@ local_user_flags="${local_user_flags//\\//}"
 contains "$local_user_flags" "data/user-extensions/continue/compose.nvidia.yaml" \
     "local mode retains user overlay that requires local inference"
 
-lemonade_flags="$(LEMONADE_EXTERNAL=true AMD_INFERENCE_RUNTIME=lemonade AMD_INFERENCE_MANAGED=false ODS_PYTHON_CMD="$PY" ./scripts/resolve-compose-stack.sh \
+native_flags="$(NATIVE_LLM_BASE_URL=http://localhost:8080 ODS_PYTHON_CMD="$PY" ./scripts/resolve-compose-stack.sh \
     --script-dir "$ROOT_DIR" \
-    --tier CLOUD \
+    --tier 1 \
     --gpu-backend cpu \
     --gpu-count 0 \
-    --ods-mode lemonade)"
-lemonade_flags="${lemonade_flags//\\//}"
+    --ods-mode local)"
+native_flags="${native_flags//\\//}"
 
-contains "$lemonade_flags" "docker-compose.base.yml" "external Lemonade keeps base stack"
-rejects "$lemonade_flags" "docker-compose.cloud.yml" "external Lemonade retains model-router instead of cloud profile gate"
-contains "$lemonade_flags" "docker-compose.lemonade-external.yml" "external Lemonade layers dedicated overlay"
-rejects "$lemonade_flags" "docker-compose.cpu.yml" "external Lemonade does not include CPU llama-server overlay"
+contains "$native_flags" "docker-compose.base.yml" "host-native llama-server keeps base stack"
+rejects "$native_flags" "docker-compose.cloud.yml" "host-native llama-server retains model-router instead of cloud profile gate"
+contains "$native_flags" "docker-compose.host-native-llm.yml" "host-native llama-server layers dedicated overlay"
+rejects "$native_flags" "docker-compose.cpu.yml" "host-native llama-server does not include CPU llama-server overlay"
+rejects "$native_flags" "compose.local.yaml" "host-native llama-server adds no local-inference dependencies"
 
 if grep -q 'profiles:' docker-compose.cloud.yml && grep -q 'local-inference' docker-compose.cloud.yml; then
     pass "cloud overlay profiles local llama-server out of default startup"
@@ -121,14 +122,14 @@ if "pixel-model-relay" in services:
     sys.exit(1)
 print("[PASS] cloud mode profiles local inference out and retains Pixel's external gateway route")
 
-external = yaml.safe_load(Path("docker-compose.lemonade-external.yml").read_text(encoding="utf-8"))["services"]
-if external.get("llama-server", {}).get("profiles") != ["local-inference"]:
-    print("[FAIL] external Lemonade must disable only managed llama-server", file=sys.stderr)
+native = yaml.safe_load(Path("docker-compose.host-native-llm.yml").read_text(encoding="utf-8"))["services"]
+if native.get("llama-server", {}).get("profiles") != ["local-inference"]:
+    print("[FAIL] host-native llama-server must disable only the in-stack llama-server", file=sys.stderr)
     sys.exit(1)
-if "profiles" in external.get("model-router", {}):
-    print("[FAIL] external Lemonade must leave model-router enabled", file=sys.stderr)
+if "profiles" in native.get("model-router", {}):
+    print("[FAIL] host-native llama-server must leave model-router enabled", file=sys.stderr)
     sys.exit(1)
-print("[PASS] external Lemonade disables managed llama-server and keeps model-router")
+print("[PASS] host-native llama-server disables the in-stack llama-server and keeps model-router")
 PY
 
 if grep -Fq -- '--ods-mode "${ODS_MODE:-local}"' installers/lib/compose-select.sh \

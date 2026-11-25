@@ -9,6 +9,7 @@ RUN addgroup --gid 10778 odsremote \
 WORKDIR /srv/remote-provider-ssh-tunnel
 COPY extensions/services/remote-provider-ssh-tunnel/app ./app
 COPY bin/remote_provider ./remote_provider
+RUN chmod -R a+rX /srv/remote-provider-ssh-tunnel
 
 USER odsremote
 EXPOSE 18090 18091 18092

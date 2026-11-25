@@ -78,8 +78,26 @@ test('real HTTP lifecycle uses owner authority, bounded exact frames, and one co
   let response=await send(operations[2]);
   assert.equal(response.status,409);
   assert.deepEqual(await response.json(),{error:'model-change-unconfirmed'});
+  // A plain reason code is the controller's own answer and is relayed.
+  result={status:409,body:{error:'model-runtime-mismatch'}};
+  response=await send(operations[2]);
+  assert.equal(response.status,409);
+  assert.deepEqual(await response.json(),{error:'model-runtime-mismatch'});
   result=new Error('connection lost after mutation');
   response=await send(operations[3]);
   assert.equal(response.status,503);
-  assert.equal(calls.length,previousCalls+2);
+  assert.equal(calls.length,previousCalls+3);
+});
+
+
+test('measured thinking controls survive the owner relay and reject malformed values',()=>{
+  for(const thinkingControl of ['enable_thinking','always','none']) {
+    const proposed={...target,thinkingControl};
+    assert.equal(validModelControl({operation:'model-apply',request:{transactionId,target:proposed}}),true);
+    assert.deepEqual(publicModelControl({...state,contract:proposed}).contract,proposed);
+  }
+  for(const thinkingControl of [null,true,1,[],{},'','auto','none\n']) {
+    const proposed={...target,thinkingControl};
+    assert.equal(validModelControl({operation:'model-apply',request:{transactionId,target:proposed}}),false);
+  }
 });

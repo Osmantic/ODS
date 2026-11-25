@@ -248,6 +248,12 @@ else
 fi
 
 echo ""
+if python3 "$SCRIPT_DIR/test-preflight-docker-shims.py"; then
+    pass "complete preflights survive inactive shims and support Compose v1/v2"
+else
+    fail "Docker shim preflight regressions"
+fi
+
 echo "Result: $PASSED passed, $FAILED failed"
 echo ""
 [[ $FAILED -eq 0 ]]

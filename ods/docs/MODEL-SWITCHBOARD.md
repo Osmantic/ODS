@@ -10,6 +10,17 @@ operator behavior use [model management](MODEL-MANAGEMENT.md),
 [September promotion record](PUBLIC_BETA_PROMOTION_2026-09.md). A historical
 rollback proposal is not a supported native Pixel recovery procedure.
 
+The legacy OpenClaw extension that this plan lists as a model consumer (PR 5B
+and the consumer lists below) was later removed from ODS; see the
+[removal notice](MIGRATION-OPENCLAW-TO-HERMES.md). Pixel's OpenClaw runtime is a
+separate host component and is not affected.
+
+ODS later stopped running Lemonade Server. AMD GPUs now run upstream
+llama.cpp's `llama-server` like every other backend, so the Lemonade adapter,
+the Lemonade routes and the Lemonade hosts in this plan (PR 2C, PR 6, the
+`lemonade` backend kind and the fleet gates) describe a runtime ODS no longer
+ships; see [AMD GPUs now run on llama.cpp](MIGRATION-LEMONADE-TO-LLAMACPP.md).
+
 Last audited: 2026-07-19; refreshed 2026-07-20 against post-merge `main` `5dd6f72d` (77-PR fix sweep + #1888 + #1766 + #1711 + #1887 + #1724 all merged)
 
 Status: proposed implementation stack. The lifecycle foundation ([#1711](https://github.com/Osmantic/ODS/pull/1711)), swap-safety manifest contract ([#1766](https://github.com/Osmantic/ODS/pull/1766)), transactional swap sync ([#1887](https://github.com/Osmantic/ODS/pull/1887)), and model management UI/actions ([#1724](https://github.com/Osmantic/ODS/pull/1724)) are already merged; the state store, data plane, reconciler, and consumer migrations in this plan are not implemented.
@@ -239,6 +250,10 @@ The model-router keeps at most 2,048 evidence records for 15 minutes in memory. 
 For an owned latency investigation, the same internal bearer can opt one signed probe into per-attempt evidence with `POST /internal/route-evidence/{probeId}/capture` and the exact JSON fields `{"ttlSeconds":900,"maxAttempts":16}`. This requires a configured signing key, a canonical probe UUID, a lifetime of 1–1,800 seconds and 1–16 attempts. An existing live lease returns 409; ordinary requests and unsigned markers never activate capture. At most 32 leases exist in memory; expiry, eviction, process restart or signing-key rotation makes their evidence unavailable. Capture is not a global request logger and is not exposed through the dashboard proxy.
 
 The existing internal GET then includes `upstreamAttempts`, even while an attempt is pending or after an upstream timeout. Every actual upstream send has its own sequence, router request ID, attempt number, route identity, monotonic start, elapsed milliseconds, HTTP status and transport outcome. Tool-protocol repair is a separate attempt. A complete transport does not establish task success, tool execution or backend inference quiescence. Streaming elapsed time includes downstream consumption; it is not a model-only generation measurement. Hashing preparation time is recorded separately.
+
+Each attempt also has an additive `responseModel` field: the backend model string observed by the existing response parser, bounded to 256 characters, or `null` when unproven. It is never filled from the selected route or rewritten public alias. Pending, failed HTTP/transport, malformed or model-less responses remain unknown; streams also require a terminal event, consistent model identity and no observed error. This identity belongs to that request and attempt even when a later request with the same marker (for example, an automatic title) replaces the outer latest-response record. Consumers must treat an absent field from an older router as unknown as well. This does not classify auxiliary requests or prove that no user turn was replayed; use the request IDs and source-bound message fingerprints alongside application history. Capture limits, expiry and access controls are unchanged.
+
+The diagnostic failure check is shared by JSON, ordinary SSE and buffered tool SSE. A non-null `error`, a `failed`/`incomplete`/`cancelled` status, or an `error`/`response.failed`/`response.incomplete`/`response.cancelled` type in the parsed payload or its nested `response` keeps identity unknown, even if terminal framing follows. `error: null` alone is not a failure. Buffered assembly retains only this boolean verdict before discarding unrelated fields; existing forwarding, rejection and repair behavior is unchanged. A `complete` attempt status describes transport completion and can therefore coexist with an unknown identity after an explicit application failure.
 
 Each attempt fingerprints the exact forwarded body bytes and ordered message/tool components, with lengths and per-message role, content and tool-call fingerprints. Components use canonical JSON with sorted object keys and preserved array order; the body uses its exact wire serialization. Digests are HMAC-SHA256 under a domain-separated per-probe key, allowing comparison within that probe without persisting bodies or permitting cross-probe plaintext lookup. Components over the 2 MiB body or 256 message/tool bounds report unavailable; no payload text, tool names, secrets or exception text are retained. These byte counts and hashes are not token spans, nor evidence that a backend reused its cache. Capture failures never change or retry an inference request.
 

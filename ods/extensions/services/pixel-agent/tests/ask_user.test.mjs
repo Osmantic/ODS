@@ -17,6 +17,36 @@ test('bounded question contract rejects malformed or oversized model requests',a
   }
 });
 
+test('advertised ID constraints agree with executable validation at string boundaries',async()=>{
+  const tool=createAskUserTool();
+  const schema=tool.parameters.properties.questions.items.properties.id;
+  const samples=[['a',true],['question_2',true],['a'.repeat(40),true],['a'.repeat(41),false],
+    ['',false],['Style',false],['2style',false],['a-b',false],['a b',false],['é',false],
+    ['a\n',false],['a'.repeat(40)+'\n',false]];
+  for (const [id,expected] of samples) {
+    const advertised=(schema.minLength===undefined || id.length>=schema.minLength) &&
+      (schema.maxLength===undefined || id.length<=schema.maxLength) &&
+      (schema.pattern===undefined || new RegExp(schema.pattern).test(id));
+    const value=[{...questions[0],id}];
+    assert.equal(advertised,expected,`advertised ID ${JSON.stringify(id)}`);
+    assert.equal(Boolean(parseQuestions(value)),advertised,`parsed ID ${JSON.stringify(id)}`);
+    assert.equal((await tool.execute('id-boundary',{questions:value})).details?.status==='awaiting_user',advertised);
+  }
+});
+
+test('distinct questions still reject repeated IDs and advertise request-wide uniqueness',async()=>{
+  const tool=createAskUserTool();
+  assert.match(tool.parameters.properties.questions.items.properties.id.description,/unique within this questions array/i);
+  const first={id:'style',question:'What style of response should I use?',options:['Minimal and concise','Detailed with time calculations']};
+  const second={id:'style',question:'Do you want me to verify my calculations?',options:['Yes','No']};
+  const rejected=await tool.execute('duplicate-ids',{questions:[first,second]});
+  assert.equal(rejected.isError,true);
+  assert.equal(rejected.details,undefined);
+  const corrected=await tool.execute('unique-ids',{questions:[first,{...second,id:'verify'}]});
+  assert.equal(corrected.details.status,'awaiting_user');
+  assert.deepEqual(corrected.details.questions.map(q=>q.id),['style','verify']);
+});
+
 test('normalizes observed small-model field aliases without relaxing delivery bounds',async()=>{
   const tool=createAskUserTool();
   const input=[{text:'Qual estilo?',options:[{text:'Clean'},{text:'Colorido'}],wait:true}];

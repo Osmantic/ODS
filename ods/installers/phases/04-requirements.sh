@@ -9,12 +9,20 @@
 #           GPU_VRAM, GPU_NAME, GPU_COUNT, INTERACTIVE, DRY_RUN,
 #           PREFLIGHT_REPORT_FILE, CAP_PLATFORM_ID, CAP_COMPOSE_OVERLAYS,
 #           ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_QDRANT,
-#           tier_rank(), chapter(), ai_ok(), ai_bad(), ai_warn(), log(), warn()
-# Provides: REQUIREMENTS_MET, TIER_RANK
+#           INSTALL_DIR, EXTERNAL_LLM_URL, ODS_GATEWAY_ONLY, external_llm_env_value(),
+#           ods_gpu_memory_in_use_report() (installers/lib/detection.sh),
+#           tier_rank(), chapter(), ai(), ai_ok(), ai_bad(), ai_warn(), log(), warn()
+# Provides: REQUIREMENTS_MET, TIER_RANK, WHISPER_PORT (only when the
+#           generated default 9000 moves; phase 06 persists it)
 #
 # Modder notes:
 #   Change minimum RAM/disk thresholds per tier here.
 # ============================================================================
+
+# Isolated phase reuse (tests) gets the route predicate installers/lib/
+# native-llm.sh gives install-core: a host-native llama-server is in use.
+declare -F ods_native_llm_requested >/dev/null 2>&1 \
+    || ods_native_llm_requested() { [[ -n "${NATIVE_LLM_BASE_URL:-}" ]]; }
 
 ods_progress 25 "requirements" "Checking system requirements"
 chapter "REQUIREMENTS CHECK"
@@ -27,10 +35,9 @@ TIER_RANK="$(tier_rank "$TIER")"
 
 # Capability-aware preflight checks
 if [[ -x "$SCRIPT_DIR/scripts/preflight-engine.sh" ]]; then
-    PREFLIGHT_ENV="$(LEMONADE_EXTERNAL="${LEMONADE_EXTERNAL:-false}" \
-        LEMONADE_BASE_URL="${LEMONADE_BASE_URL:-}" \
-        LEMONADE_GPU_NAME="${LEMONADE_GPU_NAME:-}" \
-        LEMONADE_GPU_VRAM_MB="${LEMONADE_GPU_VRAM_MB:-0}" \
+    PREFLIGHT_ENV="$(NATIVE_LLM_BASE_URL="${NATIVE_LLM_BASE_URL:-}" \
+        NATIVE_LLM_GPU_NAME="${NATIVE_LLM_GPU_NAME:-}" \
+        NATIVE_LLM_GPU_VRAM_MB="${NATIVE_LLM_GPU_VRAM_MB:-0}" \
         "$SCRIPT_DIR/scripts/preflight-engine.sh" \
         --report "$PREFLIGHT_REPORT_FILE" \
         --tier "$TIER" \
@@ -140,7 +147,10 @@ else
     fi
 fi
 
-if [[ -z "${EXTERNAL_LLM_URL:-}" && "${LLM_MODEL_SIZE_MB:-0}" =~ ^[0-9]+$ && "${LLM_MODEL_SIZE_MB:-0}" -gt 0 && "${TIER:-}" != "CLOUD" ]]; then
+# A host-native llama-server keeps its model on the Windows host (phase 11
+# never downloads it here), so only the images need room on this disk.
+if [[ -z "${EXTERNAL_LLM_URL:-}" ]] && ! ods_native_llm_requested \
+      && [[ "${LLM_MODEL_SIZE_MB:-0}" =~ ^[0-9]+$ && "${LLM_MODEL_SIZE_MB:-0}" -gt 0 && "${TIER:-}" != "CLOUD" ]]; then
     _model_disk_gb=$(( (LLM_MODEL_SIZE_MB + 1023) / 1024 ))
     _model_needed_gb=$(( _model_disk_gb + 15 ))
     if [[ "${DISK_AVAIL:-0}" -lt "$_model_needed_gb" ]]; then
@@ -149,6 +159,30 @@ if [[ -z "${EXTERNAL_LLM_URL:-}" && "${LLM_MODEL_SIZE_MB:-0}" =~ ^[0-9]+$ && "${
     else
         ai_ok "Disk: ${DISK_AVAIL}GB available (selected model needs ~${_model_needed_gb}GB)"
     fi
+fi
+
+# A fresh install sizes its model and services for each GPU's whole memory.
+# Say so when other programs already hold much of it, before anything
+# downloads. A rerun's own model holds memory, and an external, host-native
+# or cloud model runs nothing on these GPUs, so only a fresh local install
+# checks.
+if [[ "${GPU_BACKEND:-}" == "nvidia" && ! -f "$INSTALL_DIR/.env" && -z "${EXTERNAL_LLM_URL:-}" \
+      && "${ODS_GATEWAY_ONLY:-false}" != true && "${TIER:-}" != "CLOUD" ]] \
+      && ! ods_native_llm_requested && command -v nvidia-smi >/dev/null 2>&1 \
+      && declare -F ods_gpu_memory_in_use_report >/dev/null 2>&1; then
+    # A warning only: report what nvidia-smi printed even when it then fails.
+    _gpu_memory_rows="$(nvidia-smi --query-gpu=index,memory.total,memory.used \
+        --format=csv,noheader,nounits 2>>"$LOG_FILE")" || log "nvidia-smi exited $? while listing GPU memory"
+    _gpu_memory_in_use="$(printf '%s\n' "$_gpu_memory_rows" | ods_gpu_memory_in_use_report)"
+    if [[ -n "$_gpu_memory_in_use" ]]; then
+        ai_warn "Other programs already use GPU memory:"
+        while IFS= read -r _gpu_line; do
+            ai "  $_gpu_line"
+        done <<< "$_gpu_memory_in_use"
+        ai "  ODS sizes its model and services for each GPU's whole memory: stop those programs before ODS starts, or its model may not load."
+        log "GPU memory in use before install: ${_gpu_memory_in_use//$'\n'/; }"
+    fi
+    unset _gpu_memory_rows _gpu_memory_in_use _gpu_line
 fi
 
 # Port conflict detection with process details
@@ -179,14 +213,113 @@ _phase04_current_install_owns_docker_port() {
     return 1
 }
 
+# Docker Desktop publishes a running container's port through a listener on
+# the Windows side, so this installation's own Whisper looks like a Windows
+# program holding its host port. Nothing before phase 11 stops or recreates
+# the stack, so on a rerun the previous Whisper is still running here. Read
+# that container's host bindings without changing anything. Its name is fixed
+# by extensions/services/whisper/compose.yaml, and its Compose identity is
+# accepted as in _phase04_current_install_owns_docker_port. That helper cannot
+# find it: Docker's publish filter matches the container side of a published
+# port, which for Whisper is 8000.
+_phase04_own_whisper_publishes() {
+    local port="${1:-}" inspected running project_name host_ports working_dir
+    [[ "$port" =~ ^[0-9]+$ ]] || return 1
+    command -v docker >/dev/null 2>&1 || return 1
+    # A missing container, an unreachable Docker daemon or no Docker at all
+    # finds nothing. The callers then treat a held port as taken, as they did
+    # before this check existed.
+    inspected="$(docker container inspect --format \
+        '{{.State.Running}}|{{ index .Config.Labels "com.docker.compose.project" }}|{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}} {{end}}{{end}}|{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' \
+        ods-whisper 2>/dev/null)" || return 1
+    IFS='|' read -r running project_name host_ports working_dir <<< "$inspected"
+    [[ "$running" == "true" ]] || return 1
+    [[ ( -n "$working_dir" && "$working_dir" == "${INSTALL_DIR:-}" ) \
+        || "$project_name" == "${COMPOSE_PROJECT_NAME:-ods}" ]] || return 1
+    [[ " $host_ports " == *" $port "* ]]
+}
+
+# The running Docker container that publishes host TCP PORT, read from the
+# host side of `docker ps` bindings (HOST_IP:START[-END]->...; its publish
+# filter can match the container side instead). Fails when Docker is
+# missing or unreadable without a prompt.
+_phase04_docker_port_owner() {
+    local port="$1" name ports binding start end
+    local binding_pattern=':([0-9]+)(-([0-9]+))?->[0-9]+(-[0-9]+)?/tcp$'
+    local -a bindings
+    command -v docker >/dev/null 2>&1 || return 1
+    # Read-only and best effort: the port is reported busy either way.
+    while IFS='|' read -r name ports; do
+        IFS=',' read -ra bindings <<< "$ports"
+        for binding in ${bindings[@]+"${bindings[@]}"}; do
+            [[ "$binding" =~ $binding_pattern ]] || continue
+            start="${BASH_REMATCH[1]}"
+            end="${BASH_REMATCH[3]:-$start}"
+            if (( start <= port && port <= end )); then
+                printf '%s' "$name"
+                return 0
+            fi
+        done
+    done < <(docker ps --format '{{.Names}}|{{.Ports}}' 2>/dev/null)
+    return 1
+}
+
+# Name the Docker container behind a conflict that check_port_conflict saw
+# only as docker-proxy, or could not see at all.
+_phase04_name_docker_owner() {
+    local name
+    [[ -z "${PORT_CONFLICT_PROC:-}" || "$PORT_CONFLICT_PROC" == docker-proxy ]] || return 0
+    name="$(_phase04_docker_port_owner "$1")" || return 0
+    PORT_CONFLICT_PROC="Docker container $name"
+    PORT_CONFLICT_PID=""
+}
+
+# Who holds PORT, after check_port_conflict, for a message. An unseen owner
+# comes with the command, among this host's tools, that names it.
+_phase04_port_owner() {
+    local finder
+    if [[ -n "${PORT_CONFLICT_PROC:-}" ]]; then
+        printf '%s%s' "$PORT_CONFLICT_PROC" "${PORT_CONFLICT_PID:+ (PID $PORT_CONFLICT_PID)}"
+    elif [[ -n "${PORT_CONFLICT_PID:-}" ]]; then
+        printf 'PID %s' "$PORT_CONFLICT_PID"
+    else
+        if command -v ss >/dev/null 2>&1; then
+            finder="sudo ss -ltnp 'sport = :$1'"
+        elif command -v lsof >/dev/null 2>&1; then
+            finder="sudo lsof -i :$1 -sTCP:LISTEN"
+        else
+            finder="sudo netstat -tlnp | grep :$1"
+        fi
+        printf 'a program this account cannot see (%s names it)' "$finder"
+    fi
+}
+
+# _phase04_free_port_hint DEFAULT [TAKEN...]: a port for a rerun example near
+# DEFAULT, every 10 up to DEFAULT+90, that nothing listens on and that is not
+# another ODS service's, a Dashboard port or one of TAKEN. Fails when none is.
+_phase04_free_port_hint() {
+    local default="$1" candidate taken
+    shift
+    taken=" ${SERVICE_PORTS[*]:-} ${DASHBOARD_PORT:-} ${DASHBOARD_REMOTE_PORT:-} $* "
+    for ((candidate = default + 10; candidate <= default + 90 && candidate <= 65535; candidate += 10)); do
+        [[ "$taken" != *" $candidate "* ]] || continue
+        if ! check_port_conflict "$candidate" false; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 check_port_conflict() {
     local port="$1"
+    local allow_owned_port="${2:-true}"
     PORT_CONFLICT=false
     PORT_CONFLICT_PID=""
     PORT_CONFLICT_PROC=""
     local port_tool_found=false
 
-    if _phase04_current_install_owns_docker_port "$port"; then
+    if [[ "$allow_owned_port" == true ]] && _phase04_current_install_owns_docker_port "$port"; then
         return 1
     fi
 
@@ -195,8 +328,10 @@ check_port_conflict() {
         port_tool_found=true
         if lsof -i ":${port}" -sTCP:LISTEN >/dev/null 2>&1; then
             PORT_CONFLICT_PID=$(lsof -t -i ":${port}" -sTCP:LISTEN 2>/dev/null | head -1)
-            PORT_CONFLICT_PROC=$(ps -p "$PORT_CONFLICT_PID" -o comm= 2>/dev/null || echo "unknown")
+            # Empty when the process has exited since: its name is then unknown.
+            PORT_CONFLICT_PROC=$(ps -p "$PORT_CONFLICT_PID" -o comm= 2>/dev/null) || PORT_CONFLICT_PROC=""
             PORT_CONFLICT=true
+            _phase04_name_docker_owner "$port"
             return 0
         fi
     fi
@@ -211,11 +346,11 @@ check_port_conflict() {
             ss_line=$(ss -tlnp 2>/dev/null | grep -E ":${port}(\s|$)" | head -1)
             if [[ "$ss_line" =~ pid=([0-9]+) ]]; then
                 PORT_CONFLICT_PID="${BASH_REMATCH[1]}"
-                PORT_CONFLICT_PROC=$(ps -p "$PORT_CONFLICT_PID" -o comm= 2>/dev/null || echo "unknown")
-            else
-                PORT_CONFLICT_PROC="unknown"
+                # Empty when the process has exited since: its name is then unknown.
+                PORT_CONFLICT_PROC=$(ps -p "$PORT_CONFLICT_PID" -o comm= 2>/dev/null) || PORT_CONFLICT_PROC=""
             fi
             PORT_CONFLICT=true
+            _phase04_name_docker_owner "$port"
             return 0
         fi
     fi
@@ -230,10 +365,9 @@ check_port_conflict() {
             if [[ "$netstat_line" =~ ([0-9]+)/([^ ]+) ]]; then
                 PORT_CONFLICT_PID="${BASH_REMATCH[1]}"
                 PORT_CONFLICT_PROC="${BASH_REMATCH[2]}"
-            else
-                PORT_CONFLICT_PROC="unknown"
             fi
             PORT_CONFLICT=true
+            _phase04_name_docker_owner "$port"
             return 0
         fi
     fi
@@ -252,13 +386,88 @@ check_port_conflict() {
     # eventual Docker bind fail.
     if declare -F ods_windows_host_port_in_use >/dev/null 2>&1 \
         && ods_windows_host_port_in_use "$port"; then
-        PORT_CONFLICT_PROC="Windows host process"
         PORT_CONFLICT=true
+        # Docker Desktop's own published ports show up here too.
+        _phase04_name_docker_owner "$port"
+        PORT_CONFLICT_PROC="${PORT_CONFLICT_PROC:-Windows host process}"
         return 0
     fi
 
     return 1
 }
+
+# Both Dashboard bindings are required: a collision on the remote listener
+# can leave the whole container without networking despite internal health.
+# Only its actual published host ports prove a safe in-place rerun. Another
+# service in the same project, or an unconnected container, is not an owner.
+_phase04_own_dashboard_publishes() {
+    local port="$1" inspected running project_name service working_dir host_ports
+    command -v docker >/dev/null 2>&1 || return 1
+    local -a inspect_command=(docker container inspect --format \
+        '{{.State.Running}}|{{ index .Config.Labels "com.docker.compose.project" }}|{{ index .Config.Labels "com.docker.compose.service" }}|{{ index .Config.Labels "com.docker.compose.project.working_dir" }}|{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}} {{end}}{{end}}' \
+        ods-dashboard)
+    # Phase 05 selects sudo Docker later. A rerun may already need it to read
+    # the existing container; never prompt or alter daemon/group permissions.
+    if [[ "${DOCKER_CMD:-docker}" == 'sudo docker' ]]; then
+        inspected="$(sudo -n "${inspect_command[@]}" 2>/dev/null)" || return 1
+    elif ! inspected="$("${inspect_command[@]}" 2>/dev/null)"; then
+        command -v sudo >/dev/null 2>&1 || return 1
+        inspected="$(sudo -n "${inspect_command[@]}" 2>/dev/null)" || return 1
+    fi
+    IFS='|' read -r running project_name service working_dir host_ports <<< "$inspected"
+    [[ "$running" == true && "$project_name" == "${COMPOSE_PROJECT_NAME:-ods}" \
+        && "$service" == dashboard && -n "$working_dir" && "$working_dir" == "${INSTALL_DIR:-}" ]] || return 1
+    [[ " $host_ports " == *" $port "* ]]
+}
+
+_phase04_check_dashboard_ports() {
+    local key default port hint keys example=""
+    local -a busy=() taken=()
+    for key in DASHBOARD_PORT DASHBOARD_REMOTE_PORT; do
+        default=3001
+        [[ "$key" != DASHBOARD_REMOTE_PORT ]] || default=3011
+        port="${!key:-}"
+        if [[ -z "$port" && -f "${INSTALL_DIR:-}/.env" ]]; then
+            port="$(external_llm_env_value "$INSTALL_DIR/.env" "$key")"
+        fi
+        port="${port:-$default}"
+        if [[ ! "$port" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$port > 65535 )); then
+            warn "$key must be a port from 1 to 65535"
+            return 1
+        fi
+        printf -v "$key" '%s' "$port"
+        export "$key"
+        if ! _phase04_own_dashboard_publishes "$port" && check_port_conflict "$port" false; then
+            warn "Required Dashboard port $port ($key) is in use by $(_phase04_port_owner "$port")."
+            busy+=("$key")
+        fi
+    done
+    if [[ "$DASHBOARD_PORT" == "$DASHBOARD_REMOTE_PORT" ]]; then
+        warn "DASHBOARD_PORT and DASHBOARD_REMOTE_PORT must use different host ports."
+        return 1
+    fi
+    (( ${#busy[@]} )) || return 0
+    # Every busy port is named above, so one rerun can fix them all.
+    for key in "${busy[@]}"; do
+        hint="$(_phase04_free_port_hint "${!key}" ${taken[@]+"${taken[@]}"})" || continue
+        taken+=("$hint")
+        example+=" $key=$hint"
+    done
+    keys="${busy[0]}"
+    (( ${#busy[@]} == 1 )) || keys="${busy[0]} and ${busy[1]}"
+    if [[ -n "$example" ]]; then
+        # The example stands on its own line, ready to copy.
+        warn "Choose a free port for $keys in the environment or installed .env, then rerun the installer, for example with:"
+        warn " $example"
+    else
+        warn "Choose a free port for $keys in the environment or installed .env, then rerun the installer."
+    fi
+    return 1
+}
+
+# Fail before .env regeneration or Compose startup, including in non-interactive mode. Do not
+# stop another application or silently replace an owner's chosen port.
+_phase04_check_dashboard_ports || return 1
 
 # Ollama conflict detection
 check_ollama_conflict() {
@@ -294,70 +503,114 @@ if $OLLAMA_RUNNING && [[ "${EXTERNAL_LLM_PROVIDER:-}" != "ollama" ]]; then
     fi
 fi
 
-_phase04_lemonade_uses_host_9000() {
-    [[ "${LEMONADE_EXTERNAL:-false}" =~ ^([Tt][Rr][Uu][Ee]|1|yes|on)$ ]] && return 0
-    [[ "${AMD_INFERENCE_RUNTIME:-}" =~ ^([Ll][Ee][Mm][Oo][Nn][Aa][Dd][Ee])$ ]] && return 0
-    [[ "${GPU_BACKEND:-}" == "amd" && "${ODS_MODE:-local}" != "cloud" ]] && return 0
-    return 1
+# A local model's host port is required, rather than a requirement the owner
+# can waive. Docker Desktop's Windows listener is invisible to Linux tools.
+# Reuse only this installation's running llama-server and actual host binding;
+# another service in the same Compose project is not proof of ownership.
+_phase04_own_inference_publishes() {
+    local port="$1" inspected running project_name service working_dir host_ports
+    command -v docker >/dev/null 2>&1 || return 1
+    local -a inspect_command=(docker container inspect --format \
+        '{{.State.Running}}|{{ index .Config.Labels "com.docker.compose.project" }}|{{ index .Config.Labels "com.docker.compose.service" }}|{{ index .Config.Labels "com.docker.compose.project.working_dir" }}|{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}} {{end}}{{end}}' \
+        ods-llama-server)
+    # Read-only, noninteractive inspection also supports sudo Docker reruns.
+    if [[ "${DOCKER_CMD:-docker}" == 'sudo docker' ]]; then
+        inspected="$(sudo -n "${inspect_command[@]}" 2>/dev/null)" || return 1
+    elif ! inspected="$("${inspect_command[@]}" 2>/dev/null)"; then
+        command -v sudo >/dev/null 2>&1 || return 1
+        inspected="$(sudo -n "${inspect_command[@]}" 2>/dev/null)" || return 1
+    fi
+    IFS='|' read -r running project_name service working_dir host_ports <<< "$inspected"
+    [[ "$running" == true && "$project_name" == "${COMPOSE_PROJECT_NAME:-ods}" \
+        && "$service" == llama-server && -n "$working_dir" && "$working_dir" == "${INSTALL_DIR:-}" ]] || return 1
+    [[ " $host_ports " == *" $port "* ]]
 }
 
-if [[ "${ENABLE_VOICE:-false}" == "true" ]] && _phase04_lemonade_uses_host_9000; then
-    _whisper_port_for_check="${WHISPER_PORT:-${SERVICE_PORTS[whisper]:-9000}}"
-    if [[ "$_whisper_port_for_check" == "9000" ]]; then
-        # Lemonade's native router can reserve host port 9000 on AMD systems.
-        # Keep Whisper's container port unchanged, but check/use 9100 on the host
-        # unless the user explicitly selected another non-9000 port.
-        WHISPER_PORT=9100
-        SERVICE_PORTS[whisper]=9100
-        log "AMD/Lemonade detected; reserving host port 9000 for Lemonade and checking Whisper on 9100"
+_phase04_check_inference_port() {
+    [[ "${TIER:-}" != CLOUD && "${ODS_MODE:-local}" != cloud \
+        && -z "${EXTERNAL_LLM_URL:-}" ]] || return 0
+    ods_native_llm_requested && return 0
+    local port="${OLLAMA_PORT:-}"
+    if [[ -z "$port" && -f "${INSTALL_DIR:-}/.env" ]]; then
+        port="$(external_llm_env_value "$INSTALL_DIR/.env" OLLAMA_PORT)"
     fi
-    unset _whisper_port_for_check
+    port="${port:-11434}"
+    if [[ ! "$port" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$port > 65535 )); then
+        warn "OLLAMA_PORT must be a port from 1 to 65535."
+        return 1
+    fi
+    export OLLAMA_PORT="$port"
+    SERVICE_PORTS[llama-server]="$port"
+    if ! _phase04_own_inference_publishes "$port" && check_port_conflict "$port" false; then
+        warn "Required local model port $port is in use by $(_phase04_port_owner "$port")."
+        warn "If Ollama is running on Windows, quit it from the system tray first. Otherwise stop or reconfigure the conflicting service."
+        warn "Alternatively choose a free OLLAMA_PORT in the environment or installed .env and rerun. Windows PowerShell: \$env:OLLAMA_PORT='11435' (choose a free port)."
+        warn "Installation stopped before configuration or service startup; this port conflict cannot be bypassed with Continue anyway."
+        return 1
+    fi
+}
+
+_phase04_check_inference_port || return 1
+
+# Phase 06 writes WHISPER_PORT from this shell first, then from the installed
+# .env, then 9000. Decide and check with that same port, so a rerun leaves a
+# port the owner chose, or the 9100 earlier AMD installs moved Whisper to,
+# untouched. A retained 9000 is the generated default: earlier installers
+# wrote it whenever no port was chosen.
+_whisper_configured_port="${WHISPER_PORT:-}"
+if [[ -z "$_whisper_configured_port" && -f "${INSTALL_DIR:-}/.env" ]]; then
+    _whisper_configured_port="$(external_llm_env_value "$INSTALL_DIR/.env" WHISPER_PORT)"
 fi
+[[ -z "$_whisper_configured_port" ]] || SERVICE_PORTS[whisper]="$_whisper_configured_port"
+unset _whisper_configured_port
 
 # A native Windows application can own 9000 even when WSL reports it free.
 # For the generated Whisper default, select ODS's established alternate only
 # when it is also free on both sides of the WSL boundary. Explicit non-default
 # ports remain untouched and are reported by the normal conflict loop below.
-if [[ "${ENABLE_VOICE:-false}" == "true" ]]; then
-    _whisper_port_for_check="${WHISPER_PORT:-${SERVICE_PORTS[whisper]:-9000}}"
-    if [[ "$_whisper_port_for_check" == "9000" ]] \
-        && declare -F ods_windows_host_port_in_use >/dev/null 2>&1 \
-        && ods_windows_host_port_in_use 9000; then
-        _whisper_alternate=""
-        for _whisper_candidate in 9100 9001; do
-            if ! check_port_conflict "$_whisper_candidate"; then
-                _whisper_alternate="$_whisper_candidate"
-                break
-            fi
-        done
-        if [[ -n "$_whisper_alternate" ]]; then
-            WHISPER_PORT="$_whisper_alternate"
-            SERVICE_PORTS[whisper]="$_whisper_alternate"
-            log "Windows host port 9000 is occupied; checking Whisper on ${_whisper_alternate}"
-        else
-            warn "Windows host port 9000 is occupied and Whisper alternates 9100 and 9001 are unavailable"
+# Choose it with voice off too: Whisper can be added from the Extensions
+# Library later, and it then publishes the port this install writes. A rerun
+# keeps 9000 while this installation's own Whisper is the one publishing it.
+_whisper_port_for_check="${WHISPER_PORT:-${SERVICE_PORTS[whisper]:-9000}}"
+if [[ "$_whisper_port_for_check" == "9000" ]] \
+    && declare -F ods_windows_host_port_in_use >/dev/null 2>&1 \
+    && ods_windows_host_port_in_use 9000 \
+    && ! _phase04_own_whisper_publishes 9000; then
+    _whisper_alternate=""
+    for _whisper_candidate in 9100 9001; do
+        if ! check_port_conflict "$_whisper_candidate"; then
+            _whisper_alternate="$_whisper_candidate"
+            break
         fi
-        unset _whisper_alternate _whisper_candidate
+    done
+    if [[ -n "$_whisper_alternate" ]]; then
+        WHISPER_PORT="$_whisper_alternate"
+        SERVICE_PORTS[whisper]="$_whisper_alternate"
+        log "Windows host port 9000 is occupied; checking Whisper on ${_whisper_alternate}"
+    else
+        warn "Windows host port 9000 is occupied and Whisper alternates 9100 and 9001 are unavailable"
     fi
-    unset _whisper_port_for_check
+    unset _whisper_alternate _whisper_candidate
 fi
+unset _whisper_port_for_check
 
 # Port conflict detection with detailed process information
 PORTS_TO_CHECK=""
 [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || PORTS_TO_CHECK="${SERVICE_PORTS[open-webui]:-3000}"
-[[ -z "${EXTERNAL_LLM_URL:-}" ]] && PORTS_TO_CHECK="${SERVICE_PORTS[llama-server]:-8080} ${PORTS_TO_CHECK}"
-[[ "$ENABLE_VOICE" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[whisper]:-9000} ${SERVICE_PORTS[tts]:-8880}"
+# The required local inference port was admitted above and cannot be waived.
+if [[ "$ENABLE_VOICE" == "true" ]]; then
+    # A rerun's running Whisper holds its own port; that is not a conflict.
+    _phase04_own_whisper_publishes "${SERVICE_PORTS[whisper]:-9000}" \
+        || PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[whisper]:-9000}"
+    PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[tts]:-8880}"
+fi
 [[ "$ENABLE_WORKFLOWS" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[n8n]:-5678}"
 [[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[qdrant]:-6333}"
 [[ "$ENABLE_COMFYUI" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[comfyui]:-8188}"
 
 for port in $PORTS_TO_CHECK; do
     if check_port_conflict "$port"; then
-        if [[ -n "$PORT_CONFLICT_PID" ]]; then
-            warn "Port $port is in use by ${PORT_CONFLICT_PROC} (PID ${PORT_CONFLICT_PID})"
-        else
-            warn "Port $port is in use by ${PORT_CONFLICT_PROC}"
-        fi
+        warn "Port $port is in use by $(_phase04_port_owner "$port")"
         REQUIREMENTS_MET=false
     fi
 done

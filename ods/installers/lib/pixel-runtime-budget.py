@@ -196,6 +196,7 @@ lean_prompt = compact_context or small_model
 updated_pixel_config["modelContextWindow"] = context_window
 updated_pixel_config["leanPrompt"] = lean_prompt
 updated_pixel_config["perplexicaPort"] = research_port
+thinking_control = None
 if sys.argv[3]:
     answers_path = pathlib.Path(sys.argv[3])
     answers_info = answers_path.lstat()
@@ -207,8 +208,14 @@ if sys.argv[3]:
     image_input = answers.get("modelImageInput", "unknown")
     if image_input not in ("supported", "unsupported", "unknown"):
         raise SystemExit("invalid ODS Pixel image-input contract")
+    # A measured thinking control lives only in this owner-private file. It is
+    # never copied into the plugin config: the previous release's plugin schema
+    # rejects unknown keys and its renderer keeps them, so a rollback would fail.
+    thinking_control = answers.get("modelThinkingControl")
+    if thinking_control not in (None, "enable_thinking", "always", "none"):
+        raise SystemExit("invalid ODS Pixel thinking-control contract")
     # The contract must belong to this exact selected route before it can
-    # change native image transport. Never inherit another model's policy.
+    # change native image transport or thinking. Never inherit another model's policy.
     if (answers.get("modelProvider") != provider_id
             or answers.get("modelId") != updated_model.get("id")
             or answers.get("modelName") != updated_model.get("name")):
@@ -267,8 +274,18 @@ updated_compaction["keepRecentTokens"] = max(
 model_reasoning = updated_model.get("reasoning", False)
 if type(model_reasoning) is not bool:
     raise SystemExit("OpenClaw model reasoning configuration must be boolean")
+# A measured control replaces the "qwen" name guess. "always" and "none"
+# describe the chat template itself, so they win over a mismatching reasoning
+# flag: that template thinks (or cannot) whatever a request asks. Only
+# enable_thinking leaves the choice to the flag.
+if thinking_control == "always":
+    model_reasoning = True
+elif thinking_control == "none":
+    model_reasoning = False
+enable_thinking_switch = ("qwen" in model_label if thinking_control is None
+                          else thinking_control == "enable_thinking")
 updated_model["reasoning"] = model_reasoning
-if "qwen" in model_label and model_reasoning:
+if enable_thinking_switch and model_reasoning:
     model_compat = updated_model.setdefault("compat", {})
     if not isinstance(model_compat, dict):
         raise SystemExit("OpenClaw Qwen compatibility configuration must be an object")
@@ -280,7 +297,7 @@ else:
 updated_agent_params = updated_agent.setdefault("params", {})
 if not isinstance(updated_agent_params, dict):
     raise SystemExit("OpenClaw Pixel agent parameters must be an object")
-if "qwen" in model_label:
+if enable_thinking_switch:
     template_kwargs = updated_agent_params.setdefault("chat_template_kwargs", {})
     if not isinstance(template_kwargs, dict):
         raise SystemExit("OpenClaw Pixel chat-template parameters must be an object")

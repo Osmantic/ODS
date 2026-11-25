@@ -14,3 +14,14 @@ it('fills the preview without viewport controls and retains iframe isolation',()
  expect(frame).not.toBeVisible()
  expect(container.querySelector('iframe')).toBe(frame)
 })
+
+it('shows the preview without a temporary-inputs note',()=>{
+ const access={frameUrl:'/pixel-preview/test/',sandbox:'allow-scripts',route:'owner'}
+ const {container,rerender}=render(<PixelPreviewViewport access={access} title="My site"/>)
+ expect(screen.getByTitle('My site')).toBeVisible()
+ expect(screen.queryByText(/temporary|may be lost/i)).toBeNull()
+ expect(container.querySelector('.pixel-viewport-note')).toBeNull()
+ expect(container.querySelector('section').children).toHaveLength(1)
+ rerender(<PixelPreviewViewport access={{checking:false}} title="My site"/>)
+ expect(screen.queryByText(/temporary|may be lost/i)).toBeNull()
+})

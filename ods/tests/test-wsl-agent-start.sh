@@ -47,6 +47,10 @@ _ods_cli_wait_for_bootstrap_compose_safe() { :; }
 _ods_cli_reload_model_env() { :; }
 _ods_cli_repair_rootless_ownership() { :; }
 _ods_cli_maybe_resume_bootstrap_upgrade() { :; }
+_ods_cli_wait_for_litellm_ready() { :; }
+# Not under test here: the network sign-in rule and the legacy OpenClaw notice.
+_ods_cli_network_access_enabled() { return 1; }
+_ods_cli_warn_legacy_openclaw_container() { :; }
 _compose_run_with_summary() { printf 'compose\n' >> "$events"; }
 error() { printf '%s\n' "$*" >&2; exit 1; }
 

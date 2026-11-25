@@ -17,6 +17,8 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root_dir="$(cd "$script_dir/.." && pwd)"
 macos_cli="$root_dir/installers/macos/ods-macos.sh"
+# Resolve the real executable before fixture PATH changes (macOS uses /bin).
+sleep_bin="$(type -P sleep)"
 tmp_dir="$(mktemp -d)"
 install_dir="$tmp_dir/install"
 bin_dir="$tmp_dir/bin"
@@ -25,10 +27,44 @@ docker_log="$tmp_dir/docker.log"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 mkdir -p "$install_dir/data/models" "$install_dir/scripts" "$install_dir/bin" "$bin_dir"
+install_dir="$(cd "$install_dir" && pwd -P)"
+python3 "$script_dir/fixtures/macos-private-store-cli.py" "$install_dir"
+# Bridge ownership is exercised by its manager suites. This fixture isolates
+# the CLI's bootstrap-resume dispatch across successful bridge operations.
+cat > "$install_dir/bin/macos_bridge_service.py" <<'BRIDGE'
+import json,sys
+assert sys.argv[1] in {"configure", "stop"}
+print(json.dumps({"listener_ready": sys.argv[1] == "configure"}))
+BRIDGE
+# This fixture checks resume dispatch, not launchd or native inference. The CLI
+# now delegates both start and stop through its installed service helper.
+mkdir -p "$install_dir/installers/macos/lib"
+cat > "$install_dir/installers/macos/lib/native-llama-service.sh" <<'NATIVE'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+    start)
+        printf '%s\n' 123 > "$4"
+        printf '%s\n' '{"identity":[123,1,2,501,20,501,20,501,20,"/fixture/runtime"]}'
+        ;;
+    status)
+        if [[ -f "$4" ]]; then
+            printf '%s\n' '{"running":true,"identity":[123,1,2,501,20,501,20,501,20,"/fixture/runtime"]}'
+        else
+            printf '%s\n' '{"running":false,"identity":null}'
+        fi
+        ;;
+    stop)
+        rm -f "$4"
+        printf '%s\n' '{"stopped":true}'
+        ;;
+    *) exit 1 ;;
+esac
+NATIVE
 cp "$root_dir/docker-compose.base.yml" "$install_dir/docker-compose.base.yml"
 printf '%s\n' '-f docker-compose.base.yml' > "$install_dir/.compose-flags"
 touch "$install_dir/data/models/Qwen3.5-2B-Q4_K_M.gguf"
-touch "$install_dir/bin/llama-server"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$install_dir/bin/llama-server"
 chmod +x "$install_dir/bin/llama-server"
 
 cat > "$install_dir/.env" <<'ENV'
@@ -121,7 +157,7 @@ run_cli() {
         }
     for _ in {1..20}; do
         [[ -s "$resume_log" ]] && return 0
-        /usr/bin/sleep 0.1
+        "$sleep_bin" 0.1
     done
     cat "$tmp_dir/${command}.out" >&2
     cat "$install_dir/logs/model-upgrade.log" >&2 2>/dev/null || true

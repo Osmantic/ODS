@@ -48,7 +48,10 @@ _SECRET_FIELD_TO_REF = {
 _SINGLE_LINE_SECRET_FIELDS = {"apiKey", "peerToken"}
 _SSH_SECRET_FIELDS = {"sshPrivateKey", "sshKnownHosts"}
 _DEFAULT_CONTEXT_LENGTH = 32768
-_DEFAULT_MAX_TOKENS = 4096
+# The default output limit is a quarter of the context window, at most this.
+# Portal writes each file in one reply; 4096 cut off ordinary game files
+# (fleet 2026-10-18). ods-cli and the Dashboard form use the same rule.
+_MAX_DEFAULT_OUTPUT_TOKENS = 32768
 
 
 class LifecycleError(PolicyError):
@@ -151,7 +154,7 @@ def _provider_runtime_contract(provider: Mapping[str, Any]) -> dict[str, Any]:
     context_length = provider.get("contextLength", _DEFAULT_CONTEXT_LENGTH)
     if type(context_length) is not int or not 16384 <= context_length <= 10_000_000:
         raise LifecycleError("provider.contextLength must be an integer from 16384 to 10000000")
-    max_tokens = provider.get("maxTokens", min(_DEFAULT_MAX_TOKENS, context_length // 8))
+    max_tokens = provider.get("maxTokens", min(_MAX_DEFAULT_OUTPUT_TOKENS, context_length // 4))
     if type(max_tokens) is not int or not 1 <= max_tokens <= context_length:
         raise LifecycleError("provider.maxTokens must be an integer within the context window")
     reasoning = provider.get("reasoning", False)

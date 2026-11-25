@@ -38,6 +38,20 @@ export function readRuntimeModel(config, metadata) {
       || JSON.stringify(row.input)!==JSON.stringify(expected))throw invalid();
     contract.imageInput=capability;
   }
+  if('modelThinkingControl' in settings) {
+    const control=settings.modelThinkingControl;
+    if(!['enable_thinking','always','none'].includes(control))throw invalid();
+    const defaults=config.agents.defaults??{};
+    const params=Object.assign({},object(get(defaults,'params',{})),object(get(defaults.models?.[selected]??{},'params',{})),object(get(agent,'params',{})));
+    const compat=object(get(row,'compat',{}));
+    const kwargs=object(get(params,'chat_template_kwargs',{}));
+    const switched=control==='enable_thinking',enabled=switched&&contract.reasoning;
+    if((switched&&kwargs.enable_thinking!==contract.reasoning)
+      ||(!switched&&Object.hasOwn(kwargs,'enable_thinking'))
+      ||(compat.thinkingFormat??null)!==(enabled?'qwen-chat-template':null)
+      ||get(agent,'thinkingDefault',get(defaults,'thinkingDefault',null))!==(enabled?'low':null))throw invalid();
+    contract.thinkingControl=control;
+  }
   const defaults=config.agents.defaults??{},compaction=defaults.compaction??{};
   const layers=[defaults.params??{},defaults.models?.[selected]?.params??{},agent.params??{}];
   let output=contract.maxTokens,declared=false,resolved=false;

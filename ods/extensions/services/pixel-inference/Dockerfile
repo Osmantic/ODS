@@ -4,6 +4,9 @@ COPY extensions/services/pixel-inference/requirements.lock ./
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY extensions/services/pixel-inference/app ./app
 COPY bin/pixel_provider ./pixel_provider
+# The installer may stage source with 0600/0700 modes. Normalize only code
+# copied into the image; the private state mount keeps its host permissions.
+RUN chmod -R a+rX /srv/pixel-inference
 # Compose runs as the installing owner so the read-only private state mount
 # remains 0700/0600. No host control credential or Docker socket is mounted.
 USER 1000:1000

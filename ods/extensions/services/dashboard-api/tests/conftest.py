@@ -59,6 +59,60 @@ def mock_edge_read_transport(monkeypatch):
     monkeypatch.setattr(pixel_edge_read_client, 'get_edge_read_client', get_fake)
 
 
+@pytest.fixture(autouse=True)
+def _no_remembered_portal_status(monkeypatch):
+    """Each test starts without an available Portal status remembered by an earlier one."""
+    from routers import pixel
+
+    monkeypatch.setattr(pixel, "_last_available_status", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_remembered_release_check(monkeypatch):
+    """Each test starts without a release or a failed check remembered by an earlier one."""
+    from routers import updates
+
+    monkeypatch.setattr(updates, "_version_cache", {"expires_at": 0.0, "payload": None})
+    monkeypatch.setattr(updates, "_version_hold", {"until": 0.0, "rate_limited": False})
+    monkeypatch.setattr(updates, "_version_refresh_task", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_remembered_model_management(monkeypatch):
+    """Each test starts without a model management proof remembered by an earlier one."""
+    from routers import models
+
+    monkeypatch.setattr(models, "_model_management_remembered", None)
+    monkeypatch.setattr(models, "_model_management_proof_future", None)
+    monkeypatch.setattr(models, "_model_management_missed", False)
+    monkeypatch.setattr(models, "_pending_sample", None)
+    monkeypatch.setattr(models, "_last_committed_sample_key", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_hugging_face_header_reads(monkeypatch):
+    """Unit tests never reach Hugging Face; a test that needs a header stubs one."""
+    import hf_gguf_header
+
+    async def unreachable(*_args, **_kwargs):
+        raise hf_gguf_header.HeaderUnavailable("unreachable", "unit tests do not read Hugging Face")
+
+    monkeypatch.setattr(hf_gguf_header, "fetch_gguf_header", unreachable)
+
+
+@pytest.fixture(autouse=True)
+def _no_runtime_probe_requests(monkeypatch):
+    """Unit tests never probe a real llama-server (a developer machine may run one on
+    127.0.0.1:8080). Every loaded copy of the host agent gets an unreachable runtime;
+    a test that exercises the probes stubs ``_runtime_exchange`` itself."""
+    def unreachable(*_args, **_kwargs):
+        raise OSError("unit tests do not probe a real runtime")
+
+    for module in list(sys.modules.values()):
+        if getattr(module, "_profile_model", None) is not None and hasattr(module, "_runtime_exchange"):
+            monkeypatch.setattr(module, "_runtime_exchange", unreachable)
+
+
 @pytest.fixture()
 def install_dir(tmp_path, monkeypatch):
     """Provide an isolated install directory with a .env file."""

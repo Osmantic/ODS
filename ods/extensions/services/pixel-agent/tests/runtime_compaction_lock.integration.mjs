@@ -44,21 +44,24 @@ const deps = {
   isSessionWriteLockAcquireError: (await load('session-write-lock-error-CYOzPsPk.js')).r,
 };
 
-function runtime(source) {
+function runtime(source, overrides = {}) {
   const start = '//#region src/agents/embedded-agent-runner/run/attempt.session-lock.ts';
   const end = '//#region src/agents/embedded-agent-runner/google-prompt-cache.ts';
   assert.equal(source.split(start).length, 2);
   assert.equal(source.split(end).length, 2);
   const region = source.slice(source.indexOf(start), source.indexOf(end));
-  return new Function(...Object.keys(deps), region +
-    '\nreturn {createEmbeddedAttemptSessionLockController, installPromptSubmissionLockRelease};')(...Object.values(deps));
+  const runtimeDeps = {...deps, ...overrides};
+  return new Function(...Object.keys(runtimeDeps), region +
+    '\nreturn {createEmbeddedAttemptSessionLockController, installPromptSubmissionLockRelease};')(...Object.values(runtimeDeps));
 }
 
-async function fixture(t, source = candidate) {
+const fixtureHeader = '{"type":"session","id":"fixture"}\n';
+
+async function fixture(t, source = candidate, overrides = {}) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ods-compaction-lock-'));
   const sessionFile = path.join(dir, 'session.jsonl');
-  await fsp.writeFile(sessionFile, '{"type":"session","id":"fixture"}\n');
-  const api = runtime(source);
+  await fsp.writeFile(sessionFile, fixtureHeader);
+  const api = runtime(source, overrides);
   const controller = await api.createEmbeddedAttemptSessionLockController({acquireSessionWriteLock,
     lockOptions: {sessionFile, timeoutMs: 200, staleMs: 30000, maxHoldMs: 30000}});
   t.after(async () => {
@@ -108,3 +111,89 @@ test('independent sessions can compact concurrently', async t => {
   assert.equal(fs.existsSync(a.sessionFile + '.lock'), true);
   assert.equal(fs.existsSync(b.sessionFile + '.lock'), true);
 });
+
+// Use the last shipped recipe, not an invented controller, for the negative control.
+const predecessorHash = '670a1c0007f7fc2d3c623b3d0882e94d472513b60c43bf97b1d3ac3f586d2149';
+assert.ok(manifest.previousReplacements[predecessorHash], 'reviewed predecessor recipe is required');
+let predecessor = original;
+for (const [before, after] of manifest.previousReplacements[predecessorHash]) {
+  assert.equal(predecessor.split(before).length, 2);
+  predecessor = predecessor.replace(before, after);
+}
+assert.equal(checksum(predecessor), predecessorHash);
+
+async function bounded(promise) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('session fence regression timed out')), 2000);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+for (const [name, source] of [['predecessor', predecessor], ['candidate', candidate]]) {
+  test(`${name}: owned write queued at fingerprint capture`, async t => {
+    let armed = false, current, resolveOwned, rejectOwned;
+    const trace = [];
+    const owned = new Promise((resolve, reject) => { resolveOwned = resolve; rejectOwned = reject; });
+    owned.catch(() => {});
+    function capture(file, value) {
+      if (armed && path.resolve(file) === current.sessionFile) {
+        armed = false;
+        trace.push(Number(value.size));
+        // The same scheduling hook wraps actual async and sync filesystem reads.
+        // The old await yields to this owned append; the fixed comparison does not.
+        queueMicrotask(() => {
+          try {
+            fs.appendFileSync(file, '{"type":"message","id":"owned","parentId":null,"message":{"role":"assistant","content":"owned"}}\n');
+            current.controller.refreshAfterOwnedSessionWrite();
+            trace.push(fs.statSync(file).size);
+            resolveOwned();
+          } catch (error) { rejectOwned(error); }
+        });
+      }
+      return value;
+    }
+    current = await fixture(t, source, {
+      fs$1: {...fsp, stat: async (file, options) => capture(file, await fsp.stat(file, options))},
+      statSync: (file, options) => capture(file, fs.statSync(file, options)),
+    });
+    await current.controller.releaseForPrompt();
+    armed = true;
+    const outcome = await bounded(current.controller.reacquireAfterPrompt().then(
+      () => ({ok: true}), error => ({ok: false, name: error.name})));
+    await bounded(owned);
+    assert.equal(trace.length, 2);
+    assert.equal(trace[0], Buffer.byteLength(fixtureHeader));
+    assert.ok(trace[1] > trace[0]);
+    if (name === 'predecessor') {
+      assert.deepEqual(outcome, {ok: false, name: 'EmbeddedAttemptSessionTakeoverError'});
+      assert.equal(current.controller.hasSessionTakeover(), true);
+    } else {
+      assert.deepEqual(outcome, {ok: true});
+      assert.equal(current.controller.hasSessionTakeover(), false);
+      let entered = false;
+      await current.controller.withSessionWriteLock(() => { entered = true; });
+      assert.equal(entered, true);
+    }
+  });
+
+  for (const mutation of ['replace', 'rewrite']) {
+    test(`${name}: external ${mutation} rejects before executing a write`, async t => {
+      const {controller, sessionFile} = await fixture(t, source);
+      await controller.releaseForPrompt();
+      const target = mutation === 'replace' ? sessionFile + '.replacement' : sessionFile;
+      await fsp.writeFile(target, '{"type":"session","id":"external"}\n');
+      if (mutation === 'replace') await fsp.rename(target, sessionFile);
+      await assert.rejects(bounded(controller.reacquireAfterPrompt()),
+        error => error.name === 'EmbeddedAttemptSessionTakeoverError');
+      let entered = false;
+      await assert.rejects(controller.withSessionWriteLock(() => { entered = true; }),
+        error => error.name === 'EmbeddedAttemptSessionTakeoverError');
+      assert.equal(entered, false);
+      assert.equal(fs.existsSync(sessionFile + '.lock'), false);
+    });
+  }
+}

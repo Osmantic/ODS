@@ -12,7 +12,7 @@ The embeddings service runs Hugging Face's Text Embeddings Inference (TEI) serve
 - **OpenAI-compatible API**: Drop-in replacement for OpenAI's embeddings endpoint
 - **Configurable model**: Switch embedding models via a single environment variable
 - **Persistent model cache**: Downloaded models are stored locally and survive restarts
-- **CPU-packaged runtime**: The shipped Compose service uses the pinned TEI CPU image across supported hosts
+- **CPU-packaged runtime**: The shipped Compose service uses the pinned TEI CPU image across supported hosts. TEI's release tags are amd64 only, so Linux arm64 hosts (DGX Station, DGX Spark, Ampere) run TEI's own arm64 build of the same release line from `compose.arm64.yaml`, and Apple Silicon runs the amd64 image under Rosetta 2
 
 ## Configuration
 
@@ -27,7 +27,7 @@ Environment variables (set in `.env`):
 | `RAG_OPENAI_API_BASE_URL` | bundled TEI | OpenAI-compatible endpoint used by Open WebUI RAG |
 | `RAG_OPENAI_API_KEY` | empty | Optional credential for an authenticated external embeddings provider |
 
-> **Changing the model:** Set `EMBEDDING_MODEL` in `.env` to a TEI-compatible Hugging Face repository ID. Open WebUI uses the same value on first boot when it uses bundled TEI; existing installs retain their Admin Panel value until it is updated there. The model is downloaded on first start and cached in `./data/embeddings`.
+> **Changing the model:** Set `EMBEDDING_MODEL` in `.env` to a TEI-compatible Hugging Face repository ID. Open WebUI uses the same value when it uses bundled TEI, and picks it up when it restarts. The model is downloaded on first start and cached in `./data/embeddings`.
 
 The bundled service is Hugging Face Text Embeddings Inference, not llama.cpp.
 GGUF files and GGUF/Q4 repositories cannot be used as `EMBEDDING_MODEL`.
@@ -147,11 +147,9 @@ docker compose logs embeddings
    .\ods.ps1 restart open-webui
    ```
 
-3. In Open WebUI, open **Admin Panel / Settings / Documents**, set the
-   embedding engine, endpoint, and model to the values above, then run
-   **Reindex**. Open WebUI persists these settings in its database after first
-   boot, so recreating its container does not override an existing Admin Panel
-   value. Embeddings from different models are not in the same vector space.
+3. In Open WebUI, open **Admin Panel / Settings / Documents**, check that it
+   shows the engine, endpoint, and model above (Open WebUI reads them from ODS
+   when it restarts), then run **Reindex**. Embeddings from different models are not in the same vector space.
    Existing knowledge bases must be re-embedded, and files attached directly
    to old chats must be uploaded again.
 

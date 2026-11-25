@@ -4,7 +4,7 @@
 # Part of: installers/windows/phases/
 # Purpose: Create install directory tree, copy source files via robocopy,
 #          generate .env with secure secrets, generate SearXNG settings.yml,
-#          generate OpenClaw configs (if enabled), validate .env schema.
+#          validate .env schema.
 #
 # Reads:
 #   $installDir, $sourceRoot   -- from orchestrator context
@@ -13,12 +13,10 @@
 #   $gpuInfo                   -- from phase 02
 #   $llamaServerImage          -- from phase 02
 #   $whisperCudaSupported      -- from phase 02
-#   $enableOpenClaw            -- from phase 03
 #   $enableRecommended, $enableDeepResearch, $enableHermes -- from phase 03
-#   $openClawConfig            -- from phase 03
 #
 # Writes:
-#   $envResult  -- hashtable: SearxngSecret, OpenclawToken
+#   $envResult  -- hashtable: SearxngSecret
 #
 # Modder notes:
 #   Add new directories to $_dirs array below.
@@ -35,13 +33,9 @@ if ($dryRun) {
     Write-AI "[DRY RUN] Would generate .env with secure secrets (WEBUI_SECRET, N8N_PASS, LITELLM_KEY, ...)"
     Write-AI "[DRY RUN] Would generate SearXNG config with randomized secret key"
     Write-AI "[DRY RUN] Would copy ods.ps1 CLI + lib/ to install root"
-    if ($enableOpenClaw) {
-        Write-AI "[DRY RUN] Would generate OpenClaw configs (model: $($tierConfig.LlmModel))"
-    }
     # Signal to later phases: no envResult in dry-run mode
     $envResult = @{
         SearxngSecret = "(dry-run-placeholder)"
-        OpenclawToken = "(dry-run-placeholder)"
     }
     return
 }
@@ -55,7 +49,6 @@ $_dirs = @(
     (Join-Path $_configDir "searxng"),
     (Join-Path $_configDir "n8n"),
     (Join-Path $_configDir "litellm"),
-    (Join-Path $_configDir "openclaw"),
     (Join-Path $_configDir "llama-server"),
     (Join-Path $_dataDir "auth"),
     (Join-Path $_dataDir "config"),
@@ -95,7 +88,6 @@ $_expectedRegularFiles = @(
     ".env.schema.json",
     "config\llama-server\models.ini",
     "config\litellm\local.yaml",
-    "config\litellm\lemonade.yaml",
     "config\litellm\switchboard.yaml",
     "data\.extensions-lock",
     "extensions\services\litellm\select-config.sh",
@@ -106,6 +98,8 @@ $_expectedRegularFiles = @(
     "extensions\services\ods-proxy\Caddyfile",
     "extensions\services\whisper\docker-entrypoint.sh",
     "extensions\services\perplexica\docker-entrypoint.sh",
+    "extensions\services\perplexica\patch-client-citations.js",
+    "extensions\services\perplexica\citation-renderer.js",
     "data\persona\SOUL.md"
 )
 foreach ($_expectedFileName in $_expectedRegularFiles) {
@@ -227,6 +221,65 @@ if (Test-Path $_retiredODSForge) {
     Remove-Item -LiteralPath $_retiredODSForge -Recurse -Force
     Write-AI "Removed retired ODSForge service files from extensions/services"
 }
+# The legacy OpenClaw extension (the ods-openclaw container) was removed;
+# Portal (Pixel) and Hermes are the supported agents. Remove its stale service
+# files the same way so `up --remove-orphans` drops the old container.
+$_retiredOpenClaw = Join-Path $installDir "extensions\services\openclaw"
+if (Test-Path -LiteralPath $_retiredOpenClaw) {
+    Remove-Item -LiteralPath $_retiredOpenClaw -Recurse -Force
+    Write-AI "Removed retired OpenClaw service files from extensions/services"
+}
+# Every release copied the OpenClaw templates into config\openclaw, used or
+# not. A template that is still byte-identical to a shipped version is not
+# owner data; anything else, and data\openclaw, stays.
+$_openClawConfig = Join-Path $_configDir "openclaw"
+$_openClawData = Join-Path $_dataDir "openclaw"
+$_openClawManifest = Join-Path $sourceRoot "installers\lib\retired-openclaw-config.sha256"
+if ((Test-Path -LiteralPath $_openClawConfig -PathType Container) -and
+    (Test-Path -LiteralPath $_openClawManifest -PathType Leaf) -and
+    -not ((Get-Item -LiteralPath $_openClawConfig -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    foreach ($_line in Get-Content -LiteralPath $_openClawManifest) {
+        if ($_line -notmatch '^([0-9a-f]{64})\s+(\S+)$') { continue }
+        $_digest = $Matches[1]
+        $_relative = $Matches[2]
+        if ($_relative.Contains('..')) { continue }
+        $_template = Join-Path $_openClawConfig ($_relative -replace '/', '\')
+        # Never reach a template through a linked folder.
+        $_parent = Get-Item -LiteralPath (Split-Path -Parent $_template) -Force -ErrorAction SilentlyContinue
+        if ($null -ne $_parent -and ($_parent.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+        $_item = Get-Item -LiteralPath $_template -Force -ErrorAction SilentlyContinue
+        if ($null -eq $_item -or $_item.PSIsContainer -or
+            ($_item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+        # An unreadable file has no digest, so it is kept.
+        $_hash = Get-FileHash -LiteralPath $_template -Algorithm SHA256 -ErrorAction SilentlyContinue
+        if ($null -eq $_hash -or $_hash.Hash.ToLowerInvariant() -ne $_digest) { continue }
+        Remove-Item -LiteralPath $_template -Force -ErrorAction SilentlyContinue -ErrorVariable _removeErrors
+        if ($_removeErrors.Count -gt 0) {
+            Write-AIWarn "Could not remove the unchanged OpenClaw template $_template"
+        }
+    }
+    foreach ($_folder in @((Join-Path $_openClawConfig "workspace"), $_openClawConfig)) {
+        if (-not (Test-Path -LiteralPath $_folder -PathType Container)) { continue }
+        # A folder that cannot be listed may hold owner data, so it stays.
+        $_entries = @(Get-ChildItem -LiteralPath $_folder -Force -ErrorAction SilentlyContinue -ErrorVariable _listErrors)
+        if ($_listErrors.Count -eq 0 -and $_entries.Count -eq 0) {
+            Remove-Item -LiteralPath $_folder -Force -ErrorAction SilentlyContinue -ErrorVariable _removeErrors
+            if ($_removeErrors.Count -gt 0) {
+                Write-AIWarn "Could not remove the empty folder $_folder"
+            }
+        }
+    }
+}
+$_openClawKept = @()
+if (Test-Path -LiteralPath $_openClawConfig) { $_openClawKept += "config\openclaw" }
+if (Test-Path -LiteralPath $_openClawData -PathType Container) {
+    # A data folder that cannot be listed may still hold the agent's state.
+    $_entries = @(Get-ChildItem -LiteralPath $_openClawData -Force -ErrorAction SilentlyContinue -ErrorVariable _listErrors)
+    if ($_listErrors.Count -gt 0 -or $_entries.Count -gt 0) { $_openClawKept += "data\openclaw" }
+}
+if ($_openClawKept.Count -gt 0) {
+    Write-AI "The legacy OpenClaw extension was removed. Its remaining files in $($_openClawKept -join ' and ') were kept; delete them by hand when you no longer need them (docs/MIGRATION-OPENCLAW-TO-HERMES.md explains how)."
+}
 
 # Copy extensions library to data dir for dashboard portal. Keep this in
 # parity with Linux phase 06 and macOS install: dashboard-api installs
@@ -308,24 +361,21 @@ $_amdInferencePort = ""
 $_amdInferenceSupportedBackends = ""
 $_amdInferenceRuntimeMode = ""
 $_amdInferenceManaged = ""
-$_lemonadeServerImage = ""
 if ($gpuInfo.Backend -eq "amd" -and -not $cloudMode) {
-    $_amdInferenceRuntime = "lemonade"
-    $_amdInferenceBackend = $(if ($amdLemonadeRuntime -and $amdLemonadeRuntime.windows_backend) { $amdLemonadeRuntime.windows_backend } else { "vulkan" })
+    # AMD runs ggml-org llama-server.exe (Vulkan) natively on this PC; the
+    # values are written directly (no post-launch .env patching).
+    $_amdInferenceRuntime = "llama-server"
+    $_amdInferenceBackend = "vulkan"
     $_amdInferenceLocation = "host"
-    $_amdInferencePort = [string]$script:LEMONADE_PORT
-    $_amdInferenceSupportedBackends = $_amdInferenceBackend
-    $_amdInferenceRuntimeMode = "windows-legacy-lemonade"
+    $_amdInferencePort = [string]$script:NATIVE_LLM_PORT
+    $_amdInferenceSupportedBackends = "vulkan"
+    $_amdInferenceRuntimeMode = "windows-native-llama-server"
     $_amdInferenceManaged = "true"
-}
-if ($amdLemonadeRuntime -and $amdLemonadeRuntime.container_image) {
-    $_lemonadeServerImage = $amdLemonadeRuntime.container_image
 }
 $_enableWebSearch = Test-ODSWindowsSearxngNeeded `
     -EnableRecommended $enableRecommended `
     -EnableDeepResearch $enableDeepResearch `
-    -EnableHermes $enableHermes `
-    -EnableOpenClaw $enableOpenClaw
+    -EnableHermes $enableHermes
 $envResult = New-ODSEnv `
     -InstallDir     $installDir `
     -TierConfig     $tierConfig `
@@ -340,7 +390,6 @@ $envResult = New-ODSEnv `
     -AmdInferenceSupportedBackends $_amdInferenceSupportedBackends `
     -AmdInferenceRuntimeMode $_amdInferenceRuntimeMode `
     -AmdInferenceManaged $_amdInferenceManaged `
-    -LemonadeServerImage $_lemonadeServerImage `
     -SystemRamGB    $systemRamGB `
     -WhisperCudaEnabled $whisperCudaSupported `
     -EnableLangfuse $enableLangfuse `
@@ -356,7 +405,7 @@ Write-AISuccess "Generated .env with secure secrets"
 # NOTE: Only checks keys that use :? (required non-empty) in compose files.
 # Keys like ANTHROPIC_API_KEY= are intentionally empty and not checked here.
 $_envPath = Join-Path $installDir ".env"
-$_requiredKeys = @("WEBUI_SECRET", "N8N_PASS", "LITELLM_KEY", "OPENCLAW_TOKEN", "DASHBOARD_API_KEY")
+$_requiredKeys = @("WEBUI_SECRET", "N8N_PASS", "LITELLM_KEY", "DASHBOARD_API_KEY")
 $_envLines = @{}
 if (Test-Path $_envPath) {
     Get-Content $_envPath | ForEach-Object {
@@ -365,8 +414,8 @@ if (Test-Path $_envPath) {
         }
     }
 }
-if ($_amdInferenceRuntime -eq "lemonade") {
-    $_requiredKeys += "LEMONADE_MODEL"
+if ($_amdInferenceRuntimeMode -eq "windows-native-llama-server") {
+    $_requiredKeys += "LLAMA_SERVER_API_KEY"
 }
 $_missingKeys = @()
 foreach ($_k in $_requiredKeys) {
@@ -391,7 +440,7 @@ function Update-HermesConfigFile {
         [int]$ContextLength,
         [int]$RequestTimeoutSeconds = 180,
         [int]$MaxTokens = 1024,
-        [switch]$LemonadeCompact
+        [switch]$CompactToolset
     )
 
     if (-not (Test-Path $Path)) { return $false }
@@ -479,7 +528,7 @@ function Update-HermesConfigFile {
         }
     }
 
-    if ($LemonadeCompact) {
+    if ($CompactToolset) {
         $compactAgent = @"
 agent:
   disabled_toolsets:
@@ -595,8 +644,9 @@ function Invoke-HermesSoulRefresh {
     $_profileArgs = @()
     try {
         $_envText = Get-Content -LiteralPath $_envPath -Raw -ErrorAction Stop
-        if ($_envText -match '(?m)^LLM_BACKEND=lemonade\s*$' -and
-            $_envText -match '(?m)^AMD_INFERENCE_RUNTIME=lemonade\s*$') {
+        # Windows AMD keeps the compact prompt profile. Its name is the
+        # build-installation-context.py interface, not a runtime choice.
+        if ($_envText -match '(?m)^AMD_INFERENCE_RUNTIME_MODE=windows-native-llama-server\s*$') {
             $_profileArgs = @("--profile", "local-lemonade")
         }
     } catch { }
@@ -654,14 +704,9 @@ if ($enableHermes) {
     } else {
         "observe"
     })
+    # llama-server serves the GGUF file name as the model id (--alias).
     $_hermesModel = $(if ($tierConfig.GgufFile) {
-        if ($gpuInfo.Backend -eq "amd" -and
-            $_envLines.ContainsKey("LEMONADE_MODEL") -and
-            -not [string]::IsNullOrWhiteSpace([string]$_envLines["LEMONADE_MODEL"])) {
-            $_envLines["LEMONADE_MODEL"].Trim().Trim('"').Trim("'")
-        } else {
-            $tierConfig.GgufFile
-        }
+        $tierConfig.GgufFile
     } else {
         $tierConfig.LlmModel
     })
@@ -707,8 +752,8 @@ if ($enableHermes) {
         Copy-Item -Path $_hermesTemplate -Destination $_hermesLive -Force
     }
     $_hermesRequestTimeout = $(if ($cloudMode -and $_switchboardMode -ne "enabled") { 180 } else { 900 })
-    $_patchedHermesTemplate = Update-HermesConfigFile -Path $_hermesTemplate -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ApiKey $_hermesApiKey -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
-    $_patchedHermesLive = Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ApiKey $_hermesApiKey -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -LemonadeCompact:($gpuInfo.Backend -eq "amd")
+    $_patchedHermesTemplate = Update-HermesConfigFile -Path $_hermesTemplate -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ApiKey $_hermesApiKey -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -CompactToolset:($gpuInfo.Backend -eq "amd")
+    $_patchedHermesLive = Update-HermesConfigFile -Path $_hermesLive -Model $_hermesModel -BaseUrl $_hermesBaseUrl -ApiKey $_hermesApiKey -ContextLength ([int]$tierConfig.MaxContext) -RequestTimeoutSeconds $_hermesRequestTimeout -CompactToolset:($gpuInfo.Backend -eq "amd")
     if (-not ($_patchedHermesTemplate -and $_patchedHermesLive)) {
         Write-AIError "Failed to patch Hermes config for Windows runtime (model=$_hermesModel, base_url=$_hermesBaseUrl)"
         throw "ODS_INSTALL_ABORTED"
@@ -720,46 +765,6 @@ if ($enableHermes) {
 # ── Generate SearXNG config ───────────────────────────────────────────────────
 $_searxngPath = New-SearxngConfig -InstallDir $installDir -SecretKey $envResult.SearxngSecret
 Write-AISuccess "Generated SearXNG config ($_searxngPath)"
-
-# ── Generate OpenClaw configs ─────────────────────────────────────────────────
-if ($enableOpenClaw) {
-    # On Windows, AMD native inference server is reachable from Docker containers
-    # via host.docker.internal; NVIDIA runs in Docker as llama-server service name.
-    # Lemonade serves at /api/v1, so OpenClaw base URL needs /api prefix
-    # (OpenClaw appends /v1/chat/completions to the base URL)
-    $_providerUrl = $(if ($gpuInfo.Backend -eq "amd") {
-        "http://host.docker.internal:$($script:LEMONADE_PORT)/api"
-    } else {
-        "http://llama-server:8080"
-    })
-
-    New-OpenClawConfig `
-        -InstallDir   $installDir `
-        -LlmModel     $tierConfig.LlmModel `
-        -MaxContext   $tierConfig.MaxContext `
-        -Token        $envResult.OpenclawToken `
-        -ProviderUrl  $_providerUrl
-    Write-AISuccess "Generated OpenClaw configs (model: $($tierConfig.LlmModel))"
-
-    # Select and copy the tier-appropriate OpenClaw agent profile
-    if ($openClawConfig) {
-        $_ocSrcProfile = Join-Path (Join-Path $installDir "config\openclaw") $openClawConfig
-        $_ocDstProfile = Join-Path (Join-Path $installDir "config\openclaw") "openclaw.json"
-        if (Test-Path $_ocSrcProfile) {
-            $_ocSrcResolved = (Resolve-Path $_ocSrcProfile).Path
-            $_ocDstResolved = [System.IO.Path]::GetFullPath($_ocDstProfile)
-            if ($_ocSrcResolved -ieq $_ocDstResolved) {
-                Write-AISuccess "OpenClaw profile already installed: $openClawConfig"
-            } else {
-                Copy-Item -Path $_ocSrcProfile -Destination $_ocDstProfile -Force
-                Write-AISuccess "Installed OpenClaw profile: $openClawConfig -> openclaw.json"
-            }
-        } else {
-            Write-AIError "Missing OpenClaw config $openClawConfig and no fallback present in repo. This is a packaging bug; please re-clone or report."
-            throw "ODS_INSTALL_ABORTED"
-        }
-    }
-}
 
 # ── Create llama-server models.ini stub ──────────────────────────────────────
 $_modelsIni = Join-Path (Join-Path $installDir "config\llama-server") "models.ini"

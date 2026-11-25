@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fixture="$(mktemp -d)"
-trap 'rm -f -- "$fixture/output" "$fixture/log"; rmdir -- "$fixture"' EXIT
+trap 'rm -rf -- "$fixture/existing" "$fixture/fakebin"; rm -f -- "$fixture/output" "$fixture/log"; rmdir -- "$fixture"' EXIT
 
 if env -u ODS_GATEWAY_ONLY -u ENABLE_OPEN_WEBUI \
     INSTALL_DIR="$fixture/install" LOG_FILE="$fixture/log" \
@@ -30,6 +30,39 @@ for optional in --voice --rag; do
         echo "FAIL: $optional dependency error was unclear" >&2; exit 1
     }
 done
+
+# An installation whose Extensions Library added voice and RAG without Open
+# WebUI keeps that selection on a rerun. The log directory is missing on
+# purpose: install-core stops at the log check right after the selection
+# checks, so nothing is installed or changed.
+existing="$fixture/existing"
+mkdir -p "$existing/extensions/services/whisper" "$existing/extensions/services/qdrant"
+printf 'ENABLE_OPEN_WEBUI=false\n' > "$existing/.env"
+: > "$existing/extensions/services/whisper/compose.yaml"
+: > "$existing/extensions/services/qdrant/compose.yaml"
+env -u ODS_GATEWAY_ONLY -u ENABLE_OPEN_WEBUI \
+    INSTALL_DIR="$existing" LOG_FILE="$fixture/missing/log" \
+    "$ROOT/install-core.sh" --pixel --non-interactive --skip-docker \
+    >"$fixture/output" 2>&1 || true
+if grep -q 'currently require Open WebUI' "$fixture/output" \
+    || ! grep -q 'Keeping the installed voice and RAG services without Open WebUI' "$fixture/output" \
+    || ! grep -q 'Installer log directory is missing or unsafe' "$fixture/output"; then
+    echo 'FAIL: a rerun refused the voice and RAG selection the Library installed' >&2
+    cat "$fixture/output" >&2
+    exit 1
+fi
+[[ "$(cat "$existing/.env")" == 'ENABLE_OPEN_WEBUI=false' && ! -e "$fixture/missing" ]] || {
+    echo 'FAIL: the rerun selection check changed installation state' >&2; exit 1;
+}
+mkdir -p "$existing/extensions/services/ods-proxy"
+: > "$existing/extensions/services/ods-proxy/compose.yaml"
+if env -u ODS_GATEWAY_ONLY -u ENABLE_OPEN_WEBUI \
+    INSTALL_DIR="$existing" LOG_FILE="$fixture/missing/log" \
+    "$ROOT/install-core.sh" --pixel --non-interactive --skip-docker \
+    >"$fixture/output" 2>&1 \
+    || ! grep -q 'currently require Open WebUI' "$fixture/output"; then
+    echo 'FAIL: a rerun accepted the ODS proxy without Open WebUI' >&2; exit 1
+fi
 
 resolve() {
     ODS_GATEWAY_ONLY=false ENABLE_OPEN_WEBUI="$1" \
@@ -61,6 +94,40 @@ PIXEL_INGRESS_GID='' PORTAL_TEST_REQUIRE_GID=true INSTALL_DIR="$fixture" \
     PORTAL_TEST_MODE=safe ods_compose_assert_no_webui_before_pixel_identity -f fake.yml
 [[ -z "${PIXEL_INGRESS_GID:-}" ]] || {
     echo 'FAIL: early Compose check leaked its placeholder Pixel GID' >&2; exit 1;
+}
+# A fresh install runs Compose as "sudo docker compose" until the new docker
+# group applies to the session. sudo drops exported variables, so the early
+# checks must hand their placeholder GID to Compose explicitly.
+fakebin="$fixture/fakebin"
+mkdir -p "$fakebin"
+printf '#!/bin/sh\nexec env -i PATH="$PATH" "$@"\n' > "$fakebin/sudo"
+printf '#!/bin/sh\n[ "${PIXEL_INGRESS_GID:-}" = 1 ] || { echo "PIXEL_INGRESS_GID is missing a value" >&2; exit 1; }\nprintf "dashboard\\npixel-edge\\n"\n' \
+    > "$fakebin/fake-compose"
+chmod +x "$fakebin/sudo" "$fakebin/fake-compose"
+PATH="$fakebin:$PATH" DOCKER_COMPOSE_CMD="sudo fake-compose" PIXEL_INGRESS_GID='' INSTALL_DIR="$fixture" \
+    ods_compose_assert_no_webui_before_pixel_identity -f fake.yml 2>/dev/null || {
+    echo 'FAIL: early no-WebUI check lost its placeholder Pixel GID under sudo' >&2; exit 1;
+}
+PATH="$fakebin:$PATH" DOCKER_COMPOSE_CMD="sudo fake-compose" PIXEL_INGRESS_GID='' INSTALL_DIR="$fixture" \
+    ods_host_native_assert_no_managed_llama_before_pixel_identity -f fake.yml 2>/dev/null || {
+    echo 'FAIL: early host-native check lost its placeholder Pixel GID under sudo' >&2; exit 1;
+}
+# A nonempty inherited GID can precede phase 11's persisted identity too.
+printf '#!/bin/sh\n[ "${PIXEL_INGRESS_GID:-}" = 41002 ] || exit 1\nprintf "dashboard\\npixel-edge\\n"\n' \
+    > "$fakebin/fake-compose"
+for early_check in ods_compose_assert_no_webui_before_pixel_identity \
+    ods_host_native_assert_no_managed_llama_before_pixel_identity; do
+    PATH="$fakebin:$PATH" DOCKER_COMPOSE_CMD="sudo fake-compose" PIXEL_INGRESS_GID=41002 INSTALL_DIR="$fixture" \
+        "$early_check" -f fake.yml || {
+        echo 'FAIL: early check lost its inherited Pixel GID under sudo' >&2; exit 1;
+    }
+    if PATH="$fakebin:$PATH" DOCKER_COMPOSE_CMD="sudo fake-compose" PIXEL_INGRESS_GID='41002 EXTRA=yes' INSTALL_DIR="$fixture" \
+        "$early_check" -f fake.yml; then
+        echo 'FAIL: early check accepted a nonnumeric Pixel GID' >&2; exit 1;
+    fi
+done
+[[ "$DOCKER_COMPOSE_CMD" == portal_compose_stub && -z "${PIXEL_INGRESS_GID:-}" ]] || {
+    echo 'FAIL: early Compose check changed the caller'"'"'s Compose command' >&2; exit 1;
 }
 if INSTALL_DIR="$fixture" PORTAL_TEST_MODE=unsafe \
     ods_compose_assert_no_webui -f fake.yml 2>/dev/null; then

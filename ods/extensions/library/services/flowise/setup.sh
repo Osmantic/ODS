@@ -3,8 +3,15 @@
 # Usage: setup.sh INSTALL_DIR GPU_BACKEND
 
 set -eu
+umask 077
 
-ENV_FILE="${1:-.}/.env"
+INSTALL_DIR="${1:-.}"
+ENV_FILE="$INSTALL_DIR/.env"
+
+# The pinned image writes encryption.key here without creating its parent.
+# Keep the existing key location and never replace a retained key. Operators
+# choosing a custom FLOWISE_SECRETKEY_PATH must provision that path separately.
+mkdir -p "$INSTALL_DIR/data/flowise/secretkey"
 
 append_if_missing() {
   key="$1"

@@ -29,7 +29,7 @@ def import_shards(client, monkeypatch, tmp_path, *, prefix="quant/model-Q4_K_M",
     monkeypatch.setattr(models, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(models, "_hf_get_json", hub)
     monkeypatch.setattr(models, "_bootstrap_upgrade_download_conflict", lambda: None)
-    monkeypatch.setattr(models, "_call_agent_model", lambda path, body: calls.append((path, body)) or {"status": "started"})
+    monkeypatch.setattr(models, "_call_agent_model", lambda path, body, **_kwargs: calls.append((path, body)) or {"status": "started"})
     details = client.get(f"/api/models/huggingface/repositories/{repo}", headers=client.auth_headers)
     assert details.status_code == 200, details.text
     artifacts = details.json()["artifacts"]

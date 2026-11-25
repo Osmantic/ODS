@@ -46,9 +46,18 @@ it('saves only explicit string edits and preserves null reset intent', () => {
   expect(snapshot.preferences).toEqual({ temperature: 0.5, verbosity: 'off' })
 })
 
+it('allows an empty first save without declaring defaults or reset intent', () => {
+  const snapshot = readSettings(envelope())
+  expect(prepareSettingsSave(snapshot, {})).toEqual({ expectedRevision: 0, changes: {} })
+  expect(snapshot).toEqual({ revision: 0, preferences: {} })
+  for (const existing of [envelope({}, 1), envelope({ thinking: null }), envelope({ thinking: 'off' })]) {
+    expect(() => prepareSettingsSave(readSettings(existing), {})).toThrow('Changes must be non-empty')
+  }
+})
+
 it('rejects nonstring, blank, nonfinite, unsupported, unsafe and protected edits', () => {
   const snapshot = readSettings(envelope())
-  for (const changes of [null, [], {}, { temperature: ' ' }, { temperature: '\t' },
+  for (const changes of [null, [], { temperature: ' ' }, { temperature: '\t' },
     { temperature: false }, { temperature: 1 }, { temperature: 'Infinity' },
     { temperature: 'NaN' }, { temperature: '0x1' }, { temperature: '3' },
     { contextTokens: '4096.5' }, { contextTokens: '9007199254740992' },

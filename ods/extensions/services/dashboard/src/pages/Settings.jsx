@@ -32,6 +32,7 @@ import { WALLPAPERS } from '../lib/wallpapers'
 import CustomWallpaperPicker from '../components/CustomWallpaperPicker'
 import '../wallpaper-themes.css'
 import { dashboardHost, serviceUrl } from '../lib/serviceUrls'
+import { openWithFreshSession, opensWithOdsSession } from '../lib/odsSession'
 import {
   clearSettingsFollowUp,
   loadSettingsFollowUp,
@@ -173,6 +174,7 @@ export default function Settings({ activeSection = 'all' }) {
   const [envActiveSection, setEnvActiveSection] = useState(null)
   const [envSaving, setEnvSaving] = useState(false)
   const [envApplying, setEnvApplying] = useState(false)
+  const [envReloading, setEnvReloading] = useState(false)
   const [envIssues, setEnvIssues] = useState([])
   const [envRevealSecrets, setEnvRevealSecrets] = useState({})
   const [envClearedSecrets, setEnvClearedSecrets] = useState([])
@@ -221,7 +223,8 @@ export default function Settings({ activeSection = 'all' }) {
       if (announce) {
         setNotice({
           type: !checked || versionData.update_available ? 'warn' : 'info',
-          text: !checked ? 'Could not confirm the latest release. Try checking again.' : versionData.update_available && versionData.latest ? `Update available: v${versionData.latest}` : 'You are on the latest available release or a newer development version.',
+          // A held check says why, e.g. a used-up GitHub request limit that "try again" cannot fix.
+          text: !checked ? (versionData.check_error ? `${versionData.check_error}.` : 'Could not confirm the latest release. Try checking again.') : versionData.update_available && versionData.latest ? `Update available: v${versionData.latest}` : 'You are on the latest available release or a newer development version.',
         })
         window.dispatchEvent(new Event('ods-version-checked'))
       }
@@ -231,12 +234,21 @@ export default function Settings({ activeSection = 'all' }) {
   }
 
   const fetchEnvEditor = async ({ announce = false } = {}) => {
-    const payload = await fetchPayload('/api/settings/env', 10000)
-    applyEnvEditorPayload(payload)
-    if (announce) setNotice({ type: 'info', text: 'Environment editor reloaded from disk.' })
+    if (envSaving || envApplying || envReloading || loading) return
+    setEnvReloading(true)
+    try {
+      const payload = await fetchPayload('/api/settings/env', 10000)
+      applyEnvEditorPayload(payload)
+      if (announce) setNotice({ type: 'info', text: 'Environment editor reloaded from disk.' })
+    } catch (err) {
+      setNotice({ type: 'danger', text: getErrorText(err) })
+    } finally {
+      setEnvReloading(false)
+    }
   }
 
   const fetchSettings = async ({ preserveEnvChanges = false } = {}) => {
+    if (envSaving || envApplying || envReloading) return
     const failures = []
     try {
       setLoading(true)
@@ -298,7 +310,7 @@ export default function Settings({ activeSection = 'all' }) {
   }
 
   const handleSaveEnv = async () => {
-    if (!envEditor) return
+    if (!envEditor || envSaving || envApplying || envReloading || loading) return
     setEnvSaving(true)
     try {
       const payload = await fetchPayload('/api/settings/env', 15000, {
@@ -317,13 +329,18 @@ export default function Settings({ activeSection = 'all' }) {
   }
 
   const handleApplyEnv = async () => {
-    if (!envApplyPlan?.supported || !envApplyPlan?.services?.length) return
+    if (envSaving || envApplying || envReloading || loading || !envApplyPlan?.supported || !envApplyPlan?.services?.length) return
+    const expectedEnvRevision = envApplyPlan?.envRevision
+    if (typeof expectedEnvRevision !== 'string' || !/^[0-9a-f]{64}$/.test(expectedEnvRevision)) {
+      setNotice({ type: 'warn', text: 'Reload the current settings, then review and save your changes before applying.' })
+      return
+    }
     setEnvApplying(true)
     try {
       const payload = await fetchPayload('/api/settings/env/apply', 180000, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service_ids: envApplyPlan.services }),
+        body: JSON.stringify({ service_ids: envApplyPlan.services, expected_env_revision: expectedEnvRevision }),
       })
       const { remainingPlan, followUpPlan } = settleSettingsApplyPlan(envApplyPlan)
       setEnvApplyPlan(remainingPlan)
@@ -337,7 +354,21 @@ export default function Settings({ activeSection = 'all' }) {
           : (payload?.message || 'Runtime changes applied successfully.'),
       })
     } catch (err) {
-      setNotice({ type: 'danger', text: getErrorText(err) })
+      if (err?.details?.code === 'model_lifecycle_busy') {
+        setNotice({ type: 'info', text: err.details.message || 'ODS is finishing another operation. Wait for it to finish, then choose Apply changes again. If settings changed, ODS will ask you to review them.' })
+      } else if (err?.details?.code === 'env_revision_mismatch') {
+        setEnvApplyPlan(null)
+        try {
+          const fresh = await fetchPayload('/api/settings/env', 10000)
+          applyEnvEditorPayload(fresh)
+          setNotice({ type: 'warn', text: 'Settings changed while you were waiting. The current values are shown below. Review and save your changes before applying.' })
+        } catch (refreshErr) {
+          setNotice({ type: 'danger', text: `Settings changed while you were waiting. Reload the current settings before saving or applying. (${getErrorText(refreshErr)})` })
+        }
+        return
+      } else {
+        setNotice({ type: 'danger', text: getErrorText(err) })
+      }
     } finally {
       setEnvApplying(false)
     }
@@ -397,6 +428,7 @@ export default function Settings({ activeSection = 'all' }) {
   return (
     <div className={`settings-refined min-h-full ${activeSection === 'all' ? 'px-3 py-6 sm:px-4 lg:px-5 xl:px-6' : 'settings-single-section'}`}>
       <div hidden={activeSection !== 'all'}><SettingsPageHeader
+        refreshingUnavailable={loading || envSaving || envApplying || envReloading}
         onRefresh={() => fetchSettings({ preserveEnvChanges: envDirty })}
         onCheckUpdates={() => {
           setNotice({ type: 'info', text: 'Checking for updates...' })
@@ -405,7 +437,7 @@ export default function Settings({ activeSection = 'all' }) {
         onOpenEnvironment={handleOpenEnvironmentEditor}
       /></div>
 
-      {error ? <Banner tone="danger">{error} - <button className="underline" onClick={fetchSettings}>Retry</button></Banner> : null}
+      {error ? <Banner tone="danger">{error} - <button className="underline" disabled={loading || envSaving || envApplying || envReloading} onClick={() => fetchSettings({ preserveEnvChanges: envDirty })}>Retry</button></Banner> : null}
       {notice ? <Banner tone={notice.type} onClose={() => setNotice(null)}>{notice.text}</Banner> : null}
 
       <div className="w-full space-y-5">
@@ -465,6 +497,7 @@ export default function Settings({ activeSection = 'all' }) {
               onExport={handleExportConfig}
               dirty={envDirty}
               saving={envSaving}
+              reading={loading || envReloading}
               applyPlan={envApplyPlan}
               followUpPlan={envFollowUpPlan}
               onCompleteFollowUp={handleCompleteEnvFollowUp}
@@ -477,7 +510,7 @@ export default function Settings({ activeSection = 'all' }) {
   )
 }
 
-function SettingsPageHeader({ onRefresh, onCheckUpdates, onOpenEnvironment }) {
+function SettingsPageHeader({ onRefresh, onCheckUpdates, onOpenEnvironment, refreshingUnavailable }) {
   return (
     <header className="mb-7 flex w-full flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
       <div>
@@ -485,7 +518,7 @@ function SettingsPageHeader({ onRefresh, onCheckUpdates, onOpenEnvironment }) {
         <p className="mt-2 text-base text-theme-text-muted">Configure your ODS installation.</p>
       </div>
       <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-        <button onClick={onRefresh} className="flex h-11 items-center gap-2 rounded-lg px-3 text-sm font-medium text-theme-accent-light transition-colors hover:bg-theme-surface-hover hover:text-theme-text">
+        <button onClick={onRefresh} disabled={refreshingUnavailable} className="flex h-11 items-center gap-2 rounded-lg px-3 text-sm font-medium text-theme-accent-light transition-colors hover:bg-theme-surface-hover hover:text-theme-text disabled:opacity-50">
           <RefreshCw size={16} />
           Refresh
         </button>
@@ -755,7 +788,7 @@ function UpdatesCard({ version, onCheckUpdates, showHeading = true }) {
   const checkedAt = formatCheckedAt(version?.checked_at)
   const updateText = version?.update_check_ok
     ? (version?.update_available ? 'Update available' : 'Current release')
-    : ({ checking: 'Checking for updates…', stale: 'Check unavailable · showing last known release', unavailable: 'Update check unavailable', 'current-unknown': 'Installed version could not be verified' }[version?.check_status] || 'Not checked yet')
+    : ({ checking: 'Checking for updates…', stale: 'Check unavailable · showing last known release', unavailable: 'Update check unavailable', disabled: 'Update checks are off (DISABLE_UPDATE_CHECK)', 'current-unknown': 'Installed version could not be verified' }[version?.check_status] || 'Not checked yet')
 
   return (
     <PremiumCard className="flex min-h-0 flex-col justify-between p-4">
@@ -875,7 +908,7 @@ function RouteRow({ service }) {
   )
   const className = "settings-route-row flex items-center justify-between gap-4 border-b border-theme-border py-3 last:border-b-0 hover:bg-theme-surface-hover"
   return href
-    ? <a href={href} target="_blank" rel="noopener noreferrer" className={className}>{content}</a>
+    ? <a href={href} target="_blank" rel="noopener noreferrer" onClick={opensWithOdsSession(service.id) ? openWithFreshSession : undefined} className={className}>{content}</a>
     : <div className={className}>{content}</div>
 }
 

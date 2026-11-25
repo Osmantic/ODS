@@ -3,8 +3,27 @@
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
 import yaml
 from models import ServiceStatus
+
+
+@pytest.fixture(autouse=True)
+def _local_selection_transport(monkeypatch):
+    """Keep dependency endpoint tests off the live agent transport."""
+    from routers import extensions
+
+    def select(action, service_ids, expected_sha256=None):
+        assert action == "enable"
+        assert set(expected_sha256) == set(service_ids)
+        for service_id in service_ids:
+            directory = extensions._resolve_extension_dir(service_id)
+            disabled = directory / "compose.yaml.disabled"
+            if disabled.exists():
+                disabled.rename(directory / "compose.yaml")
+        return {"action": "enabled", "service_ids": service_ids}
+
+    monkeypatch.setattr(extensions, "_select_extensions_on_host", select)
 
 
 # --- Helpers ---
@@ -289,18 +308,18 @@ class TestBuiltinExtensionDeps:
         ext_dir = _setup_builtin_ext(tmp_path, "svc-a", deps=["svc-b"], enabled=False)
         _patch_builtin_config(monkeypatch, tmp_path)
 
-        rename_calls = []
+        from routers import extensions
+        selections = []
+        select = extensions._select_extensions_on_host
 
-        def _mock_compose_rename(action, service_id):
-            rename_calls.append((action, service_id))
-            d = dep_dir if service_id == "svc-b" else ext_dir
-            (d / "compose.yaml.disabled").rename(d / "compose.yaml")
-            return True
+        def record_selection(action, service_ids, expected_sha256=None):
+            selections.append((action, service_ids))
+            return select(action, service_ids, expected_sha256)
 
         with patch("routers.extensions._call_agent", return_value=True), \
              patch("routers.extensions._call_agent_hook", return_value=True), \
-             patch("routers.extensions._call_agent_compose_rename",
-                   side_effect=_mock_compose_rename):
+             patch("routers.extensions._select_extensions_on_host",
+                   side_effect=record_selection):
             resp = test_client.post(
                 "/api/extensions/svc-a/enable?auto_enable_deps=true",
                 headers=test_client.auth_headers,
@@ -309,7 +328,7 @@ class TestBuiltinExtensionDeps:
         assert resp.status_code == 200
         body = resp.json()
         assert body["enabled_services"] == ["svc-b", "svc-a"]
-        assert rename_calls == [("activate", "svc-b"), ("activate", "svc-a")]
+        assert selections == [("enable", ["svc-b", "svc-a"])]
         assert (dep_dir / "compose.yaml").exists()
         assert (ext_dir / "compose.yaml").exists()
 

@@ -42,6 +42,23 @@ def test_verification_cli_distinguishes_rejection_without_provisioning(
         assert captured.err == ''
 
 
+@pytest.mark.parametrize('error, shown', [
+    (ValueError('operations-identity-process-active'), 'operations-identity-process-active'),
+    (ValueError('operations-home-not-empty-or-owned'), 'operations-home-not-empty-or-owned'),
+    (ValueError('private-fixture-details'), None),
+    (OSError(2, 'No such file', '/private/var/lib/private-fixture-path'), None)])
+def test_verification_rejection_names_only_known_reason_codes(monkeypatch, capsys, error, shown):
+    def verify():
+        raise error
+    monkeypatch.setattr(account, 'verify_identity_only', verify)
+    assert account.main(['--verify-identity-only']) == os.EX_DATAERR
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    expected = 'Native Pixel Operations identity verification rejected'
+    assert captured.err == expected + (': ' + shown if shown else '') + '.\n'
+    assert 'private-fixture' not in captured.err
+
+
 @pytest.fixture
 def fixture(monkeypatch):
     intent = {'schema': 1, 'name': account.NAME, 'id': 61000,

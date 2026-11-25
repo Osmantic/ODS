@@ -8,5 +8,5 @@ RUN rm -rf /usr/share/nginx/html/*
 COPY --from=source /source/src /usr/share/nginx/html
 COPY --from=source /source/LICENSE /source/THIRD_PARTY_NOTICES.md /usr/share/nginx/html/licenses/
 COPY --from=source /tmp/source.tar.gz /usr/share/nginx/html/source/audiomass-21f5ee1.tar.gz
-COPY nginx.conf /etc/nginx/nginx.conf
+COPY --chmod=0644 nginx.conf /etc/nginx/nginx.conf
 USER 101:101

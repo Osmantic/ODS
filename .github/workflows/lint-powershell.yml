@@ -7,6 +7,9 @@ on:
       - main
       - master
 
+permissions:
+  contents: read
+
 jobs:
   powershell-lint:
     strategy:
@@ -25,24 +28,28 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-          if (-not (Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue)) {
-            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force -ForceBootstrap
+          # The Gallery package endpoint intermittently returns 404 on hosted
+          # runners. Use the same version's official release asset, pinned by
+          # its published SHA-256, in a job-private module directory.
+          $requiredVersion = '1.25.0'
+          $package = Join-Path $env:RUNNER_TEMP 'PSScriptAnalyzer.zip'
+          $moduleRoot = Join-Path $env:RUNNER_TEMP "PSScriptAnalyzer/$requiredVersion"
+          Invoke-WebRequest -Uri "https://github.com/PowerShell/PSScriptAnalyzer/releases/download/$requiredVersion/PSScriptAnalyzer.$requiredVersion.nupkg" `
+            -OutFile $package -TimeoutSec 90 -MaximumRetryCount 3 -RetryIntervalSec 2
+          $expectedHash = '14e634c828eb98efb9f40b2918ba90f139ed5eccdf663a2a747736d996995d60'
+          if ((Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash -ne $expectedHash) {
+            throw 'PSScriptAnalyzer release checksum mismatch'
           }
-
-          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
-            Register-PSRepository -Default
-          }
-          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
-
-          Install-Module -Name PSScriptAnalyzer -Repository PSGallery -Scope CurrentUser -Force -AllowClobber
-          Import-Module PSScriptAnalyzer -ErrorAction Stop
+          Expand-Archive -LiteralPath $package -DestinationPath $moduleRoot
+          Import-Module (Join-Path $moduleRoot 'PSScriptAnalyzer.psd1') -RequiredVersion $requiredVersion -ErrorAction Stop
+          Get-Command Invoke-ScriptAnalyzer -Module PSScriptAnalyzer -ErrorAction Stop | Out-Null
           Get-Module PSScriptAnalyzer | Format-Table Name, Version, Path -AutoSize
 
       - name: Run PowerShell Script Analyzer
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module (Join-Path $env:RUNNER_TEMP 'PSScriptAnalyzer/1.25.0/PSScriptAnalyzer.psd1') -RequiredVersion '1.25.0' -ErrorAction Stop
           $scripts = @()
           $scripts += Get-ChildItem -Path installers -Filter *.ps1 -Recurse
 
@@ -77,6 +84,33 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-comfyui-standalone.ps1
 
+      - name: Windows .env reader keeps UTF-8 values (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-env-utf8.ps1
+
+      - name: Windows CLI chat sends UTF-8 (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-cli-chat-utf8.ps1
+
+      - name: Windows Compose startup recovery (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-compose-startup-recovery.ps1
+
+      - name: Windows Compose startup recovery (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-compose-startup-recovery.ps1
+
+      - name: Windows chat HTTP response exit contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-Command powershell.exe -ErrorAction Stop | Out-Null
+          python tests/test-cli-chat-error-exit.py
+
       - name: Windows Portal Setup Contracts (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell
@@ -86,10 +120,24 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-portal-prereqs.ps1
 
+      - name: Public Windows bootstrap (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-readme-bootstrap.ps1
+
+      - name: Public Windows bootstrap (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-readme-bootstrap.ps1
+
       - name: Windows Portal Prerequisite Contracts (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell
         run: ./tests/contracts/test-windows-portal-prereqs.ps1
+
+      - name: Fresh Ubuntu account configuration without Python
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tests/test-wsl-first-account.sh
 
       - name: Windows Portal AMD Contracts (PowerShell 7)
         shell: pwsh
@@ -99,6 +147,46 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./tests/contracts/test-windows-portal-amd.ps1
+
+      - name: Windows RTX Spark Detection Contracts (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-spark-detection.ps1
+
+      - name: Windows RTX Spark Detection Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-spark-detection.ps1
+
+      - name: Windows Native llama.cpp Runtime Contracts (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-native-llama-runtime.ps1
+
+      - name: Windows Native llama.cpp Runtime Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-native-llama-runtime.ps1
+
+      - name: Windows Native llama.cpp CUDA Runtime Contracts (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-native-llama-cuda-runtime.ps1
+
+      - name: Windows Native llama.cpp CUDA Runtime Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-native-llama-cuda-runtime.ps1
+
+      - name: Windows RTX Spark Memory Contracts (PowerShell 7)
+        shell: pwsh
+        run: |
+          ./tests/contracts/test-windows-spark-memory.ps1
+          ./tests/contracts/test-windows-wslconfig.ps1
+
+      - name: Windows RTX Spark Memory Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          ./tests/contracts/test-windows-spark-memory.ps1
+          ./tests/contracts/test-windows-wslconfig.ps1
 
       - name: WSL Portal Completion Gate
         if: runner.os == 'Linux'
@@ -121,25 +209,61 @@ jobs:
           ./tests/contracts/test-wsl-lifecycle.ps1
           ./tests/contracts/test-wsl-lifecycle-output.ps1
 
-      - name: Windows AMD Recovery and Model Control Contracts (PowerShell 7)
+      - name: WSL scheduled task account regression (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./tests/contracts/test-wsl-task-account.ps1
+          ./tests/contracts/test-wsl-task-account.ps1 -Live
+
+      - name: WSL scheduled task account regression (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          ./tests/contracts/test-wsl-task-account.ps1
+          ./tests/contracts/test-wsl-task-account.ps1 -Live
+
+      - name: Windows AMD Recovery, Model Control and Migration Contracts (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           ./tests/contracts/test-windows-portal-amd-recovery.ps1
-          ./tests/contracts/test-windows-portal-lemonade-restart.ps1
+          ./tests/contracts/test-windows-portal-llama-restart.ps1
           ./tests/contracts/test-windows-portal-model-control.ps1
+          ./tests/contracts/test-windows-portal-llama-migration.ps1
 
-      - name: Windows AMD Recovery and Model Control Contracts (Windows PowerShell)
+      - name: Windows AMD Recovery, Model Control and Migration Contracts (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell
         run: |
           ./tests/contracts/test-windows-portal-amd-recovery.ps1
-          ./tests/contracts/test-windows-portal-lemonade-restart.ps1
+          ./tests/contracts/test-windows-portal-llama-restart.ps1
           ./tests/contracts/test-windows-portal-model-control.ps1
+          ./tests/contracts/test-windows-portal-llama-migration.ps1
 
-      - name: Windows Lemonade Task Cleanup Contract
+      - name: Windows ODS App Shortcut Contracts (PowerShell 7)
+        if: runner.os == 'Windows'
         shell: pwsh
-        run: ./tests/contracts/test-windows-lemonade-task-cleanup.ps1
+        run: ./tests/contracts/test-windows-app-shortcut.ps1
+
+      - name: Windows ODS App Shortcut Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-app-shortcut.ps1
+
+      - name: Windows Native llama-server (non-Portal) and Lemonade Retirement Contracts (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./tests/contracts/test-windows-native-llama-legacy.ps1
+          ./tests/contracts/test-windows-native-lemonade-retire.ps1
+
+      - name: Windows Native llama-server (non-Portal) and Lemonade Retirement Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          ./tests/contracts/test-windows-native-llama-legacy.ps1
+          ./tests/contracts/test-windows-native-lemonade-retire.ps1
 
       - name: Windows Hermes Config Runtime Contract
         shell: pwsh
@@ -179,6 +303,24 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-model-activation.ps1
 
+      - name: Windows Model Readiness Literal Path Contract (PowerShell 7)
+        shell: pwsh
+        run: ./tests/test-windows-model-readiness-literalpath.ps1
+
+      - name: Windows Model Readiness Literal Path Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-model-readiness-literalpath.ps1
+
+      - name: Windows Owner Public URL Carry Contract
+        shell: pwsh
+        run: ./tests/test-windows-public-url-carry.ps1
+
+      - name: Windows Owner Public URL Carry Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-public-url-carry.ps1
+
       - name: Windows Bootstrap Download Handoff Contract
         shell: pwsh
         run: ./tests/test-windows-bootstrap-download-handoff.ps1
@@ -186,6 +328,33 @@ jobs:
       - name: Windows Dotenv Serializer Contract
         shell: pwsh
         run: ./tests/test-windows-dotenv-serializer.ps1
+
+      - name: Windows Owner .env Settings Carry Contract
+        shell: pwsh
+        run: ./tests/test-windows-owner-env-carry.ps1
+
+      - name: Windows Owner .env Settings Carry Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-owner-env-carry.ps1
+
+      - name: Windows Extension .env Settings Carry Contract
+        shell: pwsh
+        run: ./tests/test-windows-extension-env-carry.ps1
+
+      - name: Windows Web Search Bypass Carry Contract
+        shell: pwsh
+        run: ./tests/test-windows-web-search-bypass.ps1
+
+      - name: Windows Web Search Bypass Carry Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-web-search-bypass.ps1
+
+      - name: Windows Extension .env Settings Carry Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-extension-env-carry.ps1
 
       - name: Windows llama.cpp Speculative Opt-out Contract
         shell: pwsh
@@ -203,6 +372,20 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-port-preflight.ps1
 
+      - name: Windows Port Preflight Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-port-preflight.ps1
+
+      - name: Windows Service Port Override Contract (PowerShell 7)
+        shell: pwsh
+        run: ./tests/test-windows-service-port-overrides.ps1 ${{ runner.os == 'Linux' && '-CheckCompose' || '' }}
+
+      - name: Windows Service Port Override Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-service-port-overrides.ps1
+
       - name: Windows Host Agent Python Resolver Contract
         shell: pwsh
         run: ./tests/test-windows-python-resolver.ps1
@@ -210,6 +393,26 @@ jobs:
       - name: Windows Runtime Recovery Contract
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
+
+      - name: Windows report during Docker outage (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-report-outage.ps1
+
+      - name: Windows report during Docker outage (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-report-outage.ps1
+
+      - name: Windows Host Agent Stale PID Recovery (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-host-agent-stale-pid.ps1
+
+      - name: Windows Host Agent Stale PID Recovery (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-host-agent-stale-pid.ps1
 
       - name: Windows Install Model Proof
         shell: pwsh
@@ -247,3 +450,133 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./tests/contracts/test-windows-uninstall-leftovers.ps1
+
+      - name: Windows Docker Pull Contract
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/contracts/test-windows-docker-pull.ps1
+
+      - name: WSL Lifecycle JSON Sharing Contract
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/contracts/test-wsl-json-sharing.ps1
+
+      - name: WSL Relay Lifetime Contract
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/contracts/test-wsl-relay-lifetime.ps1
+
+      - name: Windows AMD Memory Detection
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-amd-memory-detection.ps1
+
+      - name: Windows Hermes SOUL Refresh
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-hermes-soul-refresh.ps1
+
+      - name: Windows llama-server Memory Budget
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-llama-memory-budget.ps1
+
+      - name: Required Windows model gateways (PowerShell 7)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: ./tests/test-windows-required-model-gateway.ps1
+
+      - name: Required Windows model gateways (Windows PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-required-model-gateway.ps1
+
+      - name: Windows OpenCode Runtime
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-opencode-runtime.ps1
+
+      - name: Windows OpenCode Startup (PowerShell 7)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-opencode-startup.ps1
+
+      - name: Windows OpenCode Startup (Windows PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-opencode-startup.ps1
+
+      - name: Windows OpenCode Port (PowerShell 7)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-opencode-port.ps1
+
+      - name: Windows OpenCode Port (PowerShell 5.1)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-opencode-port.ps1
+
+      - name: Windows Restart Model Preflight
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-restart-model-preflight.ps1
+
+      - name: Windows OpenClaw Template Cleanup (PowerShell 7)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-openclaw-template-cleanup.ps1
+
+      - name: Windows OpenClaw Template Cleanup (Windows PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-openclaw-template-cleanup.ps1
+
+      - name: Windows Network Sign-in (PowerShell 7)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: ./tests/test-windows-network-signin.ps1
+
+      - name: Windows Network Sign-in (Windows PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-network-signin.ps1
+
+      - name: Windows STT trigger native timeout contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-stt-trigger.ps1
+
+      - name: Windows Whisper Port Conflict
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-whisper-port-conflict.ps1
+
+      - name: Windows Whisper Port Conflict (Windows PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-whisper-port-conflict.ps1
+
+      - name: Windows container tuning retention (PowerShell 7)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-container-tuning-carry.ps1
+
+      - name: Windows container tuning retention (Windows PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-container-tuning-carry.ps1
+
+      - name: Every PowerShell test runs in a workflow
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          # Tests run from this directory (./tests/...) or the repository root (./ods/tests/...).
+          $workflows = (Get-ChildItem ../.github/workflows -Filter '*.yml' | Get-Content -Raw) -join "`n"
+          $missing = Get-ChildItem tests -Recurse -Filter 'test-*.ps1' |
+            ForEach-Object { [IO.Path]::GetRelativePath((Get-Location).Path, $_.FullName).Replace('\', '/') } |
+            Where-Object { -not $workflows.Contains('/' + $_) }
+          if ($missing) {
+            $missing | ForEach-Object { Write-Host "::error::ods/$_ is not run by any workflow" }
+            exit 1
+          }
+          Write-Host 'Every PowerShell test under ods/tests runs in a workflow.'

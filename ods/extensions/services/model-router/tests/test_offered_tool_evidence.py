@@ -98,6 +98,19 @@ def test_evidence_matches_actual_forwarded_payload_and_request_id(router, path, 
         payload = json.loads(request.content)
         captured.append(payload)
         if payload.get("stream"):
+            if request.url.path == "/v1/chat/completions":
+                chunks = [
+                    {"id": "c1", "model": "Concrete.gguf", "choices": [{
+                        "index": 0, "delta": {"role": "assistant",
+                                             "content": "hello"},
+                        "finish_reason": None}]},
+                    {"id": "c1", "model": "Concrete.gguf", "choices": [{
+                        "index": 0, "delta": {}, "finish_reason": "stop"}]},
+                ]
+                sse = b"".join(b"data: " + json.dumps(chunk).encode() + b"\n\n"
+                               for chunk in chunks) + b"data: [DONE]\n\n"
+                return httpx.Response(200, content=sse,
+                                      headers={"content-type": "text/event-stream"})
             data = {"type": "response.completed", "response": {
                 "model": "Concrete.gguf", "status": "completed", "output": []}}
             return httpx.Response(200, content=("event: response.completed\ndata: " +

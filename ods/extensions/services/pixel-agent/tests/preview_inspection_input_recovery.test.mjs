@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createWorkspacePreviewInspectTool} from '../plugin/workspace-preview-inspect.mjs';
+import {createWorkspacePreviewInspectTool, hasVisibilityTransitionPlan, inspectionPlanHash,
+  normalizeWorkspacePreviewInspectionParams as normalize} from '../plugin/workspace-preview-inspect.mjs';
 
 const valid = () => ({siteId:'site-'+ 'a'.repeat(24),sha256:'a'.repeat(64),
   viewport:{width:800,height:600},steps:[{action:'assert-hidden',locator:{selector:'#details'}}]});
@@ -22,6 +23,22 @@ test('invalid inspection arguments never contact the broker or report it unavail
     assert.match(result.content[0].text,/Requested behavior remains unverified/);
   }
   assert.equal(calls,0);
+});
+
+test('a step without the field its action needs names that field',async()=>{
+  const tool=createWorkspacePreviewInspectTool({request:async()=>{throw Error('should not execute');}});
+  for(const [step,hint] of [
+    [{action:'assert-text',locator:{selector:'#moves'}},/Step 1 \(steps\[0\]\.expectedText\): assert-text needs expectedText.*use assert-visible\./],
+    [{action:'fill',locator:{selector:'#name'}},/Step 1 \(steps\[0\]\.value\): select-option and fill need value/],
+    [{action:'press',locator:{selector:'#game'}},/Step 1 \(steps\[0\]\.key\): press needs key/],
+  ]) {
+    const params=valid();params.steps=[step];
+    const result=await tool.execute('missing-field',params);
+    assert.equal(result.details.errorCode,'invalid_request');
+    assert.match(result.content[0].text,hint);
+    // Only the missing field, not every action's rules.
+    assert.doesNotMatch(result.content[0].text,/download must be last/);
+  }
 });
 
 test('valid input still distinguishes unavailable transport and cancellation',async()=>{
@@ -55,4 +72,144 @@ test('observed digest guessing gets actionable feedback without contacting the b
   assert.equal(calls,0);
   assert.equal((await tool.execute('corrected',valid())).details.errorCode,'unavailable');
   assert.equal(calls,1);
+});
+
+test('empty accessible names identify every affected step before a corrected retry',async()=>{
+  const calls=[];
+  const tool=createWorkspacePreviewInspectTool({request:async params=>{calls.push(structuredClone(params));throw Error('offline fixture');}});
+  // Synthetic public-shaped reproduction, not a private browser transcript.
+  const params={...valid(),viewport:{width:375,height:667},steps:[
+    {action:'assert-visible',locator:{role:'heading',name:'Packing Checklist',exact:true}},
+    {action:'assert-visible',locator:{role:'textbox',name:'',exact:true}},
+    {action:'fill',locator:{role:'textbox',name:'',exact:true},value:'Passport'},
+    {action:'click',locator:{role:'button',name:'Add',exact:true}},
+    {action:'assert-text',locator:{selector:'#counter'},expectedText:'1 of 1'},
+  ]};
+  const before=structuredClone(params);
+  const result=await tool.execute('invalid-empty-names',params);
+  assert.equal(result.details.errorCode,'invalid_request');
+  assert.equal(result.isError,true);
+  assert.equal(calls.length,0);
+  assert.match(result.content[0].text,/Step 2 \(steps\[1\]\.locator\.name\)/);
+  assert.match(result.content[0].text,/Step 3 \(steps\[2\]\.locator\.name\)/);
+  assert.match(result.content[0].text,/non-empty accessible name/);
+  assert.match(result.content[0].text,/unnamed.*CSS selector/i);
+  assert.match(result.content[0].text,/Retain an interaction and its visible postcondition/);
+  assert.deepEqual(params,before,'invalid input is never corrected automatically');
+
+  const corrected=structuredClone(params);
+  corrected.steps[1].locator={selector:'#item-input'};
+  corrected.steps[2].locator={selector:'#item-input'};
+  assert.equal((await tool.execute('corrected',corrected)).details.errorCode,'unavailable');
+  assert.equal(calls.length,1,'an explicit corrected plan reaches transport');
+  assert.deepEqual(calls[0].steps,corrected.steps,'the inspector never changes the heading or counter expectation to make a test pass');
+  assert.equal(calls[0].steps[4].expectedText,'1 of 1','a potentially wrong postcondition stays the caller responsibility');
+});
+
+test('inspection tool schema excludes empty CSS selectors and accessible names',()=>{
+  const schema=createWorkspacePreviewInspectTool().parameters.properties.steps.items.properties.locator;
+  assert.equal(schema.oneOf[0].properties.selector.minLength,1);
+  assert.equal(schema.oneOf[1].properties.name.minLength,1);
+});
+
+// RTX Spark, 2026-10-25: the model router rejected three completions in a row
+// against this tool's schema before any tool ran, and the Portal turn ended.
+// One likely cause: role/name locators required exact as the constant true, and
+// models often leave it out, or add exact:true to a CSS selector. Neither
+// changes what is matched: role/name always match the exact accessible name,
+// and a selector has no other mode. exact:false, other keys and mixed forms
+// stay invalid.
+test('role/name locators may omit exact and selectors may carry exact:true; the inspector gets the protocol form',async()=>{
+  const calls=[];
+  const tool=createWorkspacePreviewInspectTool({request:async request=>{calls.push(structuredClone(request));throw Error('offline fixture');}});
+  const params={...valid(),steps:[
+    {action:'assert-hidden',locator:{selector:'#details',exact:true}},
+    {action:'click',locator:{role:'button',name:'Show details'}},
+    {action:'assert-visible',locator:{selector:'#details'}},
+  ]};
+  const before=structuredClone(params);
+  const result=await tool.execute('lenient',params);
+  assert.equal(result.details.errorCode,'unavailable','accepted and sent; only the offline fixture failed');
+  assert.deepEqual(params,before,'the caller arguments are never changed');
+  assert.deepEqual(calls[0].steps.map(step=>step.locator),
+    [{selector:'#details'},{role:'button',name:'Show details',exact:true},{selector:'#details'}]);
+  const strict={...valid(),steps:[
+    {action:'assert-hidden',locator:{selector:'#details'}},
+    {action:'click',locator:{role:'button',name:'Show details',exact:true}},
+    {action:'assert-visible',locator:{selector:'#details'}},
+  ]};
+  assert.deepEqual(normalize(params),normalize(strict),'one plan, whichever form the model used');
+  assert.equal(inspectionPlanHash(normalize(params)),inspectionPlanHash(normalize(strict)));
+  assert.equal(hasVisibilityTransitionPlan(normalize(params)),true,'the two #details assertions name one element');
+});
+
+test('exact:false, extra keys and mixed locator forms stay invalid, with a hint naming the field',async()=>{
+  const tool=createWorkspacePreviewInspectTool({request:async()=>assert.fail('an invalid plan must not run')});
+  for(const [locator,field] of [
+    [{role:'button',name:'Start',exact:false},'locator.exact'],
+    [{selector:'#start',exact:false},'locator.exact'],
+    [{role:'button',name:'Start',level:1},'locator'],
+    [{role:'button',name:'Start',exact:true,description:'the start button'},'locator'],
+    [{selector:'#start',role:'button',name:'Start'},'locator'],
+    [{role:'button'},'locator'],
+    [{name:'Start'},'locator'],
+    [{},'locator'],
+  ]) {
+    const params={...valid(),steps:[{action:'click',locator}]};
+    assert.throws(()=>normalize(params),undefined,JSON.stringify(locator));
+    const text=(await tool.execute('invalid',params)).content[0].text;
+    assert.ok(text.includes(`Step 1 (steps[0].${field})`),`${JSON.stringify(locator)}: ${text.slice(0,200)}`);
+  }
+  const schema=createWorkspacePreviewInspectTool().parameters.properties.steps.items.properties.locator;
+  assert.deepEqual(schema.oneOf.map(form=>[form.required,form.additionalProperties,form.properties.exact]),
+    [[['selector'],false,{const:true}],[['role','name'],false,{const:true}]]);
+});
+
+test('bounded step diagnostics identify fields without reflecting untrusted argument text',async()=>{
+  const tool=createWorkspacePreviewInspectTool({request:async()=>assert.fail('invalid plan must not run')});
+  const marker='UNTRUSTED_ARGUMENT_DO_NOT_REPEAT';
+  const params={...valid(),steps:[
+    {action:'assert-visible',locator:{selector:''}},
+    {action:'click',locator:{role:marker,name:'Add',exact:true}},
+    {action:'click',locator:{role:'button',name:'Add',exact:false}},
+    {action:'assert-text',locator:{selector:'#counter'},expectedText:' invalid spacing '},
+    {action:'fill',locator:{selector:'#item-input'},value:marker+'\n'},
+    null,
+  ]};
+  const result=await tool.execute('invalid-fields',params);
+  for(const [index,field] of ['locator.selector','locator.role','locator.exact','expectedText','value',''].entries()) {
+    assert.ok(result.content[0].text.includes(`Step ${index+1} (steps[${index}]${field?'.'+field:''})`));
+  }
+  assert.doesNotMatch(result.content[0].text,new RegExp(marker));
+  assert.equal(result.details.errorCode,'invalid_request');
+  assert.equal(result.isError,true);
+  const sparse={...valid(),steps:Array(1)};
+  assert.equal((await tool.execute('sparse',sparse)).details.errorCode,'invalid_request');
+});
+
+// A path on click/assert-visible attempted to navigate to a sibling test page.
+test('non-download paths explain navigation limits without transport or value disclosure',async()=>{
+  let calls=0;
+  const tool=createWorkspacePreviewInspectTool({request:async()=>{calls++;throw Error('must not execute');}});
+  const marker='PRIVATE_PATH_VALUE_DO_NOT_REPEAT';
+  const params={...valid(),steps:[
+    {action:'click',locator:{selector:'#go'},path:'sibling-test.html'},
+    {action:'assert-visible',locator:{selector:'#result'},path:marker},
+  ]};
+  const before=structuredClone(params);
+  const result=await tool.execute('unsupported-navigation',params);
+  assert.equal(result.isError,true);
+  assert.equal(result.details.errorCode,'invalid_request');
+  assert.equal(result.details.status,'failed');
+  assert.equal(result.details.receipt,undefined);
+  assert.equal(calls,0);
+  assert.match(result.content[0].text,/steps\[0\]\.path/);
+  assert.match(result.content[0].text,/steps\[1\]\.path/);
+  assert.match(result.content[0].text,/path is allowed only for a final download assertion/);
+  assert.match(result.content[0].text,/no navigation or reload action/);
+  assert.match(result.content[0].text,/the entry page unless the top-level page names another/);
+  assert.match(result.content[0].text,/cross-reload persistence as unverified/);
+  assert.ok(!result.content[0].text.includes(marker));
+  assert.ok(!result.content[0].text.includes('sibling-test.html'));
+  assert.deepEqual(params,before);
 });

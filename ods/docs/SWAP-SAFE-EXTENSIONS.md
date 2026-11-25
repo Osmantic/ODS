@@ -32,8 +32,8 @@ OPENAI_MODEL=ods/current
 OPENAI_API_KEY=${LITELLM_KEY}
 ```
 
-Do not persist GGUF filenames, Lemonade `extra.*` ids, llama-server model names,
-or catalog ids in your app config. The gateway alias is the app contract.
+Do not persist GGUF filenames, llama-server model names, or catalog ids in your
+app config. The gateway alias is the app contract.
 
 ## Tier 2: Add The `llm:` Manifest Block
 

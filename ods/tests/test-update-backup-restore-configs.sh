@@ -2,8 +2,11 @@
 # `ods update` delegates its pre-update snapshot to `ods-update.sh backup`,
 # which historically captured only compose files, .env*, and .version. The
 # snapshot_pre_update path used by `ods-update.sh update` also records
-# .compose-flags and config/{litellm,n8n,openclaw,searxng}, and its metadata
+# .compose-flags and config/{litellm,n8n,searxng}, and its metadata
 # (snapshot.json) routes restores through the transactional _restore_snapshot.
+# config/openclaw belonged to the removed legacy OpenClaw extension: new
+# backups leave it alone on disk, while a snapshot taken before the removal
+# still restores the config-openclaw copy it captured.
 #
 # A general backup lacked all three, so `ods rollback` of a failed `ods
 # update` restored compose/.env but silently left extension configuration and
@@ -45,6 +48,8 @@ INSTALL="$TMP_DIR/install"
 HOME_DIR="$TMP_DIR/home"
 mkdir -p "$INSTALL/config/litellm" "$INSTALL/config/n8n" "$INSTALL/data" "$HOME_DIR"
 cp "$UPDATE_SCRIPT" "$INSTALL/ods-update.sh"
+mkdir -p "$INSTALL/scripts"
+cp "$ROOT_DIR/scripts/publish-update-backup.py" "$INSTALL/scripts/"
 # Use the reviewed real guard; synthetic target remains separate from helper code.
 mkdir -p "$INSTALL/scripts"
 ln -s "$ROOT_DIR/scripts/source-update-preflight.py" "$INSTALL/scripts/source-update-preflight.py"
@@ -54,6 +59,8 @@ printf 'GPU_BACKEND=cpu\n' > "$INSTALL/.env"
 echo '{"version": "2.6.0"}' > "$INSTALL/.version"
 printf 'model_list:\n  - model_name: before-update\n' > "$INSTALL/config/litellm/config.yaml"
 printf '{"encryptionKey": "before-update"}\n' > "$INSTALL/config/n8n/config.json"
+mkdir -p "$INSTALL/config/openclaw/workspace"
+printf 'left on disk\n' > "$INSTALL/config/openclaw/workspace/MEMORY.md"
 
 # ── Take the backup exactly the way cmd_update does ─────────────────────────
 (cd "$INSTALL" && HOME="$HOME_DIR" bash ./ods-update.sh backup pre-update) > "$TMP_DIR/backup.out" 2>&1 \
@@ -75,7 +82,16 @@ else
     fail "general backup lacks a valid snapshot.json — restores would fall back to the flat-copy path"
 fi
 
+[[ ! -e "$BACKUP/config-openclaw" ]] \
+    || fail "general backup captured config/openclaw from the removed legacy OpenClaw extension"
+pass "general backup leaves the removed extension's config/openclaw on disk only"
+
+# A snapshot taken before the removal can still carry config-openclaw.
+mkdir -p "$BACKUP/config-openclaw/workspace"
+printf 'before-update\n' > "$BACKUP/config-openclaw/workspace/MEMORY.md"
+
 # ── Mutate the live install the way a failed update leaves it ───────────────
+printf 'after-broken-update\n' > "$INSTALL/config/openclaw/workspace/MEMORY.md"
 printf 'model_list:\n  - model_name: after-broken-update\n' > "$INSTALL/config/litellm/config.yaml"
 rm -f "$INSTALL/config/n8n/config.json"
 printf '%s\n' '-f docker-compose.base.yml -f docker-compose.nvidia.yml' > "$INSTALL/.compose-flags"
@@ -93,6 +109,10 @@ pass "rollback restores config/litellm content"
 [[ -f "$INSTALL/config/n8n/config.json" ]] \
     || fail "rollback did not bring back the deleted config/n8n/config.json"
 pass "rollback restores deleted extension config files"
+
+grep -q 'before-update' "$INSTALL/config/openclaw/workspace/MEMORY.md" \
+    || fail "rollback did not restore config-openclaw from a snapshot taken before the removal"
+pass "rollback restores config-openclaw captured before the legacy extension was removed"
 
 [[ "$(cat "$INSTALL/.compose-flags")" == '-f docker-compose.base.yml' ]] \
     || fail "rollback did not restore .compose-flags"

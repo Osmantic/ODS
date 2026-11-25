@@ -2,6 +2,23 @@
 
 Common issues and solutions.
 
+## Web Search Cannot Embed Retrieved Pages
+
+Open WebUI web search normally embeds retrieved pages. If the optional embeddings
+service is not installed and no external embedding provider is configured, search
+can fail with "Failed to embed and store the retrieved web pages."
+
+To use search without an embedding provider, enable
+`BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL` in ODS Settings and apply the change.
+This recreates Open WebUI and keeps the setting in the installation configuration;
+Windows installer reruns retain the explicit value. A change made only in Open
+WebUI's own Admin Settings is not a persistent ODS configuration change.
+
+This option passes full retrieved pages to the model instead of selecting embedded
+chunks. It can use more context and include irrelevant text. Check the answer and
+its citations, particularly with long pages or small-context models. The default
+remains off, and document retrieval still needs its configured embedding provider.
+
 ---
 
 ## Installation Issues
@@ -19,6 +36,46 @@ sudo usermod -aG docker $USER
 # Verify with:
 docker ps
 ```
+
+### Pixel Cannot Access Docker
+
+**Error:** `Pixel's Docker access check failed` during Docker setup, or
+`Docker daemon is unavailable to the current user` in Pixel's bootstrap log.
+
+Pixel runs Docker as the ODS install owner. The rest of the installer may be
+able to use `sudo docker` even when that owner's Docker access fails. Current
+Linux/WSL installers check the owner's access before downloading images and
+show Docker's error in the terminal. This check also applies with `--skip-docker`;
+that flag skips installing Docker, not Pixel's runtime requirements.
+
+In a terminal as the owner named in the error, run:
+
+```bash
+docker info >/dev/null
+```
+
+Run it without `sudo`. It queries Docker without changing containers and keeps
+the error visible while hiding the full info report. Use the reported error:
+
+- **Permission denied:** for a system Docker Engine, check the owner's socket
+  access and [Docker's Linux post-install instructions](https://docs.docker.com/engine/install/linux-postinstall/).
+  Docker group membership grants root-level privileges; only grant it deliberately.
+  If membership was just changed, open a new login session.
+- **Cannot connect:** check that the intended daemon is running. On WSL, check
+  Docker Desktop and its integration with the selected Ubuntu distribution.
+- **Context, endpoint or TLS error:** check `docker context show`, `DOCKER_CONTEXT`,
+  `DOCKER_HOST` and `DOCKER_CONFIG` in that user's session. Correct the setting
+  identified by Docker rather than changing socket permissions.
+
+Once the command succeeds, rerun the documented installer with the same install
+directory and options. If you previously chose `--no-pixel`, replace it with
+`--pixel` to add Pixel. This error alone does not call for `--force`, deleting
+the ODS directory, or removing containers or volumes.
+
+If the check succeeds but bootstrap still fails, it does not explain the earlier
+failure. Keep the first error and `logs/pixel-install.log` from that attempt;
+review them for credentials or private endpoints before sharing. Avoid repeated
+reinstalls based only on the generic Docker message.
 
 ### NVIDIA Container Toolkit Missing
 
@@ -42,7 +99,7 @@ sudo systemctl restart docker
 
 **Error:** installer reports missing `/dev/kfd`, `/dev/dri`, or `/dev/dri/renderD*`, or AMD services never become healthy inside an LXD container.
 
-**Cause:** LXD/LXC containers can expose enough host CPU/sysfs information for ODS to recognize AMD/Strix Halo hardware while still hiding the actual GPU device nodes that Docker must mount into ROCm containers.
+**Cause:** LXD/LXC containers can expose enough host CPU/sysfs information for ODS to recognize AMD/Strix Halo hardware while still hiding the actual GPU device nodes that Docker must mount into the AMD containers: `/dev/dri` for the default Vulkan llama.cpp image, and `/dev/kfd` as well for the ROCm image and ComfyUI.
 
 **Fix for GPU acceleration:** pass the GPU devices from the LXD host into the container, then re-run the installer.
 
@@ -66,41 +123,53 @@ Fresh installs now fall back to CPU mode automatically when AMD is auto-detected
 
 ### llama-server Container Won't Start
 
-**Check logs:**
+Start in **Dashboard → Models** and check which runtime is selected. These
+container commands apply to an ODS-managed Docker llama-server on Linux/WSL:
+
 ```bash
-docker compose logs llama-server
+ods status
+ods logs llama-server
 ```
 
-**Common causes:**
+Stop following logs with **Ctrl+C**. The `ods` CLI selects this installation's
+Compose files; a bare `docker compose` command may select a different stack.
 
-1. **Not enough VRAM:**
-   - Reduce context: Edit `.env`, set `CTX_SIZE=4096`
-   - Use smaller model: Set `LLM_MODEL=qwen2.5-7b-instruct`
+If inference runs natively on macOS or Windows, use the Models controls and the
+[platform-specific model-management guidance](MODEL-MANAGEMENT.md#recommended-dashboard-models-page);
+there may be no llama-server container. If **Models** reports an external or
+remote API, inspect that provider and **Settings → Model connections** instead.
+Restarting a local container does not repair the selected remote server.
 
-2. **Model download failed:**
-   - Check disk space: `df -h`
-   - Restart: `docker compose restart llama-server`
+Use the first reported error to choose the next step:
 
-3. **GPU not detected:**
-   - Check: `nvidia-smi`
-   - Restart Docker: `sudo systemctl restart docker`
+1. **Missing or incomplete model:** check free space with `df -h` and inspect
+   download progress/error in **Models**. Resolve the reported disk, network or
+   Hub-access problem, then retry **Download**. Wait for verification before
+   choosing **Run**. Restarting inference does not complete a failed download.
+2. **Insufficient memory:** follow [CUDA Out of Memory](#cuda-out-of-memory)
+   below to select a suitable model/context through the managed controls.
+3. **GPU unavailable:** run `ods doctor` and use the reported driver/device
+   error. `nvidia-smi` is a driver check for NVIDIA hosts, not for AMD, Intel or
+   Apple GPUs. See [Hardware Sizing](HARDWARE-GUIDE.md) for supported hardware.
+
+If Portal reports an interrupted model switch, use **Recover model switch** or,
+from the Linux/WSL Bash CLI, `ods model recover`. Recovery reconciles the existing switch;
+it does not download or choose another model. If it refuses, keep the saved
+state and follow its reported repair guidance. See
+[Interrupted switches](PORTAL-MODEL-TRANSITIONS.md#interrupted-switches) before
+attempting another activation; do not delete transaction journals to unlock it.
 
 ### Open WebUI Shows "No Models Available"
 
-**Cause:** llama-server is still loading the model.
+First inspect **Dashboard → Models**. A model may still be downloading/loading,
+the selected runtime may have failed or stopped, or inference may be routed to
+an external API. Follow the startup checks above for the runtime actually in use.
 
-**Check:**
-```bash
-# Watch llama-server logs
-docker compose logs -f llama-server
-
-# Wait for "Application startup complete"
-```
-
-**Model loading time:**
-- 7B model: ~30 seconds
-- 32B model: ~2 minutes
-- 72B model: ~5 minutes
+Wait while the download or runtime reports progress; loading time depends on the
+model and hardware. Once Models reports the selected model running, send a short
+message through Portal or an enabled chat app. If inference works there but
+Open WebUI still has an empty list, inspect `ods logs open-webui` and its model
+connection settings. See the [Open WebUI service guide](../extensions/services/open-webui/README.md).
 
 ### Port Already in Use
 
@@ -128,26 +197,32 @@ docker compose logs -f llama-server
 
 ### CUDA Out of Memory
 
-**Error:** `torch.cuda.OutOfMemoryError: CUDA out of memory`
+Identify the failing service in its logs first. ODS's local LLM runs on
+llama.cpp; a `torch.cuda.OutOfMemoryError` from an image or speech extension
+needs that extension's own memory settings. On an NVIDIA host, `nvidia-smi`
+shows which processes use VRAM. On other backends, use their platform diagnostics.
 
-**Fixes:**
+For an ODS-managed local language model:
 
-1. **Reduce context window:**
-   ```bash
-   # In .env
-   CTX_SIZE=4096  # or even 2048
-   ```
+1. In **Models**, use **Configure context** on the running model and review the
+   offered context sizes, memory estimates and compatibility warnings. Choose a
+   smaller context only when it still meets the model's and enabled apps'
+   requirements. A fixed 2K/4K context is not suitable for every Portal or Talk
+   configuration.
+2. If a suitable context does not fit, choose a smaller compatible model.
+   **Download**, wait for verification, then **Run** it with the selected context.
+   The managed activation updates the artifact, runtime and dependent app routes
+   together. See [Model Management](MODEL-MANAGEMENT.md#recommended-dashboard-models-page).
+3. For headless Linux/WSL maintenance, `ods model list` shows tier choices and marks
+   downloaded artifacts. `ods model swap <tier>` activates an already-downloaded
+   tier through the same host-agent transaction; it does not download a model or
+   select an arbitrary GGUF file.
 
-2. **Reduce VRAM utilization:**
-   ```bash
-   # In .env
-   GPU_UTIL=0.8  # default is 0.9
-   ```
-
-3. **Use smaller model:**
-   ```bash
-   LLM_MODEL=qwen2.5-7b-instruct
-   ```
+After activation, check the running model in **Models** and send a short message
+through the affected chat app. Keep any reported activation or recovery error
+visible; use the interrupted-switch guidance above if a switch remains pending.
+For remote/external inference, change memory/context settings at the provider
+that owns the model rather than editing this installation's local model fields.
 
 ### Responses Very Slow
 

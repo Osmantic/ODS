@@ -11,7 +11,7 @@ const inventory=[
   {id:'not-installed',name:'Install me',status:'available',fitsVram:true},
 ]
 let current,ready,postResult,lifecycle
-const payload=()=>({models:inventory,currentModel:current,loadedModel:technical,activationReadyModel:ready,odsMode:'lemonade',configuredMode:'lemonade',llmBackend:'lemonade',modelLifecycle:lifecycle,gpu:{vramTotal:8}})
+const payload=()=>({models:inventory,currentModel:current,loadedModel:technical,activationReadyModel:ready,odsMode:'local',configuredMode:'local',llmBackend:'llama-server',modelLifecycle:lifecycle,gpu:{vramTotal:8}})
 const view=props=><MemoryRouter><PortalModelSelector activeModel={technical} runtimeSource="local-switchboard" {...props}/></MemoryRouter>
 beforeEach(()=>{
   current=old;ready=old;postResult={ok:true};lifecycle=null
@@ -19,6 +19,30 @@ beforeEach(()=>{
 })
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals()})
 const posts=()=>fetch.mock.calls.filter(([,options])=>options?.method==='POST')
+
+it.each([
+  '/Users/Owner Name/models/Qwen3.5-9B-Q4_K_M.gguf',
+  String.raw`C:\My Models\Qwen3.5-9B-Q4_K_M.GGUF`,
+  'C:/My Models/Qwen3.5-9B-Q4_K_M.gguf',
+  String.raw`\\server\model share\Qwen3.5-9B-Q4_K_M.gguf`,
+])('shows a native GGUF basename without changing its identity: %s',id=>{
+  const model=Object.freeze({id})
+  expect(modelDisplayName(model,true)).toBe('Qwen 3.5 9B')
+  expect(modelDisplayName(id,false)).toBe('Qwen 3.5 9B')
+  expect(modelDisplayName({id,name:'My preferred model'},true)).toBe('My preferred model')
+  expect(model.id).toBe(id)
+  render(view({activeModel:id}))
+  expect(screen.getByRole('button',{name:'Choose model: Qwen 3.5 9B'})).toBeVisible()
+  expect(posts()).toHaveLength(0)
+})
+
+it.each([
+  ['provider/model.gguf','provider/model'],
+  ['https://models.example/model.gguf','https://models.example/model'],
+  ['//models.example/model.gguf','//models.example/model'],
+])('retains the provider or URL portion of a model label: %s',(id,expected)=>{
+  expect(modelDisplayName(id,false)).toBe(expected)
+})
 
 it.each([false,true])('keeps a cloud label diagnostic when available status loses runtime proof (opened: %s)',async opened=>{
  vi.useFakeTimers()
@@ -280,6 +304,45 @@ it.each([true,false])('clears an earlier activation error only after confirmed r
   expect(posts().map(([url])=>url)).toEqual([`/api/models/${encodeURIComponent(target)}/load`,'/api/models/recovery'])
 })
 
+it.each(['same transaction','pending','different transaction','idle','failed read'])('reconciles an activation error after recovery elsewhere only with proof: %s',async outcome=>{
+  vi.useFakeTimers()
+  let recoveryState={pending:false,phase:'idle',transactionId:null},readOk=true
+  vi.stubGlobal('fetch',vi.fn(async(url,options)=>{
+    if(url==='/api/models/recovery')return {ok:readOk,status:readOk?200:503,json:async()=>recoveryState}
+    if(options?.method==='POST'){
+      recoveryState={pending:true,phase:'applied',transactionId:'a'.repeat(64)}
+      return {ok:false,status:500,json:async()=>({detail:'Health check failed; previous model restoration could not be proved; recovery is required.'})}
+    }
+    return {ok:true,json:async()=>payload()}
+  }))
+  const settled=vi.fn()
+  render(view({onSettled:settled}))
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: Qwen 3.5 4B'}))
+  await act(async()=>{})
+  fireEvent.click(screen.getByRole('menuitemradio',{name:/Qwen 3.5 2B/}))
+  fireEvent.click(screen.getByRole('button',{name:'Switch model',exact:true}))
+  await act(async()=>{await vi.advanceTimersByTimeAsync(5000)})
+  expect(screen.getByRole('alert')).toHaveTextContent('recovery is required')
+  expect(screen.getByRole('button',{name:'Recover model switch'})).toBeVisible()
+  fireEvent.keyDown(window,{key:'Escape'})
+  // Models (or another tab) resolves the held transaction while Portal stays mounted.
+  recoveryState=outcome==='pending'?recoveryState:outcome==='idle'
+    ? {pending:false,phase:'idle',transactionId:null}
+    : {pending:false,phase:'completed',transactionId:(outcome==='different transaction'?'b':'a').repeat(64),outcome:'rollback'}
+  readOk=outcome!=='failed read'
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: Qwen 3.5 4B'}))
+  await act(async()=>{})
+  if(outcome==='same transaction'){
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button',{name:'Recover model switch'})).toBeNull()
+    expect(settled).toHaveBeenCalledTimes(2)
+  }else{
+    expect(screen.getByRole('alert')).toHaveTextContent('recovery is required')
+    expect(settled).toHaveBeenCalledOnce()
+  }
+  expect(posts().map(([url])=>url)).toEqual([`/api/models/${encodeURIComponent(target)}/load`])
+})
+
 it('prevents a pending confirmation from switching models after a task starts',async()=>{
   const {rerender}=render(view())
   await open()
@@ -492,7 +555,7 @@ it('reports the active switch instead of an expected temporary unknown source',a
 })
 
 it.each([true,false])('an external host selector requires explicit managed activation capability (%s)',async managed=>{
-  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({...payload(),externalLemonade:true,
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({...payload(),hostRuntime:true,
     modelManagement:{managed,canActivate:true,canUnload:true,running:true}})})))
   render(view({runtimeSource:'external-host'}))
   await open()
@@ -504,7 +567,7 @@ it.each([true,false])('an external host selector requires explicit managed activ
 
 it('keeps unknown management distinct from an external service and recovers on refresh',async()=>{
   let capability={managed:null,canActivate:false,canUnload:false,running:false,reason:'Runtime management could not be verified'}
-  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({...payload(),externalLemonade:true,modelManagement:capability})})))
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({...payload(),hostRuntime:true,modelManagement:capability})})))
   render(view({runtimeSource:'external-host'}))
   await open()
   expect(screen.getByRole('menuitemradio',{name:/Qwen 3.5 2B/})).toBeDisabled()

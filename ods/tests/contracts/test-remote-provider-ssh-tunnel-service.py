@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -194,6 +195,12 @@ def test_compose_service_is_internal_only_and_hardened() -> None:
     for port in ('"18090"', '"18091"', '"18092"'):
         assert_true(port in block, f"service must expose internal port {port}")
     assert_true("ports:" not in block, "service must not bind a host port")
+    # Its SSH forwards are plain TCP with no caller check (GHSA-4rpc).
+    assert_true(
+        "    networks:\n      - remote-provider\n      - remote-provider-outbound\n" in block,
+        "tunnel must join only the remote-provider networks",
+    )
+    assert_true("      - default\n" not in block, "tunnel must not join ods-network")
     assert_true("cap_drop:" in block and "- ALL" in block, "service must drop capabilities")
     assert_true(
         '"${REMOTE_PROVIDER_DATA_GID:-1000}"' in block,
@@ -349,6 +356,34 @@ def test_supervisor_uses_restart_cooldown_after_child_exit() -> None:
     assert_true(restarted["status"] == "starting", "restarted child should enter grace period")
 
 
+def test_supervisor_logs_why_a_ready_plan_has_no_ssh_argv() -> None:
+    ssh_app = _health_app()
+    real_plan = ssh_app._supervisor_plan_for_paths
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    ssh_app.LOGGER.addHandler(handler)
+    ssh_app.LOGGER.setLevel(logging.INFO)
+    # A plan that is ready to start but carries no tunnels is rejected by
+    # _combined_ssh_argv; the reason used to be dropped.
+    ssh_app._supervisor_plan_for_paths = lambda route, secrets: {**real_plan(route, secrets), "tunnels": []}
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            route_path, secret_dir = _ready_supervisor_fixture(Path(tmp))
+            supervisor, factory, _clock = _new_fake_supervisor(route_path, secret_dir)
+            payload = supervisor.reconcile()
+    finally:
+        ssh_app._supervisor_plan_for_paths = real_plan
+        ssh_app.LOGGER.removeHandler(handler)
+    messages = [record.getMessage() for record in records]
+    assert_true(not factory.calls, "a rejected plan must not start an SSH child")
+    assert_true(payload["reason"] == "ssh_plan_unavailable", "rejected plan reason drifted")
+    assert_true(
+        "remote SSH tunnel argv unavailable: SSH supervisor plan has no tunnels" in messages,
+        f"rejected plan reason was not logged: {messages}",
+    )
+
+
 def test_service_source_avoids_public_secret_names() -> None:
     for path, text in _walk_service_source():
         for key in PUBLIC_SSH_SECRET_ENV:
@@ -372,6 +407,7 @@ def main() -> int:
         test_supervisor_stops_process_when_secret_custody_disappears,
         test_supervisor_restarts_process_when_route_argv_changes,
         test_supervisor_uses_restart_cooldown_after_child_exit,
+        test_supervisor_logs_why_a_ready_plan_has_no_ssh_argv,
         test_service_source_avoids_public_secret_names,
     ]
     for test in tests:

@@ -100,7 +100,11 @@ for(const finalMode of ['answer','tool']) test(`native blocked diagnostic preser
       else {
         assert.deepEqual(events.filter(e=>'abort' in e).map(e=>e.abort),[true],trace);
         assert.match(delivered,/v\d+\.\d+\.\d+/);
-        assert.match(delivered,/código final não verifica cada subetapa/);
+        // The fixed refusal and excerpt heading are English for every owner,
+        // including this Portuguese request.
+        assert.match(delivered,/Portal blocked an unapproved recursive deletion/);
+        assert.match(delivered,/the exit code does not verify every substep/);
+        assert.doesNotMatch(delivered,/[ãõçáéíóúâêôà]|bloqueou|Resultados anteriores|subetapa/iu);
         assert.ok(!delivered.includes(answer),delivered);
       }
       assert.doesNotMatch(delivered,/Tudo foi concluído|preview|browser/);

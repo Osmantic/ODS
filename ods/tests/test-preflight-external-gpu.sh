@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run the real requirements phase and engine against fixture files only.
-# A complete external Lemonade GPU route replaces only the CPU warning.
+# The complete GPU evidence of a host-native llama-server (the Windows
+# Portal's llama-server.exe) replaces only the CPU warning.
 # Variables below are consumed by the sourced requirements phase.
 # shellcheck disable=SC2034
 set -euo pipefail
@@ -15,8 +16,8 @@ chmod +x "$tmp/source/scripts/preflight-engine.sh"
 touch "$tmp/source/docker-compose.base.yml"
 
 run_case() (
-    local label="$1" external="$2" url="$3" name="$4" vram="$5" gpu_status="$6"
-    local backend="${7:-cpu}" ram="${8:-64}" disk="${9:-200}"
+    local label="$1" url="$2" name="$3" vram="$4" gpu_status="$5"
+    local backend="${6:-cpu}" ram="${7:-64}" disk="${8:-200}"
     SCRIPT_DIR="$tmp/source" INSTALL_DIR="$tmp/install"
     LOG_FILE="$tmp/requirements.log" PREFLIGHT_REPORT_FILE="$tmp/preflight.json"
     TIER=2 RAM_GB="$ram" DISK_AVAIL="$disk"
@@ -24,11 +25,10 @@ run_case() (
     INTERACTIVE=false DRY_RUN=true PYTHON_CMD=python3
     CAP_PLATFORM_ID=wsl CAP_COMPOSE_OVERLAYS=docker-compose.base.yml
     ENABLE_VOICE=false ENABLE_WORKFLOWS=false ENABLE_RAG=false ENABLE_COMFYUI=false
-    EXTERNAL_LLM_URL='' ODS_MODE=lemonade
+    EXTERNAL_LLM_URL='' ODS_MODE=local
     # Deliberately not exported: phase 04 must pass this structured evidence.
-    LEMONADE_EXTERNAL="$external" LEMONADE_BASE_URL="$url"
-    LEMONADE_GPU_NAME="$name" LEMONADE_GPU_VRAM_MB="$vram"
-    export -n LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_GPU_NAME LEMONADE_GPU_VRAM_MB
+    NATIVE_LLM_BASE_URL="$url" NATIVE_LLM_GPU_NAME="$name" NATIVE_LLM_GPU_VRAM_MB="$vram"
+    export -n NATIVE_LLM_BASE_URL NATIVE_LLM_GPU_NAME NATIVE_LLM_GPU_VRAM_MB
     declare -A SERVICE_PORTS=()
     tier_rank() { printf '2\n'; }
     ods_progress() { :; }; chapter() { :; }; log() { :; }
@@ -53,9 +53,9 @@ gpu = checks["gpu-vram" if backend == "nvidia" else "gpu-backend"]
 assert gpu["status"] == status, gpu
 assert report["inputs"]["gpu_backend"] == backend, "local backend must remain unchanged"
 if status == "pass":
-    assert "External Lemonade GPU route configured" in gpu["message"], gpu
+    assert "Host-native llama-server GPU route configured" in gpu["message"], gpu
     assert report["inputs"]["external_gpu"] == {
-        "provider": "lemonade", "gpu_name": "AMD Radeon RX 9070 XT", "gpu_vram_mb": 16304,
+        "provider": "host-native-llama-server", "gpu_name": "AMD Radeon RX 9070 XT", "gpu_vram_mb": 16304,
     }
     assert "CPU fallback selected" not in output, output
 elif backend == "cpu":
@@ -79,14 +79,13 @@ PY
 )
 
 gpu_name='AMD Radeon RX 9070 XT'
-endpoint='http://host.docker.internal:13305/api/v1'
-run_case 'External AMD route replaces the CPU fallback warning' true "$endpoint" "$gpu_name" 16304 pass
-run_case 'External route keeps RAM warnings and disk blockers' true "$endpoint" "$gpu_name" 16304 pass cpu 16 10
-run_case 'Disabled external route retains CPU fallback warning' false "$endpoint" "$gpu_name" 16304 warn
-run_case 'Missing external endpoint retains CPU fallback warning' true '' "$gpu_name" 16304 warn
-run_case 'Missing GPU name retains CPU fallback warning' true "$endpoint" '' 16304 warn
-run_case 'Unknown GPU name retains CPU fallback warning' true "$endpoint" Unknown 16304 warn
-run_case 'Zero VRAM retains CPU fallback warning' true "$endpoint" "$gpu_name" 0 warn
-run_case 'Invalid VRAM retains CPU fallback warning' true "$endpoint" "$gpu_name" 16GB warn
-run_case 'Negative VRAM retains CPU fallback warning' true "$endpoint" "$gpu_name" -1 warn
-run_case 'Other GPU warnings remain visible with an external route' true "$endpoint" "$gpu_name" 16304 warn nvidia
+endpoint='http://localhost:8080'
+run_case 'Host-native AMD route replaces the CPU fallback warning' "$endpoint" "$gpu_name" 16304 pass
+run_case 'Host-native route keeps RAM warnings and disk blockers' "$endpoint" "$gpu_name" 16304 pass cpu 16 10
+run_case 'Missing native endpoint retains CPU fallback warning' '' "$gpu_name" 16304 warn
+run_case 'Missing GPU name retains CPU fallback warning' "$endpoint" '' 16304 warn
+run_case 'Unknown GPU name retains CPU fallback warning' "$endpoint" Unknown 16304 warn
+run_case 'Zero VRAM retains CPU fallback warning' "$endpoint" "$gpu_name" 0 warn
+run_case 'Invalid VRAM retains CPU fallback warning' "$endpoint" "$gpu_name" 16GB warn
+run_case 'Negative VRAM retains CPU fallback warning' "$endpoint" "$gpu_name" -1 warn
+run_case 'Other GPU warnings remain visible with a host-native route' "$endpoint" "$gpu_name" 16304 warn nvidia

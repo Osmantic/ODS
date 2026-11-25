@@ -12,6 +12,7 @@ import pytest
     ("ODS_MODEL_SWITCHBOARD", "--switchboard-mode", "enabledd", "enabled"),
     ("REMOTE_LLM_ENABLED", "--remote-llm-enabled", "tru", "false"),
     ("REMOTE_LLM_TRANSPORT", "--remote-llm-transport", "sshh", ""),
+    ("LLM_BACKEND", "--llm-backend", "vlm", "llama-server"),
 ])
 def test_invalid_environment_mode_cannot_write_configs(tmp_path, key, option, bad, valid):
     script = Path(__file__).resolve().parents[1] / "scripts/render-runtime-configs.py"

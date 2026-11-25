@@ -18,20 +18,25 @@ lint: ## Syntax check all shell scripts + Python compile check
 
 test: ## Run unit and contract tests
 	@python3 scripts/verify-pixel-bundle.py
+	@python3 tests/test-seeded-content-privacy.py
 	@bash tests/test-pixel-bundled-source.sh
 	@echo "=== Install documentation contract ==="
 	@bash tests/test-install-docs.sh
 	@bash tests/test-hosted-bootstrap-verifier.sh
+	@bash tests/test-summary-quick-commands.sh
 	@echo ""
 	@echo "=== Tier map tests ==="
 	@bash tests/test-tier-map.sh
 	@python3 tests/test-model-library-pinned-urls.py
+	@python3 tests/test-tier-map-catalog-pins.py
 	@bash tests/test-installer-context-parity.sh
+	@bash tests/test-embeddings-prefetch-service-cache.sh
 	@bash tests/test-hermes-context-floor.sh
 	@bash tests/test-install-menu-hermes-flag.sh
 	@bash tests/test-custom-menu-agent-flags.sh
-	@bash tests/test-lemonade-external-gpu.sh
+	@bash tests/test-native-llm-flags.sh
 	@bash tests/test-preflight-external-gpu.sh
+	@bash tests/test-wsl-whisper-port-reservation.sh
 	@echo ""
 	@echo "=== Hermes slash worker prune ==="
 	@bash tests/test-hermes-slash-worker-prune.sh
@@ -67,6 +72,8 @@ test: ## Run unit and contract tests
 	@bash tests/test-ods-test-http-code.sh
 	@echo "=== ods-test.sh completes and reports when checks fail ==="
 	@bash tests/test-ods-test-complete-run.sh
+	@echo "=== ods-test.sh judges Tool Calling and LLM replies by their JSON ==="
+	@bash tests/test-ods-test-tool-calling.sh
 	@echo "=== phase 10 skips templated system units in the user scope ==="
 	@bash tests/test-phase10-skip-templated-user-units.sh
 	@echo "=== pre-download --tier is non-interactive ==="
@@ -81,15 +88,16 @@ test: ## Run unit and contract tests
 	@python3 tests/test_dashboard_data_permissions.py
 	@bash tests/test-token-spy-install-owner.sh
 	@bash tests/test-cli-status-docker-error.sh
+	@bash tests/test-cli-status-optional-webui.sh
+	@bash tests/test-macos-status-optional-opencode.sh
 	@python3 tests/test-cli-stt-env.py
 	@echo ""
-	@echo "=== AMD/Lemonade contracts ==="
-	@bash tests/contracts/test-amd-lemonade-contracts.sh
-	@bash tests/test-lemonade-host-transport.sh
+	@echo "=== AMD llama.cpp contracts ==="
+	@bash tests/contracts/test-amd-llamacpp-contracts.sh
 	@bash tests/test-wsl-agent-start.sh
-	@python3 tests/test-lemonade-container-transport.py
-	@python3 tests/test-wsl-lemonade-proof.py
-	@python3 tests/test-wsl-lemonade-control.py
+	@python3 tests/test-router-transport.py
+	@python3 tests/test-wsl-runtime-proof.py
+	@python3 tests/test-wsl-runtime-control.py
 	@python3 tests/test-configure-wsl-model-store.py
 	@python3 tests/test-retire-wsl-runtime.py
 	@bash tests/test-litellm-amd-auth-enforced.sh
@@ -177,6 +185,14 @@ test: ## Run unit and contract tests
 	@bash tests/test-validate-manifest-schema.sh
 	@echo "=== ComfyUI user directory is persisted ==="
 	@bash tests/test-comfyui-user-dir-persisted.sh
+	@echo "=== ComfyUI CUDA kernel cache is persisted ==="
+	@bash tests/test-comfyui-cuda-cache-persisted.sh
+	@bash tests/test-llama-cuda-cache-persisted.sh
+	@echo "=== vLLM engine service and its compose selection ==="
+	@bash tests/test-vllm-engine-service.sh
+	@echo "=== vLLM engine choice and installer phases ==="
+	@bash tests/test-vllm-installer-route.sh
+	@bash tests/test-vllm-installer-phases.sh
 	@echo ""
 	@echo "=== macOS ods config show secret-mask ==="
 	@bash tests/test-macos-config-show-secret-mask.sh
@@ -185,9 +201,7 @@ test: ## Run unit and contract tests
 	@echo "=== CLI preset restore user extensions ==="
 	@bash tests/test-cli-preset-restore-user-extensions.sh
 	@bash tests/test-preset-export-permissions.sh
-	@echo ""
-	@echo "=== bootstrap OpenClaw compose-guard regression ==="
-	@bash tests/test-bootstrap-openclaw-compose-guard.sh
+	@bash tests/test-preset-host-only-services.sh
 	@echo ""
 	@echo "=== ods-update.sh backup command ==="
 	@bash tests/test-update-backup-retention-labels.sh
@@ -246,22 +260,16 @@ test: ## Run unit and contract tests
 	@echo "=== fleet host lock behavior ==="
 	@bash tests/test-fleet-host-lock.sh
 	@echo ""
-	@echo "=== issue-to-pr security check ==="
-	@bash tests/test-issue-to-pr-security.sh
-	@echo ""
 	@echo "=== documented security suites (SECURITY_AUDIT.md) ==="
 	@bash tests/test-secret-security.sh
-	@bash tests/test-openclaw-device-auth-default.sh
 	@bash tests/contracts/test-security-suites-wired.sh
 	@echo ""
 	@echo "=== NVIDIA multi-GPU visibility contract ==="
 	@bash tests/test-multigpu-nvidia-visibility.sh
+	@bash tests/test-multigpu-nvidia-service-pinning.sh
 	@echo ""
 	@echo "=== CLI user-extension dependency resolution ==="
 	@bash tests/test-cli-user-extension-deps.sh
-	@echo ""
-	@echo "=== session cleanup lifecycle ==="
-	@bash tests/test-session-cleanup.sh
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="

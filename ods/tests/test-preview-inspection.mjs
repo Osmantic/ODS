@@ -160,7 +160,7 @@ test('no_match is exactly zero matches; legacy zero-match selector_not_unique st
   assert.throws(()=>validate(bad,request),undefined,JSON.stringify([code,before]));
  }
 });
-test('unmatched locators get one actionable locator fix, never a site change',async()=>{
+test('unmatched initial targets retain locator guidance; post-click assertions check behavior too',async()=>{
  const run=async value=>(await createWorkspacePreviewInspectTool({request:async()=>value}).execute('locator',fleetParams())).content[0].text;
  const request=normalize(fleetParams());
  const legacy=await run(unmatched(request,1,'selector_not_unique',0));
@@ -174,10 +174,46 @@ test('unmatched locators get one actionable locator fix, never a site change',as
  const css=fleetParams();css.steps[1].locator={selector:'#midnight-card h2'};
  const cssText=(await createWorkspacePreviewInspectTool({request:async r=>unmatched(r,1,'no_match',0)}).execute('css',css)).content[0].text;
  assert.match(cssText,/Step 2 \(assert-hidden\) matched no element, so nothing was measured and later steps did not run\. Copy the exact/);
- for(const text of [legacy,hidden,visible,many,cssText]) {
+ assert.match(visible,/An earlier click passed, but the requested result remains unverified/);
+ assert.match(visible,/either a locator mismatch or that the interaction did not create or render the expected state/);
+ for(const text of [legacy,hidden,many,cssText]) {
   assert.match(text,/retry the inspection on the same published snapshot\. Do not change the site only to satisfy a locator\. Requested behavior remains unverified\./);
   assert.doesNotMatch(text.slice(0,text.indexOf(' Evidence: ')),/selector_not_unique|not unique|failed inspection does not establish/);
   assert.equal(text.match(/retry/g).length,1);
+ }
+});
+
+test('missing post-click CSS assertion stays failed and checks the rendering path without inventing a cause',async()=>{
+ for (const errorCode of ['no_match','selector_not_unique']) {
+  const request=normalize(params());
+  const value=unmatched(request,2,errorCode,0);
+  // A control can remain unchanged even when its click changes other elements.
+  assert.deepEqual(value.steps[1].before,value.steps[1].after);
+  const result=await createWorkspacePreviewInspectTool({request:async()=>value}).execute('post-click',params());
+  assert.equal(result.isError,true);
+  assert.equal(result.details.status,'failed');
+  assert.equal(result.details.steps[2].errorCode,errorCode);
+  const text=result.content[0].text.split(' Evidence: ')[0];
+  assert.match(text,/An earlier click passed, but the requested result remains unverified/);
+  assert.match(text,/Read both the actual selector and the handler, state and rendering path/);
+  assert.match(text,/If the selector matches the source, repair the behavior, republish, and rerun the same requested assertions/);
+  assert.match(text,/optional storage failures do not prevent rendering the in-memory state/);
+  assert.match(text,/If the selector differs from the source, correct it and retry the same published snapshot/);
+  assert.match(text,/Do not weaken or remove the behavior checks or claim success/);
+  assert.doesNotMatch(text,/the handler did not run|no DOM change|the page did not change|cannot make it appear/i);
+ }
+});
+
+test('missing or ambiguous interaction targets after a click keep locator guidance',async()=>{
+ for (const [action,count] of [['click',0],['assert-visible',2]]) {
+  const p=params(); p.steps[2]={action,locator:{selector:'#missing-control'}};
+  const request=normalize(p), value=unmatched(request,2,count ? 'selector_not_unique':'no_match',count);
+  const result=await createWorkspacePreviewInspectTool({request:async()=>value}).execute('target',p);
+  assert.equal(result.isError,true);
+  const text=result.content[0].text.split(' Evidence: ')[0];
+  assert.match(text,/retry the inspection on the same published snapshot/);
+  assert.match(text,/Do not change the site only to satisfy a locator/);
+  assert.doesNotMatch(text,/An earlier click passed/);
  }
 });
 test('tool description states role/name matching for hidden assertions',()=>{
@@ -187,7 +223,7 @@ test('tool description states role/name matching for hidden assertions',()=>{
 });
 test('capsule applies hidden-inclusive role matching to assert-hidden only',()=>{
  const source=fs.readFileSync(new URL('../extensions/services/pixel-agent/host/preview_inspection_capsule.py',import.meta.url),'utf8');
- assert.match(source,/observe\(\s*step\["locator"\], step\["action"\] == "assert-hidden",\s*None if step\["action"\] in \("click", "select-option", "fill", "download"\) else step\["action"\] != "assert-hidden",\s*step\.get\('expectedText'\),\s*step\.get\('value'\) if step\['action'\] == 'select-option' else None,\s*step\.get\('value'\) if step\['action'\] == 'fill' else None,\s*\)/);
+ assert.match(source,/observe\(\s*step\["locator"\], step\["action"\] == "assert-hidden",\s*None if step\["action"\] in \("click", "select-option", "fill", "download", "press"\) else step\["action"\] != "assert-hidden",\s*step\.get\('expectedText'\),\s*step\.get\('value'\) if step\['action'\] == 'select-option' else None,\s*step\.get\('value'\) if step\['action'\] == 'fill' else None,\s*\)/);
  // Every other role/name step matches rendered-only (Playwright source-text
  // names united with Chromium's accessibility tree).
  assert.equal(source.match(/= including_hidden\(locator, nodes, owned, rendered_only=not include_hidden\)/g).length,1);
@@ -268,7 +304,12 @@ test('capsule and plugin share the palette vocabulary and bounds',()=>{
 test('tool description points to the rendered colors for color changes',()=>{
  const {description}=createWorkspacePreviewInspectTool({request:async()=>{}});
  assert.match(description,/also lists the rendered colors of the page by area at a desktop view as first loaded; use them to confirm a requested color change is actually visible\./);
- assert.match(description,/This tests CSS layout visibility, not pixel paint, occlusion or clipping\./);
+ assert.match(description,/Visibility assertions test CSS layout visibility, not pixel paint, occlusion or clipping\./);
+ // A blank canvas is detectable with assert-painted; visibility alone is not paint.
+ assert.match(description,/use assert-painted \(action and locator only\)/);
+ // Keyboard controls are testable with press steps; fill alone sends no keys.
+ assert.doesNotMatch(description,/does not simulate keystrokes/);
+ assert.match(description,/use press with key/);
 });
 
 // Load-time control names. Real capsule output for the fleet round 100 page
@@ -313,4 +354,21 @@ test('the tool states load-time names only to explain a missed exact name, never
  const text=(await createWorkspacePreviewInspectTool({request:async r=>failed(r)}).execute('miss',click)).content[0].text;
  assert.match(text,/^Preview inspection failed\. Step 3 \(click\) matched no element, so nothing was measured and later steps did not run\. At load, after the page scripts ran, the rendered button whose text is "Show sold out" has the accessible name "Show the sold out midnight concert card", set by its aria-label attribute, which replaces its text as the name\./);
  assert.equal(JSON.parse(text.slice(text.indexOf(' Evidence: ')+11)).controls,undefined);
+});
+
+test('metadata and rendered-control visibility failures retain exact evidence without inferring script execution',async()=>{
+ for (const selector of ['script','head meta[name="viewport"]','#hidden-card','script + button']) {
+  const p=params();p.steps=[{action:'assert-visible',locator:{selector}}];
+  const request=normalize(p), value=receipt(request);
+  value.status='failed';value.steps=[{index:0,...request.steps[0],before:state(false),stable:true,status:'failed',errorCode:'visibility_mismatch'}];
+  const original=structuredClone(value);
+  const result=await createWorkspacePreviewInspectTool({request:async()=>value}).execute('visibility',p);
+  assert.equal(result.isError,true);
+  assert.deepEqual(value,original,'guidance must not mutate browser evidence');
+  assert.deepEqual(result.details,original,'failed observations remain the complete receipt');
+  const text=result.content[0].text.split(' Evidence: ')[0];
+  assert.match(text,/their visibility says nothing about whether page JavaScript executed/);
+  assert.match(text,/requested behavior after any repair/);
+  assert.doesNotMatch(text,/The matched element is|scripts are disabled|JavaScript does not execute/);
+ }
 });

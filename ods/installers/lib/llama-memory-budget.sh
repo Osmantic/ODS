@@ -30,15 +30,32 @@ ods_effective_container_memory_gb() {
     fi
 }
 
-# A small Docker VM cannot afford two independent Kokoro model copies alongside
-# Portal, Pixel, and the rest of ODS. Unknown memory retains the old default.
-ods_default_tts_workers() {
-    local memory_gb="${1:-0}"
-    [[ "$memory_gb" =~ ^[0-9]+$ ]] || memory_gb=0
-    if (( memory_gb > 0 && memory_gb < 12 )); then
-        printf '%s\n' 1
+# Keep each Kokoro worker inside its share of the container CPU quota. Four
+# threads was measured on the pinned CPU image; a smaller quota or an explicit
+# multi-worker setting gets a smaller per-worker budget.
+ods_default_tts_threads() {
+    local cpu_limit="${1:-1}" workers="${2:-1}"
+    [[ "$cpu_limit" =~ ^[0-9]+([.][0-9]+)?$ ]] || cpu_limit=1
+    [[ "$workers" =~ ^[1-9][0-9]*$ ]] || workers=1
+    LC_ALL=C awk -v cpu_limit="$cpu_limit" -v workers="$workers" '
+        BEGIN {
+            threads = int(cpu_limit / workers)
+            if (threads < 1) threads = 1
+            if (threads > 4) threads = 4
+            print threads
+        }'
+}
+
+# Retain a smaller owner setting, but never let an old generated value
+# oversubscribe a reduced CPU quota or a newly increased worker count.
+ods_select_tts_threads() {
+    local requested="${1:-}" budget
+    budget="$(ods_default_tts_threads "${2:-1}" "${3:-1}")"
+    if [[ "$requested" =~ ^[1-9][0-9]*$ ]]; then
+        LC_ALL=C awk -v requested="$requested" -v budget="$budget" \
+            'BEGIN { if (requested < budget) print int(requested); else print budget }'
     else
-        printf '%s\n' 2
+        printf '%s\n' "$budget"
     fi
 }
 

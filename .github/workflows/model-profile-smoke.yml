@@ -1,0 +1,52 @@
+name: Model profile smoke
+
+# The model-profile battery (ods/bin/model_profile, PLAN WP3) against the
+# pinned llama.cpp CPU image and two SHA-pinned GGUFs. Only the deterministic
+# parts are asserted; how well a tiny model calls tools is printed, not judged
+# (ods/tests/test-model-profile-smoke.sh).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ods/bin/model_profile/**"
+      - "ods/docker-compose.base.yml"
+      - "ods/docker-compose.cpu.yml"
+      - "ods/tests/test-model-profile-smoke.sh"
+      - ".github/workflows/model-profile-smoke.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "ods/bin/model_profile/**"
+      - "ods/docker-compose.base.yml"
+      - "ods/docker-compose.cpu.yml"
+      - "ods/tests/test-model-profile-smoke.sh"
+      - ".github/workflows/model-profile-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-profile-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  model-profile-smoke:
+    name: model-profile-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # The models are pinned by revision and SHA-256; the script re-verifies
+      # a cached copy before using it. The key changes only with a pin.
+      - name: Cache the pinned models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ods-model-profile-smoke
+          key: model-profile-smoke-9465e63a22add535-270cba1bd5109f42
+
+      - name: Profile the pinned models on the CPU image
+        working-directory: ods
+        run: bash tests/test-model-profile-smoke.sh

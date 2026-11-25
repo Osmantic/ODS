@@ -17,9 +17,9 @@ Within `ods/`:
 
 - **`install-core.sh`** — thin orchestrator that sources libs then runs phases in order
 - **`installers/lib/`** — pure function libraries (constants, logging, UI, GPU detection, tier mapping, packaging, compose selection)
-- **`installers/phases/`** — 13 sequential install steps (`01-preflight` through `13-summary`), each sourced by install-core
+- **`installers/phases/`** — 14 sequential phase files (`01-preflight` through `13-summary`, plus `02b-external-services`), each sourced by install-core
 - **`installers/macos/`**, **`installers/windows/`** — platform-specific installer variants
-- **`extensions/services/`** — 24 bundled service manifests, each a directory with `manifest.yaml` + optional `compose.yaml` and GPU overlays
+- **`extensions/services/`** — 31 bundled services, each a directory with `manifest.yaml` + optional `compose.yaml` and GPU overlays
 - **`extensions/library/`** — optional extension catalog, templates, workflows, and manifest schema used by the dashboard Extensions page
 - **`docker-compose.base.yml`** — core service definitions; `docker-compose.{amd,nvidia,apple}.yml` are GPU overlays
 - **`ods-cli`** — main Bash CLI for managing the stack; keep changes narrow and follow `docs/ODS_CLI_DECOMPOSITION.md` for behavior-preserving split work
@@ -87,10 +87,13 @@ GitHub Actions in `.github/workflows/`:
 - **type-check-python.yml** — Python type checking
 - **dashboard.yml** — Dashboard build/lint
 - **test-linux.yml** — Linux test suite + installer simulation (uploads artifacts)
-- **matrix-smoke.yml** — Multi-distro smoke tests (6 distros)
+- **matrix-smoke.yml** — Multi-distro smoke tests (11 distros)
 - **validate-compose.yml** — Docker Compose validation
 - **secret-scan.yml** — Secret scanning
 - **lint-powershell.yml** — PowerShell linting for Windows installer
+- **security-runtime.yml** — locked dependency audits, image policy, and source-sandbox contracts
+
+About 25 further workflows run focused contract tests for specific subsystems; see `.github/workflows/`. The default branch requires the core checks to pass. AI-driven workflows were retired on 2026-10-03; see `ods/docs/AI_WORKFLOW_GUARDRAILS.md` before adding one.
 
 ## Architecture Key Concepts
 
@@ -104,7 +107,7 @@ Every service is an extension under `extensions/services/<name>/`. Each has a `m
 
 ### GPU Backend / Tier System
 
-GPU detection (`installers/lib/detection.sh`) identifies hardware and maps it to a tier via `installers/lib/tier-map.sh`. Backend configs in `config/backends/{amd,nvidia,apple,cpu}.json` define per-tier model selections. The compose stack is layered: `docker-compose.base.yml` + `docker-compose.{amd,nvidia,apple}.yml`.
+GPU detection (`installers/lib/detection.sh`) identifies hardware and maps it to a tier via `installers/lib/tier-map.sh`. The catalog selector (`scripts/select-model.py`) then picks the model and context from `config/model-library.json`; the tier map is the fallback when the catalog is unavailable. Backend configs in `config/backends/{amd,nvidia,apple,cpu}.json` describe each runtime. The compose stack is layered: `docker-compose.base.yml` + `docker-compose.{amd,nvidia,apple}.yml`.
 
 ### Docker Compose Layering
 
@@ -129,7 +132,7 @@ Priority order when principles conflict: **Let It Crash > KISS > Pure Functions 
 1. **No broad or silent catches.** Never `except Exception: pass` or `except Exception: return None`. No retry/backoff loops. No fallback chains.
 2. **Narrow exceptions at I/O boundaries are fine.** Health checks, network calls, and file I/O may catch *specific* exception types (e.g., `asyncio.TimeoutError`, `aiohttp.ClientConnectorError`) when each maps to a distinct, meaningful status.
 3. **Internal functions: let exceptions propagate.** The default is zero error handling — errors crash visibly with a full stack trace.
-4. **Bash: `set -euo pipefail` everywhere.** Errors kill the process. Use `trap` handlers for context (see `install-core.sh`). If you must tolerate a failure, log it: `some_command || warn "failed (non-fatal)"`. Never `|| true` or `2>/dev/null`.
+4. **Bash: `set -euo pipefail` everywhere.** Errors kill the process. Use `trap` handlers for context (see `install-core.sh`). If you must tolerate a failure, log it: `some_command || warn "failed (non-fatal)"`. Do not add new `|| true` or `2>/dev/null` without a comment explaining why the failure is safe to ignore; older code still has many of these and is being cleaned up as it is touched.
 5. **Python boundaries: raise, don't swallow.** FastAPI routers validate input and `raise HTTPException`. Never return `None` to signal an error.
 6. **Tests: let assertions fail visibly.** Never catch exceptions in tests to avoid failure. A crash in a test is a signal, not a problem.
 

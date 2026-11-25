@@ -1,0 +1,20 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "12c3a810f03f21537813949b5039aac3823cbc75d603539d85ac6dd8281822ce",
+  "patchedSha256": "0bde122627e30511cf482bc3a72f321a18c1ddf748abcfd3a95d353af73a1b26",
+  "previousReplacements": {},
+  "replacements": [
+    [
+      "async function maybeSteerSubagentAnnounce(params) {",
+      "// ODS owner announcements require native run admission, including when a\n// newer owner turn is active. Steering would inject unadmitted child text.\nfunction odsOwnerAnnouncementRequiresAdmission(key) {\n\treturn typeof key === \"string\" && /^agent:pixel:openai-user:ods-[0-9a-f]{64}$/.test(key);\n}\nasync function maybeSteerSubagentAnnounce(params) {"
+    ],
+    [
+      "\tconst canonicalKey = resolveRequesterStoreKey(cfg, params.requesterSessionKey);\n\tconst { sessionId, isActive } = resolveRequesterSessionActivity(canonicalKey);",
+      "\tconst canonicalKey = resolveRequesterStoreKey(cfg, params.requesterSessionKey);\n\tif (odsOwnerAnnouncementRequiresAdmission(canonicalKey)) return { status: \"none\" };\n\tconst { sessionId, isActive } = resolveRequesterSessionActivity(canonicalKey);"
+    ],
+    [
+      "\t\tif (params.expectsCompletionMessage && requesterActivity.sessionId && requesterActivity.isActive) {",
+      "\t\tif (!odsOwnerAnnouncementRequiresAdmission(canonicalRequesterSessionKey) && params.expectsCompletionMessage && requesterActivity.sessionId && requesterActivity.isActive) {"
+    ]
+  ]
+}

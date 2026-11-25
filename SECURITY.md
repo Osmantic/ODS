@@ -6,10 +6,16 @@ privately before opening a public issue.
 
 ## Report A Vulnerability
 
-Use GitHub's private vulnerability reporting for this repository when available.
-If you cannot use private reporting, open a minimal public issue that asks for a
-maintainer contact path without including exploit details, secrets, logs, or
-proof-of-concept payloads.
+Report privately through GitHub:
+[Security → Report a vulnerability](https://github.com/Osmantic/ODS/security/advisories/new).
+If you cannot use GitHub, email `security@osmantic.com` with the subject
+`Security report`. Please do not open a public issue for a vulnerability, and do
+not post exploit details, secrets, logs, or proof-of-concept payloads publicly.
+
+We acknowledge reports within 48 hours, keep the discussion private until a fix
+and advisory are ready, and credit reporters in the advisory unless they prefer
+otherwise. Published advisories are listed under
+[Security advisories](https://github.com/Osmantic/ODS/security/advisories).
 
 ## Security Documentation
 
@@ -25,10 +31,17 @@ proof-of-concept payloads.
 
 ## Supported Code
 
-Use tagged releases for stable installs and downstream forks. The `main` branch
-moves quickly and is validated continuously, but it is still the development
-line. For release confidence, see
-[Release Validation](ods/docs/RELEASE_VALIDATION.md) and the
+Security fixes land on `main` first. The README one-line installers install
+from `main`, so new installations receive fixes as soon as they merge.
+
+`ods update` refreshes the container images pinned by your installed version.
+It does not install newer ODS code. To pick up code fixes on an existing
+installation, follow
+[Updating an existing installation](ods/SECURITY.md#updating-an-existing-installation).
+Tagged releases are point-in-time source snapshots; check the
+[security advisories](https://github.com/Osmantic/ODS/security/advisories) and
+[`ods/CHANGELOG.md`](ods/CHANGELOG.md) before pinning one. For release
+confidence, see [Release Validation](ods/docs/RELEASE_VALIDATION.md) and the
 [Validation Matrix](ods/docs/VALIDATION-MATRIX.md).
 
 ## Public Exposure
@@ -36,4 +49,6 @@ line. For release confidence, see
 ODS defaults to localhost-bound services. Treat LAN exposure, reverse
 proxy changes, OAuth credentials, owner-card access, and extension installation
 as high-risk surfaces. Do not expose a default install directly to the public
-internet without an additional security review and deployment boundary.
+internet without an additional security review and deployment boundary. The
+[trust boundary](ods/SECURITY.md#trust-boundary) section explains what ODS
+treats as trusted on the local machine and the ODS Docker network.

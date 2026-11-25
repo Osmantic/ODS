@@ -85,6 +85,43 @@ class MigrationCeilingTests(unittest.TestCase):
         self.assertEqual((self.install / ".env").read_text(), self.original_env)
         self.assertEqual((self.data / ".migration-state").read_text().strip(), "2.4.1")
 
+    def test_invalid_present_version_cannot_authorize_migration_or_report_success(self):
+        for malformed in ("broken", "2.broken.0", "", "2..0", "2.5.0-", "2.5.0+", "2.5.0.1"):
+            for field in ("current", "previous"):
+                for action in ("check", "migrate"):
+                    with self.subTest(version=malformed, field=field, action=action):
+                        current = malformed if field == "current" else "0.2.0"
+                        previous = malformed if field == "previous" else "0.1.0"
+                        self.configure(current, previous)
+                        output = self.invoke(action, expected=1)
+                        self.assertIn("Invalid version", output)
+                        self.assertNotIn("Running migration:", output)
+                        self.assertNotIn("No migration needed", output)
+                        self.assertEqual((self.install / ".env").read_text(), self.original_env)
+                        self.assertEqual((self.install / ".version").read_text(), current)
+                        self.assertEqual((self.data / ".migration-state").read_text(), previous)
+                        self.assertFalse((self.data / "backups").exists())
+
+    def test_absent_versions_remain_a_valid_empty_install(self):
+        self.assertIn("No migration needed", self.invoke("check"))
+        self.assertEqual((self.install / ".env").read_text(), self.original_env)
+        self.assertFalse((self.data / ".migration-state").exists())
+
+    def test_release_core_suffixes_and_decimal_components_use_the_target_ceiling(self):
+        for current in ("v0.2.0-rc1", "v0.2.0-12-g975fd429b", "v0.2.0+build5", "0.02.0"):
+            with self.subTest(current=current):
+                self.configure(current, "0.1.0", json_version=True)
+                (self.install / ".env").write_text(self.original_env)
+                output = self.invoke("check", expected=2)
+                self.assertIn("  - 0.2.0:", output)
+                self.assertNotIn("  - 2.4.1:", output)
+                output = self.invoke("migrate")
+                self.assertIn("Running migration: 0.2.0", output)
+                self.assertNotIn("Running migration: 2.4.1", output)
+                self.assertIn("ENABLE_VOICE=true", (self.install / ".env").read_text())
+                self.assertEqual((self.data / ".migration-state").read_text(), current + "\n")
+                self.assertIn("No migration needed", self.invoke("check"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

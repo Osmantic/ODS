@@ -8,7 +8,7 @@
 #     umask.
 #   - The umask 077 MUST NOT leak out of the subshell, otherwise later
 #     mkdirs in the same phase (and subsequent phases) create directories
-#     with mode 700 that container processes (SearXNG uid 977, OpenClaw
+#     with mode 700 that container processes (SearXNG uid 977, Token Spy
 #     uid 1000, etc.) cannot traverse — silent runtime breakage.
 
 load '../bats/bats-support/load'
@@ -49,7 +49,7 @@ ENV_EOF
 @test "container-bind-mount dirs are not 700-class after .env subshell" {
     # Replay the .env subshell, then create the same set of bind-mount dirs
     # that phase 06 / phase 11 create later. If the umask leaked, these
-    # would inherit 0700 and container uids (SearXNG 977, OpenClaw 1000,
+    # would inherit 0700 and container uids (SearXNG 977, Token Spy 1000,
     # ComfyUI root) could not enter them.
     run bash -c '
         umask 022   # Ambient umask the installer normally inherits

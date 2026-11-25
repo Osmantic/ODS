@@ -2,7 +2,8 @@
 Description=ODS Pixel isolated immutable preview inspection broker
 After=docker.service pixel-workspace-preview.service
 Requires=pixel-workspace-preview.service
-Wants=docker.service
+# The installer verifies the selected engine. Pulling in docker.service here
+# would start a second daemon and replace Docker Desktop's socket on WSL.
 
 [Service]
 Type=simple

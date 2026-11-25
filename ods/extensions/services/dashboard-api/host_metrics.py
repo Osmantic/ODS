@@ -120,6 +120,9 @@ def windows_host_metrics():
                             "memory_used_mb": finite(row.get("memory_used_mb"), maximum=total),
                             "memory_type": "unified" if row.get("memory_type") == "unified" else "discrete",
                             "utilization_percent": finite(row.get("utilization_percent"), maximum=100),
+                            # NVIDIA rows carry the Windows driver's sensors.
+                            "temperature_c": finite(row.get("temperature_c"), maximum=150),
+                            "power_w": finite(row.get("power_w"), maximum=2000),
                             "backend": row.get("backend") if row.get("backend") in ("amd", "nvidia") else "unknown",
                         })
         _windows_cached = (time.monotonic(), result)

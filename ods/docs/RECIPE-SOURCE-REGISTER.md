@@ -2,6 +2,7 @@
 
 Source lookup performed 2026-09-24 UTC for the 34 library recipes without
 `upstream.json` at ODS `1bc5e1cbb24864f1c9efd551e0613202af324e3f`.
+Recipes removed from the library since then are no longer listed.
 This register adds documentation only; it does not change runtime metadata.
 
 The links below pin the upstream default-branch license file as retrieved.
@@ -27,7 +28,6 @@ disabled. No container was pulled or launched for this review.
 | [flowise](../extensions/library/services/flowise/README.md) | [FlowiseAI/Flowise @ 9291856d1ea4](https://github.com/FlowiseAI/Flowise/blob/9291856d1ea4a4ceea9f8fef8ce14f4f6c81e8eb/LICENSE.md) | Apache-2.0 outside designated commercial enterprise code. |
 | [forge](../extensions/library/services/forge/README.md) | [lllyasviel/stable-diffusion-webui-forge @ dfdcbab685e5](https://github.com/lllyasviel/stable-diffusion-webui-forge/blob/dfdcbab685e57677014f05a3309b48cc87383167/LICENSE.txt) | Application AGPL; ai-dock wrapper/image and downloaded models need separate records. |
 | [frigate](../extensions/library/services/frigate/README.md) | [blakeblackshear/frigate @ af0ba1919668](https://github.com/blakeblackshear/frigate/blob/af0ba191966812cf9ac8515d95b1dd221363d17e/LICENSE) | MIT for the linked source; separately verify the shipped artifact and dependencies. |
-| [gaia](../extensions/library/services/gaia/README.md) | [amd/gaia @ f136d1c87b6e](https://github.com/amd/gaia/blob/f136d1c87b6ef41077e866ec52a756471770e5f8/LICENSE.md) | MIT for the linked source; separately verify the shipped artifact and dependencies. |
 | [gitea](../extensions/library/services/gitea/README.md) | [go-gitea/gitea @ 2177969aba55](https://github.com/go-gitea/gitea/blob/2177969aba554ec36d02d024f7259d52c778f3fd/LICENSE) | MIT for the linked source; separately verify the shipped artifact and dependencies. |
 | [immich](../extensions/library/services/immich/README.md) | [immich-app/immich @ e66f2c7615ba](https://github.com/immich-app/immich/blob/e66f2c7615bacbe6a9b156e300fc182e4d1a4fa3/LICENSE) | AGPL-3.0 for the linked source; separately verify the shipped artifact and dependencies. |
 | [invokeai](../extensions/library/services/invokeai/README.md) | [invoke-ai/InvokeAI @ 02709b21ee69](https://github.com/invoke-ai/InvokeAI/blob/02709b21ee690a14fdc78e69e7fdf0e0985a2998/LICENSE) | Apache-2.0 code; downloaded models have independent terms. |

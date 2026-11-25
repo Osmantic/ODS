@@ -47,6 +47,29 @@ def test_recovery_accepts_no_selection_or_paths_and_submits_once(client,monkeypa
     call.assert_called_once_with('POST','/v1/model/recover',payload={},timeout=400)
 
 
+def test_owner_release_without_proof_is_forwarded_exactly(client,monkeypatch):
+    # Fleet row 27: the owner's explicit release of a switch that changed nothing.
+    call=Mock(return_value={**DONE,'outcome':'rollback'})
+    monkeypatch.setattr(models,'request_agent_json',call)
+    headers={'Authorization':'Bearer test-key-12345'}
+    for body in ({'releaseUnverified':1},{'releaseUnverified':'yes'},{'releaseUnverified':False},
+                 {'releaseUnverified':True,'transactionId':'b'*64}):
+        assert client.post('/api/models/recovery',headers=headers,json=body).status_code==400
+    call.assert_not_called()
+    result=client.post('/api/models/recovery',headers=headers,json={'releaseUnverified':True})
+    assert result.status_code==200 and result.json()['outcome']=='rollback'
+    call.assert_called_once_with('POST','/v1/model/recover',payload={'releaseUnverified':True},timeout=400)
+
+
+@pytest.mark.parametrize('releasable,projected',[(True,True),(False,False),('yes',None)])
+def test_unproved_recovery_says_whether_the_owner_may_release_it(client,monkeypatch,releasable,projected):
+    payload={**PENDING,'reason':'model-recovery-proof-required','releasable':releasable}
+    monkeypatch.setattr(models,'request_agent_json',Mock(side_effect=AgentHTTPError(409,'unconfirmed',json.dumps(payload))))
+    result=client.post('/api/models/recovery',headers={'Authorization':'Bearer test-key-12345'},json={})
+    assert result.status_code==409
+    assert result.json().get('releasable')==projected
+
+
 def test_unproved_recovery_remains_pending_without_replay(client,monkeypatch):
     payload={**PENDING,'reason':'model-recovery-proof-required','private':'hidden'}
     call=Mock(side_effect=AgentHTTPError(409,'unconfirmed',json.dumps(payload)))

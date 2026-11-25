@@ -1,0 +1,25 @@
+{
+  "_source": "Synthesized, not measured: the factory firmware split as the vendor documents it (about 64 GB for the GPU, 63,936 MiB carve-out, about 62.5 GiB visible to Windows), no page file, no .wslconfig, a fresh PC (no Docker Desktop data disk) with 400 GiB free.",
+  "VisibleGiB": 62.5,
+  "CommitLimitGiB": 62.5,
+  "CommittedGiB": 12.0,
+  "CarveOutMiB": 63936,
+  "SystemDrive": "C:",
+  "PageFileActiveGiB": 0,
+  "PageFileConfiguredGiB": 0,
+  "OtherPageFileGiB": 0.0,
+  "PageFileAutomatic": false,
+  "PageFilePending": false,
+  "PagingFiles": [],
+  "WslConfig": {
+    "GiB": null,
+    "Owner": null
+  },
+  "WslNowGiB": null,
+  "RunningModelGiB": 0,
+  "ModelsDrive": "C:",
+  "FreeGiB": {
+    "C:": 400
+  },
+  "StackPresent": false
+}

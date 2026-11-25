@@ -10,11 +10,12 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from contextlib import suppress
 
-from aiohttp import ClientSession, ClientTimeout, web
+from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
 KEY = os.environ.get("PIXEL_MODEL_RELAY_KEY", "")
 LITELLM_KEY = os.environ.get("LITELLM_KEY", "")
@@ -32,7 +33,35 @@ ALIASES = {"ods/current", "default"}
 # Match Portal's encoded image-turn envelope (8 MiB images plus history/tools).
 MAX_BODY = 16 * 1024 * 1024
 WRITE_TIMEOUT_SECONDS = 30.0  # Host-local OpenClaw must drain promptly.
+# An upstream error is one small body; a larger one is cut here.
+MAX_ERROR_BODY = 64 * 1024
+# A LiteLLM proxy in front of an API echoes the end of a refused key and the
+# key's hash. OpenClaw keeps provider errors in its session history, so
+# neither may pass this relay (fleet, DSV4.1 drill proxy).
+_KEY_ECHO = (
+    (re.compile(rb"(Received API Key\s*=\s*)[^,\s\"\\]+", re.IGNORECASE), rb"\1[redacted]"),
+    (re.compile(rb"(Key Hash \(Token\)\s*=\s*)[0-9A-Fa-f]+", re.IGNORECASE), rb"\1[redacted]"),
+)
 LOG = logging.getLogger("pixel-model-relay")
+# The latest model call's outcome, so the dashboard can say why a Portal turn
+# failed: its HTTP status and when it ended, never a body (fleet drills: every
+# failure looked the same in Portal).
+_LAST_GENERATION = {"status": None, "at": None}
+
+
+def _redact_key_echo(body):
+    for pattern, replacement in _KEY_ECHO:
+        body = pattern.sub(replacement, body)
+    return body
+
+
+async def _bounded_body(upstream, limit):
+    data = bytearray()
+    async for chunk in upstream.content.iter_chunked(4096):
+        data.extend(chunk)
+        if len(data) >= limit:
+            break
+    return bytes(data[:limit])
 
 
 def _generation_summary(payload):
@@ -90,6 +119,7 @@ async def _inference(request):
     max_gap = 0.0
     chunk_count = 0
     byte_count = 0
+    upstream_status = None
     async with ClientSession(timeout=ClientTimeout(total=None)) as client:
         upstream_headers = {"Content-Type": "application/json"}
         if UPSTREAM_REQUIRES_KEY:
@@ -105,8 +135,25 @@ async def _inference(request):
                 with suppress(asyncio.CancelledError):
                     await upstream_task
                 return web.Response(status=499)
-            upstream = await upstream_task
+            try:
+                upstream = await upstream_task
+            except ClientError:
+                # The route itself (model-router or LiteLLM) did not answer.
+                upstream_status = 502
+                return web.json_response({"error": {
+                    "message": "The ODS model route did not answer.", "type": "ods_route_unavailable"}},
+                    status=502, headers={"Cache-Control": "no-store"})
+            upstream_status = upstream.status
             async with upstream:
+                if upstream.status >= 400:
+                    # Read the whole small error body to scrub it, then pass
+                    # it on with the same status.
+                    body = _redact_key_echo(await _bounded_body(upstream, MAX_ERROR_BODY))
+                    first_chunk = time.monotonic() - started
+                    chunk_count, byte_count = 1, len(body)
+                    return web.Response(status=upstream.status, body=body, headers={
+                        "Content-Type": upstream.headers.get("Content-Type", "application/json"),
+                        "Cache-Control": "no-store"})
                 response = web.StreamResponse(status=upstream.status, headers={
                     "Content-Type": upstream.headers.get("Content-Type", "application/json"),
                     "Cache-Control": "no-store"})
@@ -141,9 +188,12 @@ async def _inference(request):
                         await response.write_eof()
                 return response
         finally:
+            if diagnostic_id and upstream_status is not None:
+                _LAST_GENERATION.update(status=upstream_status, at=time.time())
             if diagnostic_id:
                 LOG.info("generation_end %s", json.dumps({
-                    "id": diagnostic_id, "seconds": round(time.monotonic() - started, 3),
+                    "id": diagnostic_id, "status": upstream_status,
+                    "seconds": round(time.monotonic() - started, 3),
                     "first_chunk_seconds": round(first_chunk, 3) if first_chunk is not None else None,
                     "max_chunk_gap_seconds": round(max_gap, 3),
                     "chunks": chunk_count, "bytes": byte_count}))
@@ -154,6 +204,17 @@ async def _inference(request):
 
 async def _health(_request):
     return web.json_response({"status": "ok"})
+
+
+async def _last_generation(request):
+    """The latest model call's status and age, for the dashboard only."""
+    if not hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + KEY):
+        raise web.HTTPUnauthorized()
+    at = _LAST_GENERATION["at"]
+    return web.json_response({
+        "status": _LAST_GENERATION["status"],
+        "ageSeconds": round(max(0.0, time.time() - at), 1) if at is not None else None,
+    }, headers={"Cache-Control": "no-store"})
 
 
 def create_app():
@@ -167,6 +228,7 @@ def create_app():
         raise RuntimeError("invalid LiteLLM model relay key")
     app = web.Application(client_max_size=MAX_BODY + 1)
     app.router.add_get("/health", _health)
+    app.router.add_get("/v1/ods/last-generation", _last_generation)
     app.router.add_route("*", "/v1/models", _inference)
     app.router.add_route("*", "/v1/chat/completions", _inference)
     return app

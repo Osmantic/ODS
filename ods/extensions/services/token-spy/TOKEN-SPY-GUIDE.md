@@ -19,7 +19,7 @@ You (agent) -> Token Spy proxy -> Upstream API (Anthropic, OpenAI, etc.)
               SQLite DB <- Dashboard (charts, tables, settings)
                   ^
                   |
-           Session Manager (polls every N minutes, enforces limits)
+           Session Manager (optional, on your own timer; enforces limits)
 ```
 
 ### Your Proxy Ports
@@ -47,7 +47,7 @@ Token Spy manages your context size through a **character-based session limit**.
 1. **Every API call**: Token Spy logs `conversation_history_chars` — the total size of all messages in your request.
 2. **After logging**: It checks if your history exceeds the configured `session_char_limit`.
 3. **If exceeded**: Token Spy kills your largest active session file, forcing a fresh session on your next turn.
-4. **Session Manager**: A separate timer (systemd/cron) polls every `poll_interval_minutes` and runs additional cleanup (removes inactive sessions, enforces session count limits).
+4. **Session Manager** (optional): `session-manager.sh`, run from your own systemd timer or cron job, does additional cleanup (removes inactive sessions, enforces session count limits). Token Spy does not schedule it; list your agents in its `AGENTS` array first.
 
 ### Why Characters Instead of Tokens?
 
@@ -61,7 +61,6 @@ One token is roughly 4 characters. We use characters because:
 ```json
 {
   "session_char_limit": 200000,
-  "poll_interval_minutes": 5,
   "agents": {}
 }
 ```
@@ -104,14 +103,6 @@ curl -X POST http://localhost:9110/api/settings \
   -H "Authorization: Bearer $TOKEN_SPY_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"agents": {"my-agent": {"session_char_limit": null}}}'
-```
-
-**Change poll frequency (also updates the systemd timer if configured):**
-```bash
-curl -X POST http://localhost:9110/api/settings \
-  -H "Authorization: Bearer $TOKEN_SPY_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"poll_interval_minutes": 1}'
 ```
 
 ### Monitoring

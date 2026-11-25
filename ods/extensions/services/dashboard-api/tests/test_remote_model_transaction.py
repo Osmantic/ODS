@@ -8,6 +8,11 @@ import pytest
 from test_host_agent import _mod, TestRemoteProviderLifecycle as _LifecycleFixtures
 
 
+# The real check, kept before the fixture replaces it.
+ACTIVE_RUNTIME=_mod._active_remote_provider_pixel_runtime
+REAL_PROOF=_mod._prove_pixel_model_contract
+
+
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
     root=tmp_path/'ods'
@@ -24,7 +29,7 @@ def runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(_mod,'DATA_DIR',data)
     helpers=_LifecycleFixtures()
     helpers._patch_successful_probe(monkeypatch)
-    state=SimpleNamespace(events=[],transactions=[],held=False,failure=None,
+    state=SimpleNamespace(events=[],transactions=[],held=False,failure=None,vision='unknown',begin_code='runtime-busy',
         native={'model':'local','contextLength':65536,'maxTokens':4096,'reasoning':False},
         root=root,data=data,cloud=cloud,env=env,helpers=helpers)
 
@@ -41,8 +46,14 @@ def runtime(tmp_path, monkeypatch):
         def apply(self,target):
             assert state.held
             self.target=deepcopy(target)
-            state.native=deepcopy(target)
             state.events.append('apply')
+            # A refused apply whose native status still shows the previous
+            # contract: _PixelModelTransaction cannot tell it from a lost reply.
+            if state.failure=='apply-refused':raise _mod._PixelModelTransactionUncertain('apply refused')
+            # A transition-busy refusal the controller proves never started:
+            # the real _PixelModelTransaction re-raises it as a definite refusal.
+            if state.failure=='apply-busy':raise _mod._PixelModelTransactionRejected('busy',code='transition-busy')
+            state.native=deepcopy(target)
             if state.failure=='apply':raise _mod._PixelModelTransactionUncertain('apply unknown')
             return 'reconciled'
         def finish(self,outcome):
@@ -60,7 +71,7 @@ def runtime(tmp_path, monkeypatch):
             if state.failure=='final-journal':raise OSError('final journal write failed')
     def begin(_env):
         state.events.append('begin')
-        if state.failure=='begin':raise _mod._PixelModelTransactionRejected('busy')
+        if state.failure=='begin':raise _mod._PixelModelTransactionRejected('busy',code=state.begin_code)
         assert not state.held
         state.held=True
         tx=Transaction()
@@ -71,7 +82,7 @@ def runtime(tmp_path, monkeypatch):
         assert not state.held, 'pending native status must use transaction.previous'
         return deepcopy(state.native)
     monkeypatch.setattr(_mod,'_managed_pixel_runtime_contract',inspect)
-    monkeypatch.setattr(_mod,'_active_remote_provider_pixel_runtime',lambda:None)
+    monkeypatch.setattr(_mod,'_active_remote_provider_pixel_runtime',lambda **_:None)
     monkeypatch.setattr(_mod,'_capture_container_state',lambda *_:{'exists':True,'running':True})
     def restart(*_args,**_kwargs):
         assert state.held
@@ -93,11 +104,18 @@ def runtime(tmp_path, monkeypatch):
         state.events.append('route-proof')
         if state.failure in ('route','ownership'):raise RuntimeError('route unavailable')
     monkeypatch.setattr(_mod,'_verify_litellm_route',verify)
+    # The verdict of the vision probe through ods/current, as the host agent maps it.
+    def vision(_env,_runtime):
+        state.events.append('vision-probe')
+        return state.vision
+    monkeypatch.setattr(_mod,'_remote_provider_vision_probe',vision)
     def prove(_env,contract):
         state.events.append('prove-previous')
         if 'routeFingerprint' in contract:
+            # The real proof checks route identity and drops imageInput on both sides.
             saved=json.loads(_mod._remote_provider_route_state_path().read_text())
-            return _mod._remote_provider_runtime_contract(saved)==contract
+            identity=lambda value:{key:item for key,item in value.items() if key!='imageInput'}
+            return identity(_mod._remote_provider_runtime_contract(saved))==identity(contract)
         return _env['ODS_MODE']=='local' and cloud.read_text()=='previous cloud\n'
     monkeypatch.setattr(_mod,'_prove_pixel_model_contract',prove)
     for name in ('_write_remote_provider_route_state','_write_remote_provider_secret','_write_remote_provider_profile'):
@@ -130,6 +148,171 @@ def test_configure_holds_admission_before_egress_and_commits_after_receipts(runt
     assert events.count('begin')==1 and events.count('finish-commit')==1
     assert result['activation']['routeFingerprint']==runtime.native['routeFingerprint']
     assert not runtime.held
+
+
+@pytest.mark.parametrize('vision',['supported','unsupported','unknown'])
+def test_configure_binds_pixel_to_the_image_input_its_route_probe_measured(runtime,vision):
+    runtime.vision=vision
+    configure(runtime)
+    events=runtime.events
+    # One probe, after LiteLLM serves the route and before Pixel is bound.
+    assert events.count('vision-probe')==1
+    assert events.index('route-proof')<events.index('vision-probe')<events.index('apply')
+    saved=json.loads(_mod._remote_provider_route_state_path().read_text())
+    assert runtime.native['imageInput']==vision==_mod._remote_provider_runtime_contract(saved)['imageInput']
+    receipt=saved['status'].get('vision')
+    if vision=='unknown':assert receipt is None
+    else:assert receipt['imageInput']==vision and receipt['routeFingerprint']==runtime.native['routeFingerprint']
+
+
+def proof(state):
+    """The egress proof of the configured direct route (dashboard Check connection)."""
+    return _mod._record_remote_provider_egress_probe({**state.helpers._egress_probe_response(),'transport':'direct'})
+
+
+def saved_vision():
+    return json.loads(_mod._remote_provider_route_state_path().read_text())['status'].get('vision')
+
+
+def test_each_proof_of_the_active_route_probes_vision_once_and_rebinds_pixel_only_on_change(runtime,monkeypatch):
+    configure(runtime)
+    assert runtime.native['imageInput']=='unknown'
+    monkeypatch.setattr(_mod,'_litellm_route_failure',lambda env,*,model='ods/current':None)
+    runtime.events.clear()
+    runtime.vision='supported'
+    result=proof(runtime)
+    assert result['recorded'] and result['status']['vision']==saved_vision()
+    assert saved_vision()['imageInput']=='supported' and runtime.native['imageInput']=='supported'
+    # Pixel alone takes the new image input: LiteLLM and the relay already serve the route.
+    assert runtime.events==['vision-probe','begin','apply','finish-commit']
+    assert _mod._read_remote_provider_activation_state()['remote']==runtime.native
+    # The same answer again changes nothing: no transaction, no restart.
+    runtime.events.clear()
+    proof(runtime)
+    assert runtime.events==['vision-probe']
+    # A probe without a clear answer is no evidence: the receipt and Pixel stay.
+    runtime.vision='unknown'
+    runtime.events.clear()
+    result=proof(runtime)
+    assert result['status']['vision']['imageInput']=='supported' and runtime.native['imageInput']=='supported'
+    assert runtime.events==['vision-probe']
+    # A clear miss rebinds Pixel to it.
+    runtime.vision='unsupported'
+    runtime.events.clear()
+    proof(runtime)
+    assert saved_vision()['imageInput']=='unsupported' and runtime.native['imageInput']=='unsupported'
+    assert runtime.events==['vision-probe','begin','apply','finish-commit'] and not runtime.held
+
+
+@pytest.mark.parametrize('code',['runtime-busy','model-inspection-changed','transition-busy','active-run',
+                                 'native-transition-busy-active-run'])
+def test_a_busy_portal_keeps_the_receipt_and_the_next_check_applies_it(runtime,monkeypatch,code):
+    configure(runtime)
+    monkeypatch.setattr(_mod,'_litellm_route_failure',lambda env,*,model='ods/current':None)
+    before=deepcopy(runtime.native)
+    runtime.vision='supported'
+    runtime.failure='begin'
+    runtime.begin_code=code
+    runtime.events.clear()
+    result=proof(runtime)
+    assert result['recorded'] and result['imageCheck']=={'applied':False,'imageInput':'supported','reason':'portal-busy'}
+    assert saved_vision() is None and 'vision' not in result['status']
+    assert runtime.native==before and runtime.events==['vision-probe','begin'] and not runtime.held
+    runtime.failure=None
+    result=proof(runtime)
+    assert 'imageCheck' not in result and saved_vision()['imageInput']=='supported'
+    assert runtime.native['imageInput']=='supported'
+
+
+def test_any_other_refusal_to_begin_fails_the_check_with_its_reason(runtime,monkeypatch):
+    configure(runtime)
+    monkeypatch.setattr(_mod,'_litellm_route_failure',lambda env,*,model='ods/current':None)
+    before,native=json.loads(_mod._remote_provider_route_state_path().read_text()),deepcopy(runtime.native)
+    runtime.vision='supported'
+    runtime.failure='begin'
+    runtime.begin_code='access-owner-refused'
+    with pytest.raises(_mod._PixelModelTransactionRejected) as refused:
+        proof(runtime)
+    assert refused.value.code=='access-owner-refused'
+    assert saved_vision() is None and runtime.native==native and not runtime.held
+    assert json.loads(_mod._remote_provider_route_state_path().read_text())==before
+
+
+def test_enable_keeps_the_route_receipt_through_an_inconclusive_probe(runtime):
+    # A paused route (here: Portal off the remote contract) that is enabled
+    # again, or reconciled from the Dashboard, rewrites its route state.
+    runtime.vision='supported'
+    configure(runtime)
+    runtime.native={'model':'local','contextLength':65536,'maxTokens':4096,'reasoning':False}
+    runtime.vision='unknown'
+    enable()
+    assert saved_vision()['imageInput']=='supported' and runtime.native['imageInput']=='supported'
+    # A conclusive probe of that proof still replaces it.
+    runtime.vision='unsupported'
+    enable()
+    assert saved_vision()['imageInput']=='unsupported' and runtime.native['imageInput']=='unsupported'
+
+
+def test_a_saved_receipt_is_carried_only_for_its_own_route(runtime):
+    configure(runtime)
+    saved=json.loads(_mod._remote_provider_route_state_path().read_text())
+    route=_mod._plan_remote_provider_lifecycle_operation(runtime.helpers._configure_payload())['route']
+    receipt={'schema':'ods.remote-provider-vision-receipt.v1','imageInput':'supported',
+             'routeFingerprint':_mod._remote_provider_route_fingerprint(route),'verifiedAt':'2026-10-30T00:00:00+00:00'}
+    saved['status']['vision']=receipt
+    assert _mod._remote_provider_saved_vision(saved,route)==receipt
+    other=json.loads(json.dumps(route))
+    other['provider']['baseUrl']='https://second.example.test/v1'
+    assert _mod._remote_provider_saved_vision(saved,other) is None
+    assert _mod._remote_provider_saved_vision({'status':{'proven':False,'reason':'disabled'}},route) is None
+
+
+# apply-refused: the controller still holds the previous contract; apply: it
+# took the target (the gateway loaded it) though the reply was lost. Both are
+# uncertain applies that verify_held proves and the rebind rolls back.
+@pytest.mark.parametrize('failure',['apply-refused','apply','receipt-write'])
+def test_a_failed_rebind_rolls_back_and_keeps_the_previous_receipt(runtime,monkeypatch,failure):
+    runtime.vision='supported'
+    configure(runtime)
+    monkeypatch.setattr(_mod,'_litellm_route_failure',lambda env,*,model='ods/current':None)
+    previous_receipt,previous_native=saved_vision(),deepcopy(runtime.native)
+    previous_record=_mod._read_remote_provider_activation_state()
+    previous_public=_mod._remote_provider_activation_public_path().read_bytes()
+    # Nothing on the inference side changed: the rollback proves route
+    # identity only, so a provider that is down cannot leave the lane held.
+    monkeypatch.setattr(_mod,'_prove_pixel_model_contract',REAL_PROOF)
+    def provider_down(*_args,**_kwargs):raise RuntimeError('LiteLLM did not serve a completion')
+    monkeypatch.setattr(_mod,'_verify_litellm_route',provider_down)
+    runtime.vision='unsupported'
+    expected={'apply-refused':RuntimeError,'apply':RuntimeError,'receipt-write':OSError}[failure]
+    if expected is RuntimeError:
+        runtime.failure=failure
+    else:
+        # The rebind's public receipt (the check's own has "unchanged") fails
+        # after the activation record already took the new contract.
+        write=_mod._write_remote_provider_activation_public
+        def failing_write(value):
+            if not value.get('unchanged'):raise OSError('receipt write failed')
+            write(value)
+        monkeypatch.setattr(_mod,'_write_remote_provider_activation_public',failing_write)
+    runtime.events.clear()
+    with pytest.raises(expected) as failed:
+        proof(runtime)
+    if expected is RuntimeError:
+        assert not isinstance(failed.value,_mod._PixelModelTransactionUncertain)
+        assert 'previous contract was restored' in str(failed.value)
+    assert saved_vision()==previous_receipt and runtime.native==previous_native
+    assert _mod._read_remote_provider_activation_state()==previous_record
+    assert _mod._remote_provider_activation_public_path().read_bytes()==previous_public
+    assert runtime.events[-2:]==['verify-held','finish-rollback'] and not runtime.held
+
+
+def test_a_proof_that_activates_reports_the_status_it_left_on_disk(runtime):
+    configure(runtime,ssh=True)
+    runtime.vision='supported'
+    result=_mod._record_remote_provider_egress_probe(runtime.helpers._egress_probe_response())
+    assert result['activation']['proven'] and saved_vision()['imageInput']=='supported'
+    assert result['status']==json.loads(_mod._remote_provider_route_state_path().read_text())['status']
 
 
 def test_two_remote_providers_with_same_model_use_distinct_transactions_and_fingerprints(runtime):
@@ -215,6 +398,20 @@ def test_rejected_replacement_refreshes_consumer_after_restoring_provider_files(
         assert runtime.native == previous and not runtime.held
     assert files(runtime.root) == before
     assert runtime.events.count('refresh-restored') == 1
+
+
+def test_a_busy_controller_refusal_restores_the_previous_route_and_releases_portal(runtime):
+    # Laptop fleet run 2026-11-11: enabling the remote route right after an update met
+    # the controller's transition lock. The activation must restore its files and roll
+    # the transaction back, not leave Portal held behind an "applying" journal.
+    before=files(runtime.root)
+    runtime.failure='apply-busy'
+    with pytest.raises(RuntimeError) as failed:configure(runtime)
+    assert not isinstance(failed.value,_mod._PixelModelTransactionUncertain)
+    assert files(runtime.root)==before
+    assert runtime.env.read_text().startswith('ODS_MODE=local\n')
+    assert runtime.events[-2:]==['prove-previous','finish-rollback']
+    assert runtime.native==runtime.transactions[0].previous and not runtime.held
 
 
 @pytest.mark.parametrize('failure',['apply','finish','ownership'])
@@ -316,6 +513,21 @@ def test_failed_previous_route_proof_does_not_release_maintenance(runtime,monkey
     assert 'restore-container' in runtime.events and 'finish-rollback' not in runtime.events
 
 
+def test_remote_outage_keeps_restored_route_held_with_explicit_uncertainty(runtime, monkeypatch):
+    configure(runtime)
+    before = files(runtime.root)
+    previous = deepcopy(runtime.native)
+    runtime.events.clear()
+    runtime.failure = 'route'
+    monkeypatch.setattr(_mod, '_prove_pixel_model_contract', REAL_PROOF)
+    with pytest.raises(_mod._PixelModelTransactionUncertain,
+                       match='Previous provider route could not be proved'):
+        configure(runtime, endpoint='https://second.example.test/v1')
+    assert files(runtime.root) == before
+    assert runtime.native == previous and runtime.held
+    assert 'restore-container' in runtime.events and 'finish-rollback' not in runtime.events
+
+
 def test_failed_egress_restore_does_not_release_maintenance(runtime,monkeypatch):
     runtime.failure='route'
     def fail_restore(*_):raise OSError('restore failed')
@@ -323,3 +535,39 @@ def test_failed_egress_restore_does_not_release_maintenance(runtime,monkeypatch)
     with pytest.raises(_mod._PixelModelTransactionUncertain,match='Previous provider files could not be restored'):
         configure(runtime)
     assert runtime.held and 'finish-rollback' not in runtime.events
+
+
+def enable():
+    payload={'action':'enable'}
+    return _mod._apply_remote_provider_lifecycle_operation(payload,_mod._plan_remote_provider_lifecycle_operation(payload))
+
+
+@pytest.mark.parametrize('vision',['unknown','supported'])
+def test_enable_of_the_active_route_reads_pixel_now_and_changes_nothing(runtime,monkeypatch,vision):
+    # Fleet row 6 (Mac): configure rewrites the route state, which empties the
+    # poll cache; the first enable then missed this no-op, began a model
+    # transaction, and the controller refused it (409). A vision receipt in
+    # the route state keeps it a no-op.
+    runtime.vision=vision
+    configure(runtime)
+    monkeypatch.setattr(_mod,'_active_remote_provider_pixel_runtime',ACTIVE_RUNTIME)
+    monkeypatch.setattr(_mod,'_cached_managed_pixel_runtime_contract',lambda:None)
+    before=files(runtime.root)
+    runtime.events.clear()
+    result=enable()
+    assert result['applied'] and result['unchanged'] and not result['mutated']
+    assert result['route']['enabled'] is True
+    assert result['route']['provider']['model']=='qwen/remote:latest'
+    assert runtime.events==[] and files(runtime.root)==before and not runtime.held
+
+
+def test_enable_runs_the_transaction_when_pixel_serves_another_model(runtime,monkeypatch):
+    configure(runtime)
+    monkeypatch.setattr(_mod,'_active_remote_provider_pixel_runtime',ACTIVE_RUNTIME)
+    def cached():pytest.fail('an action must not trust the poll cache')
+    monkeypatch.setattr(_mod,'_cached_managed_pixel_runtime_contract',cached)
+    runtime.native={'model':'local','contextLength':65536,'maxTokens':4096,'reasoning':False}
+    runtime.events.clear()
+    result=enable()
+    assert result['applied'] and not result.get('unchanged')
+    assert runtime.events.count('begin')==1 and runtime.events[-1]=='finish-commit' and not runtime.held

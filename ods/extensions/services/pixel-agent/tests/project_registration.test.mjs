@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {registerProjectBuild} from '../plugin/project-registration.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
+import {promptContractForAgent, ODS_SANDBOX_RUNTIME_CONTRACT} from '../plugin/prompt-contract.mjs';
 
 test('project tool is absent without an installed service configuration', () => {
   let calls = 0;
@@ -37,6 +38,26 @@ test('installed capability guides the owner to managed builds without granting a
   assert.match(result.appendSystemContext, /action capabilities and runtime python/);
   assert.match(result.appendSystemContext, /never the host or conversational sandbox architecture/);
   assert.match(result.appendSystemContext, /do not claim the lock is portable/);
+});
+
+test('a missing sandbox npm still leaves the managed npm build to the combined Portal prompt', () => {
+  let hook;
+  registerProjectBuild({pluginConfig: {projectBuildSocket: '/run/project/control.sock'},
+    registerTool() {}, on(_name, callback) {hook = callback;}});
+  const context = {agentId:'pixel', sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
+  const project = hook({}, context).appendSystemContext;
+  const prompt = 'Build a React website with Vite and publish its preview.';
+  for (const options of [{configuredContextWindow:65536}, {configuredContextWindow:32768}]) {
+    const contract = promptContractForAgent(context, 'pixel', {prompt}, {...options, executionHost:'sandbox'}).appendSystemContext;
+    const combined = `${contract}\n\n${project}`;
+    assert.ok(combined.includes(ODS_SANDBOX_RUNTIME_CONTRACT), JSON.stringify(options));
+    // The sandbox rule bars other interpreters, not discovering the offered tool.
+    assert.match(combined, /If a sandbox runtime or tool is missing, say so instead of probing other interpreters/);
+    assert.doesNotMatch(combined, /probing alternatives/);
+    assert.match(combined, /pixel_ods_project_build for workspace npm projects/);
+    assert.match(combined, /discover this tool with tool_search\/tool_describe/);
+    assert.match(combined, /do not infer global inability from a missing sandbox executable/);
+  }
 });
 
 test('real malformed model submits are actionable without a job or an admission bypass', async () => {

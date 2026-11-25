@@ -55,7 +55,7 @@ echo "── .env generation ──"
 TMPDIR_SMOKE="$(mktemp -d)"
 INSTALL_DIR="$TMPDIR_SMOKE/ods"
 mkdir -p "$INSTALL_DIR"/{config,data,models}
-mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,openclaw,searxng}
+mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,searxng}
 
 # Copy source inputs so phase 06 can find compose files and schemas. Exclude
 # local frontend build artifacts; copying node_modules across WSL/NTFS can turn
@@ -83,7 +83,6 @@ export ENABLE_VOICE=true
 export ENABLE_WORKFLOWS=true
 export ENABLE_RAG=true
 export ENABLE_HERMES=true
-export ENABLE_OPENCLAW=true
 
 # Source required libraries (same order as install-core.sh)
 source installers/lib/constants.sh
@@ -134,7 +133,6 @@ if bash -c "
     export ENABLE_WORKFLOWS=true
     export ENABLE_RAG=true
     export ENABLE_HERMES=true
-export ENABLE_OPENCLAW=true
     export EMBEDDING_MODEL=BAAI/bge-m3
     export RAG_EMBEDDING_MODEL=
     export RAG_OPENAI_API_BASE_URL=https://embeddings.example.test/v1
@@ -162,7 +160,7 @@ export ENABLE_OPENCLAW=true
     ods_sudo() {
         case \"\$1\" in
             chmod) \"\$@\" ;;
-            chgrp) command sudo -n \"\$@\" ;;
+            chgrp|chown) command sudo -n \"\$@\" ;;
             *) return 0 ;;
         esac
     }
@@ -178,9 +176,18 @@ export ENABLE_OPENCLAW=true
         command docker \"\$@\"
     }
 
+    unset LLAMA_PARALLEL LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V HERMES_REQUIRE_OWNER_CARD
     # Run phase 06 (generates .env, configs)
     source installers/phases/06-directories.sh
     grep -qx 'TTS_WORKERS=1' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'TTS_THREADS=4' \"\$INSTALL_DIR/.env\" || exit 1
+
+    # Fresh install writes documented llama.cpp runtime defaults.
+    grep -qx 'LLAMA_PARALLEL=1' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'LLAMA_ARG_FLASH_ATTN=auto' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'LLAMA_ARG_CACHE_TYPE_K=f16' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'LLAMA_ARG_CACHE_TYPE_V=f16' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'HERMES_REQUIRE_OWNER_CARD=false' \"\$INSTALL_DIR/.env\" || exit 1
 
     # A second installer run must retain the values written by the first run,
     # even when the invoking process now carries different defaults.
@@ -193,11 +200,59 @@ export ENABLE_OPENCLAW=true
     source installers/phases/06-directories.sh
     grep -qx 'TTS_WORKERS=1' \"\$INSTALL_DIR/.env\" || exit 1
 
+    # Owner overrides of documented llama.cpp runtime settings must persist
+    # across a rerun (issue #7964).
+    sed -i 's/^LLAMA_PARALLEL=.*/LLAMA_PARALLEL=4/' \"\$INSTALL_DIR/.env\"
+    sed -i 's/^LLAMA_ARG_FLASH_ATTN=.*/LLAMA_ARG_FLASH_ATTN=on/' \"\$INSTALL_DIR/.env\"
+    sed -i 's/^LLAMA_ARG_CACHE_TYPE_K=.*/LLAMA_ARG_CACHE_TYPE_K=q8_0/' \"\$INSTALL_DIR/.env\"
+    sed -i 's/^LLAMA_ARG_CACHE_TYPE_V=.*/LLAMA_ARG_CACHE_TYPE_V=q8_0/' \"\$INSTALL_DIR/.env\"
+    # An enabled owner-card gate must survive the same real installer rerun.
+    sed -i 's/^HERMES_REQUIRE_OWNER_CARD=.*/HERMES_REQUIRE_OWNER_CARD=true/' \"\$INSTALL_DIR/.env\"
+    unset HERMES_REQUIRE_OWNER_CARD
+    unset LLAMA_PARALLEL LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V
+    source installers/phases/06-directories.sh
+    echo 'Saved llama.cpp tuning after installer rerun:'
+    grep -E '^LLAMA_(PARALLEL|ARG_FLASH_ATTN|ARG_CACHE_TYPE_[KV])=' \"\$INSTALL_DIR/.env\"
+    grep -qx 'LLAMA_PARALLEL=4' \"\$INSTALL_DIR/.env\" || {
+        echo 'Owner LLAMA_PARALLEL override was not preserved:' >&2
+        grep '^LLAMA_PARALLEL=' \"\$INSTALL_DIR/.env\" >&2
+        exit 1
+    }
+    grep -qx 'LLAMA_ARG_FLASH_ATTN=on' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'LLAMA_ARG_CACHE_TYPE_K=q8_0' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'LLAMA_ARG_CACHE_TYPE_V=q8_0' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'HERMES_REQUIRE_OWNER_CARD=true' \"\$INSTALL_DIR/.env\" || {
+        echo 'Owner Hermes gate was not preserved:'
+        grep '^HERMES_REQUIRE_OWNER_CARD=' \"\$INSTALL_DIR/.env\"
+        exit 1
+    }
+
+    # An explicit installer value in the process environment must override
+    # the saved .env value on a rerun.
+    export LLAMA_PARALLEL=2
+    export LLAMA_ARG_FLASH_ATTN=off
+    export LLAMA_ARG_CACHE_TYPE_K=f32
+    export LLAMA_ARG_CACHE_TYPE_V=f32
+    export HERMES_REQUIRE_OWNER_CARD=false
+    source installers/phases/06-directories.sh
+    grep -qx 'LLAMA_PARALLEL=2' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'LLAMA_ARG_FLASH_ATTN=off' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'LLAMA_ARG_CACHE_TYPE_K=f32' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'LLAMA_ARG_CACHE_TYPE_V=f32' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'HERMES_REQUIRE_OWNER_CARD=false' \"\$INSTALL_DIR/.env\" || exit 1
+    unset HERMES_REQUIRE_OWNER_CARD
+    unset LLAMA_PARALLEL LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V
+
     # An owner override must survive subsequent installs.
-    sed -i 's/^TTS_WORKERS=.*/TTS_WORKERS=3/' \"\$INSTALL_DIR/.env\"
+    sed -i 's/^TTS_WORKERS=.*/TTS_WORKERS=2/' \"\$INSTALL_DIR/.env\"
+    sed -i 's/^TTS_THREADS=.*/TTS_THREADS=2/' \"\$INSTALL_DIR/.env\"
     sed -i 's/^DASHBOARD_API_PORT=.*/DASHBOARD_API_PORT=13002/' \"\$INSTALL_DIR/.env\"
     source installers/phases/06-directories.sh
-    grep -qx 'TTS_WORKERS=3' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'TTS_WORKERS=2' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'TTS_THREADS=2' \"\$INSTALL_DIR/.env\" || exit 1
+    sed -i 's/^TTS_WORKERS=.*/TTS_WORKERS=3/' \"\$INSTALL_DIR/.env\"
+    source installers/phases/06-directories.sh
+    grep -qx 'TTS_THREADS=1' \"\$INSTALL_DIR/.env\" || exit 1
     grep -qx 'DASHBOARD_API_PORT=13002' \"\$INSTALL_DIR/.env\" || exit 1
     [[ \"\$DASHBOARD_API_PORT\" == 13002 ]] || exit 1
 " 2>/dev/null; then
@@ -268,6 +323,11 @@ if [[ "$ENV_GENERATED" == true && -f "$INSTALL_DIR/.env" ]]; then
         pass "Small Docker guest defaults to one TTS worker and preserves an explicit override"
     else
         fail "TTS worker default or override was not preserved"
+    fi
+    if grep -q '^TTS_THREADS=1$' "$INSTALL_DIR/.env"; then
+        pass "TTS threads are capped after an explicit worker-count increase"
+    else
+        fail "TTS thread default or override was not preserved"
     fi
 
     if grep -q '^WHISPER_CPU_LIMIT=4.0$' "$INSTALL_DIR/.env" \
@@ -359,8 +419,6 @@ QDRANT_GRPC_PORT=6334
 QDRANT_API_KEY=test
 LITELLM_PORT=4000
 LITELLM_KEY=test
-OPENCLAW_PORT=7860
-OPENCLAW_TOKEN=test
 SEARXNG_PORT=8888
 DASHBOARD_API_KEY=test
 LIVEKIT_API_KEY=test

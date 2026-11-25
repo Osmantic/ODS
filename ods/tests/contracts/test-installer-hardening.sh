@@ -234,6 +234,8 @@ assert_contains "$bootstrap" '"\$\{ODS_UI_MODE:-auto\}" == "plain"' "bootstrap s
 assert_contains "$bootstrap" 'Removing incomplete install because --force was provided' "bootstrap --force should remove incomplete install dirs without prompting"
 assert_contains "$bootstrap" 'Re-run with --force to remove it automatically' "bootstrap --non-interactive should fail with a force hint instead of prompting"
 assert_contains "$bootstrap" 'remove_install_dir()' "bootstrap should centralize incomplete install cleanup"
+assert_contains "$bootstrap" 'incomplete_install_is_removable "\$INSTALL_DIR" \|\| refuse_unidentified_incomplete_install' "bootstrap should only remove incomplete installs that are empty or carry the ODS source tree"
+assert_contains "$bootstrap" 'read -r response < /dev/tty' "bootstrap prompts should read the answer from the terminal, not the piped script"
 assert_contains "$bootstrap" 'sudo -n rm -rf -- "\$target_dir"' "bootstrap --force should retry root-owned container data cleanup with sudo -n"
 assert_contains "$bootstrap" 'root-owned container data' "bootstrap sudo fallback should explain root-owned Docker data cleanup"
 assert_contains "$bootstrap" 'validate_force_reinstall_target()' "bootstrap should fingerprint a complete install before forced replacement"
@@ -493,16 +495,19 @@ assert_contains "$macos_ui" 'ODS_DOWNLOAD_HTTP_VERSION:-' "macOS bootstrap model
 assert_contains "$macos_ui" '--http1.1' "macOS bootstrap model download should default to the hardened HTTP/1.1 path"
 assert_contains "$macos_ui" 'download-hf-artifact.py' "macOS bootstrap model download should fall back to Hugging Face client for Xet-backed artifacts"
 assert_not_contains "$macos_ui" '--speed-time 30 --speed-limit 10240' "macOS bootstrap model download should not abort active slow transfers after 30 seconds"
-assert_contains "$macos_installer" '_trigger_macos_stt_model_download' "macOS installer should trigger STT preload through a bounded helper"
-assert_contains "$macos_installer" 'ODS_STT_TRIGGER_TIMEOUT_SECONDS:-30' "macOS STT preload should bound the trigger request"
-assert_contains "$macos_installer" 'ODS_STT_CACHE_WAIT_SECONDS:-900' "macOS STT preload should poll cache readiness after triggering download"
-assert_contains "$macos_installer" '_wait_macos_stt_model_cached' "macOS installer should poll STT cache readiness after triggering download"
-assert_not_contains "$macos_installer" '--max-time 600 -X POST' "macOS installer should not block on the long STT preload POST"
+assert_contains "installers/macos/lib/post-pixel-install.sh" '_trigger_macos_stt_model_download' "macOS installer should trigger STT preload through a bounded helper"
+assert_contains "installers/macos/lib/post-pixel-install.sh" 'ODS_STT_TRIGGER_TIMEOUT_SECONDS:-30' "macOS STT preload should bound the trigger request"
+assert_contains "installers/macos/lib/post-pixel-install.sh" 'ODS_STT_CACHE_WAIT_SECONDS:-900' "macOS STT preload should poll cache readiness after triggering download"
+assert_contains "installers/macos/lib/post-pixel-install.sh" '_wait_macos_stt_model_cached' "macOS installer should poll STT cache readiness after triggering download"
+assert_not_contains "installers/macos/lib/post-pixel-install.sh" '--max-time 600 -X POST' "macOS installer should not block on the long STT preload POST"
 
 echo "[contract] Windows bootstrap model download uses retry wrapper"
 win_installer="installers/windows/install-windows.ps1"
 win_ui="installers/windows/lib/ui.ps1"
-win_lemonade_helper="installers/windows/lib/backend-contract.ps1"
+win_task_helper="installers/windows/lib/backend-contract.ps1"
+win_native_runtime="installers/windows/lib/native-llama-runtime.ps1"
+win_native_legacy="installers/windows/lib/native-llama-legacy.ps1"
+win_portal_amd="installers/windows/lib/wsl-portal-amd.ps1"
 assert_contains "$win_installer" 'Invoke-DownloadWithRetry -Url \$tierConfig\.GgufUrl' "Windows installer should retry/resume transient GGUF download failures"
 assert_not_contains "$win_installer" '\$dlOk = Show-ProgressDownload -Url \$tierConfig\.GgufUrl' "Windows installer bootstrap model path should not bypass retry wrapper"
 assert_contains "$win_ui" 'ODS_DOWNLOAD_CONNECT_TIMEOUT' "Windows bootstrap model download should allow configurable connect timeout"
@@ -511,50 +516,38 @@ assert_contains "$win_ui" 'ODS_DOWNLOAD_LOW_SPEED_LIMIT' "Windows bootstrap mode
 assert_contains "$win_ui" 'ODS_DOWNLOAD_HTTP_VERSION' "Windows bootstrap model download should allow configurable curl HTTP transport"
 assert_contains "$win_ui" '--http1.1' "Windows bootstrap model download should default to the hardened HTTP/1.1 path"
 assert_contains "$win_ui" 'download-hf-artifact.py' "Windows bootstrap model download should fall back to Hugging Face client for Xet-backed artifacts"
-assert_contains "$win_installer" 'Get-ODSLemonadeLaunchContract' "Windows installer should select Lemonade arguments by executable version"
-assert_contains "$win_installer" 'New-ODSLemonadeScheduledTaskAction' "Windows installer should launch Lemonade through the shared task contract"
-assert_contains "$win_installer" 'Start-ODSLemonadeDirectProcess' "Windows installer should use the shared direct-launch fallback"
-assert_contains "$win_installer" 'Set-ODSLemonadeModernRuntimeConfig' "Windows installer should configure and verify Lemonade 10.7 after startup"
-assert_contains "$win_installer" 'Format-ODSLemonadeLaunchDiagnostics' "Windows installer should report child/task/log diagnostics before fallback"
-assert_not_contains "$win_installer" 'serve --port .*--no-tray .*--llamacpp .*--extra-models-dir' "Windows installer must not hard-code obsolete Lemonade arguments"
-assert_contains "$win_lemonade_helper" 'extra_models_dir = ' "Windows Lemonade helper should post the 10.7 extra_models_dir key"
-assert_contains "$win_lemonade_helper" 'llamacpp = \[ordered\]@\{' "Windows Lemonade helper should post the 10.7 nested llama.cpp config"
-assert_contains "$win_lemonade_helper" 'backend = "vulkan"' "Windows Lemonade helper should request the Vulkan backend"
-assert_contains "$win_lemonade_helper" 'Authorization.*Bearer' "Windows Lemonade helper should authenticate internal configuration"
-assert_contains "$win_lemonade_helper" 'RedirectStandardOutput' "Windows Lemonade direct fallback should detach stdout from SSH/CLI parents"
-assert_contains "$win_lemonade_helper" 'RedirectStandardError' "Windows Lemonade direct fallback should detach stderr from SSH/CLI parents"
-assert_contains "$win_lemonade_helper" 'Start-Process -FilePath \$Contract\.ExecutablePath' "Windows Lemonade direct fallback should launch in the user session"
-assert_contains "$win_lemonade_helper" 'LaunchMethod = "start-process"' "Windows Lemonade direct fallback should report the user-session launch method"
-assert_not_contains "$win_lemonade_helper" 'Invoke-CimMethod -ClassName Win32_Process -MethodName Create' "Windows Lemonade direct fallback must not create session-0 WMI orphans"
-assert_contains "$win_lemonade_helper" 'ChangeExtension\(\$DiagnosticLogPath, "\.task\.ps1"\)' "Windows Lemonade scheduled-task wrapper should be written to a launcher file"
-assert_contains "$win_lemonade_helper" '-File `"\$escapedLauncherPath`"' "Windows Lemonade scheduled-task action should use a short launcher-file command"
-assert_not_contains "$win_lemonade_helper" 'EncodedCommand' "Windows Lemonade scheduled-task action must not embed a long encoded wrapper"
-assert_contains "$win_lemonade_helper" 'function Resolve-ODSInteractiveScheduledTaskUser' "Windows scheduled task helper should resolve the interactive user centrally"
-assert_contains "$win_lemonade_helper" 'whoami\.exe' "Windows scheduled task helper should prefer a fully qualified interactive identity"
-assert_contains "$win_lemonade_helper" 'New-ODSInteractiveScheduledTaskPrincipal' "Windows scheduled task helper should expose a shared principal constructor"
+# Windows AMD runs ggml-org llama-server.exe natively (the logon task of a
+# legacy installation, or the Portal's per-user task). The launcher-file task,
+# limited principal, user-session start, scoped cleanup and loopback health
+# checks are also checked structurally further down.
+assert_contains "$win_installer" 'Initialize-ODSNativeLlamaLegacyRuntime' "Windows installer should stage, verify and qualify the pinned llama.cpp release before changing anything"
+assert_contains "$win_native_legacy" 'Test-ODSNativeLlamaQualification -ExecutablePath \$runtime\.ExecutablePath -ExpectedBuild \$pin\.Build' "Windows installer should qualify the pinned llama-server build and its Vulkan device"
+assert_contains "$win_installer" 'Invoke-ODSNativeLlamaLegacyCutover' "Windows installer should start llama-server through the shared logon-task cutover"
+assert_contains "$win_native_legacy" 'llama-server did not start: \$\(Get-ODSNativeLlamaLegacyFailure\)' "Windows installer should report the recorded llama-server start failure"
+assert_contains "$win_installer" 'llama-server log: ' "Windows installer should point at the llama-server log when the start fails"
+for native_file in "$win_native_runtime" "$win_native_legacy" "$win_portal_amd"; do
+  assert_not_contains "$native_file" 'Invoke-CimMethod -ClassName Win32_Process -MethodName Create' "$native_file must not create session-0 WMI orphans"
+  assert_not_contains "$native_file" 'EncodedCommand' "$native_file scheduled tasks must not embed a long encoded command"
+  assert_not_contains "$native_file" '-NoNewWindow' "$native_file must start llama-server in its own console, detached from SSH/CLI parents"
+  assert_not_contains "$native_file" 'Stop-Process -Name|Get-Process -Name|taskkill' "$native_file must never stop a llama-server by process name"
+  assert_not_contains "$native_file" "'--api-key'," "$native_file must never put the API key on the llama-server command line"
+done
+assert_contains "$win_task_helper" 'function Resolve-ODSInteractiveScheduledTaskUser' "Windows scheduled task helper should resolve the interactive user centrally"
+assert_contains "$win_task_helper" 'whoami\.exe' "Windows scheduled task helper should prefer a fully qualified interactive identity"
+assert_contains "$win_task_helper" 'New-ODSInteractiveScheduledTaskPrincipal' "Windows scheduled task helper should expose a shared principal constructor"
 assert_not_contains "$win_installer" 'New-ScheduledTaskPrincipal -UserId \$env:USERNAME' "Windows installer must not register interactive tasks with an unqualified USERNAME"
 assert_not_contains "installers/windows/ods.ps1" 'New-ScheduledTaskPrincipal -UserId \$env:USERNAME' "ods.ps1 must not register interactive tasks with an unqualified USERNAME"
 assert_not_contains "installers/windows/phases/07-devtools.ps1" 'New-ScheduledTaskPrincipal -UserId \$env:USERNAME' "Windows host-agent phase must not register interactive tasks with an unqualified USERNAME"
 assert_contains "$win_installer" 'New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited' "Windows installer should register limited interactive tasks through the shared principal helper"
 assert_contains "installers/windows/ods.ps1" 'New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited' "ods.ps1 should register limited interactive tasks through the shared principal helper"
 assert_contains "installers/windows/phases/07-devtools.ps1" 'New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited' "Windows host-agent phase should register limited interactive tasks through the shared principal helper"
-assert_contains "$win_installer" 'Lemonade scheduled task did not start a server process' "Windows installer should recover when Task Scheduler reports success without a Lemonade process"
-assert_contains "$win_installer" 'Start-Process msiexec\.exe .* -PassThru' "Windows installer should capture Lemonade MSI exit codes"
-assert_contains "$win_installer" 'Lemonade MSI exited with code' "Windows installer should report failed Lemonade MSI exit codes honestly"
-assert_contains "$win_installer" 'INSTALLDIR=' "Windows installer should install Lemonade into the normal user's runtime directory"
-assert_contains "$win_installer" '/L\*V' "Windows installer should retain a verbose Lemonade MSI log for support"
-assert_not_contains "$win_installer" 'ALLUSERS=1' "Windows installer must not require an elevated all-users Lemonade MSI install"
-assert_contains "$win_installer" '\$_managedBin = if \(\$_resolvedExe\)' "Windows installer should scope Lemonade cleanup to the resolved ODS runtime directory"
-assert_not_contains "$win_installer" '\$_knownNames -contains \$_name' "Windows installer must not stop unrelated Lemonade processes by executable name alone"
-assert_contains "installers/windows/lib/backend-contract.ps1" 'Get-ODSLemonadeExeCandidatePaths' "Windows Lemonade resolver should expose candidate paths for diagnostics"
-assert_contains "installers/windows/lib/backend-contract.ps1" 'Get-ODSLemonadeUserInstallDir' "Windows Lemonade resolver should support the per-user MSI location"
-assert_contains "installers/windows/lib/backend-contract.ps1" 'LOCALAPPDATA' "Windows Lemonade resolver should probe the current user's AppData location"
 assert_contains "$win_installer" 'Get-ODSWindowsUserDockerClientArgs' "Windows Docker fallback should preserve an existing user Docker config"
 assert_contains "$win_installer" 'image validation failed with the install-scoped Docker config' "Windows Docker fallback should cover image validation before builds"
 assert_contains "$win_installer" 'Continuing Compose preflight and service launch with the user'\''s Docker config' "Windows Docker fallback should carry through Compose preflight and launch"
 assert_contains "$win_installer" 'Compose service launch failed with the install-scoped Docker config' "Windows Docker fallback should retry compose up"
 assert_contains "$win_installer" 'Managed-container inspection failed with the install-scoped Docker config' "Windows Docker fallback should retry managed-container inspection"
-assert_contains "$win_installer" 'ODSLemonadeRuntime' "Windows installer should use a stable Lemonade scheduled task name"
+assert_contains "$win_native_legacy" "ODSNativeLlamaLegacyTaskName = 'ODSNativeLlamaRuntime'" "Windows legacy llama-server should use a stable scheduled task name"
+assert_contains "$win_portal_amd" "ODSPortalRuntimeTaskPrefix = 'ODSLlamaServerRuntime-'" "Windows Portal llama-server should use a stable per-user scheduled task name"
 assert_contains "$win_installer" 'Invoke-WindowsSttModelDownloadTrigger' "Windows installer should trigger STT preload through a bounded helper"
 assert_contains "$win_installer" '--max-time 30 -X POST' "Windows installer STT preload should use a bounded curl trigger"
 assert_contains "$win_installer" 'Wait-WindowsSttModelCached -ModelUrl' "Windows installer should poll STT cache readiness after triggering download"
@@ -608,66 +601,100 @@ if 'exec bash "$bashScript"' not in wrapper:
 print("windows-upgrade-launcher-supervised")
 PY
 
-python3 - "$win_installer" >"$tmpdir/windows-native-llama-task.out" <<'PY'
+python3 - "$win_installer" "$win_native_legacy" "$win_native_runtime" "$win_portal_amd" >"$tmpdir/windows-native-llama-task.out" <<'PY'
+import re
 import sys
 from pathlib import Path
 
-text = Path(sys.argv[1]).read_text(encoding="utf-8")
-start = text.index('$nativeLlamaTaskName = "ODSNativeLlamaRuntime"')
-end = text.index('Write-AI "Waiting for llama-server to load model..."', start)
-block = text[start:end]
-for needle in (
-    "New-ScheduledTaskAction",
-    "-Execute $script:LLAMA_SERVER_EXE",
-    "$nativeLlamaPrincipal = New-ODSInteractiveScheduledTaskPrincipal",
-    "-RunLevel Limited",
-    "Register-ScheduledTask -TaskName $nativeLlamaTaskName",
-    "Start-ScheduledTask -TaskName $nativeLlamaTaskName",
-    "Get-CimInstance Win32_Process",
-):
-    if needle not in block:
-        raise SystemExit(f"native llama runtime task missing {needle}")
-if "Start-Process -FilePath $script:LLAMA_SERVER_EXE" in block:
+installer_path, legacy, runtime, portal = sys.argv[1:5]
+
+
+def ps_function(path, name):
+    """A top-level PowerShell function, through the closing brace in column 0."""
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    for start, line in enumerate(lines):
+        if re.match(rf"function {re.escape(name)}[ ({{]", line):
+            for end in range(start, len(lines)):
+                if lines[end].startswith("}"):
+                    return "\n".join(lines[start:end + 1])
+    raise SystemExit(f"{path}: function {name} not found")
+
+
+required = (
+    # Short task arguments that run a launcher file, never an encoded command.
+    (legacy, "Get-ODSNativeLlamaLegacyTaskArguments", """-File "' + (Join-Path $InstallDir 'ods.ps1') + '" native-llm-start"""),
+    (portal, "Get-ODSPortalLauncherArguments", """-File "' + (Join-Path (Get-ODSPortalRuntimeDir) 'launch.ps1')"""),
+    (legacy, "Register-ODSNativeLlamaLegacyTask", "-Argument (Get-ODSNativeLlamaLegacyTaskArguments $InstallDir)"),
+    # The user's own limited principal (resolved through whoami.exe), so the
+    # limited host agent can stop the server for a model switch.
+    (legacy, "Register-ODSNativeLlamaLegacyTask", "$principal = New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited"),
+    (legacy, "Register-ODSNativeLlamaLegacyTask", "-Principal $principal"),
+    (portal, "Register-ODSPortalRuntimeTask", "-Principal (New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited)"),
+    # Its own hidden console in the user's session, logging to a file.
+    (legacy, "Start-ODSNativeLlamaLegacyProcess", "-WindowStyle Hidden -PassThru"),
+    (runtime, "Invoke-ODSNativeLlamaRuntime", "-WindowStyle Hidden -PassThru"),
+    (runtime, "New-ODSNativeLlamaLaunchArguments", "'--log-file'"),
+    # Loopback only, keyed through a file; health and proof use numeric loopback.
+    (runtime, "New-ODSNativeLlamaLaunchArguments", "'--host', '127.0.0.1'"),
+    (runtime, "New-ODSNativeLlamaLaunchArguments", "'--api-key-file'"),
+    (legacy, "New-ODSNativeLlamaLegacyLaunch", "'--host', '127.0.0.1'"),
+    (legacy, "New-ODSNativeLlamaLegacyLaunch", "'--api-key-file'"),
+    (runtime, "Invoke-ODSNativeLlamaHttp", '[Net.HttpWebRequest]::Create("http://127.0.0.1:$Port$Path")'),
+    (runtime, "Invoke-ODSNativeLlamaHttp", "'Bearer ' + $ApiKey"),
+    (runtime, "Get-ODSNativeLlamaHealthState", "-Path '/health'"),
+    # Stops are scoped to the resolved executable, never a process name.
+    (legacy, "Stop-ODSNativeLlamaLegacyRuntime", "(Join-Path (Join-Path $InstallDir 'llama-server') 'llama-server.exe')"),
+    (legacy, "Stop-ODSNativeLlamaLegacyProcess", "[string]$Node.ExecutablePath"),
+    # A task that reports success proves nothing: the installer checks the
+    # listener and executable the started server recorded.
+    (legacy, "Invoke-ODSNativeLlamaLegacyCutover", "Register-ODSNativeLlamaLegacyTask -InstallDir $InstallDir"),
+    (legacy, "Invoke-ODSNativeLlamaLegacyCutover", "Start-ScheduledTask -TaskName $script:ODSNativeLlamaLegacyTaskName"),
+    (legacy, "Invoke-ODSNativeLlamaLegacyCutover", "Assert-ODSNativeLlamaListener $Port ([int]$ready.ProcessId) ([string]$ready.ExecutablePath)"),
+    (runtime, "Assert-ODSNativeLlamaListener", "$listeners[0].LocalAddress -ne '127.0.0.1'"),
+)
+for path, function, needle in required:
+    if needle not in ps_function(path, function):
+        raise SystemExit(f"{path} {function} is missing {needle}")
+if "-Argument (Get-ODSPortalLauncherArguments)" not in Path(portal).read_text(encoding="utf-8"):
+    raise SystemExit("the Portal llama-server task does not run its launcher file")
+# The elevated installer never starts llama-server itself.
+cutover = ps_function(legacy, "Invoke-ODSNativeLlamaLegacyCutover")
+installer = Path(installer_path).read_text(encoding="utf-8")
+if "Start-Process" in cutover or "Start-ODSNativeLlamaLegacyProcess" in cutover + installer or \
+        re.search(r"Start-Process[^\n]*llama", installer, re.IGNORECASE):
     raise SystemExit("elevated installer still launches native llama-server directly")
 print("windows-native-llama-runtime-limited")
 PY
 assert_contains "$tmpdir/windows-upgrade-launcher.out" 'windows-upgrade-launcher-supervised' "Windows installer should supervise the full-model upgrade in the scheduled task"
+assert_contains "$tmpdir/windows-native-llama-task.out" 'windows-native-llama-runtime-limited' "Windows installer should start llama-server through a limited launcher-file task and prove its listener"
 win_phase04="installers/windows/phases/04-requirements.ps1"
-assert_contains "$win_phase04" 'function Get-WindowsODSLemonadeProcesses' "Windows requirements phase should identify a managed AMD Lemonade listener"
-assert_contains "$win_phase04" '\$gpuInfo\.Backend -eq "amd" -and -not \$cloudMode' "Windows requirements phase should preserve AMD/Lemonade native runtime"
-assert_not_contains "$win_phase04" 'Stop-WindowsODSLemonadePortConflicts|Stop-Process -Id' "Windows installer must not kill unrelated Lemonade during preflight or dry-run"
+assert_contains "$win_phase04" 'function Test-WindowsODSNativeLlmOwnsPort' "Windows requirements phase should identify this installation's own AMD model runtime listener"
+assert_contains "$win_phase04" '-ieq \[string\]\$listener\[0\]\.ExecutablePath' "Windows requirements phase should identify the AMD model runtime by its executable, never its name"
+assert_contains "$win_phase04" '\$gpuInfo\.Backend -eq "amd" -and -not \$cloudMode' "Windows requirements phase should preserve the AMD native runtime"
+assert_not_contains "$win_phase04" 'Stop-WindowsODSLemonadePortConflicts|Stop-Process -Id' "Windows installer must not kill a port holder during preflight or dry-run"
 assert_contains "$win_phase04" 'if \(\$NonInteractive -and -not \$Force -and -not \$DryRun\)' "Non-interactive Windows installs should fail closed on occupied selected ports"
 assert_contains "installers/windows/ods.ps1" 'Invoke-ODSSttModelDownloadTrigger' "ods.ps1 repair voice should trigger STT preload through a bounded helper"
 assert_not_contains "installers/windows/ods.ps1" 'Invoke-WebRequest -Method POST -Uri \$voice\.SttModelUrl -TimeoutSec 3600' "ods.ps1 repair voice should not block on the long STT preload POST"
-assert_contains "installers/windows/ods.ps1" 'Start-ODSLemonadeDirectProcess -Contract \$launchContract -DiagnosticLogPath \$diagnosticLog' "ods.ps1 should use the shared detached direct Lemonade fallback"
-assert_contains "installers/windows/ods.ps1" 'Set-ODSLemonadeModernRuntimeConfig' "ods.ps1 should configure Lemonade 10.7 after health"
-assert_not_contains "installers/windows/ods.ps1" 'serve --port .*--no-tray .*--llamacpp .*--extra-models-dir' "ods.ps1 must not hard-code obsolete Lemonade arguments"
+assert_contains "installers/windows/ods.ps1" 'Start-ODSNativeLlamaLegacyProcess -Launch \$Plan\.Launch' "ods.ps1 should start llama-server through the shared detached, proof-gated launch"
 assert_contains "installers/windows/ods.ps1" 'Sync-ODSNativeInferenceConfig' "ods.ps1 should sync native runtime config from .env"
-assert_contains "installers/windows/ods.ps1" 'AMD_INFERENCE_PORT' "ods.ps1 should honor configured AMD Lemonade port"
-assert_contains "installers/windows/ods.ps1" 'LEMONADE_HEALTH_URL = "http://127\.0\.0\.1:\$\(\$script:LEMONADE_PORT\)/api/v1/health"' "ods.ps1 should health-check the configured Lemonade port over numeric loopback"
+assert_contains "installers/windows/ods.ps1" 'AMD_INFERENCE_PORT' "ods.ps1 should honor the configured AMD llama-server port"
+assert_contains "installers/windows/ods.ps1" 'healthUrl = "http://127\.0\.0\.1:\$\(\$script:NATIVE_LLM_PORT\)/health"' "ods.ps1 should health-check the configured llama-server port over numeric loopback"
 assert_contains "installers/windows/ods.ps1" 'ODS_MODEL_UPGRADE_TASK_NAME = "ODSModelUpgrade"' "ods.ps1 should know the supervised full-model upgrade task name"
 assert_contains "installers/windows/ods.ps1" 'function Test-ODSBootstrapUpgradeStaleActive' "ods.ps1 should detect stale active bootstrap upgrades"
 assert_contains "installers/windows/ods.ps1" 'Start-ScheduledTask -TaskName \$script:ODS_MODEL_UPGRADE_TASK_NAME' "ods.ps1 should resume the supervised full-model upgrade task"
 assert_contains "installers/windows/ods.ps1" '\$staleSeconds = 120' "ods.ps1 should retry stale full-model upgrades during the release lifecycle window"
 assert_contains "installers/windows/ods.ps1" 'Invoke-BootstrapUpgradeResume' "ods.ps1 start/restart should attempt bootstrap upgrade recovery"
 
-echo "[contract] Windows Lemonade dashboard activation uses native runtime health"
+echo "[contract] Windows dashboard activation relaunches llama-server through ods.ps1"
 host_agent="bin/ods-host-agent.py"
-assert_contains "$host_agent" '_is_windows_host_lemonade' "host-agent missing Windows host-backed Lemonade detection"
-assert_contains "$host_agent" '_restart_windows_lemonade\(env\)' "host-agent should restart Windows Lemonade through the native runtime path"
-assert_contains "$host_agent" 'AMD_INFERENCE_PORT' "host-agent should health-check Windows Lemonade on AMD_INFERENCE_PORT"
+assert_contains "$host_agent" '"native-llm-restart"' "host-agent should relaunch the Windows llama-server through ods.ps1 native-llm-restart"
+assert_contains "$host_agent" 'AMD_INFERENCE_PORT' "host-agent should health-check the Windows llama-server on AMD_INFERENCE_PORT"
 assert_not_contains "$host_agent" '\$existingTask = Get-ScheduledTask -TaskName \$taskName' "host-agent dashboard activation must not block on Task Scheduler registration"
-assert_not_contains "$host_agent" 'Register-ScheduledTask -TaskName \$taskName' "host-agent dashboard activation should use direct Lemonade launch"
+assert_not_contains "$host_agent" 'Register-ScheduledTask -TaskName \$taskName' "host-agent dashboard activation must not register a runtime task"
 assert_not_contains "$host_agent" 'Start-ScheduledTask -TaskName \$taskName' "host-agent dashboard activation should not wait on Task Scheduler"
-assert_contains "$host_agent" 'LemonadeServer.exe' "host-agent should accept current Lemonade MSI executable aliases"
-assert_contains "$host_agent" 'Start-ODSLemonadeDirectProcess -Contract \$launchContract -DiagnosticLogPath \$diagnosticLog' "host-agent should use the shared detached direct Lemonade fallback"
-assert_contains "$host_agent" 'Set-ODSLemonadeModernRuntimeConfig' "host-agent should configure and verify Lemonade 10.7"
-assert_contains "$host_agent" 'Invoke-ODSTaskkillViaWmi' "host-agent should clear session-0 Lemonade orphans after normal termination fails"
-assert_contains "$host_agent" 'Get-ODSPortOwners' "host-agent should snapshot Lemonade port ownership instead of probing per process"
-assert_not_contains "$host_agent" '\$existingTaskMatches' "host-agent should not reuse a stale Lemonade task contract"
-assert_not_contains "$host_agent" '\$argString = "serve --port .*--no-tray' "host-agent must not embed obsolete Lemonade 10.7 arguments"
+assert_not_contains "$host_agent" 'Lemonade(Server)?\.exe|lemonade-server' "host-agent must not start or stop Lemonade processes"
 
-echo "[contract] Windows Lemonade Hermes uses cancellable model-router path"
+echo "[contract] Windows AMD Hermes uses the cancellable model-router path"
 phase06_win="installers/windows/phases/06-directories.ps1"
 assert_contains "installers/windows/lib/env-generator.ps1" 'http://model-router:9099/v1' "Windows AMD Hermes should route through model-router, not direct Lemonade"
 assert_contains "$phase06_win" 'local-lemonade' "Windows AMD Hermes should render compact local profile"
@@ -676,7 +703,7 @@ assert_contains "$phase06_win" 'extensions-library-bundle\\services' "Windows in
 assert_contains "$phase06_win" 'extensions\\library\\services' "Windows installer should copy product extensions library templates"
 assert_contains "$phase06_win" 'data/extensions-library' "Windows installer should populate data/extensions-library for dashboard extension installs"
 assert_contains "scripts/build-installation-context.py" 'local-lemonade' "SOUL builder should expose local-lemonade profile"
-assert_contains "extensions/services/dashboard-api/routers/models.py" '_loaded_model_backend_ready_sync' "dashboard model no-op should verify live backend readiness"
+assert_contains "extensions/services/dashboard-api/routers/models.py" 'loaded_model = _fetch_loaded_model_sync\(\)' "dashboard model no-op should verify the model the live backend serves"
 
 echo "[contract] Linux phase 06 reports substeps on failure"
 phase06="installers/phases/06-directories.sh"
@@ -787,6 +814,7 @@ if PATH="$blackwell_bin:$PATH" bash -c '
   ai_bad() { :; }
   error() { echo "$1"; return 42; }
   source installers/lib/detection.sh
+  ods_is_wsl_host() { return 1; }
   validate_nvidia_blackwell_open_modules
 ' >"$tmpdir/blackwell-proprietary.out" 2>"$tmpdir/blackwell-proprietary.err"; then
   echo "[FAIL] proprietary Blackwell module should block install"
@@ -818,6 +846,7 @@ PATH="$open_bin:$PATH" bash -c '
   ai_bad() { :; }
   error() { echo "$1"; return 42; }
   source installers/lib/detection.sh
+  ods_is_wsl_host() { return 1; }
   validate_nvidia_blackwell_open_modules
 '
 
@@ -826,6 +855,16 @@ assert_contains "installers/lib/detection.sh" 'for mod_path in /lib/modules/"\$\
   "NVIDIA DKMS module glob does not quote the kernel release segment"
 assert_not_contains "installers/lib/detection.sh" 'for mod_path in /lib/modules/\$\{kver\}/updates/dkms/nvidia\*\.ko\*' \
   "NVIDIA DKMS module glob still expands an unquoted kernel release"
+
+echo "[contract] Secure Boot enrollment never installs a root resume unit"
+assert_not_contains "installers/lib/detection.sh" '/etc/systemd/system/' \
+  "Secure Boot enrollment must not write a systemd unit that runs the user-writable installer as root"
+assert_contains "installers/lib/detection.sh" 'resume_command="cd ' \
+  "Secure Boot enrollment must tell the owner how to finish the install"
+assert_contains "installers/phases/01-preflight.sh" '^_ods_remove_obsolete_resume_unit$' \
+  "preflight must remove the obsolete root resume unit left by older installers"
+assert_contains "installers/phases/01-preflight.sh" 'PREFLIGHT_ONLY:-false\}" == "true" \]\] && return 0' \
+  "obsolete resume-unit cleanup must not run in --preflight-only mode"
 
 echo "[contract] catalog selector output is parsed without eval"
 assert_contains "lib/safe-env.sh" 'load_model_selector_env_from_output' "safe env loader missing model selector allowlist"
@@ -897,13 +936,15 @@ assert_contains "installers/macos/install-macos.sh" 'refusing to launch stale im
 assert_not_contains "installers/macos/install-macos.sh" 'wait .*\|\| ai_warn "Build failed' "macOS installer still treats required local build failures as warnings"
 assert_contains "installers/macos/install-macos.sh" '_active_colima start --network-address --network-preferred-route' "macOS installer does not preserve the active profile while enabling the private Colima vmnet route"
 assert_contains "installers/macos/install-macos.sh" 'ODS_MACOS_HOST_GATEWAY' "macOS installer does not persist the private Colima host gateway"
-assert_contains "installers/macos/install-macos.sh" '_configure_macos_host_agent_bridge' "macOS installer does not bridge host-agent actions over private Colima networking"
+assert_contains "installers/macos/lib/host-agent-install.sh" '_configure_macos_host_agent_bridge' "macOS installer does not bridge host-agent actions over private Colima networking"
 assert_contains "installers/macos/install-macos.sh" 'source "\$\{LIB_DIR\}/bridge-manager\.sh"' "macOS installer does not source shared bridge lifecycle code"
 assert_contains "installers/macos/ods-macos.sh" 'source "\$\{LIB_DIR\}/bridge-manager\.sh"' "macOS CLI does not source shared bridge lifecycle code"
 assert_contains "installers/macos/lib/bridge-manager.sh" 'macos_configure_llm_bridge_from_env' "shared macOS bridge manager does not derive bridge state from .env"
 assert_contains "installers/macos/lib/bridge-manager.sh" '--allow-peer' "shared macOS bridge manager does not restrict the Colima peer"
-assert_contains "installers/macos/install-macos.sh" '/v1/model/status' "macOS installer does not verify authenticated host-agent reachability from the dashboard container"
-assert_contains "installers/macos/install-macos.sh" 'Authorization: Bearer' "macOS installer host-agent readiness probe is not authenticated"
+assert_contains "installers/macos/install-macos.sh" 'source "\$\{LIB_DIR\}/host-agent-install\.sh"' "macOS installer does not load shared host-agent setup"
+assert_contains "installers/macos/install-macos.sh" '^ods_macos_install_host_agent$' "macOS installer does not run shared host-agent setup"
+assert_contains "installers/macos/lib/host-agent-install.sh" '/v1/model/status' "macOS installer does not verify authenticated host-agent reachability from the dashboard container"
+assert_contains "installers/macos/lib/host-agent-install.sh" 'Authorization: Bearer' "macOS installer host-agent readiness probe is not authenticated"
 assert_contains "installers/macos/docker-compose.macos.yml" 'ODS_MACOS_HOST_GATEWAY:-host.docker.internal' "macOS compose does not route native inference over the private Colima gateway"
 assert_contains "extensions/services/litellm/compose.apple.yaml" 'ODS_MACOS_HOST_GATEWAY:-host-gateway' "macOS LiteLLM overlay does not route native inference over the private Colima gateway"
 assert_contains "installers/windows/install-windows.ps1" 'Assert-ODSWindowsManagedContainers' "Windows installer does not assert compose-managed containers"

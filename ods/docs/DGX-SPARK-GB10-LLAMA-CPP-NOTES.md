@@ -147,10 +147,34 @@ Validation after `./ods-cli start llm`:
   `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121` or use a GB10-specific
   llama-server image.
 
+## CUDA 13 image for compute capability 12.1 (2026-10)
+
+llama.cpp publishes a CUDA 13 build of each release beside the CUDA 12 one
+(`server-cuda13-<build>` beside `server-cuda-<build>`). The CUDA 12 builds,
+including the ODS default `server-cuda-b11429` (CUDA 12.8), have no kernels
+for compute capability 12.1. The CUDA 13 build does: on an RTX Spark (N1X,
+compute capability 12.1) under WSL it answered `2+2` with `4` and wrote
+coherent text.
+
+ODS now uses it on every GPU of compute capability 12.1, the DGX Spark GB10
+and the RTX Spark N1X:
+
+- Detection records the GPU's compute capability as `GPU_COMPUTE_CAP` in
+  `.env`.
+- `config/backends/nvidia.json` maps `12.1` to `server-cuda13-b11429`, pinned
+  by its multi-arch index digest and recorded in `config/dependency-lock.json`.
+- Phase 06 replaces a CUDA 12 llama.cpp image, or the empty Compose default,
+  with that image right before it writes `.env`; phase 08 pulls it.
+- The host agent applies the same map when the Models page switches models
+  and when it rolls a failed switch back.
+- An owner's own `LLAMA_SERVER_IMAGE` (for example a local `sm_121` build) and
+  any other CUDA 13 build are kept.
+
+Every other NVIDIA GPU keeps the CUDA 12 default. An install made before this
+change fixes itself on the next installer run.
+
 Follow-up ideas:
 
-- Avoid selecting generic llama.cpp CUDA images for GB10 unless the image is
-  known to include `sm_121` / `121a` support.
 - Add a GB10-specific local build path or documented override for
   `LLAMA_SERVER_IMAGE`.
 - Add troubleshooting text for the specific question-mark output pattern:

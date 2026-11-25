@@ -268,3 +268,27 @@ async def test_async_request_and_shutdown_close_both_pools(monkeypatch):
     assert sync_client.is_closed
     assert agent_client._async_client is None
     assert agent_client._sync_client is None
+
+
+def _agent_idle_socket_timeout() -> float:
+    import ast
+
+    agent = Path(__file__).resolve().parents[4] / "bin" / "ods-host-agent.py"
+    tree = ast.parse(agent.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "ThreadedHTTPServer":
+            for stmt in node.body:
+                if (
+                    isinstance(stmt, ast.Assign)
+                    and [getattr(t, "id", None) for t in stmt.targets] == ["request_socket_timeout"]
+                ):
+                    return float(ast.literal_eval(stmt.value))
+    raise AssertionError("ThreadedHTTPServer.request_socket_timeout not found")
+
+
+@pytest.mark.parametrize("limits", [agent_client._SYNC_LIMITS, agent_client._ASYNC_LIMITS])
+def test_pooled_keepalive_expires_well_before_agent_idle_close(limits):
+    # Equal timeouts let the pool reuse a socket the agent is closing; behind
+    # Docker Desktop's proxy that close may never arrive and the GET hangs.
+    assert limits.keepalive_expiry is not None
+    assert limits.keepalive_expiry <= _agent_idle_socket_timeout() / 2

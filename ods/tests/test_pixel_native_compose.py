@@ -31,6 +31,7 @@ class NativeComposeTests(unittest.TestCase):
             'PIXEL_NATIVE_UID': '732', 'PIXEL_INGRESS_GID': '81',
             'PIXEL_NATIVE_INGRESS_IMAGE': 'example.invalid/pixel-node:test',
             'PIXEL_NATIVE_CONFIG_PATH': self.temp.name + '/gateway config.json',
+            'PIXEL_NATIVE_CONFIG_SHA256': 'a' * 64,
             'PIXEL_NATIVE_WORKSPACE': self.temp.name + '/workspace',
             'PIXEL_NATIVE_GATEWAY_PORT': '19876',
             'PIXEL_NATIVE_ACCESS_PORT': '19877',
@@ -71,10 +72,12 @@ class NativeComposeTests(unittest.TestCase):
         self.assertEqual(ingress['environment']['PIXEL_GATEWAY_TRANSPORT'],
                          'docker-desktop-host')
         mounts = {item['target']: item for item in ingress['volumes']}
-        config = mounts['/run/gateway.json']
-        self.assertEqual(config['source'], self.env['PIXEL_NATIVE_CONFIG_PATH'])
+        config = mounts['/run/pixel-config']
+        self.assertEqual(config['type'], 'volume')
+        self.assertEqual(config['source'], 'pixel-native-config')
         self.assertTrue(config['read_only'])
-        self.assert_no_host_path_creation(config)
+        self.assertEqual(ingress['environment']['PIXEL_GATEWAY_TOKEN_FILE'], '/run/pixel-config/' + 'a' * 64 + '.json')
+        self.assertNotIn('/run/gateway.json', mounts)
         self.assertNotIn('ports', ingress)
         self.assertTrue(ingress['read_only'])
         self.assertEqual(ingress['cap_drop'], ['ALL'])
@@ -83,6 +86,23 @@ class NativeComposeTests(unittest.TestCase):
         self.assertEqual(init['command'], ['chown', '732:81', '/runtime'])
         self.assertEqual(init['network_mode'], 'none')
         self.assertEqual(init['cap_add'], ['CHOWN'])
+
+    def test_config_writer_is_explicit_offline_nonroot_and_private(self):
+        result = subprocess.run([
+            'docker', 'compose', '--profile', 'native-config-maintenance', '--project-name', 'native-contract-test',
+            '--project-directory', str(ROOT), '--env-file', '/dev/null', '-f', str(self.base),
+            '-f', str(ROOT / 'extensions/services/pixel-edge/compose.yaml.disabled'),
+            '-f', str(ROOT / 'installers/macos/pixel-native.compose.yaml.disabled'),
+            'config', '--format', 'json'], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        services = json.loads(result.stdout)['services']
+        writer = services['pixel-native-config-write']
+        self.assertEqual(writer['user'], '732:81')
+        self.assertEqual(writer['network_mode'], 'none')
+        self.assertEqual(writer['cap_drop'], ['ALL'])
+        self.assertTrue(writer['read_only'])
+        self.assertEqual(writer['labels']['org.osmantic.ods.native-config-source'], self.env['PIXEL_NATIVE_CONFIG_PATH'])
+        self.assertNotIn('pixel-native-config-write', self.document()['services'])
 
     def test_shared_edge_contract_preserved(self):
         services = self.document()['services']

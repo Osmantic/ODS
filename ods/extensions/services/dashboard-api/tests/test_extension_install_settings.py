@@ -183,11 +183,41 @@ def test_auto_enabled_dependency_is_checked_before_anything_is_activated(test_cl
     assert host.starts == []
 
 
-def test_builtin_enable_keeps_existing_behavior(test_client, host):
-    _definition(host.builtin, "builtin-svc", GOTIFY_COMPOSE.replace("GOTIFY_ADMIN", "BUILTIN_SVC_ADMIN"),
-                [{**ADMIN_PASSWORD, "key": "BUILTIN_SVC_ADMIN_PASSWORD"}], enabled=False)
+BRAVE_LIKE_COMPOSE = (
+    "services:\n  brave:\n    image: ods/brave:1\n    environment:\n"
+    "      - BRAVE_KEY=${BRAVE_KEY:-}\n")
 
-    assert _post(test_client, "/api/extensions/builtin-svc/enable").status_code == 200
+
+@pytest.mark.parametrize("compose", [
+    BRAVE_LIKE_COMPOSE,  # would start with the key empty and fail every request
+    GOTIFY_COMPOSE.replace("GOTIFY_ADMIN_PASSWORD", "BRAVE_KEY"),  # would fail Compose for the stack
+])
+def test_builtin_enable_asks_for_a_required_setting_compose_cannot_supply(test_client, host, compose):
+    builtin = _definition(host.builtin, "brave", compose,
+                          [{"key": "BRAVE_KEY", "required": True, "secret": True}],
+                          enabled=False, name="Brave Search")
+
+    response = _post(test_client, "/api/extensions/brave/enable")
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "missing_configuration"
+    assert detail["message"].startswith("Brave Search needs required settings before it can be started: BRAVE_KEY.")
+    assert (builtin / "compose.yaml.disabled").is_file() and not (builtin / "compose.yaml").exists()
+    assert host.starts == []
+
+    host.configured.add("BRAVE_KEY")
+    assert _post(test_client, "/api/extensions/brave/enable").status_code == 200
+    assert host.starts == [("start", "brave")]
+
+
+def test_builtin_enable_keeps_a_compose_default(test_client, host):
+    # Like a library definition, a non-empty Compose default may already
+    # have initialized data, so it is never replaced by a demand.
+    field = {"key": "PHOTOS_DB_PASSWORD", "required": True, "secret": True}
+    _definition(host.builtin, "photos", DEFAULTED_COMPOSE, [field], enabled=False)
+
+    assert _post(test_client, "/api/extensions/photos/enable").status_code == 200
 
 
 def test_unreadable_declarations_do_not_become_a_new_refusal(test_client, host):
@@ -210,3 +240,29 @@ def test_install_plan_marks_steps_whose_setup_hook_owns_settings():
     assert hooked["missingConfiguration"] == ["APP_SECRET"]
     assert declares_setup_hook({"hooks": {"post_install": "hooks/post.sh"}}) is True
     assert declares_setup_hook({"hooks": {"pre_start": "hooks/pre.sh"}, "setup_hook": " "}) is False
+
+
+def test_langflow_install_asks_for_generatable_secrets_before_compose_up(test_client, host):
+    # The shipped Langflow definition (no setup hook): both secrets are
+    # refused up front with a generator, so the dialog fills and saves them
+    # before the host agent ever runs compose.
+    import shutil
+    from pathlib import Path
+    source = Path(__file__).resolve().parents[3] / "library" / "services" / "langflow"
+    shutil.copytree(source, host.library / "langflow")
+
+    refused = _post(test_client, "/api/extensions/langflow/install")
+
+    assert refused.status_code == 400
+    detail = refused.json()["detail"]
+    assert detail["code"] == "missing_configuration"
+    assert detail["missing_configuration"] == ["LANGFLOW_SUPERUSER_PASSWORD", "LANGFLOW_SECRET_KEY"]
+    generators = {field["key"]: field["format"]["generate"] for field in detail["configuration"]}
+    assert generators == {"LANGFLOW_SUPERUSER_PASSWORD": "password", "LANGFLOW_SECRET_KEY": "hex64"}
+    assert host.installs == [] and not (host.users / "langflow").exists()
+
+    host.configured.update({"LANGFLOW_SUPERUSER_PASSWORD", "LANGFLOW_SECRET_KEY"})
+    response = _post(test_client, "/api/extensions/langflow/install")
+
+    assert response.status_code == 200
+    assert host.installs == ["langflow"]

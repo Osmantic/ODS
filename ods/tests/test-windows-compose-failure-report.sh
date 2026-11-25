@@ -120,7 +120,7 @@ echo services:
 echo   dashboard-api:
 echo     environment:
 echo       DASHBOARD_API_KEY: super-secret-dashboard-key
-echo       OPENCLAW_TOKEN: super-secret-openclaw-token
+echo       HERMES_DASHBOARD_SESSION_TOKEN: super-secret-hermes-session-token
 exit /b 0
 :check_ps
 echo %args% | findstr /I /C:"ps -a" >nul || exit /b 0
@@ -144,7 +144,7 @@ if [[ "$1" == "compose" ]]; then
     echo "  dashboard-api:"
     echo "    environment:"
     echo "      DASHBOARD_API_KEY: super-secret-dashboard-key"
-    echo "      OPENCLAW_TOKEN: super-secret-openclaw-token"
+    echo "      HERMES_DASHBOARD_SESSION_TOKEN: super-secret-hermes-session-token"
     echo "      N8N_USER: super-secret-n8n-user"
     echo "      LANGFUSE_INIT_USER_EMAIL: super-secret-langfuse-email"
     exit 0
@@ -163,7 +163,7 @@ EOF
 GPU_BACKEND=nvidia
 LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b8648
 DASHBOARD_API_KEY=super-secret-dashboard-key
-OPENCLAW_TOKEN=super-secret-openclaw-token
+HERMES_DASHBOARD_SESSION_TOKEN=super-secret-hermes-session-token
 N8N_USER=super-secret-n8n-user
 LANGFUSE_INIT_USER_EMAIL=super-secret-langfuse-email
 OLLAMA_PORT=39134
@@ -190,7 +190,7 @@ EOF
             "ghcr.io/ggml-org/llama.cpp:server-cuda-b8648",
             "Compose config tail (redacted)",
             "DASHBOARD_API_KEY: [REDACTED]",
-            "OPENCLAW_TOKEN: [REDACTED]",
+            "HERMES_DASHBOARD_SESSION_TOKEN: [REDACTED]",
             "N8N_USER: [REDACTED]",
             "LANGFUSE_INIT_USER_EMAIL: [REDACTED]"
         )) {
@@ -198,7 +198,7 @@ EOF
         }
         foreach ($secret in @(
             "super-secret-dashboard-key",
-            "super-secret-openclaw-token",
+            "super-secret-hermes-session-token",
             "super-secret-n8n-user",
             "super-secret-langfuse-email"
         )) {

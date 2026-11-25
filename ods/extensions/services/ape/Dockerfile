@@ -6,6 +6,7 @@ COPY requirements.lock .
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY main.py .
+RUN chmod a+r /app/main.py
 
 RUN adduser --system --no-create-home ape
 

@@ -140,6 +140,11 @@ function validateSnapshot(snapshot) {
   return true;
 }
 
+export function canInitializeSettings(snapshot) {
+  // The first explicit save can initialize private storage without choosing preferences.
+  return validateSnapshot(snapshot) && snapshot.revision === 0 && Object.keys(snapshot.preferences).length === 0;
+}
+
 export function readSettings(payload, expectedRevision) {
   if (!isPlainObject(payload)) throw new Error('Malformed settings payload');
   if (!isPlainObject(payload.configuration)) throw new Error('Missing configuration');
@@ -203,7 +208,7 @@ export function prepareSettingsSave(snapshot, rawChanges) {
   if (typeof snapshot.revision !== 'number' || snapshot.revision < 0 || snapshot.revision > Number.MAX_SAFE_INTEGER) throw new Error('Invalid snapshot revision');
   if (snapshot.revision === Number.MAX_SAFE_INTEGER) throw new Error('Revision at maximum');
   if (!isPlainObject(rawChanges) || Array.isArray(rawChanges)) throw new Error('Changes must be a plain object');
-  if (Object.keys(rawChanges).length === 0) throw new Error('Changes must be non-empty');
+  if (Object.keys(rawChanges).length === 0 && !canInitializeSettings(snapshot)) throw new Error('Changes must be non-empty');
   for (const [k, v] of Object.entries(rawChanges)) {
     if (!isSafeKey(k)) throw new Error(`Invalid control key: ${k}`);
     if (typeof v !== 'string') throw new Error(`Change value must be string for ${k}`);

@@ -108,6 +108,7 @@ bg_task_status() {
 import json
 import sys
 import os
+import re
 from pathlib import Path
 
 registry_path = Path(sys.argv[1])
@@ -133,6 +134,9 @@ except OSError:
     log_file = task.get("log_file", "")
     if log_file and Path(log_file).exists():
         log_content = Path(log_file).read_text()
+        # OpenClaw cleanup reports zero failures in a successful summary.
+        # Ignore only that complete line; errors elsewhere still count.
+        log_content = re.sub(r"(?m)^[ \t]*Done: [0-9]+ removed, 0 failed[ \t]*\r?$", "", log_content)
         if "ERROR" in log_content or "FAILED" in log_content or "failed" in log_content:
             sys.exit(2)  # Failed
         else:
@@ -187,6 +191,7 @@ bg_task_summary() {
 import json
 import sys
 import os
+import re
 from pathlib import Path
 
 registry_path = Path(sys.argv[1])
@@ -210,6 +215,8 @@ for task in tasks:
         log_file = task.get("log_file", "")
         if log_file and Path(log_file).exists():
             log_content = Path(log_file).read_text()
+            # Ignore the successful OpenClaw cleanup line, not other failures.
+            log_content = re.sub(r"(?m)^[ \t]*Done: [0-9]+ removed, 0 failed[ \t]*\r?$", "", log_content)
             if "ERROR" in log_content or "failed" in log_content:
                 status = "failed"
             else:

@@ -78,27 +78,27 @@ enable_service qdrant
 
 # A disabled base must suppress every specialized fragment, even when those
 # fragments would otherwise match the current backend, mode, and GPU count.
-cat > "$FIXTURE/extensions/services/openclaw/compose.apple.yaml" <<'YAML'
+cat > "$FIXTURE/extensions/services/perplexica/compose.apple.yaml" <<'YAML'
 services:
-  openclaw:
+  perplexica:
     environment:
       ODS_DISABLED_OVERLAY: apple
 YAML
-cat > "$FIXTURE/extensions/services/openclaw/compose.nvidia.yaml" <<'YAML'
+cat > "$FIXTURE/extensions/services/perplexica/compose.nvidia.yaml" <<'YAML'
 services:
-  openclaw:
+  perplexica:
     environment:
       ODS_DISABLED_OVERLAY: nvidia
 YAML
-cat > "$FIXTURE/extensions/services/openclaw/compose.multigpu-apple.yaml" <<'YAML'
+cat > "$FIXTURE/extensions/services/perplexica/compose.multigpu-apple.yaml" <<'YAML'
 services:
-  openclaw:
+  perplexica:
     environment:
       ODS_DISABLED_OVERLAY: multigpu-apple
 YAML
-cat > "$FIXTURE/extensions/services/openclaw/compose.multigpu-nvidia.yaml" <<'YAML'
+cat > "$FIXTURE/extensions/services/perplexica/compose.multigpu-nvidia.yaml" <<'YAML'
 services:
-  openclaw:
+  perplexica:
     environment:
       ODS_DISABLED_OVERLAY: multigpu-nvidia
 YAML
@@ -189,8 +189,8 @@ disabled_files="$(file_list_from_env <<< "$disabled_env")"
 assert_auth_last_once "$disabled_files"
 assert_selected_bases "$disabled_files" \
     'extensions/services/litellm/compose.yaml,extensions/services/qdrant/compose.yaml'
-if grep -Fq 'extensions/services/openclaw/compose.' <<< "$disabled_files"; then
-    fail "disabled OpenClaw contributed a specialized overlay: $disabled_files"
+if grep -Fq 'extensions/services/perplexica/compose.' <<< "$disabled_files"; then
+    fail "disabled Perplexica contributed a specialized overlay: $disabled_files"
 fi
 if grep -Fq 'extensions/services/hermes/' <<< "$disabled_files"; then
     fail "disabled Hermes contributed a compose fragment: $disabled_files"
@@ -233,8 +233,8 @@ pass "generated auth overlay is restricted to Apple cloud mode"
 # local and multi-GPU overlays are otherwise eligible.
 local_nvidia="$(bash "$RESOLVER" --script-dir "$FIXTURE" --tier 2 \
     --gpu-backend nvidia --gpu-count 2 --ods-mode local --env | normalize_paths)"
-if grep -Fq 'extensions/services/openclaw/compose.' <<< "$(file_list_from_env <<< "$local_nvidia")"; then
-    fail "disabled OpenClaw contributed a local/NVIDIA/multi-GPU overlay"
+if grep -Fq 'extensions/services/perplexica/compose.' <<< "$(file_list_from_env <<< "$local_nvidia")"; then
+    fail "disabled Perplexica contributed a local/NVIDIA/multi-GPU overlay"
 fi
 pass "disabled bases suppress GPU, local, and multi-GPU fragments"
 

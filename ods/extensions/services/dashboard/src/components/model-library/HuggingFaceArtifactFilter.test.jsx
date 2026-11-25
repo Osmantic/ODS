@@ -2,16 +2,19 @@ import {act, fireEvent, render, screen, within} from '@testing-library/react'
 import {afterEach, beforeEach, expect, test, vi} from 'vitest'
 import HuggingFaceModelBrowser from './HuggingFaceModelBrowser'
 
-const repo = {id: 'org/model', author: 'org'}
+const repo = {id: 'org/model', author: 'org', sha: 'c'.repeat(40)}
 const artifacts = [
-  {id: 'q4', label: 'model-Q4_K_M.gguf', quantization: 'Q4_K_M', sizeBytes: 4e9, files: []},
-  {id: 'q8', label: 'model-Q8_0.gguf', quantization: 'Q8_0', sizeBytes: 8e9, files: []},
-  {id: 'split', label: 'model-IQ3-00001-of-00002.gguf', quantization: 'IQ3_XS', sizeBytes: 3e9, split: true, files: [{}, {}]},
+  {id: 'q4', label: 'model-Q4_K_M.gguf', quantization: 'Q4_K_M', sizeBytes: 4e9, files: [{filename: 'model-Q4_K_M.gguf'}]},
+  {id: 'q8', label: 'model-Q8_0.gguf', quantization: 'Q8_0', sizeBytes: 8e9, files: [{filename: 'model-Q8_0.gguf'}]},
+  {id: 'split', label: 'model-IQ3-00001-of-00002.gguf', quantization: 'IQ3_XS', sizeBytes: 3e9, split: true, files: [{filename: 'model-IQ3-00001-of-00002.gguf'}, {filename: 'model-IQ3-00002-of-00002.gguf'}]},
 ]
 
 beforeEach(() => {
   vi.useFakeTimers()
-  vi.stubGlobal('fetch', vi.fn(async url => ({ok: true, json: async () => url.includes('/search?') ? {models: [repo]} : url.endsWith('/import') ? {modelId: 'hf-fixture', status: 'downloading'} : {...repo, artifacts}})))
+  vi.stubGlobal('fetch', vi.fn(async url => ({ok: true, json: async () => url.includes('/search?') ? {models: [repo]} : url.endsWith('/import') ? {modelId: 'hf-fixture', status: 'downloading'} : url.includes('/preflight/') ? {
+    ...repo, artifactId: 'q4', modelKind: 'chat', header: {status: 'read', file: artifacts[0].files[0].filename},
+    artifacts: Object.fromEntries(artifacts.map(artifact => [artifact.id, {header: {status: 'read', file: artifact.files[0].filename}, refusal: null}])),
+  } : {...repo, artifacts}})))
 })
 afterEach(() => {vi.useRealTimers(); vi.unstubAllGlobals()})
 
@@ -46,7 +49,7 @@ test('imports the exact filtered artifact and retains backend import guards', as
   fireEvent.change(dialog.getByRole('searchbox'), {target: {value: 'q8'}})
   await act(async () => {fireEvent.click(dialog.getByRole('button', {name: 'Import', exact: true}))})
   const request = fetch.mock.calls.find(([url]) => url.endsWith('/import'))
-  expect(JSON.parse(request[1].body)).toEqual({repoId: 'org/model', artifactId: 'q8'})
+  expect(JSON.parse(request[1].body)).toEqual({repoId: 'org/model', revision: repo.sha, artifactId: 'q8'})
   expect(onImportStarted).toHaveBeenCalledWith({modelId: 'hf-fixture', status: 'downloading'})
 })
 
@@ -59,4 +62,46 @@ test('clears filtering when the operator closes and reopens a repository', async
   dialog = await open()
   expect(dialog.getByRole('searchbox')).toHaveValue('')
   expect(dialog.getAllByRole('button', {name: 'Import', exact: true})).toHaveLength(3)
+})
+
+test('disambiguates identical basenames by visible repository path and imports the directory-filtered artifact', async () => {
+  const mixed = [
+    {id: 'bert', label: 'ggml-model-f16.gguf', files: [{filename: 'bert-bge-small/ggml-model-f16.gguf'}]},
+    {id: 'phi', label: 'ggml-model-f16.gguf', files: [{filename: 'phi-2/ggml-model-f16.gguf'}]},
+    {id: 'tiny', label: 'ggml-model-f16.gguf', files: [{filename: 'tinyllama-1.1b/ggml-model-f16.gguf'}]},
+  ]
+  fetch.mockImplementation(async url => ({ok: true, json: async () => url.includes('/search?') ? {models: [repo]} : url.endsWith('/import') ? {modelId: 'hf-phi', status: 'downloading'} : url.includes('/preflight/') ? {
+    ...repo, artifactId: 'bert', modelKind: 'chat', header: {status: 'read', file: mixed[0].files[0].filename},
+    artifacts: Object.fromEntries(mixed.map(artifact => [artifact.id, {header: {status: 'read', file: artifact.files[0].filename}, refusal: null}])),
+  } : {...repo, artifacts: mixed}}))
+  render(<HuggingFaceModelBrowser/>)
+  const dialog = await open()
+  for (const artifact of mixed) {
+    const path = artifact.files[0].filename
+    expect(dialog.getByText(path)).toBeVisible()
+    expect(dialog.getByText(path)).toHaveAttribute('title', path)
+  }
+  const requestsBeforeFilter = fetch.mock.calls.length
+  fireEvent.change(dialog.getByRole('searchbox'), {target: {value: ' PHI-2/ '}})
+  expect(dialog.getByRole('status')).toHaveTextContent('1 of 3 artifacts')
+  expect(dialog.queryByText(mixed[0].files[0].filename)).toBeNull()
+  expect(fetch).toHaveBeenCalledTimes(requestsBeforeFilter)
+  await act(async () => {fireEvent.click(dialog.getByRole('button', {name: 'Import', exact: true}))})
+  const request = fetch.mock.calls.find(([url]) => url.endsWith('/import'))
+  expect(JSON.parse(request[1].body)).toEqual({repoId: repo.id, revision: repo.sha, artifactId: 'phi'})
+})
+
+test('matches every split part repository path without another network request', async () => {
+  const split = {...artifacts[2], files: [{filename: 'nested/model-00001-of-00002.gguf'}, {filename: 'nested/model-00002-of-00002.gguf'}]}
+  fetch.mockImplementation(async url => ({ok: true, json: async () => url.includes('/search?') ? {models: [repo]} : url.includes('/preflight/') ? {
+    ...repo, artifactId: split.id, modelKind: 'chat', header: {status: 'read', file: split.files[0].filename},
+    artifacts: {[split.id]: {header: {status: 'read', file: split.files[0].filename}}},
+  } : {...repo, artifacts: [split]}}))
+  render(<HuggingFaceModelBrowser/>)
+  const dialog = await open()
+  const requestsBeforeFilter = fetch.mock.calls.length
+  fireEvent.change(dialog.getByRole('searchbox'), {target: {value: 'nested/model-00002'}})
+  expect(dialog.getByText(split.files[0].filename)).toBeVisible()
+  expect(dialog.getByText('2 verified parts')).toBeVisible()
+  expect(fetch).toHaveBeenCalledTimes(requestsBeforeFilter)
 })

@@ -285,6 +285,80 @@ def activate_new(*, services, readiness, checkpoint):
         raise
 
 
+def _operations_readiness(*, custody, state, owner_entry, broker):
+    # Retry only a completed read-only broker timeout; never overlap an unknown job.
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    deadline = time.monotonic() + 45
+    attempts = 0
+    while attempts < 3 and time.monotonic() < deadline:
+        attempts += 1
+        job = 'ops-' + str(int(time.time() * 1000)) + '-' + uuid.uuid4().hex[:12]
+        body = json.dumps({'schemaVersion': 1, 'jobId': job,
+            'createdAt': datetime.now(timezone.utc).isoformat(), 'kind': 'action',
+            'target': 'ods-host', 'action': 'host.os-release'}).encode()
+        with ExitStack() as stack:
+            parent = stack.enter_context(custody.protected_directory(state.parent))
+            def directory(name, parent, uid):
+                fd = os.open(name, flags, dir_fd=parent)
+                stack.callback(os.close, fd)
+                info = os.fstat(fd)
+                if info.st_uid != uid or info.st_gid != broker.pw_gid or info.st_mode & 0o007:
+                    raise ValueError('native-readiness-spool-identity-mismatch')
+                return fd
+            base = directory(state.name, parent, broker.pw_uid)
+            requests = directory('requests', base, owner_entry.pw_uid)
+            results = directory('results', base, broker.pw_uid)
+            temporary, filename = '.' + job + '.tmp', job + '.json'
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600, dir_fd=requests)
+            try:
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(body)
+                    stream.flush()
+                    os.fchown(stream.fileno(), owner_entry.pw_uid, broker.pw_gid)
+                    os.fchmod(stream.fileno(), 0o640)
+                    os.fsync(stream.fileno())
+                os.rename(temporary, filename, src_dir_fd=requests, dst_dir_fd=requests)
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=requests)
+                except FileNotFoundError:
+                    pass
+            retry = False
+            while time.monotonic() < deadline:
+                try:
+                    fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=results)
+                except FileNotFoundError:
+                    time.sleep(0.1)
+                    continue
+                with os.fdopen(fd, 'rb') as stream:
+                    info = os.fstat(stream.fileno())
+                    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                            or info.st_uid != broker.pw_uid or info.st_size > 65536):
+                        raise ValueError('native-readiness-result-invalid')
+                    receipt = json.loads(stream.read(65537))
+                if receipt.get('jobId') != job:
+                    raise ValueError('native-readiness-result-mismatch')
+                if receipt.get('status') == 'succeeded':
+                    steps = receipt.get('steps', [])
+                    if len(steps) == 1 and json.loads(steps[0]['stdout']).get('available') is True:
+                        return True
+                    raise ValueError('native-operations-readiness-failed')
+                if receipt.get('status') == 'failed':
+                    if receipt.get('error') == 'step exceeded its hard timeout':
+                        retry = True
+                        break
+                    raise ValueError('native-operations-readiness-failed')
+                if receipt.get('status') in ('cancelled', 'rejected'):
+                    raise ValueError('native-operations-readiness-failed')
+                time.sleep(0.1)
+            if not retry:
+                raise ValueError('native-operations-readiness-timeout')
+    if attempts == 3:
+        raise ValueError('native-operations-readiness-failed')
+    raise ValueError('native-operations-readiness-timeout')
+
+
 def readiness_checks(*, owner, identity, python,
                      program_root='/usr/local/libexec/ods-pixel-services',
                      state='/private/var/lib/pixel-ops-broker', inspection_required=True):
@@ -337,63 +411,8 @@ def readiness_checks(*, owner, identity, python,
         # on inspection health before admitting the gateway.
         if inspection_required:
             inspection()
-        job = 'ops-' + str(int(time.time() * 1000)) + '-' + uuid.uuid4().hex[:12]
-        body = json.dumps({'schemaVersion': 1, 'jobId': job,
-            'createdAt': datetime.now(timezone.utc).isoformat(), 'kind': 'action',
-            'target': 'ods-host', 'action': 'host.os-release'}).encode()
-        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        with ExitStack() as stack:
-            parent = stack.enter_context(custody.protected_directory(state.parent))
-            def directory(name, parent, uid):
-                fd = os.open(name, flags, dir_fd=parent)
-                stack.callback(os.close, fd)
-                info = os.fstat(fd)
-                if info.st_uid != uid or info.st_gid != broker.pw_gid or info.st_mode & 0o007:
-                    raise ValueError('native-readiness-spool-identity-mismatch')
-                return fd
-            base = directory(state.name, parent, broker.pw_uid)
-            requests = directory('requests', base, owner_entry.pw_uid)
-            results = directory('results', base, broker.pw_uid)
-            temporary, filename = '.' + job + '.tmp', job + '.json'
-            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600, dir_fd=requests)
-            try:
-                with os.fdopen(fd, 'wb') as stream:
-                    stream.write(body)
-                    stream.flush()
-                    os.fchown(stream.fileno(), owner_entry.pw_uid, broker.pw_gid)
-                    os.fchmod(stream.fileno(), 0o640)
-                    os.fsync(stream.fileno())
-                os.rename(temporary, filename, src_dir_fd=requests, dst_dir_fd=requests)
-            finally:
-                try:
-                    os.unlink(temporary, dir_fd=requests)
-                except FileNotFoundError:
-                    pass
-            deadline = time.monotonic() + 45
-            while time.monotonic() < deadline:
-                try:
-                    fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=results)
-                except FileNotFoundError:
-                    time.sleep(0.1)
-                    continue
-                with os.fdopen(fd, 'rb') as stream:
-                    info = os.fstat(stream.fileno())
-                    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                            or info.st_uid != broker.pw_uid or info.st_size > 65536):
-                        raise ValueError('native-readiness-result-invalid')
-                    receipt = json.loads(stream.read(65537))
-                if receipt.get('jobId') != job:
-                    raise ValueError('native-readiness-result-mismatch')
-                if receipt.get('status') == 'succeeded':
-                    steps = receipt.get('steps', [])
-                    if len(steps) == 1 and json.loads(steps[0]['stdout']).get('available') is True:
-                        return True
-                    raise ValueError('native-operations-readiness-failed')
-                if receipt.get('status') in ('failed', 'cancelled', 'rejected'):
-                    raise ValueError('native-operations-readiness-failed')
-                time.sleep(0.1)
-        raise ValueError('native-operations-readiness-timeout')
+        return _operations_readiness(custody=custody, state=state,
+            owner_entry=owner_entry, broker=broker)
 
     def inspection():
         script = root / 'helpers/preview_inspection.py'

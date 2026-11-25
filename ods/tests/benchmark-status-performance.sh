@@ -34,7 +34,7 @@ setup_mock_services() {
 
     # Create a simple HTTP server that responds to health checks
     # This simulates the actual service health endpoints
-    for port in 3000 3001 3002 4000 5678 6333 7860 8080 8090 8188 8880 8888 9000; do
+    for port in 3000 3001 3002 4000 5678 6333 8080 8090 8188 8880 8888 9000; do
         # Start a simple netcat listener that responds with 200 OK
         (while true; do echo -e "HTTP/1.1 200 OK\r\n\r\nOK" | nc -l -p $port -q 1 2>/dev/null; done) &
         echo $! >> /tmp/benchmark-mock-pids.txt
