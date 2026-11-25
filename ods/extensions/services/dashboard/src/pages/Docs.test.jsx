@@ -70,6 +70,24 @@ const mockDocOverview = {
   },
 }
 
+const mockDocWsl2 = {
+  slug: 'platform/wsl2-gpu',
+  title: 'WSL2 GPU Passthrough Setup',
+  description: 'Configuring GPU in WSL2',
+  category: 'platform',
+  category_title: 'Platform & Hardware',
+  path: 'docs/WSL2-GPU-PASSTHROUGH.md',
+  content: '# WSL2 GPU\n\n## Driver Prerequisites\n\nInstall NVIDIA Windows driver with WSL2 GPU support enabled.\n',
+  headings: [
+    { level: 1, text: 'WSL2 GPU', id: 'wsl2-gpu' },
+    { level: 2, text: 'Driver Prerequisites', id: 'driver-prerequisites' },
+  ],
+  word_count: 16,
+  reading_time_minutes: 1,
+  prev: null,
+  next: null,
+}
+
 function response(status, body) {
   return Promise.resolve({
     ok: status >= 200 && status < 300,
@@ -86,8 +104,11 @@ describe('Docs Component', () => {
       'GET /api/docs/catalog': mockCatalog,
       'GET /api/docs/document?slug=getting-started%2Foverview': mockDocOverview,
       'GET /api/docs/document?slug=getting-started/overview': mockDocOverview,
+      'GET /api/docs/document?slug=platform%2Fwsl2-gpu': mockDocWsl2,
+      'GET /api/docs/document?slug=platform/wsl2-gpu': mockDocWsl2,
       'GET /api/docs/search?q=gpu': {
         query: 'gpu',
+        total: 1,
         results: [
           {
             slug: 'platform/wsl2-gpu',
@@ -95,6 +116,14 @@ describe('Docs Component', () => {
             description: 'Configuring GPU in WSL2',
             category: 'platform',
             category_title: 'Platform & Hardware',
+            match_type: 'title',
+            sections: [
+              {
+                heading: 'Driver Prerequisites',
+                anchor: 'driver-prerequisites',
+                snippet: 'Install NVIDIA Windows driver with WSL2 GPU support enabled.',
+              },
+            ],
           },
         ],
       },
@@ -153,7 +182,7 @@ describe('Docs Component', () => {
     expect(navSidebar.textContent).toContain('WSL2 GPU Passthrough Setup')
   })
 
-  it('opens search modal on Ctrl+K and displays search results', async () => {
+  it('opens search modal on Ctrl+K and displays search results and in-file sections', async () => {
     render(<Docs />)
 
     await waitFor(() => {
@@ -165,6 +194,8 @@ describe('Docs Component', () => {
 
     const searchInput = screen.getByPlaceholderText(/Search documentation/i)
     expect(searchInput).toBeInTheDocument()
+    // Quick Jump is shown before typing
+    expect(screen.getByText(/Quick Jump/i)).toBeInTheDocument()
 
     // Type query
     act(() => {
@@ -172,7 +203,40 @@ describe('Docs Component', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByText('WSL2 GPU Passthrough Setup')).toBeInTheDocument()
+      const dialog = screen.getByRole('dialog', { name: /Search documentation/i })
+      expect(dialog).toHaveTextContent('WSL2 GPU Passthrough Setup')
+      expect(dialog).toHaveTextContent('Driver Prerequisites')
+      expect(dialog).toHaveTextContent('Install NVIDIA Windows driver')
+    })
+
+    // Clicking a matched in-file section navigates to #anchor and closes modal
+    fireEvent.click(screen.getByText('Driver Prerequisites'))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: /Search documentation/i })).not.toBeInTheDocument()
+      expect(screen.getByRole('heading', { level: 1, name: /WSL2 GPU Passthrough Setup/i })).toBeInTheDocument()
+      expect(screen.getByRole('heading', { level: 2, name: /Driver Prerequisites/i })).toHaveAttribute('id', 'driver-prerequisites')
+    })
+  })
+
+  it('supports arrow navigation and Enter in Quick Jump modal', async () => {
+    render(<Docs />)
+
+    await waitFor(() => {
+      expect(screen.getAllByText('ODS Overview & Features').length).toBeGreaterThanOrEqual(1)
+    })
+
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
+    expect(screen.getByRole('dialog', { name: /Search documentation/i })).toBeInTheDocument()
+
+    // Move selection to 2nd Quick Jump item ("Quickstart Guide") and open with Enter
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    const dialog = screen.getByRole('dialog', { name: /Search documentation/i })
+    const selectedQuick = dialog.querySelector('.docs-modal-quick-card.is-selected')
+    expect(selectedQuick).toHaveTextContent('Quickstart Guide')
+
+    fireEvent.keyDown(window, { key: 'Enter' })
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: /Search documentation/i })).not.toBeInTheDocument()
     })
   })
 })

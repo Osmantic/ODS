@@ -131,7 +131,7 @@ def test_api_document_not_found():
 
 
 def test_api_search_endpoint():
-    """Test GET /api/docs/search query."""
+    """Test GET /api/docs/search query matches titles and metadata."""
     response = client.get("/api/docs/search?q=quickstart")
     assert response.status_code == 200
     data = response.json()
@@ -139,3 +139,46 @@ def test_api_search_endpoint():
     assert len(data["results"]) > 0
     slugs = [r["slug"] for r in data["results"]]
     assert "getting-started/quickstart" in slugs
+
+
+def test_api_search_in_file_sections_and_live_refresh(tmp_path):
+    """Test GET /api/docs/search matches in-file headings, body text, and reloads edited files."""
+    # 1. Heading match inside QUICKSTART.md ("## Installation")
+    resp = client.get("/api/docs/search?q=installation")
+    assert resp.status_code == 200
+    results = resp.json()["results"]
+    qs = next((r for r in results if r["slug"] == "getting-started/quickstart"), None)
+    assert qs is not None
+    assert any(sec["anchor"] == "installation" and "Installation" in sec["heading"] for sec in qs["sections"])
+
+    # 2. Body text match inside HARDWARE-GUIDE.md ("## GPU Sizing")
+    (tmp_path / "docs" / "HARDWARE-GUIDE.md").write_text(
+        "# Hardware Guide\n\n## GPU Sizing\n\nChoose tensor_parallelism wisely for large clusters.\n",
+        encoding="utf-8",
+    )
+    resp2 = client.get("/api/docs/search?q=tensor_parallelism")
+    assert resp2.status_code == 200
+    results2 = resp2.json()["results"]
+    hw = next((r for r in results2 if r["slug"] == "getting-started/hardware-guide"), None)
+    assert hw is not None
+    assert hw["match_type"] == "section"
+    assert hw["sections"][0]["anchor"] == "gpu-sizing"
+    assert "tensor_parallelism" in hw["sections"][0]["snippet"]
+
+    # 3. Updating file on disk refreshes section cache immediately
+    (tmp_path / "docs" / "HARDWARE-GUIDE.md").write_text(
+        "# Hardware Guide\n\n## VRAM Budgets\n\nEstimate kv_cache_quant footprint accurately.\n",
+        encoding="utf-8",
+    )
+    resp3 = client.get("/api/docs/search?q=kv_cache_quant")
+    assert resp3.status_code == 200
+    hw3 = next((r for r in resp3.json()["results"] if r["slug"] == "getting-started/hardware-guide"), None)
+    assert hw3 is not None
+    assert hw3["sections"][0]["anchor"] == "vram-budgets"
+
+    # 4. Natural-language query with stop words ("how to install") still matches doc titles & sections
+    resp4 = client.get("/api/docs/search?q=how+to+install")
+    assert resp4.status_code == 200
+    qs4 = next((r for r in resp4.json()["results"] if r["slug"] == "getting-started/quickstart"), None)
+    assert qs4 is not None
+    assert qs4["match_type"] == "title"

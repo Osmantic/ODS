@@ -14,18 +14,66 @@ import {
   ChevronRight,
   Clock,
   Copy,
+  CornerDownLeft,
   ExternalLink,
   FileText,
+  FolderOpen,
+  Hash,
   Info,
   Lightbulb,
   Search,
   ShieldAlert,
+  Sparkles,
   X,
 } from 'lucide-react'
 import ODSLogo from '../components/ODSLogo'
 import './docs.css'
 
 const DEFAULT_SLUG = 'getting-started/overview'
+
+function extractHeadingText(node) {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(extractHeadingText).join('')
+  if (node && typeof node === 'object' && node.props?.children !== undefined) {
+    return extractHeadingText(node.props.children)
+  }
+  return ''
+}
+
+function slugifyHeading(node) {
+  return extractHeadingText(node)
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, '')
+    .trim()
+    .replace(/[-\s]+/g, '-')
+}
+
+function HighlightText({ text, query }) {
+  if (!text) return null
+  const cleanQuery = (query || '').trim()
+  if (cleanQuery.length < 2) return text
+
+  const escaped = cleanQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const parts = String(text).split(new RegExp(`(${escaped})`, 'ig'))
+  if (parts.length > 1) {
+    return parts.map((part, idx) =>
+      part.toLowerCase() === cleanQuery.toLowerCase()
+        ? <mark key={idx} className="docs-search-highlight">{part}</mark>
+        : part
+    )
+  }
+
+  const tokens = cleanQuery.split(/\s+/).filter(t => t.length >= 2)
+  if (tokens.length <= 1) return text
+  const tokenRegex = new RegExp(`(${tokens.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'ig')
+  const tokenParts = String(text).split(tokenRegex)
+  const tokenSet = new Set(tokens.map(t => t.toLowerCase()))
+  return tokenParts.map((part, idx) =>
+    tokenSet.has(part.toLowerCase())
+      ? <mark key={idx} className="docs-search-highlight">{part}</mark>
+      : part
+  )
+}
 
 // Helper to determine callout type from markdown blockquote
 function parseCalloutType(text) {
@@ -171,11 +219,13 @@ export default function Docs() {
   const [filterQuery, setFilterQuery] = useState('')
   const [searchModalOpen, setSearchModalOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [searchFilter, setSearchFilter] = useState('all')
   const [searchResults, setSearchResults] = useState([])
   const [searching, setSearching] = useState(false)
   const [selectedSearchIdx, setSelectedSearchIdx] = useState(0)
 
   const [activeHeadingId, setActiveHeadingId] = useState('')
+  const searchItemRefs = useRef({})
 
   // Determine target slug from path: /docs, /docs/:category/:slug
   const activeSlug = useMemo(() => {
@@ -254,9 +304,11 @@ export default function Docs() {
         // If the URL slug was an alias or relative path (e.g. docs/MACOS-QUICKSTART.md)
         // and doesn't match the canonical slug, normalize the browser URL cleanly
         if (data.slug && activeSlug !== data.slug && activeSlug !== DEFAULT_SLUG) {
-          navigate(`/docs/${data.slug}`, { replace: true })
+          navigate(`/docs/${data.slug}${location.hash || ''}`, { replace: true })
         }
-        window.scrollTo({ top: 0, behavior: 'smooth' })
+        if (!location.hash) {
+          window.scrollTo({ top: 0, behavior: 'smooth' })
+        }
       })
       .catch(err => {
         if (!active) return
@@ -266,6 +318,23 @@ export default function Docs() {
 
     return () => { active = false }
   }, [activeSlug, navigate])
+
+  // Smoothly scroll to in-file #section anchor once document renders
+  useEffect(() => {
+    if (docLoading || !currentDoc || !location.hash) return
+    const targetId = decodeURIComponent(location.hash.slice(1))
+    if (!targetId) return
+    const frame = window.requestAnimationFrame(() => {
+      const el = document.getElementById(targetId)
+      if (el) {
+        if (typeof el.scrollIntoView === 'function') {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }
+        setActiveHeadingId(targetId)
+      }
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [docLoading, currentDoc, location.hash])
 
   // Global Ctrl+K / Cmd+K listener for search
   useEffect(() => {
@@ -305,32 +374,149 @@ export default function Docs() {
     return () => clearTimeout(timer)
   }, [searchQuery, searchModalOpen])
 
-  // Scroll-spy for Table of Contents
+  const quickDocs = useMemo(() => {
+    const list = []
+    for (const cat of catalog) {
+      for (const doc of cat.documents || []) {
+        list.push({ ...doc, category_title: cat.title })
+        if (list.length >= 6) return list
+      }
+    }
+    return list
+  }, [catalog])
+
+  // Reset filter & selection when modal opens/closes or query/filter changes
+  useEffect(() => {
+    if (!searchModalOpen) {
+      setSearchFilter('all')
+    }
+    setSelectedSearchIdx(0)
+  }, [searchModalOpen, searchQuery, searchFilter])
+
+  const filteredSearchResults = useMemo(() => {
+    if (searchFilter === 'title') {
+      return searchResults.filter(r => r.match_type !== 'section')
+    }
+    if (searchFilter === 'section') {
+      return searchResults.filter(r => (r.sections || []).length > 0)
+    }
+    return searchResults
+  }, [searchResults, searchFilter])
+
+  const searchCounts = useMemo(() => ({
+    all: searchResults.length,
+    title: searchResults.filter(r => r.match_type !== 'section').length,
+    section: searchResults.reduce((acc, r) => acc + (r.sections?.length || 0), 0),
+  }), [searchResults])
+
+  const navItems = useMemo(() => {
+    const items = []
+    if (searchQuery.trim().length >= 2) {
+      for (const res of filteredSearchResults) {
+        const docTarget = `/docs/${res.slug}`
+        if (searchFilter !== 'section') {
+          items.push({ key: `doc:${res.slug}`, to: docTarget })
+        }
+        for (const sec of res.sections || []) {
+          const secTarget = `/docs/${res.slug}${sec.anchor ? `#${sec.anchor}` : ''}`
+          items.push({ key: `sec:${res.slug}#${sec.anchor || sec.heading}`, to: secTarget })
+        }
+      }
+    } else {
+      for (const doc of quickDocs) {
+        items.push({ key: `quick:${doc.slug}`, to: `/docs/${doc.slug}` })
+      }
+      for (const cat of catalog) {
+        const firstSlug = cat.documents?.[0]?.slug
+        if (firstSlug) {
+          items.push({ key: `cat:${cat.id}`, to: `/docs/${firstSlug}` })
+        }
+      }
+    }
+    return items
+  }, [searchQuery, filteredSearchResults, searchFilter, quickDocs, catalog])
+
+  useEffect(() => {
+    const activeItem = navItems[selectedSearchIdx]
+    const el = activeItem ? searchItemRefs.current[activeItem.key] : null
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest' })
+    }
+  }, [selectedSearchIdx, navItems])
+
+  // Modal keyboard navigation across results, sections, Quick Jump, and Categories
+  useEffect(() => {
+    if (!searchModalOpen) return
+    function handleModalNav(e) {
+      if (!navItems.length) return
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSelectedSearchIdx(prev => (prev + 1) % navItems.length)
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSelectedSearchIdx(prev => (prev - 1 + navItems.length) % navItems.length)
+      } else if (e.key === 'ArrowRight' && searchQuery.length === 0) {
+        e.preventDefault()
+        setSelectedSearchIdx(prev => (prev + 1) % navItems.length)
+      } else if (e.key === 'ArrowLeft' && searchQuery.length === 0) {
+        e.preventDefault()
+        setSelectedSearchIdx(prev => (prev - 1 + navItems.length) % navItems.length)
+      } else if (e.key === 'Enter') {
+        const activeEl = document.activeElement
+        if (
+          activeEl &&
+          (activeEl.getAttribute('role') === 'tab' ||
+            activeEl.classList.contains('docs-modal-clear-btn') ||
+            activeEl.classList.contains('docs-modal-esc-kbd'))
+        ) {
+          return
+        }
+        const selected = navItems[selectedSearchIdx]
+        if (selected) {
+          e.preventDefault()
+          navigate(selected.to)
+          setSearchModalOpen(false)
+        }
+      }
+    }
+    window.addEventListener('keydown', handleModalNav)
+    return () => window.removeEventListener('keydown', handleModalNav)
+  }, [searchModalOpen, navItems, selectedSearchIdx, searchQuery, navigate])
+
+  // Throttled Scroll-spy for Table of Contents using requestAnimationFrame to prevent layout thrashing
   useEffect(() => {
     if (!currentDoc?.headings?.length) return
 
+    let rafId = null
     const handleScroll = () => {
-      const headingElements = currentDoc.headings
-        .map(h => document.getElementById(h.id))
-        .filter(Boolean)
+      if (rafId) return
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null
+        const headingElements = currentDoc.headings
+          .map(h => document.getElementById(h.id))
+          .filter(Boolean)
 
-      const scrollPos = window.scrollY + 100
-      let currentId = ''
+        const scrollPos = window.scrollY + 100
+        let currentId = ''
 
-      for (const el of headingElements) {
-        if (el.offsetTop <= scrollPos) {
-          currentId = el.id
-        } else {
-          break
+        for (const el of headingElements) {
+          if (el.offsetTop <= scrollPos) {
+            currentId = el.id
+          } else {
+            break
+          }
         }
-      }
 
-      if (currentId) setActiveHeadingId(currentId)
+        if (currentId) setActiveHeadingId(currentId)
+      })
     }
 
     window.addEventListener('scroll', handleScroll, { passive: true })
     handleScroll()
-    return () => window.removeEventListener('scroll', handleScroll)
+    return () => {
+      window.removeEventListener('scroll', handleScroll)
+      if (rafId) window.cancelAnimationFrame(rafId)
+    }
   }, [currentDoc])
 
   const toggleCategory = useCallback((categoryId) => {
@@ -355,10 +541,12 @@ export default function Docs() {
       return <code className="docs-inline-code" {...props}>{children}</code>
     },
     // Heading anchors
-    h1: ({ children }) => <h1 className="docs-h1">{children}</h1>,
+    h1: ({ children }) => {
+      const id = slugifyHeading(children)
+      return <h1 id={id || undefined} className="docs-h1">{children}</h1>
+    },
     h2: ({ children }) => {
-      const text = typeof children === 'string' ? children : String(children?.[0] || '')
-      const id = text.toLowerCase().replace(/[^\w\s-]/g, '').trim().replace(/[-\s]+/g, '-')
+      const id = slugifyHeading(children)
       return (
         <h2 id={id} className="docs-h2 group flex items-center">
           <span className="flex-1">{children}</span>
@@ -367,8 +555,7 @@ export default function Docs() {
       )
     },
     h3: ({ children }) => {
-      const text = typeof children === 'string' ? children : String(children?.[0] || '')
-      const id = text.toLowerCase().replace(/[^\w\s-]/g, '').trim().replace(/[-\s]+/g, '-')
+      const id = slugifyHeading(children)
       return (
         <h3 id={id} className="docs-h3 group flex items-center">
           <span className="flex-1">{children}</span>
@@ -431,6 +618,20 @@ export default function Docs() {
       )
     },
   }), [pathMap])
+
+  // Memoize rendered markdown body so modal state / keystrokes / scrollspy never re-parse or re-highlight markdown
+  const renderedMarkdown = useMemo(() => {
+    if (!currentDoc?.content) return null
+    return (
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
+        components={markdownComponents}
+      >
+        {currentDoc.content}
+      </ReactMarkdown>
+    )
+  }, [currentDoc?.slug, currentDoc?.content, markdownComponents])
 
   return (
     <div className="docs-page-container">
@@ -575,13 +776,7 @@ export default function Docs() {
                 </header>
 
                 <div className="docs-markdown-body">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    rehypePlugins={[rehypeHighlight]}
-                    components={markdownComponents}
-                  >
-                    {currentDoc.content}
-                  </ReactMarkdown>
+                  {renderedMarkdown}
                 </div>
 
                 {/* Bottom Pagination */}
@@ -637,9 +832,12 @@ export default function Docs() {
           <div
             className="docs-search-modal"
             onClick={e => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Search documentation"
           >
             <div className="docs-modal-input-row">
-              <Search size={18} className="text-theme-text-muted" />
+              <Search size={20} className="text-theme-accent-light shrink-0" />
               <input
                 autoFocus
                 type="text"
@@ -647,62 +845,269 @@ export default function Docs() {
                 className="docs-modal-input"
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'ArrowDown') {
-                    e.preventDefault()
-                    setSelectedSearchIdx(prev => Math.min(prev + 1, searchResults.length - 1))
-                  } else if (e.key === 'ArrowUp') {
-                    e.preventDefault()
-                    setSelectedSearchIdx(prev => Math.max(prev - 1, 0))
-                  } else if (e.key === 'Enter' && searchResults[selectedSearchIdx]) {
-                    navigate(`/docs/${searchResults[selectedSearchIdx].slug}`)
-                    setSearchModalOpen(false)
-                  }
-                }}
               />
+              {searchQuery && (
+                <button
+                  type="button"
+                  className="docs-modal-clear-btn"
+                  onClick={() => setSearchQuery('')}
+                  aria-label="Clear search"
+                >
+                  <X size={14} />
+                </button>
+              )}
               <button
-                className="text-theme-text-muted hover:text-theme-text"
+                type="button"
+                className="docs-modal-esc-kbd"
                 onClick={() => setSearchModalOpen(false)}
                 aria-label="Close search"
               >
-                <X size={18} />
+                ESC
               </button>
             </div>
 
+            {searchQuery.trim().length >= 2 && !searching && searchResults.length > 0 && (
+              <div className="docs-modal-filter-bar">
+                <div className="docs-modal-filter-tabs" role="tablist" aria-label="Filter search matches">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={searchFilter === 'all'}
+                    className={`docs-modal-filter-tab ${searchFilter === 'all' ? 'is-active' : ''}`}
+                    onClick={() => setSearchFilter('all')}
+                  >
+                    <span>All</span>
+                    <span className="docs-modal-filter-count">({searchCounts.all})</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={searchFilter === 'title'}
+                    className={`docs-modal-filter-tab ${searchFilter === 'title' ? 'is-active' : ''}`}
+                    onClick={() => setSearchFilter('title')}
+                  >
+                    <span>Documents</span>
+                    <span className="docs-modal-filter-count">({searchCounts.title})</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={searchFilter === 'section'}
+                    className={`docs-modal-filter-tab ${searchFilter === 'section' ? 'is-active' : ''}`}
+                    onClick={() => setSearchFilter('section')}
+                  >
+                    <span>In-file sections</span>
+                    <span className="docs-modal-filter-count">({searchCounts.section})</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="docs-modal-results">
               {searching ? (
-                <div className="p-4 text-xs text-theme-text-muted text-center">Searching documentation...</div>
-              ) : searchResults.length > 0 ? (
-                searchResults.map((res, idx) => (
-                  <div
-                    key={res.slug}
-                    className={`docs-modal-result-item ${selectedSearchIdx === idx ? 'is-selected' : ''}`}
-                    onClick={() => {
-                      navigate(`/docs/${res.slug}`)
-                      setSearchModalOpen(false)
-                    }}
-                    onMouseEnter={() => setSelectedSearchIdx(idx)}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="docs-modal-result-title">{res.title}</span>
-                      <span className="text-[11px] text-theme-text-muted">{res.category_title}</span>
-                    </div>
-                    {res.description && (
-                      <div className="docs-modal-result-desc">{res.description}</div>
-                    )}
-                  </div>
-                ))
-              ) : searchQuery.length >= 2 ? (
-                <div className="p-6 text-sm text-theme-text-muted text-center">
-                  No matching documentation found for "{searchQuery}"
+                <div className="p-8 text-xs text-theme-text-muted text-center">
+                  Searching titles and document sections...
+                </div>
+              ) : filteredSearchResults.length > 0 ? (
+                (() => {
+                  const navIndexByKey = new Map(navItems.map((item, i) => [item.key, i]))
+                  return filteredSearchResults.map(res => {
+                    const docKey = `doc:${res.slug}`
+                    const docNavIdx = navIndexByKey.get(docKey)
+                    const isDocSelected = docNavIdx !== undefined && selectedSearchIdx === docNavIdx
+                    const hasSectionSelected = (res.sections || []).some(sec => {
+                      const sIdx = navIndexByKey.get(`sec:${res.slug}#${sec.anchor || sec.heading}`)
+                      return sIdx !== undefined && selectedSearchIdx === sIdx
+                    })
+
+                    return (
+                      <div
+                        key={res.slug}
+                        className={`docs-modal-result-card ${(isDocSelected || hasSectionSelected) ? 'has-active' : ''}`}
+                      >
+                        <div
+                          ref={el => { searchItemRefs.current[docKey] = el }}
+                          className={`docs-modal-result-item ${isDocSelected ? 'is-selected' : ''}`}
+                          onClick={() => {
+                            navigate(`/docs/${res.slug}`)
+                            setSearchModalOpen(false)
+                          }}
+                          onMouseEnter={() => {
+                            if (docNavIdx !== undefined) setSelectedSearchIdx(docNavIdx)
+                          }}
+                          role="button"
+                          tabIndex={0}
+                        >
+                          <div className="docs-modal-result-icon">
+                            <FileText size={16} />
+                          </div>
+                          <div className="docs-modal-result-body">
+                            <div className="docs-modal-result-header">
+                              <span className="docs-modal-result-title">
+                                <HighlightText text={res.title} query={searchQuery} />
+                              </span>
+                              <div className="docs-modal-badges">
+                                <span className="docs-modal-category-pill">{res.category_title}</span>
+                              </div>
+                            </div>
+                            {res.description && (
+                              <div className="docs-modal-result-desc">
+                                <HighlightText text={res.description} query={searchQuery} />
+                              </div>
+                            )}
+                          </div>
+                          {isDocSelected && (
+                            <CornerDownLeft size={14} className="text-theme-accent-light shrink-0 mt-1.5" />
+                          )}
+                        </div>
+
+                        {res.sections && res.sections.length > 0 && (
+                          <div className="docs-modal-sections">
+                            {res.sections.map((sec, sIdx) => {
+                              const secKey = `sec:${res.slug}#${sec.anchor || sec.heading}`
+                              const secNavIdx = navIndexByKey.get(secKey)
+                              const isSecSelected = secNavIdx !== undefined && selectedSearchIdx === secNavIdx
+                              const secPath = `/docs/${res.slug}${sec.anchor ? `#${sec.anchor}` : ''}`
+                              return (
+                                <div
+                                  key={`${sec.anchor || sec.heading}-${sIdx}`}
+                                  ref={el => { searchItemRefs.current[secKey] = el }}
+                                  className={`docs-modal-section-item ${isSecSelected ? 'is-selected' : ''}`}
+                                  onClick={() => {
+                                    navigate(secPath)
+                                    setSearchModalOpen(false)
+                                  }}
+                                  onMouseEnter={() => {
+                                    if (secNavIdx !== undefined) setSelectedSearchIdx(secNavIdx)
+                                  }}
+                                  role="button"
+                                  tabIndex={0}
+                                >
+                                  <Hash size={13} className="text-theme-accent-light shrink-0 mt-0.5 opacity-80" />
+                                  <div className="flex-1 min-w-0">
+                                    <div className="docs-modal-section-heading">
+                                      <HighlightText text={sec.heading} query={searchQuery} />
+                                    </div>
+                                    {sec.snippet && (
+                                      <div className="docs-modal-section-snippet">
+                                        <HighlightText text={sec.snippet} query={searchQuery} />
+                                      </div>
+                                    )}
+                                  </div>
+                                  {isSecSelected && (
+                                    <CornerDownLeft size={13} className="text-theme-accent-light shrink-0 mt-1" />
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })
+                })()
+              ) : searchQuery.trim().length >= 2 ? (
+                <div className="p-8 text-sm text-theme-text-muted text-center">
+                  No matching documents or sections found for "{searchQuery}"
                 </div>
               ) : (
-                <div className="p-4 text-xs text-theme-text-muted text-center">
-                  Type at least 2 characters to search across all ODS guides and specs.
-                </div>
+                (() => {
+                  const navIndexByKey = new Map(navItems.map((item, i) => [item.key, i]))
+                  return (
+                    <div className="docs-modal-quick-section">
+                      {quickDocs.length > 0 && (
+                        <div>
+                          <div className="docs-modal-quick-label">
+                            <Sparkles size={12} />
+                            <span>Quick Jump</span>
+                          </div>
+                          <div className="docs-modal-quick-grid">
+                            {quickDocs.map(doc => {
+                              const quickKey = `quick:${doc.slug}`
+                              const quickIdx = navIndexByKey.get(quickKey)
+                              const isSelected = quickIdx !== undefined && selectedSearchIdx === quickIdx
+                              return (
+                                <button
+                                  key={doc.slug}
+                                  ref={el => { searchItemRefs.current[quickKey] = el }}
+                                  type="button"
+                                  className={`docs-modal-quick-card ${isSelected ? 'is-selected' : ''}`}
+                                  onClick={() => {
+                                    navigate(`/docs/${doc.slug}`)
+                                    setSearchModalOpen(false)
+                                  }}
+                                  onMouseEnter={() => {
+                                    if (quickIdx !== undefined) setSelectedSearchIdx(quickIdx)
+                                  }}
+                                >
+                                  <div className="docs-modal-result-icon">
+                                    <BookOpen size={15} />
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <div className="text-sm font-semibold text-theme-text truncate">{doc.title}</div>
+                                    <div className="text-xs text-theme-text-muted truncate mt-0.5">{doc.category_title}</div>
+                                  </div>
+                                  {isSelected && (
+                                    <CornerDownLeft size={13} className="text-theme-accent-light shrink-0 mt-1" />
+                                  )}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {catalog.length > 0 && (
+                        <div>
+                          <div className="docs-modal-quick-label">
+                            <FolderOpen size={12} />
+                            <span>Browse Categories</span>
+                          </div>
+                          <div className="docs-modal-category-chips">
+                            {catalog.map(cat => {
+                              const firstSlug = cat.documents?.[0]?.slug
+                              const catKey = `cat:${cat.id}`
+                              const catIdx = navIndexByKey.get(catKey)
+                              const isSelected = catIdx !== undefined && selectedSearchIdx === catIdx
+                              return (
+                                <button
+                                  key={cat.id}
+                                  ref={el => { searchItemRefs.current[catKey] = el }}
+                                  type="button"
+                                  className={`docs-modal-category-chip ${isSelected ? 'is-selected' : ''}`}
+                                  onClick={() => {
+                                    if (firstSlug) navigate(`/docs/${firstSlug}`)
+                                    setSearchModalOpen(false)
+                                  }}
+                                  onMouseEnter={() => {
+                                    if (catIdx !== undefined) setSelectedSearchIdx(catIdx)
+                                  }}
+                                >
+                                  <span>{cat.title}</span>
+                                  <span className="text-[11px] text-theme-text-muted">({cat.documents?.length || 0})</span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()
               )}
+            </div>
+
+            <div className="docs-modal-footer">
+              <div className="docs-modal-hints">
+                <span><kbd className="docs-modal-hint-kbd">↑↓</kbd> Navigate</span>
+                <span><kbd className="docs-modal-hint-kbd">↵</kbd> Open</span>
+                <span><kbd className="docs-modal-hint-kbd">Esc</kbd> Close</span>
+              </div>
+              <span>
+                {searchQuery.trim().length >= 2 && !searching
+                  ? `${filteredSearchResults.length} doc${filteredSearchResults.length === 1 ? '' : 's'} matched`
+                  : 'Search titles & in-file sections'}
+              </span>
             </div>
           </div>
         </div>
