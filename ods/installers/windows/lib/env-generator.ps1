@@ -881,9 +881,10 @@ function New-ODSEnv {
 BIND_ADDRESS=$bindAddress
 # Docker Desktop containers reach loopback-only host services through this name.
 ODS_AGENT_HOST=$(Get-EnvOrNew "ODS_AGENT_HOST" "host.docker.internal")
-# The dashboard-api container must call the host agent over Docker Desktop's
-# host gateway. Bearer auth still protects every host-agent endpoint.
-ODS_AGENT_BIND=$(Get-EnvOrNew "ODS_AGENT_BIND" "0.0.0.0")
+# Docker Desktop forwards host.docker.internal / host-gateway to the host's
+# loopback, so dashboard-api reaches a loopback-only agent. Do not publish the
+# Docker-controlling agent on every interface; Bearer auth stays on top.
+ODS_AGENT_BIND=$(Get-EnvOrNew "ODS_AGENT_BIND" "127.0.0.1")
 # Docker Desktop presents host-owned lifecycle secrets through its root group.
 REMOTE_PROVIDER_DATA_GID=0
 
