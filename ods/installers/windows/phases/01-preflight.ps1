@@ -196,6 +196,7 @@ if ($_fsNetworked) {
 # Pull the probe image first so a missing image/network problem is not reported
 # as a Docker Desktop file-sharing problem.
 $_shareOk = $true
+$_shareEmpty = $false
 $_shareErr = ""
 $_probeImage = "alpine:3.20"
 try {
@@ -225,13 +226,28 @@ try {
     }
 
     # PowerShell -v argument needs careful quoting for paths with spaces.
+    # A successful mount is not enough: Docker Desktop mounts a removable
+    # drive as an empty directory, or as a stale tree from an earlier mount,
+    # with exit 0. Require every sampled host entry to exist inside the
+    # container (exit 42 = the container does not see this directory).
+    # Names travel in an env var joined by '/', which no file name contains;
+    # the script avoids double quotes because PS 5.1 mangles them.
+    $_probeEntries = @(Get-ChildItem -LiteralPath $_fsProbe -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notin @('System Volume Information', '$RECYCLE.BIN') } |
+        Select-Object -First 8 -ExpandProperty Name)
+    $_probeScript = "ls -A /check > /tmp/seen; [ -s /tmp/seen ] || exit 42; printenv ODS_PROBE_ENTRIES | tr / '\n' | grep -vxFf /tmp/seen | grep -q . && exit 42; exit 0"
+    $_probeCommand = @(if ($_probeEntries.Count) { 'sh', '-c', $_probeScript } else { 'true' })
     $_prevRunEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    $_probeOut = & docker run --rm -v "${_fsProbe}:/check:ro" $_probeImage true 2>&1
+    $_probeOut = & docker run --rm -e "ODS_PROBE_ENTRIES=$($_probeEntries -join '/')" `
+        -v "${_fsProbe}:/check:ro" $_probeImage @_probeCommand 2>&1
     $_probeExit = $LASTEXITCODE
     $ErrorActionPreference = $_prevRunEap
     $_probeText = ($_probeOut -join "`n")
-    if ($_probeExit -ne 0 -and $_probeText -match "not shared from the host|Mounts denied|file sharing|filesharing") {
+    if ($_probeExit -eq 42) {
+        $_shareOk = $false
+        $_shareEmpty = $true
+    } elseif ($_probeExit -ne 0 -and $_probeText -match "not shared from the host|Mounts denied|file sharing|filesharing") {
         $_shareOk = $false
         $_shareErr = $_probeText
     } elseif ($_probeExit -ne 0) {
@@ -258,6 +274,12 @@ try {
     $_shareOk = $false
     $_shareErr = $_.Exception.Message
 }
+if ($_shareEmpty) {
+    Write-AIError "Docker Desktop mounted $_fsProbe but its containers see it as empty."
+    Write-AIError "Docker Desktop cannot read removable or USB drives this way."
+    Write-AI "  Pick an install path on an internal NTFS drive (e.g. C:\Users\<you>\ods) and re-run."
+    throw "Docker Desktop sees $installDir as empty"
+}
 if (-not $_shareOk) {
     Write-AIError "Docker Desktop cannot bind-mount $installDir."
     Write-AIError "Add the path to Docker Desktop > Settings > Resources > File Sharing,"
@@ -270,6 +292,19 @@ if (-not $_shareOk) {
     throw "Docker Desktop cannot bind-mount $installDir"
 }
 Write-AISuccess "Docker Desktop file sharing OK"
+
+# A data\models junction or symlink (e.g. to models on a USB drive) passes
+# every host-side Test-Path, but containers see a dangling link, so
+# llama-server cannot find a model the installer reported as present.
+$_modelsDir = Join-Path (Join-Path $installDir "data") "models"
+$_modelsItem = Get-Item -LiteralPath $_modelsDir -Force -ErrorAction SilentlyContinue
+if ($_modelsItem -and ($_modelsItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    $_modelsTarget = @($_modelsItem.Target) -join ", "
+    Write-AIError "$_modelsDir is a link$(if ($_modelsTarget) { " to $_modelsTarget" })."
+    Write-AIError "Docker Desktop containers cannot follow it, so llama-server would not find any model."
+    Write-AI "  Replace the link with a real folder on this drive and copy the .gguf files into it."
+    throw "data\models is a link Docker containers cannot follow"
+}
 
 # ── Initial disk space check ─────────────────────────────────────────────────
 # 20 GB minimum before model size is known (tier-aware check happens in phase 04).
