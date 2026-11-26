@@ -10,7 +10,7 @@ Run from the ODS installation directory, using the Python command available on t
 python scripts/register-model-store.py --install-dir /path/to/ods --id models-ssd --directory /path/to/models
 ```
 
-On Windows, use native paths such as `C:/Users/owner/ods` and `D:/Models`. On Linux and macOS, use the disk's mounted absolute path. Docker Desktop must have access to the directory. The command writes `data/model-stores.json` and `.model-stores.compose.json`; it does not move files, switch the active model, or restart services. Recreate the Dashboard API using the installation's Compose stack with the generated overlay. The normal ODS stack resolver includes that overlay on subsequent runs.
+On Windows, use native paths such as `C:/Users/owner/ods` and `D:/Models`. On Linux and macOS, use the disk's mounted absolute path. Docker Desktop must have access to the directory. On Windows it cannot read removable drives (USB pen drives and SD cards): the Dashboard API would see such a store as empty, so registration refuses them. Copy the models to an internal or fixed disk instead. The command writes `data/model-stores.json` and `.model-stores.compose.json`; it does not move files, switch the active model, or restart services. Recreate the Dashboard API using the installation's Compose stack with the generated overlay. The normal ODS stack resolver includes that overlay on subsequent runs.
 
 Unplugged disks are unavailable until remounted. Ambiguous GGUF basenames across stores are excluded rather than silently selecting a different file. Companion `mmproj` and `MTP-` artifacts are not standalone chat models.
 

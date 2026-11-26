@@ -38,10 +38,29 @@ def atomic_json(path: Path, value: dict) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+DRIVE_REMOVABLE = 2
+
+
+def windows_drive_type(directory: Path) -> int | None:
+    """Return GetDriveTypeW for the directory's drive root, or None off Windows."""
+    if os.name != 'nt':
+        return None
+    import ctypes
+    return int(ctypes.windll.kernel32.GetDriveTypeW(directory.anchor))
+
+
 def register(install: Path, identifier: str, directory: Path, qualified: Path | None = None, enable_mtp: bool = False, backend: str | None = None, benchmark_evidence: Path | None = None) -> dict:
     install, directory = install.resolve(strict=True), directory.resolve(strict=True)
     if not directory.is_dir() or not re.fullmatch(r'[a-z][a-z0-9-]{0,47}', identifier) or identifier == 'default':
         raise ValueError('An existing model directory and unique store id are required')
+    # Docker Desktop (WSL2) does not mount removable drives: the API container
+    # would see an empty or stale directory and the store's models would never
+    # appear. Fixed USB disks are mounted normally.
+    if windows_drive_type(directory) == DRIVE_REMOVABLE:
+        raise ValueError(
+            f'{directory.anchor} is a removable drive; Docker Desktop cannot read it, so the Dashboard API '
+            'would see this store as empty. Copy the models to an internal or fixed disk and register that directory'
+        )
     data = install/'data'
     data.mkdir(exist_ok=True)
     registry_path = data/'model-stores.json'
