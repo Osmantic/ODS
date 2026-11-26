@@ -227,15 +227,20 @@ try {
 
     # PowerShell -v argument needs careful quoting for paths with spaces.
     # A successful mount is not enough: Docker Desktop mounts a removable
-    # drive as an empty directory with exit 0. When the host directory has
-    # entries, require the container to see one (exit 42 = mounted but empty).
-    # The script avoids double quotes: PS 5.1 mangles them for native args.
-    $_probeHasEntries = [bool](Get-ChildItem -LiteralPath $_fsProbe -Force -ErrorAction SilentlyContinue |
-        Select-Object -First 1)
-    $_probeCommand = @(if ($_probeHasEntries) { 'sh', '-c', 'ls -A /check | grep -q . || exit 42' } else { 'true' })
+    # drive as an empty directory, or as a stale tree from an earlier mount,
+    # with exit 0. Require every sampled host entry to exist inside the
+    # container (exit 42 = the container does not see this directory).
+    # Names travel in an env var joined by '/', which no file name contains;
+    # the script avoids double quotes because PS 5.1 mangles them.
+    $_probeEntries = @(Get-ChildItem -LiteralPath $_fsProbe -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notin @('System Volume Information', '$RECYCLE.BIN') } |
+        Select-Object -First 8 -ExpandProperty Name)
+    $_probeScript = "ls -A /check > /tmp/seen; [ -s /tmp/seen ] || exit 42; printenv ODS_PROBE_ENTRIES | tr / '\n' | grep -vxFf /tmp/seen | grep -q . && exit 42; exit 0"
+    $_probeCommand = @(if ($_probeEntries.Count) { 'sh', '-c', $_probeScript } else { 'true' })
     $_prevRunEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    $_probeOut = & docker run --rm -v "${_fsProbe}:/check:ro" $_probeImage @_probeCommand 2>&1
+    $_probeOut = & docker run --rm -e "ODS_PROBE_ENTRIES=$($_probeEntries -join '/')" `
+        -v "${_fsProbe}:/check:ro" $_probeImage @_probeCommand 2>&1
     $_probeExit = $LASTEXITCODE
     $ErrorActionPreference = $_prevRunEap
     $_probeText = ($_probeOut -join "`n")
