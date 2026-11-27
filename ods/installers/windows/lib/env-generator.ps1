@@ -522,6 +522,18 @@ function New-ODSEnv {
         -ExistingEnv $existingEnv -InstallDir $InstallDir
     $whisperPort = Resolve-WindowsWhisperHostPort -ConfiguredPort ([string]$whisperPort)
 
+    # n8n/README.md tells owners to set N8N_WEBHOOK_URL to their public URL.
+    # As phase 06 does on Linux (#7396): an explicit process value, then the
+    # previous .env, then this install's n8n port.
+    $n8nPort = Resolve-WindowsODSPort -Name "N8N_PORT" -DefaultPort 5678 -ExistingEnv $existingEnv -RequireValidProcessOverride
+    $n8nWebhookUrl = [Environment]::GetEnvironmentVariable("N8N_WEBHOOK_URL")
+    if ($n8nWebhookUrl -match '[\r\n]') {
+        throw "N8N_WEBHOOK_URL process override must be a single line."
+    }
+    if ([string]::IsNullOrEmpty($n8nWebhookUrl)) {
+        $n8nWebhookUrl = Get-EnvOrNew "N8N_WEBHOOK_URL" "http://localhost:$n8nPort"
+    }
+
     function Get-ExistingTokenSpyApiKey {
         $tokenSpyKeyFile = Join-Path $InstallDir "data\token-spy\token-spy-api-key.txt"
         if (Test-Path $tokenSpyKeyFile) {
@@ -986,7 +998,7 @@ OLLAMA_PORT=11434
 WEBUI_PORT=$webuiPort
 WHISPER_PORT=$whisperPort
 TTS_PORT=$(Resolve-WindowsODSPort -Name "TTS_PORT" -DefaultPort 8880 -ExistingEnv $existingEnv -RequireValidProcessOverride)
-N8N_PORT=$(Resolve-WindowsODSPort -Name "N8N_PORT" -DefaultPort 5678 -ExistingEnv $existingEnv -RequireValidProcessOverride)
+N8N_PORT=$n8nPort
 QDRANT_PORT=$(Resolve-WindowsODSPort -Name "QDRANT_PORT" -DefaultPort 6333 -ExistingEnv $existingEnv -RequireValidProcessOverride)
 QDRANT_GRPC_PORT=$(Resolve-WindowsODSPort -Name "QDRANT_GRPC_PORT" -DefaultPort 6334 -ExistingEnv $existingEnv -RequireValidProcessOverride)
 QDRANT_API_KEY=$qdrantApiKey
@@ -1051,7 +1063,7 @@ WEB_SEARCH_ENGINE=searxng
 
 #=== n8n Settings ===
 N8N_HOST=localhost
-N8N_WEBHOOK_URL=http://localhost:5678
+N8N_WEBHOOK_URL=$n8nWebhookUrl
 TIMEZONE=$tz
 
 #=== Langfuse Observability ===

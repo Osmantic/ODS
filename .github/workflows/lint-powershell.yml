@@ -386,6 +386,15 @@ jobs:
         shell: powershell
         run: ./tests/test-windows-service-port-overrides.ps1
 
+      - name: Windows n8n Webhook URL Carry Contract
+        shell: pwsh
+        run: ./tests/test-windows-n8n-webhook-carry.ps1
+
+      - name: Windows n8n Webhook URL Carry Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-n8n-webhook-carry.ps1
+
       - name: Windows Host Agent Python Resolver Contract
         shell: pwsh
         run: ./tests/test-windows-python-resolver.ps1
