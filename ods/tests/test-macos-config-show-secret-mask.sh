@@ -8,7 +8,9 @@
 # LANGFUSE_DB_PASSWORD, LANGFUSE_SALT, N8N_USER and LANGFUSE_INIT_USER_EMAIL
 # printed their auto-generated secret values in cleartext. Masking now matches
 # the key NAME against the same keyword set the Linux CLI's _cmd_config_is_secret
-# falls back to. This test exercises the real script end-to-end.
+# falls back to. Keys .env.schema.json marks secret are masked first, as on
+# Linux, because some (MAILPIT_UI_AUTH, CREDS_IV) carry no keyword at all.
+# This test exercises the real script end-to-end.
 # ============================================================================
 
 set -euo pipefail
@@ -47,6 +49,8 @@ chmod +x "$SHIM_DIR/docker"
 INSTALL_SCAFFOLD="$TEMP_DIR/install"
 mkdir -p "$INSTALL_SCAFFOLD"
 touch "$INSTALL_SCAFFOLD/docker-compose.base.yml"
+# The schema marks secrets whose names carry no keyword (MAILPIT_UI_AUTH, CREDS_IV).
+cp "$ROOT_DIR/.env.schema.json" "$INSTALL_SCAFFOLD/.env.schema.json"
 
 cat > "$INSTALL_SCAFFOLD/.env" <<'EOF'
 # Test fixture
@@ -59,12 +63,19 @@ N8N_USER=leak-user-value
 LANGFUSE_INIT_USER_EMAIL=leak@example.test
 DASHBOARD_API_KEY=leak-key-value
 ODS_SESSION_SECRET=leak-secret-value
+MAILPIT_UI_AUTH=leak-mailpit:ui-pass
+MAILPIT_SMTP_AUTH=leak-mailpit:smtp-pass
+CREDS_IV=leak-creds-iv-value
+HUGINN_INVITATION_CODE=leak-invite-value
+SFTPGO_SETUP_CODE=leak-setup-value
 LLM_MODEL=some-model
 EOF
 
 # Sentinel values whose appearance in stdout would prove a leak.
 SECRETS=(leak-pw-value leak-salt-value leak-dbpw-value leak-user-value \
-         leak@example.test leak-key-value leak-secret-value)
+         leak@example.test leak-key-value leak-secret-value \
+         leak-mailpit:ui-pass leak-mailpit:smtp-pass leak-creds-iv-value \
+         leak-invite-value leak-setup-value)
 
 # Strip ANSI colors so assertions match on plain text.
 OUT=$(ODS_HOME="$INSTALL_SCAFFOLD" PATH="$SHIM_DIR:$PATH" \
@@ -80,7 +91,8 @@ for secret in "${SECRETS[@]}"; do
 done
 
 # The masked keys must still be listed (as KEY=***), not dropped entirely.
-for key in OPENCODE_SERVER_PASSWORD LANGFUSE_SALT N8N_USER LANGFUSE_INIT_USER_EMAIL DASHBOARD_API_KEY; do
+for key in OPENCODE_SERVER_PASSWORD LANGFUSE_SALT N8N_USER LANGFUSE_INIT_USER_EMAIL DASHBOARD_API_KEY \
+           MAILPIT_UI_AUTH MAILPIT_SMTP_AUTH CREDS_IV HUGINN_INVITATION_CODE SFTPGO_SETUP_CODE; do
     if grep -qF "${key}=***" <<<"$OUT"; then
         pass "$key shown as masked ***"
     else

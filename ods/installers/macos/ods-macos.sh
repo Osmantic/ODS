@@ -1321,6 +1321,28 @@ cmd_logs() {
     docker compose $flags logs -f --tail "$lines" "$service"
 }
 
+# Keys .env.schema.json marks secret, one per line, as the Linux CLI's
+# _cmd_config_load_secret_schema reads them. Names such as MAILPIT_UI_AUTH or
+# CREDS_IV contain none of the keyword fallbacks, so the schema comes first.
+# Without the schema, jq or python3, print nothing; the keyword match still runs.
+macos_schema_secret_keys() {
+    local schema="${INSTALL_DIR}/.env.schema.json"
+    [[ -f "$schema" ]] || return 0
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '.properties | to_entries[] | select(.value.secret == true) | .key' "$schema"
+        return
+    fi
+    command -v python3 >/dev/null 2>&1 || return 0
+    python3 - "$schema" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+for key, spec in (data.get("properties") or {}).items():
+    if isinstance(spec, dict) and spec.get("secret") is True:
+        print(key)
+PYEOF
+}
+
 cmd_config_show() {
     test_install_dir
 
@@ -1334,6 +1356,9 @@ cmd_config_show() {
         ai_warn ".env not found"
         return
     fi
+
+    local secret_keys
+    secret_keys="$(macos_schema_secret_keys)"
 
     while IFS= read -r line || [[ -n "$line" ]]; do
         line_trimmed=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -1351,6 +1376,10 @@ cmd_config_show() {
         local key key_lc
         key="${line_trimmed%%=*}"
         key_lc=$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')
+        if [[ -n "$secret_keys" ]] && grep -qxF -- "$key" <<< "$secret_keys"; then
+            echo -e "  ${DGRN}${key}=***${NC}"
+            continue
+        fi
         case "$key_lc" in
             *secret*|*password*|*pass*|*token*|*key*|*salt*|*bearer*|*user*|*email*)
                 echo -e "  ${DGRN}${key}=***${NC}" ;;
