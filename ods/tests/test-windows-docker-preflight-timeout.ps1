@@ -21,14 +21,14 @@ function Set-FakeDocker {
     $infoJson = '{"KernelVersion":"5.15.167.4-microsoft-standard-WSL2","NCPU":8}'
     if ($onWindows) {
         $body = switch ($Mode) {
-            "hang" { "@echo off`r`nping -n 120 127.0.0.1 >nul`r`n" }
+            "hang" { "@echo off`r`nping -n 127 127.0.0.1 >nul`r`n" }
             "down" { "@echo off`r`necho error during connect 1>&2`r`nexit /b 1`r`n" }
-            "ok"   { "@echo off`r`nif ""%1""==""version"" echo $versionJson`r`nif ""%1""==""info"" if ""%3""==""{{.NCPU}}"" (echo 8) else (echo $infoJson)`r`n" }
+            "ok"   { "@echo off`r`nif ""%~1""==""version"" echo $versionJson`r`nif ""%~1""==""info"" if ""%~3""==""{{.NCPU}}"" (echo 8) else (echo $infoJson)`r`n" }
         }
         Set-Content -LiteralPath (Join-Path $fakeDir "docker.cmd") -Value $body -Encoding ASCII
     } else {
         $body = switch ($Mode) {
-            "hang" { "#!/bin/sh`nexec sleep 120`n" }
+            "hang" { "#!/bin/sh`nsleep 127 &`nwait`n" }
             "down" { "#!/bin/sh`necho 'error during connect' >&2`nexit 1`n" }
             "ok"   { "#!/bin/sh`ncase `"`$1`" in`n  version) echo '$versionJson' ;;`n  info) if [ `"`$3`" = '{{.NCPU}}' ]; then echo 8; else echo '$infoJson'; fi ;;`nesac`n" }
         }
@@ -36,6 +36,14 @@ function Set-FakeDocker {
         Set-Content -LiteralPath $path -Value $body -NoNewline
         chmod +x $path
     }
+}
+
+function Get-HungChildCount {
+    if ($onWindows) {
+        return @(Get-CimInstance Win32_Process -Filter "Name = 'PING.EXE'" |
+            Where-Object { $_.CommandLine -like "*-n 127*" }).Count
+    }
+    return @(pgrep -f "sleep 127").Count
 }
 
 $oldPath = $env:PATH
@@ -56,6 +64,9 @@ try {
         throw "hung engine: Test-DockerDesktop took $([int]$watch.Elapsed.TotalSeconds)s, expected the 2s probe timeout"
     }
 
+    Start-Sleep -Milliseconds 500
+    Assert-Equal (Get-HungChildCount) 0 "hung engine: timed-out probe left no child process"
+
     $watch.Restart()
     $cpu = Get-DockerAvailableCpuCount
     $watch.Stop()
@@ -63,6 +74,8 @@ try {
     if ($watch.Elapsed.TotalSeconds -gt 15) {
         throw "hung engine: Get-DockerAvailableCpuCount took $([int]$watch.Elapsed.TotalSeconds)s"
     }
+    Start-Sleep -Milliseconds 500
+    Assert-Equal (Get-HungChildCount) 0 "hung engine: CPU probe left no child process"
 
     Set-FakeDocker -Mode "down"
     $down = Test-DockerDesktop

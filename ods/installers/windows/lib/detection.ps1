@@ -332,6 +332,29 @@ function Get-ODSDockerProbeTimeoutSeconds {
     return $timeout
 }
 
+function Stop-ODSProcessTree {
+    <#
+    .SYNOPSIS
+        Kill a timed-out probe and any children it spawned.
+    .DESCRIPTION
+        A docker shim (.cmd wrapper) leaves its child running if only the
+        parent is killed, so the whole tree is stopped. Windows PowerShell 5.1
+        has no Process.Kill(bool), so it uses taskkill /T there.
+    #>
+    param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
+
+    if ($PSVersionTable.PSEdition -eq "Core") {
+        try {
+            $Process.Kill($true)
+        } catch [System.InvalidOperationException] {
+            # The process exited between the timeout and Kill(); nothing to stop.
+        }
+        return
+    }
+    # Exit code 128 means the process already exited; nothing to stop.
+    & taskkill.exe /PID $Process.Id /T /F 2>&1 | Out-Null
+}
+
 function Invoke-ODSDockerProbe {
     <#
     .SYNOPSIS
@@ -380,11 +403,7 @@ function Invoke-ODSDockerProbe {
         $null = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             $result.TimedOut = $true
-            try {
-                $process.Kill()
-            } catch [System.InvalidOperationException] {
-                # The process exited between the timeout and Kill(); nothing to stop.
-            }
+            Stop-ODSProcessTree -Process $process
             return $result
         }
         $process.WaitForExit()
