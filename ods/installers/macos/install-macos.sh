@@ -1005,10 +1005,10 @@ _ensure_colima_private_network() {
 
     local attempt
     for attempt in $(seq 1 60); do
-        docker info >/dev/null 2>&1 && break
+        ODS_DOCKER_PROBE_TIMEOUT_SECONDS=5 macos_docker_probe info >/dev/null 2>&1 && break
         sleep 1
     done
-    if ! docker info >/dev/null 2>&1 \
+    if ! macos_docker_probe info >/dev/null 2>&1 \
        || ! _detect_colima_private_network \
        || [[ "$COLIMA_PRIVATE_ROUTE_PREFERRED" != "true" ]]; then
         ai_err "Colima restarted, but its preferred private host route could not be verified."
@@ -1285,6 +1285,9 @@ ai_ok "Docker CLI found"
 
 if ! $DOCKER_RUNNING; then
     ai_err "Docker daemon is not responding."
+    if $DOCKER_NOT_RESPONDING; then
+        ai "Docker accepted the connection but did not answer within ${ODS_DOCKER_PROBE_TIMEOUT_SECONDS:-20}s; it may be stuck starting. Quit it completely and open it again."
+    fi
     case "${DOCKER_BACKEND:-unknown}" in
         desktop)  ai "Start Docker Desktop from /Applications or the menu bar, then re-run this installer." ;;
         colima)   _show_colima_start_hint ;;

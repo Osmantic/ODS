@@ -87,6 +87,31 @@ get_macos_version() {
 
 # ── Docker engine detection ──
 #
+# `docker version` / `docker info` wait forever when the socket accepts but
+# the engine never answers (Docker Desktop stuck starting, a paused Colima or
+# OrbStack VM). macOS has no `timeout` command, so probes run in the
+# background and are stopped after ODS_DOCKER_PROBE_TIMEOUT_SECONDS (20).
+# Returns docker's status, or 124 when it did not answer in time.
+macos_docker_probe() {
+    local limit="${ODS_DOCKER_PROBE_TIMEOUT_SECONDS:-20}"
+    [[ "$limit" =~ ^[1-9][0-9]*$ ]] || limit=20
+    local deadline=$((SECONDS + limit)) pid
+    docker "$@" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        if (( SECONDS >= deadline )); then
+            # It may exit on its own between the check and the signal.
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return 124
+        fi
+        sleep 0.2
+    done
+    wait "$pid"
+}
+
+# Engine detection proper.
+#
 # Despite the legacy function name, this only requires a working docker
 # CLI talking to a working daemon — Docker Desktop is one option, but
 # Colima, Rancher Desktop, OrbStack, and a docker socket forwarded from
@@ -98,6 +123,7 @@ test_docker_desktop() {
     DOCKER_INSTALLED=false
     DOCKER_RUNNING=false
     DOCKER_VERSION=""
+    DOCKER_NOT_RESPONDING=false
     DOCKER_BACKEND="unknown"  # "desktop" | "colima" | "rancher" | "orbstack" | "other"
 
     # Check if docker CLI is available
@@ -125,9 +151,13 @@ test_docker_desktop() {
     esac
 
     # Check if Docker daemon is responsive
-    if docker version >/dev/null 2>&1; then
+    local probe_rc=0
+    macos_docker_probe version >/dev/null 2>&1 || probe_rc=$?
+    if (( probe_rc == 0 )); then
         DOCKER_RUNNING=true
-        DOCKER_VERSION=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo "unknown")
+        DOCKER_VERSION=$(macos_docker_probe version --format '{{.Server.Version}}' 2>/dev/null || echo "unknown")
+    elif (( probe_rc == 124 )); then
+        DOCKER_NOT_RESPONDING=true
     fi
 }
 
@@ -158,7 +188,7 @@ get_host_logical_cpus() {
 get_docker_available_cpus() {
     local cores=""
     if command -v docker >/dev/null 2>&1; then
-        cores=$(docker info --format '{{.NCPU}}' 2>/dev/null || true)
+        cores=$(macos_docker_probe info --format '{{.NCPU}}' 2>/dev/null || true)
         cores="${cores//[!0-9]/}"
     fi
 
