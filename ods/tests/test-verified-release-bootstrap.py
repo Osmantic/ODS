@@ -90,6 +90,14 @@ def harness(tmp_path):
         shell = shutil.which('powershell.exe')
         if not shell:
             pytest.skip('Windows PowerShell 5.1 is required')
+        # A pwsh parent (CI's default shell) exports PowerShell 7 module folders
+        # in PSModulePath. Windows PowerShell would then load PowerShell 7's
+        # Microsoft.PowerShell.Archive, and 1.2.7 (pwsh 7.6.10) calls a .NET
+        # Core-only ExtractToDirectory overload. Without the variable,
+        # Windows PowerShell uses its own default module path, as a new window
+        # does. Python upper-cases os.environ keys on Windows, so match any case.
+        for key in [key for key in env if key.upper() == 'PSMODULEPATH']:
+            del env[key]
         wrapper = root / 'run-test.ps1'
         wrapper.write_text('''
 $ErrorActionPreference = 'Stop'
