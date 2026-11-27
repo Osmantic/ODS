@@ -90,7 +90,14 @@ NATIVE_LIFECYCLE_CHILD=false
 # ============================================================================
 
 test_docker_running() {
-    if ! docker info >/dev/null 2>&1; then
+    local probe_rc=0
+    macos_docker_probe info >/dev/null 2>&1 || probe_rc=$?
+    if (( probe_rc == 124 )); then
+        ai_err "Docker is not responding (no answer within ${ODS_DOCKER_PROBE_TIMEOUT_SECONDS:-20}s)."
+        ai "It may be stuck starting. Quit Docker Desktop (or your Colima/OrbStack VM) completely, start it again, then retry."
+        return 1
+    fi
+    if (( probe_rc != 0 )); then
         ai_err "Docker Desktop is not running."
         ai "Start it from the Applications folder or menu bar, then try again."
         return 1
