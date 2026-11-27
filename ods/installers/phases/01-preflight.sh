@@ -299,8 +299,21 @@ re-run, e.g.:  INSTALL_DIR=\"\$HOME/ods\" $0"
 check_docker_desktop_sharing() {
     command -v docker >/dev/null 2>&1 || return 0
 
-    local os_string=""
-    os_string=$(docker info --format '{{json .OperatingSystem}}' 2>/dev/null || true)
+    # `docker info` waits forever when the socket accepts but the engine never
+    # answers (Docker Desktop stuck starting). Stop after a bounded wait and say
+    # so; any other failure keeps the old behaviour (not Docker Desktop, skip).
+    local os_string="" probe_rc=0
+    local probe_timeout="${ODS_DOCKER_PROBE_TIMEOUT_SECONDS:-20}"
+    [[ "$probe_timeout" =~ ^[1-9][0-9]*$ ]] || probe_timeout=20
+    os_string=$(timeout "$probe_timeout" docker info --format '{{json .OperatingSystem}}' 2>/dev/null) || probe_rc=$?
+    if (( probe_rc == 124 )); then
+        error "Docker is not responding: 'docker info' got no answer within ${probe_timeout}s.
+
+Docker may be stuck starting. Quit Docker Desktop completely and open it again
+(on WSL, also run 'wsl --shutdown' from Windows), or restart the docker service,
+then re-run this installer. On a slow machine, raise the wait with
+ODS_DOCKER_PROBE_TIMEOUT_SECONDS=60."
+    fi
     case "$os_string" in
         *"Docker Desktop"*) ;;
         *) return 0 ;;

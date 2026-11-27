@@ -362,3 +362,4 @@ tests/performance/test_telemetry.py
 tests/performance/test_engine_timings.py
 
 tests/performance/test_open_loop.py
+tests/test-preflight-docker-info-timeout.sh
