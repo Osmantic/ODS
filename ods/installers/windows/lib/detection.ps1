@@ -322,19 +322,115 @@ function Get-SystemRamGB {
     }
 }
 
+function Get-ODSDockerProbeTimeoutSeconds {
+    $timeout = 20
+    $raw = [string]$env:ODS_DOCKER_PROBE_TIMEOUT_SECONDS
+    $parsed = 0
+    if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -gt 0) {
+        $timeout = $parsed
+    }
+    return $timeout
+}
+
+function Stop-ODSProcessTree {
+    <#
+    .SYNOPSIS
+        Kill a timed-out probe and any children it spawned.
+    .DESCRIPTION
+        A docker shim (.cmd wrapper) leaves its child running if only the
+        parent is killed, so the whole tree is stopped. Windows PowerShell 5.1
+        has no Process.Kill(bool), so it uses taskkill /T there.
+    #>
+    param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
+
+    if ($PSVersionTable.PSEdition -eq "Core") {
+        try {
+            $Process.Kill($true)
+        } catch [System.InvalidOperationException] {
+            # The process exited between the timeout and Kill(); nothing to stop.
+        }
+        return
+    }
+    # Exit code 128 means the process already exited; nothing to stop.
+    & taskkill.exe /PID $Process.Id /T /F 2>&1 | Out-Null
+}
+
+function Invoke-ODSDockerProbe {
+    <#
+    .SYNOPSIS
+        Run a read-only docker CLI command with a hard timeout.
+    .DESCRIPTION
+        `docker version` and `docker info` block indefinitely when Docker
+        Desktop's engine pipe accepts connections but the engine never
+        answers (stuck "Engine starting", paused WSL VM). Preflight must
+        report that state instead of hanging the installer forever.
+    .OUTPUTS
+        @{ Started; TimedOut; ExitCode; Output }
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [int]$TimeoutSeconds = 0
+    )
+
+    if ($TimeoutSeconds -le 0) { $TimeoutSeconds = Get-ODSDockerProbeTimeoutSeconds }
+    $result = @{ Started = $false; TimedOut = $false; ExitCode = -1; Output = "" }
+
+    $dockerCmd = Get-Command docker -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $dockerCmd) { return $result }
+
+    $quoted = foreach ($arg in $Arguments) {
+        if ($arg -match '[\s"]') { '"' + ($arg -replace '"', '\"') + '"' } else { $arg }
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $dockerCmd.Source
+    $psi.Arguments = ($quoted -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    try {
+        $process = [System.Diagnostics.Process]::Start($psi)
+    } catch [System.ComponentModel.Win32Exception] {
+        # docker is on PATH but cannot be executed; report it as not started.
+        return $result
+    }
+    $result.Started = $true
+    try {
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $null = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            $result.TimedOut = $true
+            Stop-ODSProcessTree -Process $process
+            return $result
+        }
+        $process.WaitForExit()
+        $result.ExitCode = $process.ExitCode
+        $result.Output = [string]$stdout.Result
+    } finally {
+        $process.Dispose()
+    }
+    return $result
+}
+
 function Test-DockerDesktop {
     <#
     .SYNOPSIS
         Verify Docker Desktop is installed, running, and using the WSL2 backend.
     .OUTPUTS
-        @{ Installed; Running; Version; WSL2Backend; GpuSupport }
+        @{ Installed; Running; NotResponding; TimeoutSeconds; Version; WSL2Backend; GpuSupport }
     #>
+    $timeout = Get-ODSDockerProbeTimeoutSeconds
     $result = @{
-        Installed   = $false
-        Running     = $false
-        Version     = ""
-        WSL2Backend = $false
-        GpuSupport  = $false
+        Installed      = $false
+        Running        = $false
+        NotResponding  = $false
+        TimeoutSeconds = $timeout
+        Version        = ""
+        WSL2Backend    = $false
+        GpuSupport     = $false
     }
 
     # Check if docker CLI is available
@@ -343,9 +439,14 @@ function Test-DockerDesktop {
     $result.Installed = $true
 
     # Check if Docker daemon is responsive
+    $versionProbe = Invoke-ODSDockerProbe -Arguments @("version", "--format", "{{json .}}") -TimeoutSeconds $timeout
+    if ($versionProbe.TimedOut) {
+        $result.NotResponding = $true
+        return $result
+    }
     try {
-        $versionJson = docker version --format "{{json .}}" 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
-        if ($LASTEXITCODE -eq 0 -and $versionJson) {
+        $versionJson = $versionProbe.Output | ConvertFrom-Json -ErrorAction SilentlyContinue
+        if ($versionProbe.ExitCode -eq 0 -and $versionJson) {
             $result.Running = $true
             if ($versionJson.Server) {
                 $result.Version = $versionJson.Server.Version
@@ -357,11 +458,18 @@ function Test-DockerDesktop {
         # Docker not responding
         return $result
     }
+    if (-not $result.Running) { return $result }
 
     # Check for WSL2 backend via docker info
     try {
-        $infoRaw = docker info --format "{{json .}}" 2>$null
-        if ($infoRaw) {
+        $infoProbe = Invoke-ODSDockerProbe -Arguments @("info", "--format", "{{json .}}") -TimeoutSeconds $timeout
+        if ($infoProbe.TimedOut) {
+            $result.Running = $false
+            $result.NotResponding = $true
+            return $result
+        }
+        $infoRaw = $infoProbe.Output
+        if ($infoProbe.ExitCode -eq 0 -and $infoRaw) {
             $info = $infoRaw | ConvertFrom-Json -ErrorAction SilentlyContinue
             if ($info) {
                 # Docker Desktop on Windows with WSL2 shows "wsl" in the isolation mode
@@ -414,8 +522,9 @@ function Get-DockerAvailableCpuCount {
         is unavailable or not yet running.
     #>
     try {
-        $cpuRaw = docker info --format "{{.NCPU}}" 2>$null
-        if ($LASTEXITCODE -eq 0 -and $cpuRaw -match "(\d+)") {
+        $probe = Invoke-ODSDockerProbe -Arguments @("info", "--format", "{{.NCPU}}")
+        $cpuRaw = $probe.Output
+        if (-not $probe.TimedOut -and $probe.ExitCode -eq 0 -and $cpuRaw -match "(\d+)") {
             $count = [int]$Matches[1]
             if ($count -gt 0) { return $count }
         }

@@ -95,6 +95,15 @@ if (-not $preflight_docker.Installed) {
 }
 Write-AISuccess "Docker CLI found"
 
+if ($preflight_docker.NotResponding) {
+    Write-AIError "Docker Desktop is not responding (no answer from the Docker engine within $($preflight_docker.TimeoutSeconds)s)."
+    Write-AI "  Docker Desktop may be stuck starting, or its WSL2 VM may be paused."
+    Write-AI "  Quit Docker Desktop from the tray, start it again, wait until it shows 'Engine running', then re-run this installer."
+    Write-AI "  If it stays stuck, run 'wsl --shutdown' and start Docker Desktop again."
+    Write-AI "  Slow machine? Raise the wait with: `$env:ODS_DOCKER_PROBE_TIMEOUT_SECONDS = 60"
+    throw "ODS_INSTALL_ABORTED"
+}
+
 if (-not $preflight_docker.Running) {
     Write-AIError "Docker Desktop is not running."
     Write-AI "  Start it from the Start Menu, then re-run this installer."
