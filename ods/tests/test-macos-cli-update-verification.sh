@@ -176,3 +176,24 @@ token_after="$(awk -F= '/^HERMES_DASHBOARD_SESSION_TOKEN=/{print $2}' "$install_
 }
 
 printf '[PASS] macOS update retries transient compose pull failures\n'
+
+# An option update does not have, such as --dry-run from `ods update`, must
+# stop before anything is pulled or recreated.
+: > "$docker_log"
+if PATH="$bin_dir:$PATH" ODS_HOME="$install_dir" NO_COLOR=1 TEST_DOCKER_LOG="$docker_log" \
+    "$BASH" "$macos_cli" update --dry-run > "$tmp_dir/dry-run.out" 2>&1; then
+    cat "$tmp_dir/dry-run.out" >&2
+    printf '[FAIL] macOS update accepted --dry-run and ran\n' >&2
+    exit 1
+fi
+if grep -qE 'compose .*(pull|up)' "$docker_log"; then
+    cat "$docker_log" >&2
+    printf '[FAIL] macOS update --dry-run pulled or recreated containers\n' >&2
+    exit 1
+fi
+grep -q 'ods update --dry-run' "$tmp_dir/dry-run.out" || {
+    cat "$tmp_dir/dry-run.out" >&2
+    printf '[FAIL] macOS update --dry-run did not point to ods update --dry-run\n' >&2
+    exit 1
+}
+printf '[PASS] macOS update refuses unknown options before pulling\n'

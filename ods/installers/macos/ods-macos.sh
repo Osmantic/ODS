@@ -1412,6 +1412,14 @@ cmd_update_pixel() {
 }
 
 cmd_update() {
+    # A native lifecycle child passes its service name; anything else is an
+    # option this command does not have. Refuse it before pulling, so a
+    # preview such as --dry-run (supported only by `ods update`) never updates.
+    if [[ "$NATIVE_LIFECYCLE_CHILD" != true && $# -gt 0 ]]; then
+        ai_err "Unknown option for update: $1"
+        ai "./ods-macos.sh update takes no options. To preview an update, run: ods update --dry-run"
+        return 2
+    fi
     test_install
     cd "$INSTALL_DIR"
     [[ "$NATIVE_LIFECYCLE_CHILD" == true ]] || ensure_llama_cpu_budget
@@ -1537,7 +1545,7 @@ case "$COMMAND" in
         esac
         ;;
     chat)       cmd_chat "$*" ;;
-    update)     cmd_update ;;
+    update)     cmd_update "$@" ;;
     update-pixel) cmd_update_pixel "$@" ;;
     version)    cmd_version ;;
     help)       show_help ;;
