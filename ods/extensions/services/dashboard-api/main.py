@@ -83,6 +83,7 @@ from routers import (
     usage,
     node,
     pixel,
+    docs,
     pixel_teams,
     pixel_providers,
     pixel_settings,
@@ -1310,6 +1311,7 @@ app.include_router(pixel_advice_runtime.router)
 app.include_router(pixel_sharing.router)
 app.include_router(pixel_model_failure.router)
 app.include_router(opencode_app.router)
+app.include_router(docs.router)
 
 
 # ================================================================
