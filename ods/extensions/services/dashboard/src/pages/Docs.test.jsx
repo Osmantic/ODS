@@ -46,8 +46,10 @@ const mockCatalog = {
     'docs/macos-quickstart.md': 'platform/macos-quickstart',
     'macos-quickstart.md': 'platform/macos-quickstart',
     'quickstart.md': 'getting-started/quickstart',
+    'extensions/services/open-webui/readme.md': 'extensions/open-webui',
+    'extensions/services/open-webui/readme': 'extensions/open-webui',
   },
-  total_documents: 3,
+  total_documents: 4,
 }
 
 const mockDocOverview = {
@@ -293,5 +295,71 @@ describe('Docs Component', () => {
     // Comments inside fenced bash code block must not become heading elements
     expect(screen.queryByRole('heading', { name: /bash comment inside fence/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /Not a heading/i })).not.toBeInTheDocument()
+  })
+
+  it('resolves nested README links against currentDoc.path and links unregistered files to GitHub source', async () => {
+    routes['GET /api/docs/document?slug=getting-started%2Foverview'] = {
+      ...mockDocOverview,
+      slug: 'getting-started/faq',
+      path: 'FAQ.md',
+      content: [
+        '# FAQ',
+        '',
+        '- [Open WebUI Settings](extensions/services/open-webui/README.md#settings-come-from-ods)',
+        '- [Pixel Notices](vendor/pixel/THIRD_PARTY_NOTICES.md)',
+        '- [Schema README](extensions/schema/README.md)',
+        '- [Monorepo Root](../README.md#hardware-auto-detection)',
+      ].join('\n'),
+      headings: [{ level: 1, text: 'FAQ', id: 'faq' }],
+    }
+    routes['GET /api/docs/document?slug=platform%2Fwsl2-gpu'] = {
+      ...mockDocWsl2,
+      path: 'docs/MULTI-USER-SETUP.md',
+      content: [
+        '# Multi-User Setup',
+        '',
+        'See [Open WebUI](../extensions/services/open-webui/README.md#settings-come-from-ods) and [Pixel Notices](../vendor/pixel/THIRD_PARTY_NOTICES.md).',
+      ].join('\n'),
+      headings: [{ level: 1, text: 'Multi-User Setup', id: 'multi-user-setup' }],
+    }
+
+    render(<Docs />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: 'Open WebUI Settings' })).toBeInTheDocument()
+    })
+
+    // Open WebUI README resolves to extensions/open-webui, NOT getting-started/overview (root README.md)
+    expect(screen.getByRole('link', { name: 'Open WebUI Settings' })).toHaveAttribute(
+      'href',
+      '/docs/extensions/open-webui#settings-come-from-ods'
+    )
+    // Unregistered files and nested READMEs fall back to GitHub source URLs, never broken /docs/* routes or root README
+    expect(screen.getByRole('link', { name: 'Pixel Notices' })).toHaveAttribute(
+      'href',
+      'https://github.com/Osmantic/ODS/blob/main/ods/vendor/pixel/THIRD_PARTY_NOTICES.md'
+    )
+    expect(screen.getByRole('link', { name: 'Schema README' })).toHaveAttribute(
+      'href',
+      'https://github.com/Osmantic/ODS/blob/main/ods/extensions/schema/README.md'
+    )
+    expect(screen.getByRole('link', { name: 'Monorepo Root' })).toHaveAttribute(
+      'href',
+      'https://github.com/Osmantic/ODS/blob/main/README.md#hardware-auto-detection'
+    )
+
+    // Navigate to nested doc (docs/MULTI-USER-SETUP.md) and confirm ../ resolution against currentDoc.path
+    fireEvent.click(screen.getByText('WSL2 GPU Passthrough Setup'))
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: 'Open WebUI' })).toBeInTheDocument()
+    })
+    expect(screen.getByRole('link', { name: 'Open WebUI' })).toHaveAttribute(
+      'href',
+      '/docs/extensions/open-webui#settings-come-from-ods'
+    )
+    expect(screen.getByRole('link', { name: 'Pixel Notices' })).toHaveAttribute(
+      'href',
+      'https://github.com/Osmantic/ODS/blob/main/ods/vendor/pixel/THIRD_PARTY_NOTICES.md'
+    )
   })
 })

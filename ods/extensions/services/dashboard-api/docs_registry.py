@@ -445,6 +445,14 @@ DOC_REGISTRY: list[dict[str, Any]] = [
         "path": "extensions/services/dashboard-api/README.md",
         "order": 5,
     },
+    {
+        "slug": "extensions/open-webui",
+        "category": "extensions",
+        "title": "Open WebUI Service",
+        "description": "Optional additional web chat interface backed by the ODS model gateway.",
+        "path": "extensions/services/open-webui/README.md",
+        "order": 6,
+    },
 
     # --- Operations & Runbooks ---
     {
@@ -1071,33 +1079,23 @@ DOC_REGISTRY: list[dict[str, Any]] = [
 
 def normalize_link_target(target: str) -> str:
     """Normalize a markdown file path or link target for lookup."""
-    clean = target.strip().replace("\\", "/").lstrip("/")
-    if clean.startswith("./"):
+    clean = target.strip().replace("\\", "/")
+    while clean.startswith("./"):
         clean = clean[2:]
-    while clean.startswith("../"):
-        clean = clean[3:]
-    return clean.lower()
+    return clean.lstrip("/").lower()
 
 
 def get_path_to_slug_map() -> dict[str, str]:
-    """Return dictionary mapping multiple path/filename variants to canonical slug."""
+    """Return dictionary mapping canonical paths, slugs, and explicit root aliases to slugs."""
     mapping: dict[str, str] = {
         "readme.md": "getting-started/overview",
         "readme": "getting-started/overview",
-        "docs/readme.md": "getting-started/overview",
-        "docs/readme": "getting-started/overview",
         "quickstart.md": "getting-started/quickstart",
         "quickstart": "getting-started/quickstart",
-        "docs/quickstart.md": "getting-started/quickstart",
-        "docs/quickstart": "getting-started/quickstart",
         "faq.md": "getting-started/faq",
         "faq": "getting-started/faq",
-        "docs/faq.md": "getting-started/faq",
-        "docs/faq": "getting-started/faq",
         "licensing.md": "getting-started/licensing",
         "licensing": "getting-started/licensing",
-        "license": "getting-started/licensing",
-        "license.md": "getting-started/licensing",
         "security.md": "networking/security-policy",
         "security": "networking/security-policy",
         "changelog.md": "dev/changelog",
@@ -1143,8 +1141,6 @@ def get_path_to_slug_map() -> dict[str, str]:
         "extensions.md": "extensions/overview",
         "extensions": "extensions/overview",
         "docs/extensions.md": "extensions/overview",
-        "extensions/readme.md": "extensions/catalog",
-        "extensions/readme": "extensions/catalog",
         "extensions/catalog.md": "extensions/catalog",
     }
 
@@ -1155,41 +1151,17 @@ def get_path_to_slug_map() -> dict[str, str]:
             continue
 
         norm_path = normalize_link_target(path)
-        filename = Path(path).name.lower()
-        stem = Path(path).stem.lower()
 
-        # Path variations
+        # Full relative path variations (never alias nested README.md / generic filenames globally)
         mapping[path] = slug
         mapping[path.lower()] = slug
         mapping[norm_path] = slug
         if norm_path.endswith(".md"):
             mapping[norm_path[:-3]] = slug
 
-        # Filename variations: only assign if not already claimed by a higher-priority file
-        if filename not in mapping or path.count("/") == 0:
-            mapping[filename] = slug
-        if stem not in mapping or path.count("/") == 0:
-            mapping[stem] = slug
-
-        # Slug variations
+        # Exact slug variations
         mapping[slug] = slug
         mapping[slug.lower()] = slug
-        slug_leaf = slug.split("/")[-1].lower()
-        if slug_leaf not in mapping:
-            mapping[slug_leaf] = slug
-
-    # Guarantee canonical root priorities
-    canonical_roots = {
-        "readme.md": "getting-started/overview",
-        "readme": "getting-started/overview",
-        "quickstart.md": "getting-started/quickstart",
-        "quickstart": "getting-started/quickstart",
-        "licensing.md": "getting-started/licensing",
-        "licensing": "getting-started/licensing",
-        "faq.md": "getting-started/faq",
-        "faq": "getting-started/faq",
-    }
-    mapping.update(canonical_roots)
 
     return mapping
 
@@ -1217,51 +1189,37 @@ def get_docs_catalog() -> list[dict[str, Any]]:
 
 
 def find_doc_by_slug(slug: str) -> dict[str, Any] | None:
-    """Find a document entry by its slug or path alias."""
+    """Find a document entry by its canonical slug or exact path alias."""
     # 1. Exact slug match
     for doc in DOC_REGISTRY:
         if doc["slug"] == slug:
             return doc
 
-    # 2. Lookup via canonical path mapping
+    # 2. Exact lookup via canonical path mapping (no bare-basename fallback)
     clean_target = normalize_link_target(slug)
+    if ".." in clean_target.split("/"):
+        return None
     path_map = get_path_to_slug_map()
+    by_slug = {doc["slug"]: doc for doc in DOC_REGISTRY}
 
     if clean_target in path_map:
-        target_slug = path_map[clean_target]
-        for doc in DOC_REGISTRY:
-            if doc["slug"] == target_slug:
-                return doc
+        return by_slug.get(path_map[clean_target])
 
     if clean_target.endswith(".md"):
         stripped = clean_target[:-3]
         if stripped in path_map:
-            target_slug = path_map[stripped]
-            for doc in DOC_REGISTRY:
-                if doc["slug"] == target_slug:
-                    return doc
+            return by_slug.get(path_map[stripped])
 
-    # 3. Check if target had extra prefix e.g. "getting-started/docs/MACOS-QUICKSTART.md"
-    parts = clean_target.split("/")
-    for i in range(1, len(parts)):
-        subpath = "/".join(parts[i:])
-        if subpath in path_map:
-            target_slug = path_map[subpath]
-            for doc in DOC_REGISTRY:
-                if doc["slug"] == target_slug:
-                    return doc
-        if subpath.endswith(".md") and subpath[:-3] in path_map:
-            target_slug = path_map[subpath[:-3]]
-            for doc in DOC_REGISTRY:
-                if doc["slug"] == target_slug:
-                    return doc
-
-    filename = parts[-1]
-    if filename in path_map:
-        target_slug = path_map[filename]
-        for doc in DOC_REGISTRY:
-            if doc["slug"] == target_slug:
-                return doc
+    # 3. Allow category-prefixed exact path aliases (e.g. "getting-started/docs/HARDWARE-GUIDE.md")
+    if "/" in clean_target:
+        cat_prefix, rest = clean_target.split("/", 1)
+        category_ids = {str(cat["id"]).lower() for cat in DOC_CATEGORIES}
+        if cat_prefix in category_ids and rest in path_map:
+            candidate = by_slug.get(path_map[rest])
+            if candidate and candidate.get("category", "").lower() == cat_prefix:
+                candidate_path = candidate.get("path", "").lower()
+                if candidate_path in (rest, f"{rest}.md"):
+                    return candidate
 
     return None
 

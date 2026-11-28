@@ -178,8 +178,47 @@ function DocsCodeBlock({ language, code }) {
   )
 }
 
-// Resolve any markdown href (relative paths, .md files, anchors, external URLs)
-function resolveMarkdownLink(href, pathMap) {
+const GITHUB_REPO_BLOB_BASE = 'https://github.com/Osmantic/ODS/blob/main'
+const GITHUB_REPO_TREE_BASE = 'https://github.com/Osmantic/ODS/tree/main'
+
+function resolveRelativePath(currentDocPath, rawTarget) {
+  const baseParts = String(currentDocPath || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .split('/')
+    .filter(Boolean)
+  // Drop current filename to obtain its containing directory segments
+  if (baseParts.length > 0) baseParts.pop()
+
+  const segments = [...baseParts]
+  let parentEscapes = 0
+  const targetParts = String(rawTarget || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .split('/')
+
+  for (const part of targetParts) {
+    if (!part || part === '.') continue
+    if (part === '..') {
+      if (segments.length > 0) {
+        segments.pop()
+      } else {
+        parentEscapes += 1
+      }
+    } else {
+      segments.push(part)
+    }
+  }
+
+  return {
+    path: segments.join('/'),
+    parentEscapes,
+  }
+}
+
+// Resolve any markdown href against currentDoc.path without basename collisions or broken /docs/* routes
+function resolveMarkdownLink(href, pathMap, currentDocPath = '') {
   if (!href) return null
 
   // External URLs (http, https, mailto, etc.)
@@ -193,59 +232,50 @@ function resolveMarkdownLink(href, pathMap) {
   }
 
   // Split path target and #hash
-  const [rawTarget, rawHash] = href.split('#')
+  const hashIndex = href.indexOf('#')
+  const rawTarget = (hashIndex >= 0 ? href.slice(0, hashIndex) : href).trim()
+  const rawHash = hashIndex >= 0 ? href.slice(hashIndex + 1) : ''
   const hashSuffix = rawHash ? `#${rawHash}` : ''
 
-  // Clean target path: strip leading ./, ../, and leading /
-  let clean = (rawTarget || '').trim().replace(/\\/g, '/')
-  if (clean.startsWith('/docs/')) {
-    clean = clean.replace(/^\/docs\//, '')
-  } else {
-    // Strip leading ./ and any occurrences of ../
-    clean = clean.replace(/^(\.\.?\/)+/, '').replace(/^\//, '')
-  }
+  const normalizedInput = rawTarget.replace(/\\/g, '/')
+  const isDirectoryTarget = normalizedInput.endsWith('/')
 
-  const cleanLower = clean.toLowerCase()
-  const cleanNoMd = cleanLower.replace(/\.(md|markdown)$/i, '')
-  const fileName = cleanLower.split('/').pop() || ''
-  const fileNameNoMd = fileName.replace(/\.(md|markdown)$/i, '')
-
-  // Try lookups in pathMap:
-  // 1. Exact clean path (e.g. "docs/macos-quickstart.md")
-  // 2. Clean path without .md (e.g. "docs/macos-quickstart")
-  // 3. Basename filename (e.g. "macos-quickstart.md")
-  // 4. Basename without .md (e.g. "macos-quickstart")
-  const targetSlug =
-    pathMap.get(cleanLower) ||
-    pathMap.get(cleanNoMd) ||
-    pathMap.get(fileName) ||
-    pathMap.get(fileNameNoMd)
-
-  if (targetSlug) {
-    return { type: 'internal', to: `/docs/${targetSlug}${hashSuffix}` }
-  }
-
-  // Fallback for markdown files or docs paths not in registry
-  if (cleanLower.endsWith('.md') || cleanLower.startsWith('docs/')) {
-    let slugFallback = cleanNoMd.startsWith('docs/') ? cleanNoMd.replace(/^docs\//, '') : cleanNoMd
-    // Ensure slugFallback strictly conforms to the [category]/[document] format
-    if (!slugFallback.includes('/')) {
-      const matchedSlug = pathMap.get(slugFallback.toLowerCase())
-      if (matchedSlug && matchedSlug.includes('/')) {
-        return { type: 'internal', to: `/docs/${matchedSlug}${hashSuffix}` }
-      }
-      slugFallback = `getting-started/${slugFallback}`
+  if (normalizedInput.startsWith('/docs/')) {
+    const clean = normalizedInput.slice('/docs/'.length).replace(/^\/+/, '')
+    const cleanLower = clean.toLowerCase()
+    const cleanNoMd = cleanLower.replace(/\.(md|markdown)$/i, '')
+    const targetSlug = pathMap.get(cleanLower) || pathMap.get(cleanNoMd)
+    if (targetSlug) {
+      return { type: 'internal', to: `/docs/${targetSlug}${hashSuffix}` }
     }
-    return { type: 'internal', to: `/docs/${slugFallback}${hashSuffix}` }
+    const baseUrl = isDirectoryTarget ? GITHUB_REPO_TREE_BASE : GITHUB_REPO_BLOB_BASE
+    return { type: 'external', href: `${baseUrl}/ods/docs/${clean}${hashSuffix}` }
   }
 
-  // Internal absolute app route
-  if (rawTarget.startsWith('/')) {
-    return { type: 'internal', to: `${rawTarget}${hashSuffix}` }
+  // Other internal absolute app route
+  if (normalizedInput.startsWith('/')) {
+    return { type: 'internal', to: `${normalizedInput}${hashSuffix}` }
   }
 
-  // Fallback as external/raw
-  return { type: 'external', href }
+  const resolved = resolveRelativePath(currentDocPath, normalizedInput)
+  if (resolved.parentEscapes === 0 && resolved.path) {
+    const resolvedLower = resolved.path.toLowerCase()
+    const resolvedNoMd = resolvedLower.replace(/\.(md|markdown)$/i, '')
+    const targetSlug = pathMap.get(resolvedLower) || pathMap.get(resolvedNoMd)
+    if (targetSlug) {
+      return { type: 'internal', to: `/docs/${targetSlug}${hashSuffix}` }
+    }
+    const baseUrl = isDirectoryTarget ? GITHUB_REPO_TREE_BASE : GITHUB_REPO_BLOB_BASE
+    return { type: 'external', href: `${baseUrl}/ods/${resolved.path}${hashSuffix}` }
+  }
+
+  if (resolved.parentEscapes === 1) {
+    const baseUrl = isDirectoryTarget ? GITHUB_REPO_TREE_BASE : GITHUB_REPO_BLOB_BASE
+    const suffixPath = resolved.path ? `/${resolved.path}` : ''
+    return { type: 'external', href: `${baseUrl}${suffixPath}${hashSuffix}` }
+  }
+
+  return { type: 'external', href: `${GITHUB_REPO_TREE_BASE}${hashSuffix}` }
 }
 
 export default function Docs() {
@@ -644,7 +674,7 @@ export default function Docs() {
     },
     // Link rewriting for relative markdown files, anchors, and external links
     a: ({ href, children }) => {
-      const resolved = resolveMarkdownLink(href, pathMap)
+      const resolved = resolveMarkdownLink(href, pathMap, currentDoc?.path || '')
       if (!resolved) return <a>{children}</a>
 
       if (resolved.type === 'internal') {
@@ -662,7 +692,7 @@ export default function Docs() {
         </a>
       )
     },
-  }), [pathMap])
+  }), [pathMap, currentDoc?.path])
 
   // Memoize rendered markdown body so modal state / keystrokes / scrollspy never re-parse or re-highlight markdown
   const renderedMarkdown = useMemo(() => {

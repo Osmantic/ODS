@@ -195,6 +195,71 @@ def test_heading_and_section_anchor_parity():
     ]
 
 
+def test_nested_readme_and_unregistered_docs_never_misroute():
+    """Nested READMEs resolve strictly by full path and unregistered files return 404 (never root README/LICENSING)."""
+    # 1. Registered nested README resolves to its own Open WebUI entry, not root README.md
+    ow_resp = client.get("/api/docs/document?slug=extensions/services/open-webui/README.md")
+    assert ow_resp.status_code == 200
+    ow_data = ow_resp.json()
+    assert ow_data["slug"] == "extensions/open-webui"
+    assert ow_data["path"] == "extensions/services/open-webui/README.md"
+    assert "Open WebUI" in ow_data["content"]
+
+    # 2. Unregistered nested READMEs must 404 instead of falling back to root README.md
+    for unregistered_readme in (
+        "extensions/schema/README.md",
+        "extensions/library/services/aider/README.md",
+        "docs/README.md",
+        "extensions/README.md",
+    ):
+        resp = client.get(f"/api/docs/document?slug={unregistered_readme}")
+        assert resp.status_code == 404, f"{unregistered_readme} unexpectedly resolved to {resp.json().get('slug')!r}"
+
+    # 3. Unregistered files (e.g. vendor notices/licenses) must 404 instead of falling back to LICENSING.md
+    for unregistered_doc in (
+        "vendor/pixel/THIRD_PARTY_NOTICES.md",
+        "vendor/pixel/LICENSE.md",
+        "docs/FAQ.md",
+    ):
+        resp = client.get(f"/api/docs/document?slug={unregistered_doc}")
+        assert resp.status_code == 404, f"{unregistered_doc} unexpectedly resolved to {resp.json().get('slug')!r}"
+
+
+def test_all_relative_doc_links_never_misroute_to_wrong_file():
+    """Relative links across all shipped docs never resolve via find_doc_by_slug to a different file."""
+    import posixpath
+    import re
+    from routers.docs import _iter_markdown_lines
+
+    link_re = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+    checked = 0
+
+    for doc in DOC_REGISTRY:
+        src_path = doc["path"]
+        src_dir = posixpath.dirname(src_path)
+        content = (REAL_ODS_ROOT / src_path).read_text(encoding="utf-8")
+        for line, in_fence in _iter_markdown_lines(content):
+            if in_fence:
+                continue
+            for href in link_re.findall(line):
+                if not href or href.startswith("#") or re.match(r"^(https?:|//|mailto:|tel:)", href, re.I):
+                    continue
+                target, _, _ = href.partition("#")
+                if not target or target.startswith("/"):
+                    continue
+                rel = posixpath.normpath(posixpath.join(src_dir, target))
+                if rel.startswith(".."):
+                    continue
+                checked += 1
+                matched = docs_registry.find_doc_by_slug(rel)
+                if matched is not None:
+                    assert matched["path"].lower() == rel.lower(), (
+                        f"Link {href!r} in {src_path} resolved {rel!r} to wrong file {matched['path']!r}"
+                    )
+
+    assert checked >= 400
+
+
 def test_api_document_not_found():
     """Test GET /api/docs/document with invalid slug returns 404."""
     response = client.get("/api/docs/document?slug=non-existent-doc")
