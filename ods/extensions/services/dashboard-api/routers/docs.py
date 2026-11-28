@@ -22,7 +22,8 @@ from docs_registry import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/docs", tags=["documentation"])
 
-_HEADING_REGEX = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+_HEADING_LINE_REGEX = re.compile(r"^ {0,3}(#{1,3})[ \t]+(.+?)(?:[ \t]+#+[ \t]*)?$")
+_OPEN_FENCE_REGEX = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _SLUGIFY_CLEAN_REGEX = re.compile(r"[^\w\s-]", re.UNICODE)
 _CODE_FENCE_REGEX = re.compile(r"```[^\n]*\n?")
 _MD_LINK_REGEX = re.compile(r"!?\[([^\]]*)\]\([^)]+\)")
@@ -33,15 +34,74 @@ _DOC_SECTION_CACHE: dict[Path, tuple[int, int, list[dict[str, str]]]] = {}
 
 
 def _clean_heading_text(raw_title: str) -> str:
-    """Strip inline markdown syntax from a heading title."""
-    clean_text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", raw_title.strip())
-    return re.sub(r"[*_`]", "", clean_text).strip()
+    """Strip inline markdown syntax from a heading title matching Remark AST text."""
+    clean_text = re.sub(r"!?\[([^\]]*)\]\([^)]+\)", r"\1", raw_title.strip())
+    # Split on inline code spans so backtick contents stay literal (e.g. `intel_gpu_top`).
+    parts = re.split(r"(`+[^`]*`+)", clean_text)
+    cleaned_parts: list[str] = []
+    for part in parts:
+        if len(part) >= 2 and part.startswith("`") and part.endswith("`"):
+            cleaned_parts.append(part.strip("`"))
+        else:
+            # Strip unescaped emphasis delimiters while preserving intra-word underscores (CGROUP_V2)
+            # and backslash-escaped literals (ARC\_LITE).
+            segment = re.sub(r"(?<!\\)\*", "", part)
+            segment = re.sub(r"(?<!\\)(?<!\w)_+|(?<!\\)_+(?!\w)", "", segment)
+            segment = re.sub(r"\\([\\`*_{}\[\]()#+\-.!>~|])", r"\1", segment)
+            cleaned_parts.append(segment)
+    return "".join(cleaned_parts).strip()
 
 
 def _slugify(text: str) -> str:
     """Generate a clean URL anchor from heading text."""
     clean = _SLUGIFY_CLEAN_REGEX.sub("", text).strip().lower()
     return re.sub(r"[-\s]+", "-", clean)
+
+
+def _allocate_heading_anchor(
+    clean_text: str,
+    heading_index: int,
+    seen_ids: dict[str, int],
+    used_ids: set[str],
+) -> str:
+    """Allocate a unique per-document anchor matching the frontend heading convention."""
+    base = _slugify(clean_text) or f"heading-{heading_index}"
+    count = seen_ids.get(base, 0)
+    anchor = base if count == 0 else f"{base}-{count}"
+    while anchor in used_ids:
+        count += 1
+        anchor = f"{base}-{count}"
+    seen_ids[base] = count + 1
+    used_ids.add(anchor)
+    return anchor
+
+
+def _iter_markdown_lines(markdown_text: str):
+    """Yield (line, in_code_fence) across markdown lines, tracking CommonMark fences."""
+    fence_char: str | None = None
+    fence_len = 0
+
+    for line in markdown_text.splitlines():
+        if fence_char is not None:
+            if re.match(
+                rf"^ {{0,3}}{re.escape(fence_char)}{{{fence_len},}}[ \t]*$",
+                line,
+            ):
+                fence_char = None
+                fence_len = 0
+            yield line, True
+            continue
+
+        fence_match = _OPEN_FENCE_REGEX.match(line)
+        if fence_match:
+            marker, info = fence_match.groups()
+            if not (marker[0] == "`" and "`" in info):
+                fence_char = marker[0]
+                fence_len = len(marker)
+                yield line, True
+                continue
+
+        yield line, False
 
 
 def _strip_markdown(text: str) -> str:
@@ -59,6 +119,8 @@ def _parse_doc_sections(markdown_text: str) -> list[dict[str, str]]:
     """Split markdown into searchable sections keyed by h1-h3 headings."""
     sections: list[dict[str, str]] = []
     seen_ids: dict[str, int] = {}
+    used_ids: set[str] = set()
+    heading_count = 0
     current_heading = ""
     current_anchor = ""
     buffer: list[str] = []
@@ -72,18 +134,14 @@ def _parse_doc_sections(markdown_text: str) -> list[dict[str, str]]:
                 "text": body,
             })
 
-    for line in markdown_text.splitlines():
-        match = re.match(r"^(#{1,3})\s+(.+)$", line)
+    for line, in_fence in _iter_markdown_lines(markdown_text):
+        match = None if in_fence else _HEADING_LINE_REGEX.match(line)
         if match:
             flush()
             buffer = []
+            heading_count += 1
             clean_text = _clean_heading_text(match.group(2))
-            anchor = _slugify(clean_text) or f"heading-{len(sections) + 1}"
-            if anchor in seen_ids:
-                seen_ids[anchor] += 1
-                anchor = f"{anchor}-{seen_ids[anchor]}"
-            else:
-                seen_ids[anchor] = 0
+            anchor = _allocate_heading_anchor(clean_text, heading_count, seen_ids, used_ids)
             current_heading = clean_text
             current_anchor = anchor
         else:
@@ -148,23 +206,18 @@ def _extract_headings(markdown_text: str) -> list[dict[str, Any]]:
     """Extract h1, h2, h3 headings from markdown text for table of contents."""
     headings: list[dict[str, Any]] = []
     seen_ids: dict[str, int] = {}
+    used_ids: set[str] = set()
 
-    for match in _HEADING_REGEX.finditer(markdown_text):
+    for line, in_fence in _iter_markdown_lines(markdown_text):
+        if in_fence:
+            continue
+        match = _HEADING_LINE_REGEX.match(line)
+        if not match:
+            continue
         hashes, title = match.groups()
         level = len(hashes)
-        if level > 3:
-            continue
         clean_text = _clean_heading_text(title)
-
-        anchor = _slugify(clean_text)
-        if not anchor:
-            anchor = f"heading-{len(headings) + 1}"
-
-        if anchor in seen_ids:
-            seen_ids[anchor] += 1
-            anchor = f"{anchor}-{seen_ids[anchor]}"
-        else:
-            seen_ids[anchor] = 0
+        anchor = _allocate_heading_anchor(clean_text, len(headings) + 1, seen_ids, used_ids)
 
         headings.append({
             "level": level,

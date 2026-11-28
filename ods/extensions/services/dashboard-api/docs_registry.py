@@ -248,20 +248,12 @@ DOC_REGISTRY: list[dict[str, Any]] = [
         "order": 3,
     },
     {
-        "slug": "architecture/model-router",
-        "category": "architecture",
-        "title": "ODS Model Router Service",
-        "description": "Low-latency multiplexer for GGUF and external inference runtimes.",
-        "path": "extensions/services/model-router/README.md",
-        "order": 4,
-    },
-    {
         "slug": "architecture/model-management",
         "category": "architecture",
         "title": "Model Management Architecture",
         "description": "Downloading, verifying, and activating models in ODS.",
         "path": "docs/MODEL-MANAGEMENT.md",
-        "order": 5,
+        "order": 4,
     },
     {
         "slug": "architecture/mode-switch",
@@ -269,7 +261,7 @@ DOC_REGISTRY: list[dict[str, Any]] = [
         "title": "Mode Switch Engine",
         "description": "Switching between local inference, cloud egress, and hybrid modes.",
         "path": "docs/MODE-SWITCH.md",
-        "order": 6,
+        "order": 5,
     },
     {
         "slug": "architecture/migration-lemonade-llamacpp",
@@ -277,7 +269,7 @@ DOC_REGISTRY: list[dict[str, Any]] = [
         "title": "Migration: Lemonade to llama.cpp",
         "description": "Transition from Lemonade runtime to llama.cpp for AMD and Intel.",
         "path": "docs/MIGRATION-LEMONADE-TO-LLAMACPP.md",
-        "order": 7,
+        "order": 6,
     },
     {
         "slug": "architecture/installer-architecture",
@@ -285,7 +277,7 @@ DOC_REGISTRY: list[dict[str, Any]] = [
         "title": "Installer Architecture",
         "description": "Multi-phase installer, recovery checkpoints, and system tuning.",
         "path": "docs/INSTALLER-ARCHITECTURE.md",
-        "order": 8,
+        "order": 7,
     },
     {
         "slug": "architecture/installer-trust",
@@ -293,7 +285,7 @@ DOC_REGISTRY: list[dict[str, Any]] = [
         "title": "Installer Trust & Security Boundaries",
         "description": "Integrity verification, cryptographic trust roots, and isolation planes.",
         "path": "docs/INSTALLER_TRUST.md",
-        "order": 9,
+        "order": 8,
     },
     {
         "slug": "architecture/compose-resolvers",
@@ -301,7 +293,7 @@ DOC_REGISTRY: list[dict[str, Any]] = [
         "title": "Compose Resolver Contracts",
         "description": "Deterministic composition merging across hardware profile overlays.",
         "path": "docs/COMPOSE_RESOLVER_CONTRACTS.md",
-        "order": 10,
+        "order": 9,
     },
 
     # --- Pixel & Assistant ---
@@ -1113,8 +1105,6 @@ def get_path_to_slug_map() -> dict[str, str]:
         "contributing.md": "dev/contributing",
         "contributing": "dev/contributing",
         "docs/contributing.md": "dev/contributing",
-        "code_of_conduct.md": "dev/code-of-conduct",
-        "code_of_conduct": "dev/code-of-conduct",
         # Getting Started shortcuts
         "setup-card.md": "getting-started/setup-card",
         "setup-card": "getting-started/setup-card",
@@ -1146,9 +1136,6 @@ def get_path_to_slug_map() -> dict[str, str]:
         "architecture.md": "architecture/how-ods-works",
         "architecture": "architecture/how-ods-works",
         "docs/architecture.md": "architecture/how-ods-works",
-        "model-router.md": "architecture/model-router",
-        "model-router": "architecture/model-router",
-        "docs/model-router.md": "architecture/model-router",
         "model-switchboard.md": "architecture/model-switchboard",
         "model-switchboard": "architecture/model-switchboard",
         "docs/model-switchboard.md": "architecture/model-switchboard",
@@ -1159,12 +1146,6 @@ def get_path_to_slug_map() -> dict[str, str]:
         "extensions/readme.md": "extensions/catalog",
         "extensions/readme": "extensions/catalog",
         "extensions/catalog.md": "extensions/catalog",
-        # Developer shortcuts
-        "api/readme.md": "dev/api-overview",
-        "api/readme": "dev/api-overview",
-        "api-overview.md": "dev/api-overview",
-        "docs/api.md": "dev/api-overview",
-        "api.md": "dev/api-overview",
     }
 
     for doc in DOC_REGISTRY:

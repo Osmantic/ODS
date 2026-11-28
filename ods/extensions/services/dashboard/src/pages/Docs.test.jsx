@@ -239,4 +239,59 @@ describe('Docs Component', () => {
       expect(screen.queryByRole('dialog', { name: /Search documentation/i })).not.toBeInTheDocument()
     })
   })
+
+  it('assigns unique deduplicated IDs to repeated headings and ignores fenced-code comments', async () => {
+    routes['GET /api/docs/document?slug=getting-started%2Foverview'] = {
+      ...mockDocOverview,
+      content: [
+        '# Mode Switch',
+        '',
+        '```bash',
+        '# bash comment inside fence',
+        '## Not a heading',
+        'ods mode cloud',
+        '```',
+        '',
+        '## Modes',
+        '',
+        '### Cloud Mode',
+        '',
+        'First cloud mode section.',
+        '',
+        '## Architecture',
+        '',
+        '### Cloud Mode',
+        '',
+        'Second cloud mode section.',
+      ].join('\n'),
+      headings: [
+        { level: 1, text: 'Mode Switch', id: 'mode-switch' },
+        { level: 2, text: 'Modes', id: 'modes' },
+        { level: 3, text: 'Cloud Mode', id: 'cloud-mode' },
+        { level: 2, text: 'Architecture', id: 'architecture' },
+        { level: 3, text: 'Cloud Mode', id: 'cloud-mode-1' },
+      ],
+    }
+
+    render(<Docs />)
+
+    await waitFor(() => {
+      expect(document.getElementById('cloud-mode')).toBeInTheDocument()
+    })
+
+    const cloudHeadings = screen.getAllByRole('heading', { level: 3, name: /Cloud Mode/i })
+    expect(cloudHeadings).toHaveLength(2)
+    expect(cloudHeadings[0]).toHaveAttribute('id', 'cloud-mode')
+    expect(cloudHeadings[1]).toHaveAttribute('id', 'cloud-mode-1')
+
+    // TOC sidebar links must target each distinct rendered heading element
+    const toc = screen.getByRole('complementary', { name: 'Table of Contents' })
+    const tocLinks = Array.from(toc.querySelectorAll('a'))
+    expect(tocLinks.map(a => a.getAttribute('href'))).toContain('#cloud-mode')
+    expect(tocLinks.map(a => a.getAttribute('href'))).toContain('#cloud-mode-1')
+
+    // Comments inside fenced bash code block must not become heading elements
+    expect(screen.queryByRole('heading', { name: /bash comment inside fence/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /Not a heading/i })).not.toBeInTheDocument()
+  })
 })

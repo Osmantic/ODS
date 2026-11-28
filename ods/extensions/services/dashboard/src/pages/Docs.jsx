@@ -40,12 +40,57 @@ function extractHeadingText(node) {
   return ''
 }
 
-function slugifyHeading(node) {
-  return extractHeadingText(node)
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, '')
+function extractHastText(node) {
+  if (!node || typeof node !== 'object') return ''
+  if (node.type === 'text') return String(node.value || '')
+  if (Array.isArray(node.children)) {
+    return node.children.map(extractHastText).join('')
+  }
+  return ''
+}
+
+function slugifyHeadingText(text) {
+  return String(text || '')
+    .replace(/[^\p{L}\p{N}_\s-]/gu, '')
     .trim()
+    .toLowerCase()
     .replace(/[-\s]+/g, '-')
+}
+
+function slugifyHeading(node) {
+  return slugifyHeadingText(extractHeadingText(node))
+}
+
+function rehypeHeadingAnchors() {
+  return (tree) => {
+    const seenIds = new Map()
+    const usedIds = new Set()
+    let headingIndex = 0
+
+    const visit = (node) => {
+      if (!node || typeof node !== 'object') return
+      if (node.type === 'element' && (node.tagName === 'h1' || node.tagName === 'h2' || node.tagName === 'h3')) {
+        headingIndex += 1
+        const base = slugifyHeadingText(extractHastText(node)) || `heading-${headingIndex}`
+        let count = seenIds.get(base) || 0
+        let anchor = count === 0 ? base : `${base}-${count}`
+        while (usedIds.has(anchor)) {
+          count += 1
+          anchor = `${base}-${count}`
+        }
+        seenIds.set(base, count + 1)
+        usedIds.add(anchor)
+        node.properties = { ...(node.properties || {}), id: anchor }
+      }
+      if (Array.isArray(node.children)) {
+        for (const child of node.children) {
+          visit(child)
+        }
+      }
+    }
+
+    visit(tree)
+  }
 }
 
 function HighlightText({ text, query }) {
@@ -540,26 +585,26 @@ export default function Docs() {
       }
       return <code className="docs-inline-code" {...props}>{children}</code>
     },
-    // Heading anchors
-    h1: ({ children }) => {
-      const id = slugifyHeading(children)
+    // Heading anchors (IDs are pre-allocated per document by rehypeHeadingAnchors)
+    h1: ({ id: propId, children }) => {
+      const id = propId || slugifyHeading(children)
       return <h1 id={id || undefined} className="docs-h1">{children}</h1>
     },
-    h2: ({ children }) => {
-      const id = slugifyHeading(children)
+    h2: ({ id: propId, children }) => {
+      const id = propId || slugifyHeading(children)
       return (
-        <h2 id={id} className="docs-h2 group flex items-center">
+        <h2 id={id || undefined} className="docs-h2 group flex items-center">
           <span className="flex-1">{children}</span>
-          <a href={`#${id}`} className="opacity-0 group-hover:opacity-60 ml-2 text-theme-text-muted no-underline" aria-label="Link to section">#</a>
+          {id && <a href={`#${id}`} className="opacity-0 group-hover:opacity-60 ml-2 text-theme-text-muted no-underline" aria-label="Link to section">#</a>}
         </h2>
       )
     },
-    h3: ({ children }) => {
-      const id = slugifyHeading(children)
+    h3: ({ id: propId, children }) => {
+      const id = propId || slugifyHeading(children)
       return (
-        <h3 id={id} className="docs-h3 group flex items-center">
+        <h3 id={id || undefined} className="docs-h3 group flex items-center">
           <span className="flex-1">{children}</span>
-          <a href={`#${id}`} className="opacity-0 group-hover:opacity-60 ml-2 text-theme-text-muted no-underline" aria-label="Link to section">#</a>
+          {id && <a href={`#${id}`} className="opacity-0 group-hover:opacity-60 ml-2 text-theme-text-muted no-underline" aria-label="Link to section">#</a>}
         </h3>
       )
     },
@@ -625,7 +670,7 @@ export default function Docs() {
     return (
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        rehypePlugins={[rehypeHighlight, rehypeHeadingAnchors]}
         components={markdownComponents}
       >
         {currentDoc.content}

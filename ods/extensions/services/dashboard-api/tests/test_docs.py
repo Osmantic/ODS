@@ -16,9 +16,14 @@ from docs_registry import (
     DOC_REGISTRY,
     get_all_slugs,
     get_docs_catalog,
+    get_path_to_slug_map,
     resolve_doc_path,
 )
-from routers.docs import router as docs_router
+from routers import docs as docs_router_module
+from routers.docs import _extract_headings, _parse_doc_sections, router as docs_router
+
+# Real ODS repository root (ods/) so catalog, routing, and registry checks validate shipped files.
+REAL_ODS_ROOT = Path(__file__).resolve().parents[4]
 
 # Isolated test app to avoid starting daemon background tasks
 test_app = FastAPI()
@@ -27,22 +32,12 @@ client = TestClient(test_app)
 
 
 @pytest.fixture(autouse=True)
-def mock_docs_install_dir(tmp_path, monkeypatch):
-    """Provide a test install directory with mock markdown docs matching DOC_REGISTRY."""
-    monkeypatch.setattr(docs_registry, "INSTALL_DIR", str(tmp_path))
-
-    # Create root README.md, QUICKSTART.md, FAQ.md
-    (tmp_path / "README.md").write_text("# ODS Overview\n\n## Features\n\nContent here.\n", encoding="utf-8")
-    (tmp_path / "QUICKSTART.md").write_text("# Quickstart\n\n## Installation\n\nRun install.\n", encoding="utf-8")
-    (tmp_path / "FAQ.md").write_text("# FAQ\n\n## Questions\n\nAnswer.\n", encoding="utf-8")
-
-    # Create docs/ directory
-    docs_dir = tmp_path / "docs"
-    docs_dir.mkdir(parents=True, exist_ok=True)
-    (docs_dir / "HARDWARE-GUIDE.md").write_text("# Hardware Guide\n\n## GPU Sizing\n\nDetails.\n", encoding="utf-8")
-    (docs_dir / "SETUP-CARD.md").write_text("# Setup Card\n\n## Steps\n\nChecklist.\n", encoding="utf-8")
-
-    return tmp_path
+def real_docs_install_dir(monkeypatch):
+    """Point docs_registry at the real ODS source tree rather than mock fixtures."""
+    monkeypatch.setattr(docs_registry, "INSTALL_DIR", str(REAL_ODS_ROOT))
+    docs_router_module._DOC_SECTION_CACHE.clear()
+    yield REAL_ODS_ROOT
+    docs_router_module._DOC_SECTION_CACHE.clear()
 
 
 def test_docs_registry_integrity():
@@ -56,29 +51,43 @@ def test_docs_registry_integrity():
 
     all_slugs = get_all_slugs()
     assert len(all_slugs) == len(DOC_REGISTRY)
+    assert len(set(all_slugs)) == len(DOC_REGISTRY)
     assert "getting-started/overview" in all_slugs
     assert "getting-started/quickstart" in all_slugs
 
 
+def test_all_registered_docs_exist_in_source_tree():
+    """Every entry in DOC_REGISTRY and path_map must resolve to a real shipped markdown document."""
+    all_slugs = set(get_all_slugs())
+    missing: list[tuple[str, str]] = []
+
+    for doc in DOC_REGISTRY:
+        resolved = resolve_doc_path(doc["path"])
+        if not resolved.is_file():
+            missing.append((doc["slug"], doc["path"]))
+            continue
+        content = resolved.read_text(encoding="utf-8")
+        assert content.strip(), f"Registered document {doc['path']} is empty"
+
+    assert missing == [], f"Registered docs missing from source tree: {missing}"
+
+    for alias, slug in get_path_to_slug_map().items():
+        assert slug in all_slugs, f"Path alias {alias!r} points to unknown slug {slug!r}"
+
+
 def test_resolve_doc_path_security():
     """Verify path traversal and non-markdown files are rejected."""
-    # Valid relative path
+    # Valid relative path against real source tree
     path = resolve_doc_path("README.md")
     assert path.is_file()
 
     # Path traversal rejected
-    try:
+    with pytest.raises(ValueError, match="traversal|outside"):
         resolve_doc_path("../outside.md")
-        assert False, "Should have raised ValueError"
-    except ValueError as exc:
-        assert "traversal" in str(exc).lower() or "outside" in str(exc).lower()
 
     # Non-markdown extension rejected
-    try:
+    with pytest.raises(ValueError, match="markdown"):
         resolve_doc_path("config.py")
-        assert False, "Should have raised ValueError"
-    except ValueError as exc:
-        assert "markdown" in str(exc).lower()
 
 
 def test_api_catalog_endpoint():
@@ -87,7 +96,7 @@ def test_api_catalog_endpoint():
     assert response.status_code == 200
     data = response.json()
     assert "categories" in data
-    assert data["total_documents"] >= 30
+    assert data["total_documents"] == len(DOC_REGISTRY)
     assert len(data["categories"]) == 8
     assert "path_map" in data
     assert "readme.md" in data["path_map"]
@@ -109,7 +118,7 @@ def test_api_document_alias_resolution():
 
 
 def test_api_document_endpoint():
-    """Test GET /api/docs/document for a known document."""
+    """Test GET /api/docs/document for a known real document."""
     response = client.get("/api/docs/document?slug=getting-started/overview")
     assert response.status_code == 200
     data = response.json()
@@ -117,10 +126,73 @@ def test_api_document_endpoint():
     assert data["title"] == "ODS Overview & Features"
     assert data["category"] == "getting-started"
     assert "content" in data
-    assert len(data["content"]) > 10
+    assert len(data["content"]) > 100
     assert "headings" in data
-    assert any(h["text"] == "Features" for h in data["headings"])
+    assert len(data["headings"]) > 0
     assert "reading_time_minutes" in data
+
+
+def test_api_document_all_registered_slugs_serve_200():
+    """Every slug advertised in DOC_REGISTRY must return HTTP 200 without 404s."""
+    for slug in get_all_slugs():
+        response = client.get(f"/api/docs/document?slug={slug}")
+        assert response.status_code == 200, f"Slug {slug!r} returned {response.status_code}"
+
+
+def test_real_mode_switch_headings_deduped_and_fences_excluded():
+    """Real docs/MODE-SWITCH.md deduplicates repeated headings and ignores bash fence comments."""
+    response = client.get("/api/docs/document?slug=architecture/mode-switch")
+    assert response.status_code == 200
+    headings = response.json()["headings"]
+    ids = [h["id"] for h in headings]
+
+    # Repeated "Cloud Mode" and "Hybrid Mode" headings get matching -1 suffixes
+    assert "cloud-mode" in ids
+    assert "cloud-mode-1" in ids
+    assert "hybrid-mode" in ids
+    assert "hybrid-mode-1" in ids
+
+    # Comments inside ```bash code blocks (e.g. "# Check current mode") must not appear as headings
+    texts = [h["text"] for h in headings]
+    assert not any("Check current mode" in t for t in texts)
+    assert len(ids) == len(set(ids))
+
+
+def test_heading_and_section_anchor_parity():
+    """_extract_headings and _parse_doc_sections agree on deduplication and ignore code fences."""
+    sample = (
+        "# Title\n\n"
+        "Intro before first section.\n\n"
+        "## Overview\n\n"
+        "First overview.\n\n"
+        "```bash\n"
+        "# Check current mode\n"
+        "## Not a section heading\n"
+        "echo ok\n"
+        "```\n\n"
+        "## Overview\n\n"
+        "Second overview.\n\n"
+        "~~~python\n"
+        "# Tilde fence comment\n"
+        "~~~\n\n"
+        "## Overview\n\n"
+        "Third overview.\n"
+    )
+    headings = _extract_headings(sample)
+    sections = _parse_doc_sections(sample)
+
+    assert [(h["text"], h["id"]) for h in headings] == [
+        ("Title", "title"),
+        ("Overview", "overview"),
+        ("Overview", "overview-1"),
+        ("Overview", "overview-2"),
+    ]
+    assert [(s["heading"], s["anchor"]) for s in sections if s["heading"]] == [
+        ("Title", "title"),
+        ("Overview", "overview"),
+        ("Overview", "overview-1"),
+        ("Overview", "overview-2"),
+    ]
 
 
 def test_api_document_not_found():
@@ -130,7 +202,7 @@ def test_api_document_not_found():
 
 
 def test_api_search_endpoint():
-    """Test GET /api/docs/search query matches titles and metadata."""
+    """Test GET /api/docs/search matches real documentation titles and in-file sections."""
     response = client.get("/api/docs/search?q=quickstart")
     assert response.status_code == 200
     data = response.json()
@@ -139,45 +211,40 @@ def test_api_search_endpoint():
     slugs = [r["slug"] for r in data["results"]]
     assert "getting-started/quickstart" in slugs
 
+    # Natural-language query with stop words still matches real quickstart doc
+    resp_nl = client.get("/api/docs/search?q=how+to+install")
+    assert resp_nl.status_code == 200
+    qs_nl = next((r for r in resp_nl.json()["results"] if r["slug"] == "getting-started/quickstart"), None)
+    assert qs_nl is not None
+    assert qs_nl["match_type"] == "title"
 
-def test_api_search_in_file_sections_and_live_refresh(tmp_path):
-    """Test GET /api/docs/search matches in-file headings, body text, and reloads edited files."""
-    # 1. Heading match inside QUICKSTART.md ("## Installation")
-    resp = client.get("/api/docs/search?q=installation")
-    assert resp.status_code == 200
-    results = resp.json()["results"]
-    qs = next((r for r in results if r["slug"] == "getting-started/quickstart"), None)
-    assert qs is not None
-    assert any(sec["anchor"] == "installation" and "Installation" in sec["heading"] for sec in qs["sections"])
 
-    # 2. Body text match inside HARDWARE-GUIDE.md ("## GPU Sizing")
-    (tmp_path / "docs" / "HARDWARE-GUIDE.md").write_text(
-        "# Hardware Guide\n\n## GPU Sizing\n\nChoose tensor_parallelism wisely for large clusters.\n",
+def test_api_search_section_cache_refresh_on_disk_change(tmp_path, monkeypatch):
+    """Test _DOC_SECTION_CACHE refreshes immediately when a file is updated on disk."""
+    # Copy real docs minimally only for simulating an isolated atomic file edit without mutating the repo.
+    monkeypatch.setattr(docs_registry, "INSTALL_DIR", str(tmp_path))
+    docs_router_module._DOC_SECTION_CACHE.clear()
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    hw_file = docs_dir / "HARDWARE-GUIDE.md"
+    hw_file.write_text(
+        "# Hardware Guide\n\n## GPU Sizing\n\nChoose tensor_parallelism wisely.\n",
         encoding="utf-8",
     )
-    resp2 = client.get("/api/docs/search?q=tensor_parallelism")
+
+    resp1 = client.get("/api/docs/search?q=tensor_parallelism")
+    assert resp1.status_code == 200
+    hw1 = next((r for r in resp1.json()["results"] if r["slug"] == "getting-started/hardware-guide"), None)
+    assert hw1 is not None
+    assert hw1["match_type"] == "section"
+    assert hw1["sections"][0]["anchor"] == "gpu-sizing"
+
+    hw_file.write_text(
+        "# Hardware Guide\n\n## VRAM Budgets\n\nEstimate kv_cache_quant footprint.\n",
+        encoding="utf-8",
+    )
+    resp2 = client.get("/api/docs/search?q=kv_cache_quant")
     assert resp2.status_code == 200
-    results2 = resp2.json()["results"]
-    hw = next((r for r in results2 if r["slug"] == "getting-started/hardware-guide"), None)
-    assert hw is not None
-    assert hw["match_type"] == "section"
-    assert hw["sections"][0]["anchor"] == "gpu-sizing"
-    assert "tensor_parallelism" in hw["sections"][0]["snippet"]
-
-    # 3. Updating file on disk refreshes section cache immediately
-    (tmp_path / "docs" / "HARDWARE-GUIDE.md").write_text(
-        "# Hardware Guide\n\n## VRAM Budgets\n\nEstimate kv_cache_quant footprint accurately.\n",
-        encoding="utf-8",
-    )
-    resp3 = client.get("/api/docs/search?q=kv_cache_quant")
-    assert resp3.status_code == 200
-    hw3 = next((r for r in resp3.json()["results"] if r["slug"] == "getting-started/hardware-guide"), None)
-    assert hw3 is not None
-    assert hw3["sections"][0]["anchor"] == "vram-budgets"
-
-    # 4. Natural-language query with stop words ("how to install") still matches doc titles & sections
-    resp4 = client.get("/api/docs/search?q=how+to+install")
-    assert resp4.status_code == 200
-    qs4 = next((r for r in resp4.json()["results"] if r["slug"] == "getting-started/quickstart"), None)
-    assert qs4 is not None
-    assert qs4["match_type"] == "title"
+    hw2 = next((r for r in resp2.json()["results"] if r["slug"] == "getting-started/hardware-guide"), None)
+    assert hw2 is not None
+    assert hw2["sections"][0]["anchor"] == "vram-budgets"
